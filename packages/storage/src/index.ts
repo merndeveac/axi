@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { cwd } from "node:process";
 import { DatabaseSync } from "node:sqlite";
+import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import type { FeedEvent } from "@axi/data-feeds";
 import {
@@ -38,6 +39,15 @@ export type StoredSignal = {
   reasonCodes: string[];
   payload: OverlaySignal;
   createdAt: string;
+};
+
+export type ReplaySource = "feed_events" | "signals";
+
+export type ReplayItem = {
+  createdAt: string;
+  payload: FeedEvent | OverlaySignal;
+  sequence: number;
+  source: ReplaySource;
 };
 
 export type PaperOrderSide = "buy" | "sell";
@@ -97,6 +107,14 @@ type SignalRow = {
   score: number;
   hard_reject: number;
   reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
+type FeedEventRow = {
+  id: number;
+  event_type: string;
+  mint: string;
   payload_json: string;
   created_at: string;
 };
@@ -281,6 +299,74 @@ export function listRecentSignals(limit = 50): StoredSignal[] {
     .all(parsedLimit) as SignalRow[];
 
   return rows.map(mapSignalRow);
+}
+
+export function listFeedEvents(limit = 50): StoredFeedEvent[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from feed_events
+       order by datetime(created_at) asc, id asc
+       limit ?`
+    )
+    .all(parsedLimit) as FeedEventRow[];
+
+  return rows.map(mapFeedEventRow);
+}
+
+export function listSignalsForReplay(limit = 50): StoredSignal[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from signals
+       order by datetime(created_at) asc, id asc
+       limit ?`
+    )
+    .all(parsedLimit) as SignalRow[];
+
+  return rows.map(mapSignalRow);
+}
+
+export async function* createReplayStream(options: {
+  limit?: number;
+  speed?: number;
+  type?: ReplaySource;
+} = {}): AsyncGenerator<ReplayItem> {
+  const type = options.type ?? "feed_events";
+  const speed = options.speed ?? 0;
+  const records =
+    type === "signals"
+      ? listSignalsForReplay(options.limit)
+      : listFeedEvents(options.limit);
+  let previousTimestamp: number | undefined;
+
+  for (const [index, record] of records.entries()) {
+    const currentTimestamp = Date.parse(record.createdAt);
+
+    if (
+      speed > 0 &&
+      previousTimestamp !== undefined &&
+      Number.isFinite(currentTimestamp) &&
+      Number.isFinite(previousTimestamp)
+    ) {
+      const waitMs = Math.max(0, (currentTimestamp - previousTimestamp) / speed);
+
+      if (waitMs > 0) {
+        await delay(waitMs);
+      }
+    }
+
+    previousTimestamp = currentTimestamp;
+
+    yield {
+      createdAt: record.createdAt,
+      payload: record.payload,
+      sequence: index + 1,
+      source: type
+    };
+  }
 }
 
 export function savePaperOrder(order: PaperOrderInput): StoredPaperOrder {
@@ -599,6 +685,16 @@ function getFeedEventTimestamp(event: FeedEvent): string {
 
 function stringifyJson(value: unknown): string {
   return JSON.stringify(value);
+}
+
+function mapFeedEventRow(row: FeedEventRow): StoredFeedEvent {
+  return {
+    id: row.id,
+    eventType: row.event_type,
+    mint: row.mint,
+    payload: JSON.parse(row.payload_json) as FeedEvent,
+    createdAt: row.created_at
+  };
 }
 
 function mapSignalRow(row: SignalRow): StoredSignal {

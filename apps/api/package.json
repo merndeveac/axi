@@ -7,7 +7,9 @@
     "dev": "tsx watch --conditions=development src/server.ts",
     "build": "tsc -b tsconfig.json",
     "start": "node dist/server.js",
-    "typecheck": "tsc -b tsconfig.json",
+    "typecheck": "tsc -b tsconfig.json && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "replay": "tsx --conditions=development src/replay.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {

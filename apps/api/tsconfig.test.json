@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@axi/shared": ["../../packages/shared/dist/index.d.ts"],
+      "@axi/scoring": ["../../packages/scoring/dist/index.d.ts"],
+      "@axi/data-feeds": ["../../packages/data-feeds/dist/index.d.ts"],
+      "@axi/execution": ["../../packages/execution/dist/index.d.ts"],
+      "@axi/storage": ["../../packages/storage/dist/index.d.ts"]
+    }
+  },
+  "include": ["src", "test"]
+}

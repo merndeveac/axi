@@ -129,6 +129,11 @@ export function App() {
     (signal) => signal.action === "BUY_READY"
   ).length;
   const hardRejectCount = signals.filter((signal) => signal.hardReject).length;
+  const statusMessage = getStatusMessage({
+    apiStatus,
+    signalCount: signals.length,
+    storageStats
+  });
 
   return (
     <main className="app-shell">
@@ -184,6 +189,10 @@ export function App() {
         </div>
       </section>
 
+      <section className="status-message" aria-live="polite">
+        {statusMessage}
+      </section>
+
       <section className="table-region" aria-label="Live token signals">
         <table>
           <thead>
@@ -224,7 +233,7 @@ export function App() {
             {sortedSignals.length === 0 ? (
               <tr>
                 <td colSpan={9} className="empty-state">
-                  Waiting for local paper signals
+                  {statusMessage}
                 </td>
               </tr>
             ) : null}
@@ -262,4 +271,36 @@ function formatTimestamp(timestamp: string | null | undefined): string {
   }
 
   return new Date(timestamp).toLocaleTimeString();
+}
+
+function getStatusMessage(options: {
+  apiStatus: ApiStatus;
+  signalCount: number;
+  storageStats: StorageStats | null;
+}): string {
+  if (options.apiStatus === "disconnected") {
+    return "API disconnected";
+  }
+
+  if (options.apiStatus === "checking") {
+    return "Checking API";
+  }
+
+  if (options.storageStats?.feedEventCount === 0) {
+    return "API connected, no persisted mock events yet";
+  }
+
+  if (options.signalCount === 0 && (options.storageStats?.signalCount ?? 0) > 0) {
+    return "Persisted paper data exists, waiting for live signals";
+  }
+
+  if (options.signalCount === 0) {
+    return "API connected, waiting for paper signals";
+  }
+
+  if ((options.storageStats?.signalCount ?? 0) > options.signalCount) {
+    return "Persistence active with replayable paper data";
+  }
+
+  return "Paper signals updating";
 }

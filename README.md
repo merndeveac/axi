@@ -25,6 +25,8 @@ data feeds -> scoring engine -> paper executor -> API/WebSocket -> dashboard/ove
 Current implementation uses `MockFeedProvider` only. It emits safe fake token
 events for local development.
 
+All current signal data is fake, mock-generated, and paper-only.
+
 ## Local Persistence
 
 Paper-mode development data is stored in a local SQLite database:
@@ -58,6 +60,12 @@ pnpm test
 pnpm build
 ```
 
+Run only API tests:
+
+```bash
+pnpm --filter @axi/api test
+```
+
 ## Run The API
 
 ```bash
@@ -65,6 +73,16 @@ pnpm --filter @axi/api dev
 ```
 
 The API defaults to `http://localhost:8787`.
+
+Mock feed options can be set with environment variables:
+
+```bash
+MOCK_FEED_SEED=42 MOCK_FEED_SCENARIO=momentum pnpm --filter @axi/api dev
+```
+
+Supported mock scenarios are `normal`, `momentum`, `rug`, and `flat`. The same
+seed and scenario produce the same mock event sequence, which is useful for
+repeatable paper-mode tests.
 
 Endpoints:
 
@@ -79,6 +97,20 @@ Endpoints:
 
 `GET /signals` returns the current in-memory signal cache. `GET
 /signals/recent` returns recent persisted signals from SQLite.
+
+## Replay Local Data
+
+Replay persisted fake paper data from SQLite without starting the API,
+dashboard, live trading, or external services:
+
+```bash
+pnpm --filter @axi/api replay
+pnpm --filter @axi/api replay -- --type signals --limit 25 --speed 0
+pnpm --filter @axi/api replay -- --db .data/axi.sqlite --type feed_events
+```
+
+Replay output is JSON lines on stdout. The default database is
+`.data/axi.sqlite`, which is local and ignored by git.
 
 ## Run The Dashboard
 
@@ -123,3 +155,14 @@ docker compose --profile infra up -d
 - `@axi/api`: Fastify API and local WebSocket broadcaster.
 - `@axi/dashboard`: Vite React signal dashboard.
 - `@axi/extension`: Chrome MV3 overlay skeleton.
+
+## Branch Workflow
+
+- `dev/scaffold-paper-mode` contains the initial scaffold and paper-mode SQLite
+  persistence work.
+- `dev/api-test-harness-replay` contains the API test harness, deterministic
+  mock feed, and replay work.
+
+This project still has no wallet UI, no private-key loading, no live trading,
+no Solana transaction signing, no real external feed integrations, and no Axiom
+private API usage.

@@ -111,6 +111,12 @@ h1 {
   margin-bottom: 18px;
 }
 
+.status-message {
+  margin-bottom: 18px;
+  color: #475467;
+  font-size: 0.92rem;
+}
+
 .table-region {
   overflow-x: auto;
   border: 1px solid #d9e0e8;

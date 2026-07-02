@@ -6,11 +6,14 @@ import type { FeedEvent } from "@axi/data-feeds";
 import type { OverlaySignal } from "@axi/shared";
 import {
   closeStorage,
+  createReplayStream,
   getStorageStats,
   initStorage,
+  listFeedEvents,
   listPaperOrders,
   listPaperPositions,
   listRecentSignals,
+  listSignalsForReplay,
   saveFeedEvent,
   savePaperOrder,
   saveSignal,
@@ -144,15 +147,42 @@ describe("@axi/storage", () => {
     expect(stats.paperPositionCount).toBe(1);
     expect(stats.lastSignalAt).toEqual(expect.any(String));
   });
+
+  it("lists replay records in chronological order", async () => {
+    initStorage({ databasePath });
+    saveFeedEvent(createFeedEvent("2026-01-01T00:00:02.000Z"));
+    saveFeedEvent(createFeedEvent("2026-01-01T00:00:01.000Z"));
+    saveSignal(createSignal());
+
+    const feedEvents = listFeedEvents(10);
+    const signals = listSignalsForReplay(10);
+    const replayItems = [];
+
+    for await (const item of createReplayStream({
+      limit: 10,
+      speed: 0,
+      type: "feed_events"
+    })) {
+      replayItems.push(item);
+    }
+
+    expect(feedEvents.map((event) => event.createdAt)).toEqual([
+      "2026-01-01T00:00:01.000Z",
+      "2026-01-01T00:00:02.000Z"
+    ]);
+    expect(signals).toHaveLength(1);
+    expect(replayItems).toHaveLength(2);
+    expect(replayItems[0]?.source).toBe("feed_events");
+  });
 });
 
-function createFeedEvent(): FeedEvent {
+function createFeedEvent(timestamp = "2026-01-01T00:00:00.000Z"): FeedEvent {
   return {
     type: "token_created",
     candidate: createSignal().state.candidate,
     metrics: createSignal().state.metrics,
     riskFlags: createSignal().riskFlags,
-    timestamp: "2026-01-01T00:00:00.000Z"
+    timestamp
   };
 }
 
