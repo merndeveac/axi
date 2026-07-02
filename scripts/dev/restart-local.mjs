@@ -1,4 +1,12 @@
-import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
@@ -138,8 +146,11 @@ async function stopRecordedProcess(item) {
 }
 
 function startDetached(options) {
-  const logStream = createWriteStream(options.logPath, { flags: "a" });
-  logStream.write(`\n--- ${options.name} started ${new Date().toISOString()} ---\n`);
+  appendFileSync(
+    options.logPath,
+    `\n--- ${options.name} started ${new Date().toISOString()} ---\n`
+  );
+  const logFd = openSync(options.logPath, "a");
 
   const child = spawn("pnpm", options.args, {
     cwd: root,
@@ -148,7 +159,7 @@ function startDetached(options) {
       ...process.env,
       DATA_FEED: process.env.DATA_FEED ?? "mock"
     },
-    stdio: ["ignore", logStream, logStream]
+    stdio: ["ignore", logFd, logFd]
   });
 
   child.unref();
