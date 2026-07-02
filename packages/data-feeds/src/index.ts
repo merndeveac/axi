@@ -6,7 +6,7 @@ import type {
   TokenId
 } from "@axi/shared";
 
-export type FeedSource = "mock" | "pumpportal";
+export type FeedSource = "mock" | "pumpportal" | (string & {});
 
 export type NormalizedFeedMetadata = {
   bondingCurve?: string | undefined;
@@ -22,9 +22,14 @@ export type NormalizedFeedMetadata = {
 export type TokenTradeEvent = NormalizedFeedMetadata & {
   type: "trade";
   token: TokenId;
+  mint: string;
+  symbol?: string;
+  name?: string;
   side: "buy" | "sell";
   priceUsd: number;
   volumeUsd: number;
+  tokenAmount?: number;
+  trader?: string;
   metrics: RollingMetrics;
   riskFlags: RiskFlags;
   timestamp: string;
@@ -104,7 +109,7 @@ export class MockFeedProvider implements TokenFeedProvider {
   private timer: ReturnType<typeof setInterval> | undefined;
   private sequence = 0;
   private emitted = 0;
-  private readonly knownTokens: TokenId[] = [];
+  private readonly knownTokens: TokenCandidate[] = [];
   private readonly intervalMs: number;
   private readonly maxEvents: number | undefined;
   private readonly random: () => number;
@@ -167,12 +172,12 @@ export class MockFeedProvider implements TokenFeedProvider {
   }
 
   private createEvent(): FeedEvent {
-    if (this.sequence % 4 === 0 && this.knownTokens.length > 0) {
+    if (this.knownTokens.length > 0 && this.sequence % 5 !== 1) {
       return this.createTradeEvent();
     }
 
     const event = this.createTokenCreatedEvent();
-    this.knownTokens.push(event.candidate.id);
+    this.knownTokens.push(event.candidate);
     return event;
   }
 
@@ -208,22 +213,31 @@ export class MockFeedProvider implements TokenFeedProvider {
 
   private createTradeEvent(): FeedEvent {
     const index = this.sequence % this.knownTokens.length;
-    const token = this.knownTokens[index];
+    const candidate = this.knownTokens[index];
 
-    if (!token) {
+    if (!candidate) {
       return this.createTokenCreatedEvent();
     }
 
     const riskFlags = this.createRiskFlags();
     const metrics = this.createMetrics(riskFlags);
     const timestamp = this.createTimestamp();
+    const side = this.createTradeSide();
+    const volumeUsd = this.createTradeVolumeUsd(metrics, side);
+    const tokenAmount = metrics.priceUsd > 0 ? volumeUsd / metrics.priceUsd : 0;
 
     return {
       type: "trade",
-      token,
-      side: this.sequence % 2 === 0 ? "buy" : "sell",
+      mint: candidate.mint,
+      name: candidate.name,
+      side,
       priceUsd: metrics.priceUsd,
-      volumeUsd: Math.max(metrics.volume1mUsd / 4, 25),
+      signature: `mock-${this.scenario}-${String(this.sequence).padStart(6, "0")}`,
+      symbol: candidate.symbol,
+      token: candidate.id,
+      tokenAmount,
+      trader: this.createTrader(side),
+      volumeUsd,
       metrics,
       metricsComplete: true,
       rawSourceEventType: this.scenario,
@@ -232,6 +246,57 @@ export class MockFeedProvider implements TokenFeedProvider {
       source: "mock",
       timestamp
     };
+  }
+
+  private createTradeSide(): "buy" | "sell" {
+    if (this.scenario === "momentum") {
+      return this.sequence % 6 === 0 ? "sell" : "buy";
+    }
+
+    if (this.scenario === "rug") {
+      const phase = this.sequence % 10;
+      return phase === 2 || phase === 3 ? "buy" : "sell";
+    }
+
+    if (this.scenario === "flat") {
+      return this.sequence % 2 === 0 ? "buy" : "sell";
+    }
+
+    return this.sequence % 3 === 0 ? "sell" : "buy";
+  }
+
+  private createTradeVolumeUsd(
+    metrics: RollingMetrics,
+    side: "buy" | "sell"
+  ): number {
+    const tradeCount = Math.max(metrics.buyCount1m + metrics.sellCount1m, 1);
+    const baseVolume = Math.max(metrics.volume1mUsd / tradeCount, 20);
+
+    if (this.scenario === "momentum") {
+      return Number((baseVolume * (1 + this.sequence * 0.08)).toFixed(6));
+    }
+
+    if (this.scenario === "rug") {
+      return Number((baseVolume * (side === "sell" ? 2.4 : 0.9)).toFixed(6));
+    }
+
+    if (this.scenario === "flat") {
+      return Number((25 + (this.sequence % 3) * 5).toFixed(6));
+    }
+
+    return Number((baseVolume * (side === "buy" ? 1.15 : 0.95)).toFixed(6));
+  }
+
+  private createTrader(side: "buy" | "sell"): string {
+    if (this.scenario === "flat") {
+      return `mock-flat-${side}-${this.sequence % 2}`;
+    }
+
+    if (this.scenario === "rug" && side === "sell") {
+      return `mock-rug-seller-${this.sequence % 3}`;
+    }
+
+    return `mock-${this.scenario}-${side}-${this.sequence}`;
   }
 
   private createMetrics(riskFlags: RiskFlags): RollingMetrics {

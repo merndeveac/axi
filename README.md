@@ -46,6 +46,23 @@ Clear local paper data with:
 rm -rf .data
 ```
 
+## Rolling Metrics
+
+`@axi/metrics` maintains local, in-memory rolling windows per mint. It uses
+normalized feed event timestamps and computes paper-mode features for these
+windows:
+
+```text
+1s, 3s, 5s, 10s, 30s, 60s
+```
+
+Current metrics include rolling buy/sell/total/net volume, trade counts, unique
+buyers/sellers/traders, price change, price velocity, volume velocity,
+acceleration, buyer velocity, buy/sell ratio, net buy pressure, and an
+`insufficientMetrics` flag. The mock feed emits deterministic fake trade events
+to exercise this engine locally. These mock trades are not real market data and
+remain paper-only.
+
 ## Install
 
 ```bash
@@ -66,6 +83,33 @@ Run only API tests:
 ```bash
 pnpm --filter @axi/api test
 ```
+
+## Local Launch Scripts
+
+Rebuild, stop previously launched local Axi processes, and restart the API and
+dashboard:
+
+```bash
+pnpm local:restart
+```
+
+Logs are written to:
+
+```text
+.tmp/axi-api.log
+.tmp/axi-dashboard.log
+```
+
+Stop or inspect the local app with:
+
+```bash
+pnpm local:stop
+pnpm local:logs
+```
+
+The restart script only stops PIDs recorded in `.tmp/axi-dev-pids.json`. If a
+port is already used by an unknown process, it reports that instead of killing
+unrelated processes.
 
 ## Run The API
 
@@ -106,6 +150,8 @@ Endpoints:
 - `GET /health`
 - `GET /signals`
 - `GET /signals/recent`
+- `GET /metrics`
+- `GET /metrics/:mint`
 - `GET /positions`
 - `GET /storage/stats`
 - `GET /paper/orders`
@@ -114,6 +160,10 @@ Endpoints:
 
 `GET /signals` returns the current in-memory signal cache. `GET
 /signals/recent` returns recent persisted signals from SQLite.
+
+`GET /metrics` returns current in-memory rolling metrics for tracked mints.
+`GET /metrics/:mint` returns one metrics snapshot or `404` when that mint is not
+tracked.
 
 ## Replay Local Data
 
@@ -124,10 +174,13 @@ dashboard, live trading, or external services:
 pnpm --filter @axi/api replay
 pnpm --filter @axi/api replay -- --type signals --limit 25 --speed 0
 pnpm --filter @axi/api replay -- --db .data/axi.sqlite --type feed_events
+pnpm --filter @axi/api replay -- --type feed_events --metrics true --limit 100 --speed 0
 ```
 
 Replay output is JSON lines on stdout. The default database is
-`.data/axi.sqlite`, which is local and ignored by git.
+`.data/axi.sqlite`, which is local and ignored by git. With `--metrics true`,
+feed events are replayed through the rolling metrics engine and each JSON line
+includes the metrics snapshot after that event when available.
 
 ## Probe Feeds
 
@@ -181,6 +234,7 @@ docker compose --profile infra up -d
 - `@axi/scoring`: pure scoring functions and unit tests.
 - `@axi/data-feeds`: feed interfaces plus a mock feed provider.
 - `@axi/execution`: in-memory paper execution only.
+- `@axi/metrics`: local rolling-window metrics for paper-mode signal features.
 - `@axi/storage`: local SQLite persistence for paper-mode development.
 - `@axi/api`: Fastify API and local WebSocket broadcaster.
 - `@axi/dashboard`: Vite React signal dashboard.
@@ -194,7 +248,9 @@ docker compose --profile infra up -d
   mock feed, and replay work.
 - `dev/pumpportal-feed-provider` contains the public PumpPortal new-token and
   migration feed provider.
+- `dev/rolling-metrics-engine` contains local launch scripts and the rolling
+  metrics engine.
 
 This project still has no wallet UI, no private-key loading, no live trading,
-no Solana transaction signing, no metered trade streams, no Axiom private API
-usage, and no Axiom scraping.
+no Solana transaction signing, no metered PumpPortal trade streams, no Axiom
+private API usage, and no Axiom scraping.

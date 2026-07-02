@@ -1,14 +1,18 @@
 import { closeStorage, createReplayStream, initStorage } from "@axi/storage";
+import { createRollingMetricsEngine } from "@axi/metrics";
+import type { FeedEvent } from "@axi/data-feeds";
 
 type ReplayArgs = {
   db?: string;
   limit: number;
+  metrics: boolean;
   speed: number;
   type: "feed_events" | "signals";
 };
 
 const args = parseArgs(process.argv.slice(2));
 const storage = args.db ? initStorage({ databasePath: args.db }) : initStorage();
+const metricsEngine = args.metrics ? createRollingMetricsEngine() : undefined;
 
 try {
   for await (const item of createReplayStream({
@@ -16,9 +20,15 @@ try {
     speed: args.speed,
     type: args.type
   })) {
+    const metrics =
+      metricsEngine && item.source === "feed_events" && isFeedEvent(item.payload)
+        ? metricsEngine.ingestFeedEvent(item.payload)
+        : undefined;
+
     console.log(
       JSON.stringify({
         createdAt: item.createdAt,
+        metrics,
         payload: item.payload,
         sequence: item.sequence,
         source: item.source
@@ -36,6 +46,7 @@ if (process.env.LOG_LEVEL === "debug") {
 function parseArgs(argv: string[]): ReplayArgs {
   const parsed: ReplayArgs = {
     limit: 50,
+    metrics: false,
     speed: 0,
     type: "feed_events"
   };
@@ -57,6 +68,12 @@ function parseArgs(argv: string[]): ReplayArgs {
 
     if (arg === "--speed") {
       parsed.speed = Number.parseFloat(readValue(argv, index, arg));
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--metrics") {
+      parsed.metrics = parseBoolean(readValue(argv, index, arg));
       index += 1;
       continue;
     }
@@ -93,4 +110,25 @@ function readValue(argv: string[], index: number, arg: string): string {
   }
 
   return value;
+}
+
+function parseBoolean(value: string): boolean {
+  if (["1", "true", "yes", "on"].includes(value.toLowerCase())) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(value.toLowerCase())) {
+    return false;
+  }
+
+  throw new Error("--metrics must be true or false");
+}
+
+function isFeedEvent(value: unknown): value is FeedEvent {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    (value.type === "token_created" || value.type === "trade")
+  );
 }

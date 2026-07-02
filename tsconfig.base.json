@@ -23,6 +23,7 @@
       "@axi/scoring": ["packages/scoring/src/index.ts"],
       "@axi/data-feeds": ["packages/data-feeds/src/index.ts"],
       "@axi/execution": ["packages/execution/src/index.ts"],
+      "@axi/metrics": ["packages/metrics/src/index.ts"],
       "@axi/storage": ["packages/storage/src/index.ts"]
     }
   }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { OverlaySignal, RiskFlags } from "@axi/shared";
+import type { OverlaySignal } from "@axi/shared";
 
 type ConnectionStatus = "connecting" | "open" | "closed";
 type ApiStatus = "checking" | "connected" | "disconnected";
@@ -15,9 +15,11 @@ type StorageStats = {
 
 type HealthStatus = {
   feedProvider: string;
+  metricsEnabled: boolean;
   mode: string;
   paperOnly: boolean;
   status: string;
+  trackedTokenCount: number;
 };
 
 type ServerMessage =
@@ -143,7 +145,8 @@ export function App() {
   ).length;
   const hardRejectCount = signals.filter((signal) => signal.hardReject).length;
   const incompleteMetricCount = signals.filter((signal) =>
-    signal.reasonCodes.includes("INSUFFICIENT_METRICS")
+    signal.reasonCodes.includes("INSUFFICIENT_METRICS") ||
+    signal.reasonCodes.includes("INSUFFICIENT_TRADE_METRICS")
   ).length;
   const statusMessage = getStatusMessage({
     apiStatus,
@@ -198,6 +201,14 @@ export function App() {
           <strong>{storageStats?.signalCount ?? signals.length}</strong>
         </div>
         <div>
+          <span>Metrics</span>
+          <strong>{healthStatus?.metricsEnabled ? "on" : "off"}</strong>
+        </div>
+        <div>
+          <span>Tracked</span>
+          <strong>{healthStatus?.trackedTokenCount ?? 0}</strong>
+        </div>
+        <div>
           <span>Paper Orders</span>
           <strong>{storageStats?.paperOrderCount ?? 0}</strong>
         </div>
@@ -227,11 +238,20 @@ export function App() {
               <th>Symbol</th>
               <th>Score</th>
               <th>Action</th>
-              <th>Reject</th>
               <th>Reasons</th>
+              <th>Feed</th>
+              <th>Insufficient</th>
+              <th>1s Vol</th>
+              <th>5s Vol</th>
+              <th>10s Vol</th>
               <th>Vol Vel</th>
+              <th>Vol Acc</th>
               <th>Buyer Vel</th>
-              <th>Risk Flags</th>
+              <th>Buyer Acc</th>
+              <th>Price Vel</th>
+              <th>Buy/Sell</th>
+              <th>Net Pressure</th>
+              <th>Last Updated</th>
             </tr>
           </thead>
           <tbody>
@@ -249,16 +269,25 @@ export function App() {
                     {signal.action}
                   </span>
                 </td>
-                <td>{signal.hardReject ? "yes" : "no"}</td>
                 <td>{signal.reasonCodes.slice(0, 3).join(", ")}</td>
-                <td>{signal.volumeVelocity.toFixed(2)}</td>
-                <td>{signal.buyerVelocity.toFixed(2)}</td>
-                <td>{activeRiskFlags(signal.riskFlags).join(", ") || "none"}</td>
+                <td>{signal.feedProvider ?? healthStatus?.feedProvider ?? "unknown"}</td>
+                <td>{signal.insufficientMetrics ? "yes" : "no"}</td>
+                <td>{formatUsd(metricVolume(signal, "1s"))}</td>
+                <td>{formatUsd(metricVolume(signal, "5s"))}</td>
+                <td>{formatUsd(metricVolume(signal, "10s"))}</td>
+                <td>{formatNumber(signal.volumeVelocity)}</td>
+                <td>{formatNumber(signal.volumeAcceleration)}</td>
+                <td>{formatNumber(signal.buyerVelocity)}</td>
+                <td>{formatNumber(signal.buyerAcceleration)}</td>
+                <td>{formatNumber(signal.priceVelocity)}</td>
+                <td>{formatNumber(signal.buySellRatio)}</td>
+                <td>{formatNumber(signal.netBuyPressure)}</td>
+                <td>{formatTimestamp(signal.rollingMetrics?.lastUpdatedAt)}</td>
               </tr>
             ))}
             {sortedSignals.length === 0 ? (
               <tr>
-                <td colSpan={9} className="empty-state">
+                <td colSpan={18} className="empty-state">
                   {statusMessage}
                 </td>
               </tr>
@@ -285,10 +314,23 @@ function shortMint(mint: string): string {
   return `${mint.slice(0, 8)}...${mint.slice(-6)}`;
 }
 
-function activeRiskFlags(riskFlags: RiskFlags): string[] {
-  return Object.entries(riskFlags)
-    .filter(([, active]) => active)
-    .map(([flag]) => flag);
+function metricVolume(
+  signal: OverlaySignal,
+  window: "1s" | "5s" | "10s"
+): number {
+  return signal.rollingMetrics?.windows[window].totalVolumeUsd ?? 0;
+}
+
+function formatNumber(value: number | undefined): string {
+  return value === undefined ? "-" : value.toFixed(2);
+}
+
+function formatUsd(value: number): string {
+  if (value >= 1000) {
+    return `$${(value / 1000).toFixed(1)}k`;
+  }
+
+  return `$${value.toFixed(0)}`;
 }
 
 function formatTimestamp(timestamp: string | null | undefined): string {

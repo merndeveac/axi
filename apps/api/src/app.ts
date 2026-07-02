@@ -7,17 +7,25 @@ import {
   type FeedEvent,
   type MockFeedProviderOptions,
   type PumpPortalFeedProviderOptions,
-  type TokenCreatedEvent,
+  type TokenTradeEvent,
   type TokenFeedProvider
 } from "@axi/data-feeds";
 import { PaperTradeExecutor, type PaperTradeResult } from "@axi/execution";
+import {
+  createRollingMetricsEngine,
+  type RollingMetricsEngine
+} from "@axi/metrics";
 import { scoreCandidate } from "@axi/scoring";
 import {
   BotModeSchema,
   type BotMode,
   type OverlaySignal,
+  type RiskFlags,
+  type RollingMetrics,
+  type RollingMetricsSnapshot,
   type ScoreBreakdown,
-  type SignalState
+  type SignalState,
+  type TokenCandidate
 } from "@axi/shared";
 import {
   closeStorage,
@@ -96,6 +104,7 @@ export type ApiServer = {
   close: () => Promise<void>;
   emitFeedEvent: (event: FeedEvent) => void;
   feed: TokenFeedProvider;
+  metrics: RollingMetricsEngine;
   getSignals: () => OverlaySignal[];
   startFeed: () => void;
   stopFeed: () => Promise<void>;
@@ -105,6 +114,19 @@ export type ApiServer = {
 const limitQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(1000).default(50)
 });
+const mintParamSchema = z.object({
+  mint: z.string().min(32)
+});
+
+type TokenLifecycleState = {
+  candidate: TokenCandidate;
+  metrics: RollingMetrics;
+  metricsComplete: boolean;
+  rawSourceEventType?: string;
+  riskFlags: RiskFlags;
+  source: string;
+  timestamp: string;
+};
 
 export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   return apiConfigSchema.parse(env);
@@ -135,10 +157,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       signalIntervalMs: options.signalIntervalMs ?? 2000
     });
   const executor = new PaperTradeExecutor(mode);
+  const metricsEngine = createRollingMetricsEngine();
   const storage = options.storageDatabasePath
     ? initStorage({ databasePath: options.storageDatabasePath })
     : initStorage();
   const signals = new Map<string, OverlaySignal>();
+  const tokenLifecycle = new Map<string, TokenLifecycleState>();
   const clients = new Set<WebSocket>();
   const wss = new WebSocketServer({ noServer: true });
   const maxSignalCacheSize = 100;
@@ -159,13 +183,31 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   app.get("/health", async () => ({
     feedProvider: feed.name,
+    metricsEnabled: true,
     status: "ok",
     mode,
     paperOnly: true,
+    trackedTokenCount: metricsEngine.getAllMetrics().length,
     uptimeSeconds: Math.round(process.uptime())
   }));
 
   app.get("/signals", async () => Array.from(signals.values()));
+
+  app.get("/metrics", async () => metricsEngine.getAllMetrics());
+
+  app.get("/metrics/:mint", async (request, reply) => {
+    const params = mintParamSchema.parse(request.params);
+    const metrics = metricsEngine.getMetrics(params.mint);
+
+    if (!metrics) {
+      return reply.code(404).send({
+        error: "not_found",
+        message: `No metrics tracked for mint ${params.mint}`
+      });
+    }
+
+    return metrics;
+  });
 
   app.get("/positions", async () => executor.getPositions());
 
@@ -243,13 +285,18 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   function handleFeedEvent(event: FeedEvent): void {
     saveFeedEvent(event);
+    const rollingMetrics = metricsEngine.ingestFeedEvent(event);
+    const lifecycle = upsertTokenLifecycle(event);
 
-    if (event.type !== "token_created") {
-      app.log.trace({ eventType: event.type }, "Ignoring non-candidate mock event");
+    if (!lifecycle) {
+      app.log.trace({ eventType: event.type }, "Ignoring feed event without lifecycle");
       return;
     }
 
-    const signal = createOverlaySignal(event);
+    const signal = createOverlaySignal(
+      lifecycle,
+      rollingMetrics ?? metricsEngine.getMetrics(lifecycle.candidate.mint)
+    );
     const storedSignal = saveSignal(signal);
     cacheSignal(signal);
 
@@ -272,43 +319,74 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     });
   }
 
-  function createOverlaySignal(event: TokenCreatedEvent): OverlaySignal {
-    const score = scoreFeedCandidate(event);
+  function createOverlaySignal(
+    lifecycle: TokenLifecycleState,
+    rollingMetrics: RollingMetricsSnapshot | undefined
+  ): OverlaySignal {
+    const effectiveMetrics = mergeRollingIntoLegacyMetrics(
+      lifecycle.metrics,
+      rollingMetrics
+    );
+    const score = scoreFeedCandidate(lifecycle, effectiveMetrics, rollingMetrics);
     const state: SignalState = {
-      candidate: event.candidate,
-      metrics: event.metrics,
-      riskFlags: event.riskFlags,
+      candidate: lifecycle.candidate,
+      metrics: effectiveMetrics,
+      riskFlags: lifecycle.riskFlags,
       score,
-      updatedAt: event.timestamp
+      updatedAt: rollingMetrics?.lastUpdatedAt ?? lifecycle.timestamp
     };
 
-    return {
-      mint: event.candidate.mint,
-      symbol: event.candidate.symbol,
+    const signal: OverlaySignal = {
+      mint: lifecycle.candidate.mint,
+      symbol: lifecycle.candidate.symbol,
       score: score.total,
       action: score.action,
       hardReject: score.hardReject,
       reasonCodes: score.reasonCodes,
-      volumeVelocity: event.metrics.volumeVelocity,
-      buyerVelocity: event.metrics.buyerVelocity,
-      riskFlags: event.riskFlags,
+      feedProvider: feed.name,
+      insufficientMetrics:
+        rollingMetrics?.insufficientMetrics ?? !lifecycle.metricsComplete,
+      volumeVelocity: Math.max(
+        rollingMetrics?.volumeVelocityUsdPerSec ?? effectiveMetrics.volumeVelocity,
+        0
+      ),
+      buyerVelocity: Math.max(
+        rollingMetrics?.buyerVelocityPerSec ?? effectiveMetrics.buyerVelocity,
+        0
+      ),
+      riskFlags: lifecycle.riskFlags,
       state
     };
+
+    if (rollingMetrics) {
+      signal.buySellRatio = rollingMetrics.buySellRatio;
+      signal.buyerAcceleration = rollingMetrics.buyerAccelerationPerSec2;
+      signal.netBuyPressure = rollingMetrics.netBuyPressure;
+      signal.priceVelocity = rollingMetrics.priceVelocityPctPerSec;
+      signal.rollingMetrics = rollingMetrics;
+      signal.volumeAcceleration = rollingMetrics.volumeAccelerationUsdPerSec2;
+    }
+
+    return signal;
   }
 
-  function scoreFeedCandidate(event: TokenCreatedEvent): ScoreBreakdown {
-    const score = scoreCandidate(
-      event.candidate,
-      event.metrics,
-      event.riskFlags
-    );
+  function scoreFeedCandidate(
+    lifecycle: TokenLifecycleState,
+    metrics: RollingMetrics,
+    rollingMetrics: RollingMetricsSnapshot | undefined
+  ): ScoreBreakdown {
+    const score = rollingMetrics
+      ? scoreCandidate(lifecycle.candidate, metrics, lifecycle.riskFlags, {
+          rollingMetrics
+        })
+      : scoreCandidate(lifecycle.candidate, metrics, lifecycle.riskFlags);
 
-    if (event.source !== "pumpportal" || event.metricsComplete !== false) {
+    if (lifecycle.source !== "pumpportal" || lifecycle.metricsComplete !== false) {
       return score;
     }
 
     const realFeedReason =
-      event.rawSourceEventType === "migration"
+      lifecycle.rawSourceEventType === "migration"
         ? "REAL_FEED_MIGRATION_EVENT"
         : "REAL_FEED_NEW_TOKEN_EVENT";
 
@@ -317,11 +395,50 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       action: score.hardReject ? "HARD_REJECT" : "IGNORE",
       reasonCodes: uniqueReasonCodes([
         "INSUFFICIENT_METRICS",
+        "INSUFFICIENT_TRADE_METRICS",
         realFeedReason,
         ...score.reasonCodes
       ]),
       total: score.hardReject ? 0 : Math.min(score.total, 20)
     };
+  }
+
+  function upsertTokenLifecycle(event: FeedEvent): TokenLifecycleState {
+    if (event.type === "token_created") {
+      const lifecycle: TokenLifecycleState = {
+        candidate: event.candidate,
+        metrics: event.metrics,
+        metricsComplete: event.metricsComplete ?? true,
+        riskFlags: event.riskFlags,
+        source: event.source,
+        timestamp: event.timestamp
+      };
+
+      if (event.rawSourceEventType) {
+        lifecycle.rawSourceEventType = event.rawSourceEventType;
+      }
+
+      tokenLifecycle.set(event.candidate.mint, lifecycle);
+      return lifecycle;
+    }
+
+    const mint = getTradeMint(event);
+    const existing = tokenLifecycle.get(mint);
+    const lifecycle: TokenLifecycleState = {
+      candidate: existing?.candidate ?? createCandidateFromTrade(event),
+      metrics: event.metrics,
+      metricsComplete: event.metricsComplete ?? true,
+      riskFlags: event.riskFlags,
+      source: event.source,
+      timestamp: event.timestamp
+    };
+
+    if (event.rawSourceEventType) {
+      lifecycle.rawSourceEventType = event.rawSourceEventType;
+    }
+
+    tokenLifecycle.set(mint, lifecycle);
+    return lifecycle;
   }
 
   function persistPaperTradeResult(
@@ -392,9 +509,64 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     emitFeedEvent: handleFeedEvent,
     feed,
     getSignals: () => Array.from(signals.values()),
+    metrics: metricsEngine,
     startFeed,
     stopFeed,
     storage
+  };
+}
+
+function getTradeMint(event: TokenTradeEvent): string {
+  return event.mint ?? event.token.mint;
+}
+
+function createCandidateFromTrade(event: TokenTradeEvent): TokenCandidate {
+  const mint = getTradeMint(event);
+  const symbol = event.symbol ?? "UNKNOWN";
+
+  return {
+    id: {
+      chain: "solana",
+      mint
+    },
+    mint,
+    symbol,
+    name: event.name ?? symbol,
+    source: event.source,
+    ageSeconds: 0,
+    firstSeenAt: event.timestamp
+  };
+}
+
+function mergeRollingIntoLegacyMetrics(
+  metrics: RollingMetrics,
+  rollingMetrics: RollingMetricsSnapshot | undefined
+): RollingMetrics {
+  if (!rollingMetrics || rollingMetrics.sampleCount === 0) {
+    return metrics;
+  }
+
+  const window60s = rollingMetrics.windows["60s"];
+  const window10s = rollingMetrics.windows["10s"];
+
+  return {
+    ...metrics,
+    priceUsd: rollingMetrics.latestPriceUsd || metrics.priceUsd,
+    volume1mUsd: window60s.totalVolumeUsd,
+    volume5mUsd: Math.max(metrics.volume5mUsd, window60s.totalVolumeUsd),
+    volume15mUsd: Math.max(metrics.volume15mUsd, window60s.totalVolumeUsd),
+    buyCount1m: window60s.buyTradeCount,
+    buyCount5m: Math.max(metrics.buyCount5m, window60s.buyTradeCount),
+    sellCount1m: window60s.sellTradeCount,
+    sellCount5m: Math.max(metrics.sellCount5m, window60s.sellTradeCount),
+    uniqueBuyers1m: window60s.uniqueBuyers,
+    uniqueBuyers5m: Math.max(metrics.uniqueBuyers5m, window60s.uniqueBuyers),
+    uniqueSellers1m: window60s.uniqueSellers,
+    uniqueSellers5m: Math.max(metrics.uniqueSellers5m, window60s.uniqueSellers),
+    priceChange1mPct: window60s.priceChangePct,
+    priceChange5mPct: window10s.priceChangePct,
+    volumeVelocity: Math.max(metrics.volumeVelocity, rollingMetrics.volumeVelocityUsdPerSec),
+    buyerVelocity: Math.max(metrics.buyerVelocity, rollingMetrics.buyerVelocityPerSec)
   };
 }
 

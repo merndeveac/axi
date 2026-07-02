@@ -39,6 +39,8 @@ id_*.json
 *-keypair.json
 
 # Logs and caches
+.tmp/
+*.pid
 logs/
 *.log
 npm-debug.log*

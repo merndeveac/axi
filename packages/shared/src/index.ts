@@ -53,6 +53,83 @@ export const RollingMetricsSchema = z.object({
 });
 export type RollingMetrics = z.infer<typeof RollingMetricsSchema>;
 
+export const MetricWindowSchema = z.enum(["1s", "3s", "5s", "10s", "30s", "60s"]);
+export type MetricWindow = z.infer<typeof MetricWindowSchema>;
+
+export const RollingWindowMetricsSchema = z.object({
+  buyVolumeUsd: z.number().nonnegative(),
+  sellVolumeUsd: z.number().nonnegative(),
+  totalVolumeUsd: z.number().nonnegative(),
+  netVolumeUsd: z.number(),
+  buyTradeCount: z.number().int().nonnegative(),
+  sellTradeCount: z.number().int().nonnegative(),
+  totalTradeCount: z.number().int().nonnegative(),
+  uniqueBuyers: z.number().int().nonnegative(),
+  uniqueSellers: z.number().int().nonnegative(),
+  uniqueTraders: z.number().int().nonnegative(),
+  priceChangePct: z.number(),
+  highPriceUsd: z.number().nonnegative(),
+  lowPriceUsd: z.number().nonnegative()
+});
+export type RollingWindowMetrics = z.infer<typeof RollingWindowMetricsSchema>;
+
+const numericMetricWindowRecordSchema = z.object({
+  "1s": z.number(),
+  "3s": z.number(),
+  "5s": z.number(),
+  "10s": z.number(),
+  "30s": z.number(),
+  "60s": z.number()
+});
+
+const nonnegativeNumericMetricWindowRecordSchema = z.object({
+  "1s": z.number().nonnegative(),
+  "3s": z.number().nonnegative(),
+  "5s": z.number().nonnegative(),
+  "10s": z.number().nonnegative(),
+  "30s": z.number().nonnegative(),
+  "60s": z.number().nonnegative()
+});
+
+export const RollingWindowMetricsRecordSchema = z.object({
+  "1s": RollingWindowMetricsSchema,
+  "3s": RollingWindowMetricsSchema,
+  "5s": RollingWindowMetricsSchema,
+  "10s": RollingWindowMetricsSchema,
+  "30s": RollingWindowMetricsSchema,
+  "60s": RollingWindowMetricsSchema
+});
+export type RollingWindowMetricsRecord = z.infer<
+  typeof RollingWindowMetricsRecordSchema
+>;
+
+export const RollingMetricsSnapshotSchema = z.object({
+  mint: z.string().min(32),
+  symbol: z.string().min(1).optional(),
+  windows: RollingWindowMetricsRecordSchema,
+  volumeVelocityUsdPerSec: z.number(),
+  volumeAccelerationUsdPerSec2: z.number(),
+  tradesPerSecond: z.number().nonnegative(),
+  largestTradeUsd: z.number().nonnegative(),
+  largestTradeShare: z.number().nonnegative(),
+  buyerVelocityPerSec: z.number(),
+  buyerAccelerationPerSec2: z.number(),
+  latestPriceUsd: z.number().nonnegative(),
+  priceChangePct: numericMetricWindowRecordSchema,
+  priceVelocityPctPerSec: z.number(),
+  priceAccelerationPctPerSec2: z.number(),
+  highPriceUsd: nonnegativeNumericMetricWindowRecordSchema,
+  lowPriceUsd: nonnegativeNumericMetricWindowRecordSchema,
+  buySellRatio: z.number().nonnegative(),
+  netBuyPressure: z.number().min(-1).max(1),
+  organicBuyerScore: z.number().min(0).max(100),
+  insufficientMetrics: z.boolean(),
+  sampleCount: z.number().int().nonnegative(),
+  firstSeenAt: z.string().datetime(),
+  lastUpdatedAt: z.string().datetime()
+});
+export type RollingMetricsSnapshot = z.infer<typeof RollingMetricsSnapshotSchema>;
+
 export const RiskFlagsSchema = z.object({
   mintAuthorityActive: z.boolean(),
   freezeAuthorityActive: z.boolean(),
@@ -92,7 +169,15 @@ export const OverlaySignalSchema = z.object({
   action: SignalActionSchema,
   hardReject: z.boolean(),
   reasonCodes: z.array(z.string().min(1)),
+  buySellRatio: z.number().nonnegative().optional(),
+  feedProvider: z.string().min(1).optional(),
+  insufficientMetrics: z.boolean().optional(),
+  netBuyPressure: z.number().min(-1).max(1).optional(),
+  priceVelocity: z.number().optional(),
+  rollingMetrics: RollingMetricsSnapshotSchema.optional(),
+  volumeAcceleration: z.number().optional(),
   volumeVelocity: z.number().nonnegative(),
+  buyerAcceleration: z.number().optional(),
   buyerVelocity: z.number().nonnegative(),
   riskFlags: RiskFlagsSchema,
   state: SignalStateSchema

@@ -106,7 +106,7 @@ h1 {
 
 .storage-panel {
   display: grid;
-  grid-template-columns: repeat(6, minmax(130px, 1fr));
+  grid-template-columns: repeat(9, minmax(120px, 1fr));
   gap: 12px;
   margin-bottom: 18px;
 }
@@ -126,7 +126,7 @@ h1 {
 
 table {
   width: 100%;
-  min-width: 1080px;
+  min-width: 1900px;
   border-collapse: collapse;
 }
 

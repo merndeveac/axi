@@ -59,6 +59,9 @@ importers:
       '@axi/execution':
         specifier: workspace:*
         version: link:../../packages/execution
+      '@axi/metrics':
+        specifier: workspace:*
+        version: link:../../packages/metrics
       '@axi/scoring':
         specifier: workspace:*
         version: link:../../packages/scoring
@@ -107,6 +110,15 @@ importers:
 
   packages/execution:
     dependencies:
+      '@axi/shared':
+        specifier: workspace:*
+        version: link:../shared
+
+  packages/metrics:
+    dependencies:
+      '@axi/data-feeds':
+        specifier: workspace:*
+        version: link:../data-feeds
       '@axi/shared':
         specifier: workspace:*
         version: link:../shared

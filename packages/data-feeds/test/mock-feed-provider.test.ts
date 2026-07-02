@@ -43,9 +43,59 @@ describe("MockFeedProvider", () => {
     expect(flat.metrics.buyerVelocity).toBe(1);
     expect(flat.metrics.priceChange5mPct).toBeLessThan(1);
   });
+
+  it("emits deterministic trade events", () => {
+    const first = trades(collectEvents({ scenario: "normal", seed: 99 }));
+    const second = trades(collectEvents({ scenario: "normal", seed: 99 }));
+
+    expect(first.length).toBeGreaterThan(0);
+    expect(second).toEqual(first);
+    expect(first[0]?.mint).toBe(first[0]?.token.mint);
+  });
+
+  it("momentum scenario creates rising fake trade metrics", () => {
+    const momentumTrades = trades(
+      collectEvents({ scenario: "momentum", seed: 42, maxEvents: 12 })
+    );
+
+    expect(momentumTrades.filter((event) => event.side === "buy").length).toBeGreaterThan(
+      momentumTrades.filter((event) => event.side === "sell").length
+    );
+    expect(momentumTrades.at(-1)?.volumeUsd).toBeGreaterThan(
+      momentumTrades[0]?.volumeUsd ?? 0
+    );
+    expect(momentumTrades.at(-1)?.priceUsd).toBeGreaterThan(
+      momentumTrades[0]?.priceUsd ?? 0
+    );
+  });
+
+  it("flat scenario creates low-change fake trades", () => {
+    const flatTrades = trades(
+      collectEvents({ scenario: "flat", seed: 42, maxEvents: 12 })
+    );
+
+    expect(Math.max(...flatTrades.map((event) => event.volumeUsd))).toBeLessThan(40);
+    expect(flatTrades.at(-1)?.priceUsd).toBeCloseTo(flatTrades[0]?.priceUsd ?? 0);
+  });
+
+  it("rug scenario creates sell-pressure fake trades", () => {
+    const rugTrades = trades(
+      collectEvents({ scenario: "rug", seed: 42, maxEvents: 12 })
+    );
+    const sellVolume = rugTrades
+      .filter((event) => event.side === "sell")
+      .reduce((total, event) => total + event.volumeUsd, 0);
+    const buyVolume = rugTrades
+      .filter((event) => event.side === "buy")
+      .reduce((total, event) => total + event.volumeUsd, 0);
+
+    expect(sellVolume).toBeGreaterThan(buyVolume);
+    expect(rugTrades.some((event) => event.riskFlags.honeypotSuspected)).toBe(true);
+  });
 });
 
 function collectEvents(options: {
+  maxEvents?: number;
   scenario: "normal" | "momentum" | "rug" | "flat";
   seed: number;
 }): FeedEvent[] {
@@ -53,7 +103,7 @@ function collectEvents(options: {
   const provider = new MockFeedProvider({
     ...options,
     intervalMs: 0,
-    maxEvents: 6
+    maxEvents: options.maxEvents ?? 6
   });
 
   provider.start((event) => {
@@ -61,6 +111,13 @@ function collectEvents(options: {
   });
 
   return events;
+}
+
+function trades(events: FeedEvent[]) {
+  return events.filter(
+    (event): event is Extract<FeedEvent, { type: "trade" }> =>
+      event.type === "trade"
+  );
 }
 
 function firstCreated(events: FeedEvent[]) {

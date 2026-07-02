@@ -10,6 +10,7 @@
       "@axi/scoring": ["../../packages/scoring/dist/index.d.ts"],
       "@axi/data-feeds": ["../../packages/data-feeds/dist/index.d.ts"],
       "@axi/execution": ["../../packages/execution/dist/index.d.ts"],
+      "@axi/metrics": ["../../packages/metrics/dist/index.d.ts"],
       "@axi/storage": ["../../packages/storage/dist/index.d.ts"]
     }
   },

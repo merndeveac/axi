@@ -31,16 +31,20 @@ describe("@axi/api", () => {
     });
     const body = response.json() as {
       feedProvider: string;
+      metricsEnabled: boolean;
       mode: string;
       paperOnly: boolean;
       status: string;
+      trackedTokenCount: number;
     };
 
     expect(response.statusCode).toBe(200);
     expect(body.feedProvider).toBe("mock");
+    expect(body.metricsEnabled).toBe(true);
     expect(body.status).toBe("ok");
     expect(body.mode).toBe("paper");
     expect(body.paperOnly).toBe(true);
+    expect(body.trackedTokenCount).toBeGreaterThan(0);
   });
 
   it("GET /storage/stats returns valid counts", async () => {
@@ -74,6 +78,36 @@ describe("@axi/api", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual(expect.any(Array));
+  });
+
+  it("GET /metrics returns tracked rolling metrics", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/metrics"
+    });
+    const body = response.json() as Array<{
+      mint: string;
+      sampleCount: number;
+      windows: Record<string, { totalVolumeUsd: number }>;
+    }>;
+
+    expect(response.statusCode).toBe(200);
+    expect(body.length).toBeGreaterThan(0);
+    expect(body.some((metrics) => metrics.sampleCount > 0)).toBe(true);
+    expect(body[0]?.windows["5s"]).toBeDefined();
+  });
+
+  it("GET /metrics/:mint returns 404 for unknown mint", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/metrics/UnknownMint111111111111111111111111111"
+    });
+
+    expect(response.statusCode).toBe(404);
   });
 
   it("GET /signals/recent returns persisted recent signals", async () => {

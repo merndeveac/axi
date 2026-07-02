@@ -11,7 +11,10 @@
     "lint": "eslint . --max-warnings=0",
     "format": "prettier --write .",
     "test": "pnpm -r --if-present test",
-    "clean": "pnpm -r --if-present clean"
+    "clean": "pnpm -r --if-present clean",
+    "local:stop": "node scripts/dev/stop-local.mjs",
+    "local:restart": "node scripts/dev/restart-local.mjs",
+    "local:logs": "node scripts/dev/show-local-logs.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.30.0",

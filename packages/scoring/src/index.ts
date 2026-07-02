@@ -1,6 +1,7 @@
 import type {
   RiskFlags,
   RollingMetrics,
+  RollingMetricsSnapshot,
   ScoreBreakdown,
   TokenCandidate
 } from "@axi/shared";
@@ -8,6 +9,10 @@ import type {
 export type HardRejectResult = {
   rejected: boolean;
   reasonCodes: string[];
+};
+
+export type ScoreCandidateOptions = {
+  rollingMetrics?: RollingMetricsSnapshot;
 };
 
 const TOP_HOLDER_REJECT_PERCENT = 25;
@@ -65,7 +70,10 @@ export function hardReject(
   };
 }
 
-export function computeMomentumScore(metrics: RollingMetrics): number {
+export function computeMomentumScore(
+  metrics: RollingMetrics,
+  rollingMetrics?: RollingMetricsSnapshot
+): number {
   const volumeScore = clamp((metrics.volumeVelocity - 1) * 14, 0, 28);
   const buyerScore = clamp((metrics.buyerVelocity - 1) * 16, 0, 28);
   const priceScore = clamp(metrics.priceChange5mPct * 1.4, 0, 18);
@@ -74,14 +82,23 @@ export function computeMomentumScore(metrics: RollingMetrics): number {
   const flowScore = clamp((buySellRatio - 1) * 10, 0, 16);
   const activityScore = clamp(metrics.volume1mUsd / 1000, 0, 10);
 
-  return Math.round(
+  const legacyScore = Math.round(
     clamp(volumeScore + buyerScore + priceScore + flowScore + activityScore, 0, 100)
+  );
+
+  if (!rollingMetrics || rollingMetrics.sampleCount === 0) {
+    return legacyScore;
+  }
+
+  return Math.round(
+    clamp(legacyScore * 0.35 + computeRollingMomentumScore(rollingMetrics) * 0.65, 0, 100)
   );
 }
 
 export function computeQualityScore(
   metrics: RollingMetrics,
-  riskFlags: RiskFlags
+  riskFlags: RiskFlags,
+  rollingMetrics?: RollingMetricsSnapshot
 ): number {
   const liquidityScore = clamp(metrics.liquidityUsd / 2000, 0, 24);
   const holderScore = clamp(metrics.holderCount / 12, 0, 18);
@@ -89,6 +106,9 @@ export function computeQualityScore(
   const marketCapScore = clamp(metrics.marketCapUsd / 5000, 0, 14);
   const agePenalty = riskFlags.mutableMetadata ? 4 : 0;
   const lowLiquidityPenalty = riskFlags.lowLiquidity ? 8 : 0;
+  const organicBuyerScore = rollingMetrics
+    ? clamp((rollingMetrics.organicBuyerScore - 50) * 0.12, -6, 6)
+    : 0;
 
   return Math.round(
     clamp(
@@ -97,7 +117,8 @@ export function computeQualityScore(
         concentrationScore +
         marketCapScore -
         agePenalty -
-        lowLiquidityPenalty,
+        lowLiquidityPenalty +
+        organicBuyerScore,
       0,
       100
     )
@@ -119,10 +140,12 @@ export function computeRiskPenalty(riskFlags: RiskFlags): number {
 export function scoreCandidate(
   candidate: TokenCandidate,
   metrics: RollingMetrics,
-  riskFlags: RiskFlags
+  riskFlags: RiskFlags,
+  options: ScoreCandidateOptions = {}
 ): ScoreBreakdown {
-  const momentum = computeMomentumScore(metrics);
-  const quality = computeQualityScore(metrics, riskFlags);
+  const rollingMetrics = options.rollingMetrics;
+  const momentum = computeMomentumScore(metrics, rollingMetrics);
+  const quality = computeQualityScore(metrics, riskFlags, rollingMetrics);
   const riskPenalty = computeRiskPenalty(riskFlags);
   const reject = hardReject(candidate, metrics, riskFlags);
 
@@ -140,6 +163,7 @@ export function scoreCandidate(
 
   const total = Math.round(clamp(momentum * 0.55 + quality * 0.55 - riskPenalty, 0, 100));
   const reasonCodes: string[] = [];
+  const insufficientMetrics = rollingMetrics?.insufficientMetrics ?? false;
 
   if (momentum >= 65) {
     reasonCodes.push("STRONG_MOMENTUM");
@@ -151,6 +175,43 @@ export function scoreCandidate(
 
   if (metrics.buyerVelocity >= 1.6) {
     reasonCodes.push("BUYER_ACCELERATION");
+  }
+
+  if (rollingMetrics) {
+    if (rollingMetrics.volumeVelocityUsdPerSec >= 75) {
+      reasonCodes.push("POSITIVE_VOLUME_VELOCITY");
+    }
+
+    if (rollingMetrics.volumeAccelerationUsdPerSec2 > 10) {
+      reasonCodes.push("POSITIVE_VOLUME_ACCELERATION");
+    }
+
+    if (rollingMetrics.buyerVelocityPerSec >= 0.4) {
+      reasonCodes.push("POSITIVE_BUYER_VELOCITY");
+    }
+
+    if (rollingMetrics.buyerAccelerationPerSec2 > 0.05) {
+      reasonCodes.push("POSITIVE_BUYER_ACCELERATION");
+    }
+
+    if (rollingMetrics.priceVelocityPctPerSec > 0.1) {
+      reasonCodes.push("POSITIVE_PRICE_VELOCITY");
+    }
+
+    if (rollingMetrics.buyerVelocityPerSec < 0.2) {
+      reasonCodes.push("WEAK_BUYER_GROWTH");
+    }
+
+    if (
+      rollingMetrics.netBuyPressure < -0.2 ||
+      rollingMetrics.buySellRatio < 0.75
+    ) {
+      reasonCodes.push("SELL_PRESSURE_HIGH");
+    }
+
+    if (insufficientMetrics) {
+      reasonCodes.push("INSUFFICIENT_TRADE_METRICS");
+    }
   }
 
   if (quality >= 55) {
@@ -165,13 +226,65 @@ export function scoreCandidate(
     reasonCodes.push("BASELINE_SIGNAL");
   }
 
+  const action =
+    total >= 75
+      ? insufficientMetrics
+        ? "WATCH"
+        : "BUY_READY"
+      : total >= 45
+        ? "WATCH"
+        : "IGNORE";
+
   return {
     total,
     momentum,
     quality,
     riskPenalty,
     hardReject: false,
-    action: total >= 75 ? "BUY_READY" : total >= 45 ? "WATCH" : "IGNORE",
-    reasonCodes
+    action,
+    reasonCodes: uniqueReasonCodes(reasonCodes)
   };
+}
+
+function computeRollingMomentumScore(metrics: RollingMetricsSnapshot): number {
+  const volumeVelocityScore = clamp(metrics.volumeVelocityUsdPerSec / 8, 0, 18);
+  const volumeAccelerationScore = clamp(
+    metrics.volumeAccelerationUsdPerSec2 / 3,
+    0,
+    14
+  );
+  const buyerVelocityScore = clamp(metrics.buyerVelocityPerSec * 22, 0, 16);
+  const buyerAccelerationScore = clamp(
+    metrics.buyerAccelerationPerSec2 * 60,
+    0,
+    12
+  );
+  const priceVelocityScore = clamp(metrics.priceVelocityPctPerSec * 8, 0, 14);
+  const ratioScore = clamp((metrics.buySellRatio - 1) * 7, 0, 12);
+  const pressureScore = clamp(metrics.netBuyPressure * 12, 0, 12);
+  const tradeActivityScore = clamp(metrics.tradesPerSecond * 10, 0, 12);
+  const sellPressurePenalty =
+    metrics.netBuyPressure < -0.2 || metrics.buySellRatio < 0.75 ? 18 : 0;
+  const insufficientPenalty = metrics.insufficientMetrics ? 10 : 0;
+
+  return Math.round(
+    clamp(
+      volumeVelocityScore +
+        volumeAccelerationScore +
+        buyerVelocityScore +
+        buyerAccelerationScore +
+        priceVelocityScore +
+        ratioScore +
+        pressureScore +
+        tradeActivityScore -
+        sellPressurePenalty -
+        insufficientPenalty,
+      0,
+      100
+    )
+  );
+}
+
+function uniqueReasonCodes(reasonCodes: string[]): string[] {
+  return Array.from(new Set(reasonCodes));
 }
