@@ -3,13 +3,25 @@ import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
 import { MockFeedProvider } from "@axi/data-feeds";
 import type { FeedEvent, TokenCreatedEvent } from "@axi/data-feeds";
-import { PaperTradeExecutor } from "@axi/execution";
+import { PaperTradeExecutor, type PaperTradeResult } from "@axi/execution";
 import { scoreCandidate } from "@axi/scoring";
 import {
   BotModeSchema,
   type OverlaySignal,
   type SignalState
 } from "@axi/shared";
+import {
+  closeStorage,
+  getStorageStats,
+  initStorage,
+  listPaperOrders,
+  listPaperPositions,
+  listRecentSignals,
+  saveFeedEvent,
+  savePaperOrder,
+  saveSignal,
+  upsertPaperPosition
+} from "@axi/storage";
 
 const configSchema = z.object({
   NODE_ENV: z.string().default("development"),
@@ -17,6 +29,7 @@ const configSchema = z.object({
   API_HOST: z.string().default("0.0.0.0"),
   API_PORT: z.coerce.number().int().positive().default(8787),
   SIGNAL_INTERVAL_MS: z.coerce.number().int().min(250).default(2000),
+  STORAGE_DATABASE_PATH: z.string().min(1).optional(),
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
     .default("info")
@@ -40,10 +53,16 @@ const feed = new MockFeedProvider({
   intervalMs: config.SIGNAL_INTERVAL_MS
 });
 const executor = new PaperTradeExecutor(config.BOT_MODE);
+const storage = config.STORAGE_DATABASE_PATH
+  ? initStorage({ databasePath: config.STORAGE_DATABASE_PATH })
+  : initStorage();
 const signals = new Map<string, OverlaySignal>();
 const clients = new Set<WebSocket>();
 const wss = new WebSocketServer({ noServer: true });
 const maxSignalCacheSize = 100;
+const limitQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(1000).default(50)
+});
 
 app.get("/health", async () => ({
   status: "ok",
@@ -55,6 +74,20 @@ app.get("/health", async () => ({
 app.get("/signals", async () => Array.from(signals.values()));
 
 app.get("/positions", async () => executor.getPositions());
+
+app.get("/storage/stats", async () => getStorageStats());
+
+app.get("/signals/recent", async (request) => {
+  const query = limitQuerySchema.parse(request.query);
+  return listRecentSignals(query.limit);
+});
+
+app.get("/paper/orders", async (request) => {
+  const query = limitQuerySchema.parse(request.query);
+  return listPaperOrders(query.limit);
+});
+
+app.get("/paper/positions", async () => listPaperPositions());
 
 app.server.on("upgrade", (request, socket, head) => {
   const host = request.headers.host ?? "localhost";
@@ -83,16 +116,20 @@ wss.on("connection", (socket) => {
 });
 
 function handleFeedEvent(event: FeedEvent): void {
+  saveFeedEvent(event);
+
   if (event.type !== "token_created") {
     app.log.trace({ eventType: event.type }, "Ignoring non-candidate mock event");
     return;
   }
 
   const signal = createOverlaySignal(event);
+  const storedSignal = saveSignal(signal);
   cacheSignal(signal);
 
   if (signal.action === "BUY_READY" && !signal.hardReject) {
     const paperResult = executor.submitPaperBuy(signal);
+    persistPaperTradeResult(signal, storedSignal.id, paperResult);
     app.log.info(
       {
         mint: signal.mint,
@@ -137,6 +174,37 @@ function createOverlaySignal(event: TokenCreatedEvent): OverlaySignal {
   };
 }
 
+function persistPaperTradeResult(
+  signal: OverlaySignal,
+  signalId: number,
+  paperResult: PaperTradeResult
+): void {
+  if (paperResult.order) {
+    savePaperOrder({
+      ...paperResult.order,
+      signalId,
+      payload: {
+        reason: paperResult.reason,
+        signal
+      }
+    });
+  }
+
+  if (paperResult.position) {
+    upsertPaperPosition({
+      mint: paperResult.position.mint,
+      symbol: paperResult.position.symbol,
+      sizeSol: paperResult.position.sizeSol,
+      tokenAmount: paperResult.position.tokenAmount,
+      entryPrice: paperResult.position.entryPrice,
+      status: paperResult.position.status,
+      payload: paperResult.position,
+      openedAt: paperResult.position.openedAt,
+      updatedAt: paperResult.position.updatedAt
+    });
+  }
+}
+
 function broadcast(payload: unknown): void {
   for (const client of clients) {
     sendJson(client, payload);
@@ -173,6 +241,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   }
 
   wss.close();
+  closeStorage();
   await app.close();
 }
 
@@ -194,6 +263,7 @@ feed.start(handleFeedEvent);
 app.log.info(
   {
     mode: config.BOT_MODE,
+    storagePath: storage.databasePath,
     port: config.API_PORT,
     signalIntervalMs: config.SIGNAL_INTERVAL_MS
   },

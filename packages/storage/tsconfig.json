@@ -9,10 +9,7 @@
   },
   "include": ["src"],
   "references": [
-    { "path": "../../packages/shared" },
-    { "path": "../../packages/scoring" },
-    { "path": "../../packages/data-feeds" },
-    { "path": "../../packages/execution" },
-    { "path": "../../packages/storage" }
+    { "path": "../shared" },
+    { "path": "../data-feeds" }
   ]
 }

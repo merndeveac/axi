@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@axi/shared": ["../shared/dist/index.d.ts"],
+      "@axi/data-feeds": ["../data-feeds/dist/index.d.ts"]
+    }
+  },
+  "include": ["src", "test"]
+}

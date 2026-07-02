@@ -82,7 +82,8 @@ h1 {
   margin-bottom: 18px;
 }
 
-.metric-strip div {
+.metric-strip div,
+.storage-panel div {
   min-height: 78px;
   border: 1px solid #d9e0e8;
   border-radius: 8px;
@@ -90,15 +91,24 @@ h1 {
   padding: 14px;
 }
 
-.metric-strip span {
+.metric-strip span,
+.storage-panel span {
   display: block;
   margin-bottom: 8px;
   color: #667085;
   font-size: 0.82rem;
 }
 
-.metric-strip strong {
+.metric-strip strong,
+.storage-panel strong {
   font-size: 1.35rem;
+}
+
+.storage-panel {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(130px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
 }
 
 .table-region {
@@ -202,6 +212,10 @@ tr:last-child td {
   }
 
   .metric-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .storage-panel {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

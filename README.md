@@ -25,6 +25,24 @@ data feeds -> scoring engine -> paper executor -> API/WebSocket -> dashboard/ove
 Current implementation uses `MockFeedProvider` only. It emits safe fake token
 events for local development.
 
+## Local Persistence
+
+Paper-mode development data is stored in a local SQLite database:
+
+```text
+.data/axi.sqlite
+```
+
+The API initializes the database automatically, creates the current schema, and
+stores mock feed events, overlay signals, paper orders, and paper positions.
+This database is local-only and is ignored by git.
+
+Clear local paper data with:
+
+```bash
+rm -rf .data
+```
+
 ## Install
 
 ```bash
@@ -52,8 +70,15 @@ Endpoints:
 
 - `GET /health`
 - `GET /signals`
+- `GET /signals/recent`
 - `GET /positions`
+- `GET /storage/stats`
+- `GET /paper/orders`
+- `GET /paper/positions`
 - `ws://localhost:8787/ws/signals`
+
+`GET /signals` returns the current in-memory signal cache. `GET
+/signals/recent` returns recent persisted signals from SQLite.
 
 ## Run The Dashboard
 
@@ -94,6 +119,7 @@ docker compose --profile infra up -d
 - `@axi/scoring`: pure scoring functions and unit tests.
 - `@axi/data-feeds`: feed interfaces plus a mock feed provider.
 - `@axi/execution`: in-memory paper execution only.
+- `@axi/storage`: local SQLite persistence for paper-mode development.
 - `@axi/api`: Fastify API and local WebSocket broadcaster.
 - `@axi/dashboard`: Vite React signal dashboard.
 - `@axi/extension`: Chrome MV3 overlay skeleton.
