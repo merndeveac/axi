@@ -1,3 +1,4 @@
+import WebSocket from "ws";
 import type {
   RiskFlags,
   RollingMetrics,
@@ -5,7 +6,20 @@ import type {
   TokenId
 } from "@axi/shared";
 
-export type TokenTradeEvent = {
+export type FeedSource = "mock" | "pumpportal";
+
+export type NormalizedFeedMetadata = {
+  bondingCurve?: string | undefined;
+  creator?: string | undefined;
+  metricsComplete?: boolean;
+  raw?: unknown;
+  rawSourceEventType?: string | undefined;
+  receivedAt?: string | undefined;
+  signature?: string | undefined;
+  source: FeedSource;
+};
+
+export type TokenTradeEvent = NormalizedFeedMetadata & {
   type: "trade";
   token: TokenId;
   side: "buy" | "sell";
@@ -16,7 +30,7 @@ export type TokenTradeEvent = {
   timestamp: string;
 };
 
-export type TokenCreatedEvent = {
+export type TokenCreatedEvent = NormalizedFeedMetadata & {
   type: "token_created";
   candidate: TokenCandidate;
   metrics: RollingMetrics;
@@ -38,10 +52,40 @@ export type MockFeedScenario = "normal" | "momentum" | "rug" | "flat";
 
 export type MockFeedProviderOptions = {
   intervalMs?: number;
-  maxEvents?: number;
+  maxEvents?: number | undefined;
   scenario?: MockFeedScenario;
-  seed?: number | string;
+  seed?: number | string | undefined;
 };
+
+export type PumpPortalLogger = {
+  debug?: (message: string, context?: Record<string, unknown>) => void;
+  error?: (message: string, context?: Record<string, unknown>) => void;
+  info?: (message: string, context?: Record<string, unknown>) => void;
+  warn?: (message: string, context?: Record<string, unknown>) => void;
+};
+
+export type WebSocketLike = {
+  close: () => void;
+  on: (event: string, handler: (...args: unknown[]) => void) => WebSocketLike;
+  send: (data: string) => void;
+};
+
+export type WebSocketConstructor = new (url: string) => WebSocketLike;
+
+export type PumpPortalFeedProviderOptions = {
+  apiKey?: string | undefined;
+  logger?: PumpPortalLogger;
+  maxEvents?: number | undefined;
+  now?: () => Date;
+  reconnectInitialDelayMs?: number;
+  reconnectMaxDelayMs?: number;
+  subscribeMigration?: boolean;
+  subscribeNewToken?: boolean;
+  webSocketConstructor?: WebSocketConstructor;
+  wsUrl?: string | undefined;
+};
+
+export const defaultPumpPortalWsUrl = "wss://pumpportal.fun/api/data";
 
 const safeRiskFlags: RiskFlags = {
   mintAuthorityActive: false,
@@ -153,7 +197,11 @@ export class MockFeedProvider implements TokenFeedProvider {
         firstSeenAt: timestamp
       },
       metrics,
+      metricsComplete: true,
+      rawSourceEventType: this.scenario,
+      receivedAt: timestamp,
       riskFlags,
+      source: "mock",
       timestamp
     };
   }
@@ -168,6 +216,7 @@ export class MockFeedProvider implements TokenFeedProvider {
 
     const riskFlags = this.createRiskFlags();
     const metrics = this.createMetrics(riskFlags);
+    const timestamp = this.createTimestamp();
 
     return {
       type: "trade",
@@ -176,8 +225,12 @@ export class MockFeedProvider implements TokenFeedProvider {
       priceUsd: metrics.priceUsd,
       volumeUsd: Math.max(metrics.volume1mUsd / 4, 25),
       metrics,
+      metricsComplete: true,
+      rawSourceEventType: this.scenario,
+      receivedAt: timestamp,
       riskFlags,
-      timestamp: this.createTimestamp()
+      source: "mock",
+      timestamp
     };
   }
 
@@ -359,6 +412,343 @@ export class MockFeedProvider implements TokenFeedProvider {
   }
 }
 
+export class PumpPortalFeedProvider implements TokenFeedProvider {
+  readonly name = "pumpportal";
+
+  private reconnectDelayMs: number;
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private socket: WebSocketLike | undefined;
+  private stopped = true;
+  private emitted = 0;
+  private handler: FeedEventHandler | undefined;
+
+  private readonly apiKey: string | undefined;
+  private readonly logger: PumpPortalLogger;
+  private readonly maxEvents: number | undefined;
+  private readonly now: () => Date;
+  private readonly reconnectInitialDelayMs: number;
+  private readonly reconnectMaxDelayMs: number;
+  private readonly subscribeMigration: boolean;
+  private readonly subscribeNewToken: boolean;
+  private readonly webSocketConstructor: WebSocketConstructor;
+  private readonly wsUrl: string;
+
+  constructor(options: PumpPortalFeedProviderOptions = {}) {
+    this.apiKey = options.apiKey;
+    this.logger = options.logger ?? {};
+    this.maxEvents = options.maxEvents;
+    this.now = options.now ?? (() => new Date());
+    this.reconnectInitialDelayMs = options.reconnectInitialDelayMs ?? 1_000;
+    this.reconnectMaxDelayMs = options.reconnectMaxDelayMs ?? 30_000;
+    this.reconnectDelayMs = this.reconnectInitialDelayMs;
+    this.subscribeMigration = options.subscribeMigration ?? true;
+    this.subscribeNewToken = options.subscribeNewToken ?? true;
+    this.webSocketConstructor =
+      options.webSocketConstructor ??
+      (WebSocket as unknown as WebSocketConstructor);
+    this.wsUrl = buildPumpPortalWsUrl({
+      apiKey: options.apiKey,
+      wsUrl: options.wsUrl
+    });
+  }
+
+  start(handler: FeedEventHandler): void {
+    this.handler = handler;
+    this.stopped = false;
+    this.connect();
+  }
+
+  stop(): void {
+    this.stopped = true;
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+
+    this.socket?.close();
+    this.socket = undefined;
+  }
+
+  private connect(): void {
+    if (this.stopped) {
+      return;
+    }
+
+    const socket = new this.webSocketConstructor(this.wsUrl);
+    this.socket = socket;
+    this.logger.info?.("PumpPortal websocket connecting", {
+      url: maskPumpPortalUrl(this.wsUrl)
+    });
+
+    socket.on("open", () => {
+      this.reconnectDelayMs = this.reconnectInitialDelayMs;
+      this.sendSubscriptions(socket);
+    });
+
+    socket.on("message", (data) => {
+      this.handleMessage(data);
+    });
+
+    socket.on("error", (error) => {
+      this.logger.warn?.("PumpPortal websocket error", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      this.scheduleReconnect();
+    });
+
+    socket.on("close", () => {
+      this.logger.debug?.("PumpPortal websocket closed");
+      this.scheduleReconnect();
+    });
+  }
+
+  private sendSubscriptions(socket: WebSocketLike): void {
+    if (this.subscribeNewToken) {
+      socket.send(
+        JSON.stringify({
+          method: "subscribeNewToken"
+        })
+      );
+    }
+
+    if (this.subscribeMigration) {
+      socket.send(
+        JSON.stringify({
+          method: "subscribeMigration"
+        })
+      );
+    }
+  }
+
+  private handleMessage(data: unknown): void {
+    const payload = this.parsePayload(data);
+
+    if (!payload) {
+      return;
+    }
+
+    const event = this.normalizePayload(payload);
+
+    if (!event) {
+      this.logger.debug?.("Skipping unknown PumpPortal payload");
+      return;
+    }
+
+    this.emitted += 1;
+    this.handler?.(event);
+
+    if (this.maxEvents !== undefined && this.emitted >= this.maxEvents) {
+      this.stop();
+    }
+  }
+
+  private parsePayload(data: unknown): Record<string, unknown> | null {
+    try {
+      const text =
+        typeof data === "string" || data instanceof Buffer
+          ? data.toString()
+          : String(data);
+      const parsed = JSON.parse(text) as unknown;
+
+      if (isRecord(parsed)) {
+        return parsed;
+      }
+
+      this.logger.debug?.("Skipping non-object PumpPortal payload");
+      return null;
+    } catch (error) {
+      this.logger.warn?.("Failed to parse PumpPortal payload", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
+  }
+
+  private normalizePayload(
+    payload: Record<string, unknown>
+  ): TokenCreatedEvent | null {
+    const mint = readString(payload, [
+      "mint",
+      "tokenMint",
+      "ca",
+      "address",
+      "contractAddress"
+    ]);
+
+    if (!mint) {
+      return null;
+    }
+
+    const receivedAt = this.now().toISOString();
+    const rawSourceEventType = inferPumpPortalEventType(payload);
+    const symbol = readString(payload, ["symbol", "ticker"]) ?? "UNKNOWN";
+    const name = readString(payload, ["name", "tokenName"]) ?? symbol;
+    const creator = readString(payload, [
+      "creator",
+      "traderPublicKey",
+      "user",
+      "owner"
+    ]);
+    const bondingCurve = readString(payload, [
+      "bondingCurve",
+      "bondingCurveKey",
+      "bondingCurveAddress"
+    ]);
+    const signature = readString(payload, [
+      "signature",
+      "txSignature",
+      "transactionSignature"
+    ]);
+    const timestamp = readTimestamp(payload) ?? receivedAt;
+
+    return {
+      type: "token_created",
+      bondingCurve,
+      candidate: {
+        id: {
+          chain: "solana",
+          mint
+        },
+        mint,
+        symbol,
+        name,
+        source: "pumpportal",
+        ageSeconds: 0,
+        firstSeenAt: timestamp
+      },
+      creator,
+      metrics: createIncompleteMetrics(),
+      metricsComplete: false,
+      raw: payload,
+      rawSourceEventType,
+      receivedAt,
+      riskFlags: {
+        ...safeRiskFlags,
+        lowLiquidity: true
+      },
+      signature,
+      source: "pumpportal",
+      timestamp
+    };
+  }
+
+  private scheduleReconnect(): void {
+    if (this.stopped || this.reconnectTimer) {
+      return;
+    }
+
+    const delayMs = this.reconnectDelayMs;
+    this.reconnectDelayMs = Math.min(
+      this.reconnectDelayMs * 2,
+      this.reconnectMaxDelayMs
+    );
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      this.connect();
+    }, delayMs);
+  }
+}
+
+export function buildPumpPortalWsUrl(options: {
+  apiKey?: string | undefined;
+  wsUrl?: string | undefined;
+} = {}): string {
+  const url = new URL(options.wsUrl ?? defaultPumpPortalWsUrl);
+
+  if (options.apiKey) {
+    url.searchParams.set("api-key", options.apiKey);
+  }
+
+  return url.toString();
+}
+
+export function maskPumpPortalUrl(url: string): string {
+  const parsed = new URL(url);
+
+  if (parsed.searchParams.has("api-key")) {
+    parsed.searchParams.set("api-key", "***");
+  }
+
+  return parsed.toString();
+}
+
+function createIncompleteMetrics(): RollingMetrics {
+  return {
+    priceUsd: 0,
+    marketCapUsd: 0,
+    liquidityUsd: 0,
+    volume1mUsd: 0,
+    volume5mUsd: 0,
+    volume15mUsd: 0,
+    buyCount1m: 0,
+    buyCount5m: 0,
+    sellCount1m: 0,
+    sellCount5m: 0,
+    uniqueBuyers1m: 0,
+    uniqueBuyers5m: 0,
+    uniqueSellers1m: 0,
+    uniqueSellers5m: 0,
+    holderCount: 0,
+    topHolderPercent: 0,
+    top10HolderPercent: 0,
+    priceChange1mPct: 0,
+    priceChange5mPct: 0,
+    volumeVelocity: 0,
+    buyerVelocity: 0
+  };
+}
+
+function inferPumpPortalEventType(payload: Record<string, unknown>): string {
+  const explicit = readString(payload, ["event", "method", "type", "txType"]);
+
+  if (explicit) {
+    return explicit.toLowerCase().includes("migr") ? "migration" : explicit;
+  }
+
+  if (readString(payload, ["pool", "newPool", "bondingCurve"])) {
+    return "migration";
+  }
+
+  return "new_token";
+}
+
+function readTimestamp(payload: Record<string, unknown>): string | undefined {
+  const value = payload["timestamp"] ?? payload["createdAt"] ?? payload["time"];
+
+  if (typeof value === "string") {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+  }
+
+  if (typeof value === "number") {
+    const millis = value > 10_000_000_000 ? value : value * 1000;
+    return new Date(millis).toISOString();
+  }
+
+  return undefined;
+}
+
+function readString(
+  payload: Record<string, unknown>,
+  keys: string[]
+): string | undefined {
+  for (const key of keys) {
+    const value = payload[key];
+
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function hashSeed(seed: number | string): number {
   if (typeof seed === "number") {
     return seed;
@@ -386,6 +776,6 @@ function createRandom(seed: number): () => number {
   };
 }
 
-// TODO: Add public Solana feed providers here later, such as PumpPortal,
-// Birdeye, Helius, or DexScreener adapters.
-// TODO: Add Axiom overlay inputs only through user-permitted public surfaces.
+// TODO: Add more public Solana feed providers later, such as Birdeye, Helius,
+// or DexScreener adapters, only after they are explicitly requested.
+// TODO: Keep Axiom overlay inputs limited to user-permitted public surfaces.

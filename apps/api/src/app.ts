@@ -3,8 +3,10 @@ import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
 import {
   MockFeedProvider,
+  PumpPortalFeedProvider,
   type FeedEvent,
   type MockFeedProviderOptions,
+  type PumpPortalFeedProviderOptions,
   type TokenCreatedEvent,
   type TokenFeedProvider
 } from "@axi/data-feeds";
@@ -14,6 +16,7 @@ import {
   BotModeSchema,
   type BotMode,
   type OverlaySignal,
+  type ScoreBreakdown,
   type SignalState
 } from "@axi/shared";
 import {
@@ -43,6 +46,7 @@ const logLevelSchema = z.enum([
 export const apiConfigSchema = z.object({
   NODE_ENV: z.string().default("development"),
   BOT_MODE: BotModeSchema.default("paper"),
+  DATA_FEED: z.enum(["mock", "pumpportal"]).default("mock"),
   API_HOST: z.string().default("0.0.0.0"),
   API_PORT: z.coerce.number().int().positive().default(8787),
   SIGNAL_INTERVAL_MS: z.coerce.number().int().min(0).default(2000),
@@ -56,6 +60,16 @@ export const apiConfigSchema = z.object({
     (value) => (value === "" ? undefined : value),
     z.coerce.number().int().positive().optional()
   ),
+  PUMPPORTAL_WS_URL: z
+    .preprocess((value) => (value === "" ? undefined : value), z.string().url().optional()),
+  PUMPPORTAL_API_KEY: z
+    .preprocess((value) => (value === "" ? undefined : value), z.string().min(1).optional()),
+  PUMPPORTAL_SUBSCRIBE_NEW_TOKEN: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  PUMPPORTAL_SUBSCRIBE_MIGRATION: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
   LOG_LEVEL: logLevelSchema.default("info")
 });
 
@@ -64,12 +78,14 @@ export type ApiLogLevel = z.infer<typeof logLevelSchema>;
 
 export type ApiServerOptions = {
   closeStorageOnClose?: boolean;
+  dataFeed?: "mock" | "pumpportal";
   feedProvider?: TokenFeedProvider;
   host?: string;
   logLevel?: ApiLogLevel | false;
-  mockFeed?: MockFeedProviderOptions;
+  mockFeed?: MockFeedProviderOptions | undefined;
   mode?: BotMode;
   port?: number;
+  pumpPortal?: PumpPortalFeedProviderOptions | undefined;
   signalIntervalMs?: number;
   startFeed?: boolean;
   storageDatabasePath?: string;
@@ -112,9 +128,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   const feed =
     options.feedProvider ??
-    new MockFeedProvider({
-      intervalMs: options.signalIntervalMs ?? 2000,
-      ...options.mockFeed
+    createFeedProvider({
+      dataFeed: options.dataFeed ?? "mock",
+      mockFeed: options.mockFeed,
+      pumpPortal: options.pumpPortal,
+      signalIntervalMs: options.signalIntervalMs ?? 2000
     });
   const executor = new PaperTradeExecutor(mode);
   const storage = options.storageDatabasePath
@@ -140,6 +158,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   });
 
   app.get("/health", async () => ({
+    feedProvider: feed.name,
     status: "ok",
     mode,
     paperOnly: true,
@@ -254,11 +273,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   }
 
   function createOverlaySignal(event: TokenCreatedEvent): OverlaySignal {
-    const score = scoreCandidate(
-      event.candidate,
-      event.metrics,
-      event.riskFlags
-    );
+    const score = scoreFeedCandidate(event);
     const state: SignalState = {
       candidate: event.candidate,
       metrics: event.metrics,
@@ -278,6 +293,34 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       buyerVelocity: event.metrics.buyerVelocity,
       riskFlags: event.riskFlags,
       state
+    };
+  }
+
+  function scoreFeedCandidate(event: TokenCreatedEvent): ScoreBreakdown {
+    const score = scoreCandidate(
+      event.candidate,
+      event.metrics,
+      event.riskFlags
+    );
+
+    if (event.source !== "pumpportal" || event.metricsComplete !== false) {
+      return score;
+    }
+
+    const realFeedReason =
+      event.rawSourceEventType === "migration"
+        ? "REAL_FEED_MIGRATION_EVENT"
+        : "REAL_FEED_NEW_TOKEN_EVENT";
+
+    return {
+      ...score,
+      action: score.hardReject ? "HARD_REJECT" : "IGNORE",
+      reasonCodes: uniqueReasonCodes([
+        "INSUFFICIENT_METRICS",
+        realFeedReason,
+        ...score.reasonCodes
+      ]),
+      total: score.hardReject ? 0 : Math.min(score.total, 20)
     };
   }
 
@@ -353,6 +396,42 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     stopFeed,
     storage
   };
+}
+
+function createFeedProvider(options: {
+  dataFeed: "mock" | "pumpportal";
+  mockFeed?: MockFeedProviderOptions | undefined;
+  pumpPortal?: PumpPortalFeedProviderOptions | undefined;
+  signalIntervalMs: number;
+}): TokenFeedProvider {
+  if (options.dataFeed === "pumpportal") {
+    return new PumpPortalFeedProvider(options.pumpPortal);
+  }
+
+  return new MockFeedProvider({
+    intervalMs: options.signalIntervalMs,
+    ...options.mockFeed
+  });
+}
+
+function parseBooleanEnv(value: unknown): boolean | undefined {
+  if (value === undefined || value === "") {
+    return undefined;
+  }
+
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    return ["1", "true", "yes", "on"].includes(value.toLowerCase());
+  }
+
+  return undefined;
+}
+
+function uniqueReasonCodes(reasonCodes: string[]): string[] {
+  return Array.from(new Set(reasonCodes));
 }
 
 export async function startApiServer(

@@ -13,6 +13,13 @@ type StorageStats = {
   lastSignalAt: string | null;
 };
 
+type HealthStatus = {
+  feedProvider: string;
+  mode: string;
+  paperOnly: boolean;
+  status: string;
+};
+
 type ServerMessage =
   | {
       type: "snapshot";
@@ -32,6 +39,7 @@ export function App() {
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("connecting");
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
+  const [healthStatus, setHealthStatus] = useState<HealthStatus | null>(null);
   const [storageStats, setStorageStats] = useState<StorageStats | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>("never");
 
@@ -87,18 +95,23 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
 
-    const loadStorageStats = async () => {
+    const loadApiStatus = async () => {
       try {
-        const response = await fetch(`${apiBaseUrl}/storage/stats`);
+        const [healthResponse, statsResponse] = await Promise.all([
+          fetch(`${apiBaseUrl}/health`),
+          fetch(`${apiBaseUrl}/storage/stats`)
+        ]);
 
-        if (!response.ok) {
-          throw new Error(`Storage stats failed: ${response.status}`);
+        if (!healthResponse.ok || !statsResponse.ok) {
+          throw new Error("API status check failed");
         }
 
-        const stats = (await response.json()) as StorageStats;
+        const health = (await healthResponse.json()) as HealthStatus;
+        const stats = (await statsResponse.json()) as StorageStats;
 
         if (!cancelled) {
           setApiStatus("connected");
+          setHealthStatus(health);
           setStorageStats(stats);
         }
       } catch {
@@ -108,9 +121,9 @@ export function App() {
       }
     };
 
-    void loadStorageStats();
+    void loadApiStatus();
     const timer = window.setInterval(() => {
-      void loadStorageStats();
+      void loadApiStatus();
     }, 3000);
 
     return () => {
@@ -129,8 +142,13 @@ export function App() {
     (signal) => signal.action === "BUY_READY"
   ).length;
   const hardRejectCount = signals.filter((signal) => signal.hardReject).length;
+  const incompleteMetricCount = signals.filter((signal) =>
+    signal.reasonCodes.includes("INSUFFICIENT_METRICS")
+  ).length;
   const statusMessage = getStatusMessage({
     apiStatus,
+    feedProvider: healthStatus?.feedProvider,
+    incompleteMetricCount,
     signalCount: signals.length,
     storageStats
   });
@@ -172,6 +190,10 @@ export function App() {
           <strong>{apiStatus}</strong>
         </div>
         <div>
+          <span>Feed</span>
+          <strong>{healthStatus?.feedProvider ?? "unknown"}</strong>
+        </div>
+        <div>
           <span>Stored Signals</span>
           <strong>{storageStats?.signalCount ?? signals.length}</strong>
         </div>
@@ -186,6 +208,10 @@ export function App() {
         <div>
           <span>Last Signal</span>
           <strong>{formatTimestamp(storageStats?.lastSignalAt)}</strong>
+        </div>
+        <div>
+          <span>Incomplete</span>
+          <strong>{incompleteMetricCount}</strong>
         </div>
       </section>
 
@@ -275,6 +301,8 @@ function formatTimestamp(timestamp: string | null | undefined): string {
 
 function getStatusMessage(options: {
   apiStatus: ApiStatus;
+  feedProvider: string | undefined;
+  incompleteMetricCount: number;
   signalCount: number;
   storageStats: StorageStats | null;
 }): string {
@@ -288,6 +316,13 @@ function getStatusMessage(options: {
 
   if (options.storageStats?.feedEventCount === 0) {
     return "API connected, no persisted mock events yet";
+  }
+
+  if (
+    options.feedProvider === "pumpportal" &&
+    options.incompleteMetricCount > 0
+  ) {
+    return "PumpPortal feed connected with insufficient metrics for scoring";
   }
 
   if (options.signalCount === 0 && (options.storageStats?.signalCount ?? 0) > 0) {

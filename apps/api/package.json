@@ -10,6 +10,7 @@
     "typecheck": "tsc -b tsconfig.json && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "replay": "tsx --conditions=development src/replay.ts",
+    "feed:probe": "tsx --conditions=development src/feed-probe.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {

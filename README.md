@@ -22,8 +22,9 @@ exists here yet.
 data feeds -> scoring engine -> paper executor -> API/WebSocket -> dashboard/overlay
 ```
 
-Current implementation uses `MockFeedProvider` only. It emits safe fake token
-events for local development.
+Default implementation uses `MockFeedProvider`. It emits safe fake token events
+for local development. A public PumpPortal feed provider is available behind
+`DATA_FEED=pumpportal` for new-token and migration events only.
 
 All current signal data is fake, mock-generated, and paper-only.
 
@@ -84,6 +85,22 @@ Supported mock scenarios are `normal`, `momentum`, `rug`, and `flat`. The same
 seed and scenario produce the same mock event sequence, which is useful for
 repeatable paper-mode tests.
 
+Public PumpPortal paper-feed mode can be started explicitly:
+
+```bash
+DATA_FEED=pumpportal PUMPPORTAL_API_KEY=... pnpm --filter @axi/api dev
+```
+
+PumpPortal support uses one WebSocket connection and subscribes only to:
+
+- `subscribeNewToken`
+- `subscribeMigration`
+
+`subscribeTokenTrade` and `subscribeAccountTrade` are intentionally not
+implemented because they are metered streams. PumpPortal events are normalized
+with conservative placeholder metrics until a later metrics source exists, so
+they are marked with `INSUFFICIENT_METRICS` and remain paper-only.
+
 Endpoints:
 
 - `GET /health`
@@ -111,6 +128,19 @@ pnpm --filter @axi/api replay -- --db .data/axi.sqlite --type feed_events
 
 Replay output is JSON lines on stdout. The default database is
 `.data/axi.sqlite`, which is local and ignored by git.
+
+## Probe Feeds
+
+Probe normalized feed events without starting the API server, dashboard, live
+trading, or persistence:
+
+```bash
+pnpm --filter @axi/api feed:probe -- --provider mock --limit 5
+DATA_FEED=pumpportal PUMPPORTAL_API_KEY=... pnpm --filter @axi/api feed:probe -- --limit 10
+DATA_FEED=pumpportal pnpm --filter @axi/api feed:probe -- --new-token true --migration false --timeout 30000
+```
+
+Do not put real API keys in source files, tests, commits, or `.env.example`.
 
 ## Run The Dashboard
 
@@ -162,7 +192,9 @@ docker compose --profile infra up -d
   persistence work.
 - `dev/api-test-harness-replay` contains the API test harness, deterministic
   mock feed, and replay work.
+- `dev/pumpportal-feed-provider` contains the public PumpPortal new-token and
+  migration feed provider.
 
 This project still has no wallet UI, no private-key loading, no live trading,
-no Solana transaction signing, no real external feed integrations, and no Axiom
-private API usage.
+no Solana transaction signing, no metered trade streams, no Axiom private API
+usage, and no Axiom scraping.

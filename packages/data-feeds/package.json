@@ -17,6 +17,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@axi/shared": "workspace:*"
+    "@axi/shared": "workspace:*",
+    "ws": "^8.18.0"
   }
 }

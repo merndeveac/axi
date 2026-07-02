@@ -181,7 +181,10 @@ function createFeedEvent(timestamp = "2026-01-01T00:00:00.000Z"): FeedEvent {
     type: "token_created",
     candidate: createSignal().state.candidate,
     metrics: createSignal().state.metrics,
+    metricsComplete: true,
+    receivedAt: timestamp,
     riskFlags: createSignal().riskFlags,
+    source: "mock",
     timestamp
   };
 }
