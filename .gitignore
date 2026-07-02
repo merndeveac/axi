@@ -1,12 +1,50 @@
+# Dependencies
 node_modules/
+.pnpm-store/
+
+# Build outputs
 dist/
 build/
+coverage/
+*.tsbuildinfo
+
+# Environment and secrets
 .env
 .env.*
+!.env.example
+secrets/
+secret/
+private/
+*.secret
 *.pem
 *.key
-*.secret
+*.private
+*.priv
+*.p8
+*.p12
+
+# Wallets and keypairs
 wallet*.json
+*wallet*.json
+keypair*.json
+*keypair*.json
 id.json
-secrets/
+id_*.json
+*-keypair.json
+
+# Logs and caches
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.cache/
+.vite/
+.turbo/
+
+# Local editor and OS files
+.vscode/
+.idea/
 .DS_Store
+Thumbs.db

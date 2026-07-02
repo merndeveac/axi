@@ -1,0 +1,22 @@
+{
+  "name": "@axi/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --conditions=development src/server.ts",
+    "build": "tsc -b tsconfig.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc -b tsconfig.json",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@axi/data-feeds": "workspace:*",
+    "@axi/execution": "workspace:*",
+    "@axi/scoring": "workspace:*",
+    "@axi/shared": "workspace:*",
+    "fastify": "^5.0.0",
+    "ws": "^8.18.0",
+    "zod": "^3.25.0"
+  }
+}
