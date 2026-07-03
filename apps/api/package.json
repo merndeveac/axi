@@ -10,6 +10,7 @@
     "typecheck": "tsc -b tsconfig.json && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "replay": "tsx --conditions=development src/replay.ts",
+    "chain:verify": "tsx --conditions=development src/chain-verify.ts",
     "feed:probe": "tsx --conditions=development src/feed-probe.ts",
     "clean": "rm -rf dist"
   },
@@ -21,6 +22,7 @@
     "@axi/risk": "workspace:*",
     "@axi/scoring": "workspace:*",
     "@axi/shared": "workspace:*",
+    "@axi/solana-chain": "workspace:*",
     "@axi/storage": "workspace:*",
     "fastify": "^5.0.0",
     "ws": "^8.18.0",

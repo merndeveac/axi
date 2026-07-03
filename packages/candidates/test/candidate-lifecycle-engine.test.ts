@@ -117,6 +117,33 @@ describe("@axi/candidates", () => {
     expect(decision?.action).toBe("PAPER_ORDER_SUBMITTED");
   });
 
+  it("attaches chain verification metadata to decisions", () => {
+    const engine = createCandidateLifecycleEngine();
+
+    engine.ingestFeedEvent(createTokenEvent());
+    engine.updateMetrics(mint, createMetrics({ sampleCount: 12 }));
+    engine.updateRisk(mint, createRisk());
+    engine.updateScore(mint, createScore({ total: 90 }));
+    engine.updateChainVerification(mint, {
+      mint,
+      status: "verified",
+      reasonCodes: ["ON_CHAIN_MINT_VERIFIED", "ON_CHAIN_HOLDERS_VERIFIED"],
+      inspectedAt: "2026-01-01T00:00:13.000Z",
+      mintAuthorityActive: false,
+      freezeAuthorityActive: false,
+      supplyUi: 1_000_000,
+      topHolderPct: 8.5,
+      top10HolderPct: 30.5
+    });
+
+    const decision = engine.evaluateCandidate(mint);
+
+    expect(decision?.chainVerificationStatus).toBe("verified");
+    expect(decision?.chainReasonCodes).toContain("ON_CHAIN_MINT_VERIFIED");
+    expect(decision?.combinedReasonCodes).toContain("ON_CHAIN_HOLDERS_VERIFIED");
+    expect(decision?.onChainTopHolderPct).toBe(8.5);
+  });
+
   it("reset and clear work", () => {
     const engine = createCandidateLifecycleEngine();
 

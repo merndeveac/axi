@@ -65,6 +65,7 @@ describe("@axi/api", () => {
     const body = response.json() as {
       feedEventCount: number;
       candidateDecisionCount: number;
+      chainVerificationCount: number;
       paperOrderCount: number;
       paperPositionCount: number;
       riskSnapshotCount: number;
@@ -74,6 +75,7 @@ describe("@axi/api", () => {
     expect(response.statusCode).toBe(200);
     expect(body.feedEventCount).toBeGreaterThan(0);
     expect(body.signalCount).toBeGreaterThan(0);
+    expect(body.chainVerificationCount).toBe(0);
     expect(body.riskSnapshotCount).toBeGreaterThan(0);
     expect(body.candidateDecisionCount).toBeGreaterThan(0);
     expect(body.paperOrderCount).toBe(0);
@@ -237,6 +239,67 @@ describe("@axi/api", () => {
     expect(response.statusCode).toBe(200);
     expect(body).toEqual(expect.any(Array));
     expect(body).toHaveLength(0);
+  });
+
+  it("GET /chain/status reports disabled by default", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/chain/status"
+    });
+    const body = response.json() as {
+      enabled: boolean;
+      paperOnly: boolean;
+      status: string;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.enabled).toBe(false);
+    expect(body.paperOnly).toBe(true);
+    expect(body.status).toBe("disabled");
+  });
+
+  it("GET /chain/verifications returns persisted verifier rows", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/chain/verifications"
+    });
+    const body = response.json() as unknown[];
+
+    expect(response.statusCode).toBe(200);
+    expect(body).toEqual([]);
+  });
+
+  it("POST /chain/verify returns config error when enabled without RPC", async () => {
+    server = createApiServer({
+      chainVerifier: {
+        enabled: true
+      },
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/chain/verify",
+      payload: {
+        mint: "So11111111111111111111111111111111111111112"
+      }
+    });
+    const body = response.json() as {
+      error: string;
+      chainVerifier: {
+        status: string;
+      };
+    };
+
+    expect(response.statusCode).toBe(409);
+    expect(body.error).toBe("CHAIN_VERIFIER_CONFIG_MISSING_RPC");
+    expect(body.chainVerifier.status).toBe("config_error");
   });
 
   it("unknown route returns 404", async () => {

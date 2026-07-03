@@ -38,12 +38,13 @@ Paper-mode development data is stored in a local SQLite database:
 ```
 
 The API initializes the database automatically, creates the current schema, and
-stores mock feed events, risk snapshots, candidate decisions, overlay signals,
-paper orders, and paper positions. This database is local-only and is ignored by
-git.
+stores mock feed events, risk snapshots, candidate decisions, read-only chain
+verifications, overlay signals, paper orders, and paper positions. This
+database is local-only and is ignored by git.
 
 Current persistence tables include `feed_events`, `signals`, `risk_snapshots`,
-`candidate_decisions`, `paper_orders`, and `paper_positions`.
+`candidate_decisions`, `chain_verifications`, `paper_orders`, and
+`paper_positions`.
 
 Clear local paper data with:
 
@@ -86,6 +87,37 @@ Every decision includes combined reason codes.
 `PAPER_BUY_READY` decision is only a paper-mode signal state and does not submit
 a paper order. Setting `PAPER_AUTO_ORDER=true` can submit paper orders through
 the existing in-memory paper executor only. It never enables live trading.
+
+## Read-Only Solana Chain Verifier
+
+`@axi/solana-chain` provides optional read-only Solana RPC helpers for mint
+inspection, token supply, largest token accounts, holder concentration, recent
+signatures, parsed transactions, and token verification. It does not load
+wallets, private keys, seed phrases, or API keys, and it does not sign or send
+transactions.
+
+The API verifier is disabled by default:
+
+```bash
+CHAIN_VERIFIER_ENABLED=false
+SOLANA_RPC_HTTP=
+SOLANA_RPC_COMMITMENT=confirmed
+CHAIN_VERIFIER_REQUEST_TIMEOUT_MS=10000
+CHAIN_VERIFIER_CACHE_TTL_MS=60000
+CHAIN_VERIFIER_MAX_CONCURRENT=2
+CHAIN_VERIFIER_ON_NEW_TOKEN=true
+CHAIN_VERIFIER_ON_MIGRATION=true
+CHAIN_VERIFIER_ON_MOCK=false
+```
+
+Enable it only with an explicit read-only RPC URL:
+
+```bash
+CHAIN_VERIFIER_ENABLED=true SOLANA_RPC_HTTP=https://... pnpm --filter @axi/api dev
+```
+
+Verification results are cached, persisted to SQLite, and merged into paper-mode
+risk decisions when available. Replay never calls live RPC.
 
 ## Install
 
@@ -188,6 +220,11 @@ Endpoints:
 - `GET /metrics/:mint`
 - `GET /positions`
 - `GET /storage/stats`
+- `GET /chain/status`
+- `GET /chain/verifications`
+- `GET /chain/verifications/:mint`
+- `GET /chain/verify/:mint`
+- `POST /chain/verify`
 - `GET /paper/orders`
 - `GET /paper/positions`
 - `ws://localhost:8787/ws/signals`
@@ -203,6 +240,11 @@ tracked.
 lifecycle and risk snapshots. The persisted history is available through SQLite
 and replay.
 
+`GET /chain/status` reports whether the read-only verifier is disabled,
+misconfigured, or ready. `POST /chain/verify` accepts `{ "mint": "..." }` and
+runs one read-only verification only when the verifier is enabled and
+`SOLANA_RPC_HTTP` is configured.
+
 ## Replay Local Data
 
 Replay persisted fake paper data from SQLite without starting the API,
@@ -216,6 +258,8 @@ pnpm --filter @axi/api replay -- --type feed_events --metrics true --limit 100 -
 pnpm --filter @axi/api replay -- --type feed_events --metrics true --risk true --candidates true --limit 100 --speed 0
 pnpm --filter @axi/api replay -- --type risk_snapshots --limit 25 --speed 0
 pnpm --filter @axi/api replay -- --type candidate_decisions --limit 25 --speed 0
+pnpm --filter @axi/api replay -- --type chain_verifications --limit 25 --speed 0
+pnpm --filter @axi/api replay -- --type feed_events --chain false
 ```
 
 Replay output is JSON lines on stdout. The default database is
@@ -225,6 +269,16 @@ includes the metrics snapshot after that event when available. With
 `--risk true` and `--candidates true`, feed events are replayed through the
 local risk and candidate lifecycle engines and each JSON line includes those
 snapshots when available.
+
+Run one read-only chain verification from the CLI without persistence:
+
+```bash
+pnpm --filter @axi/api chain:verify -- --mint <MINT> --json
+pnpm --filter @axi/api chain:verify -- --mint <MINT> --rpc https://... --commitment confirmed
+```
+
+The CLI validates malformed mints before creating an RPC client and never
+performs wallet loading, signing, sending, buying, or selling.
 
 ## Probe Feeds
 
@@ -281,6 +335,7 @@ docker compose --profile infra up -d
 - `@axi/metrics`: local rolling-window metrics for paper-mode signal features.
 - `@axi/risk`: pure local risk/scam-filter snapshots and reason codes.
 - `@axi/candidates`: pure local candidate lifecycle decisions.
+- `@axi/solana-chain`: optional read-only Solana RPC verification helpers.
 - `@axi/storage`: local SQLite persistence for paper-mode development.
 - `@axi/api`: Fastify API and local WebSocket broadcaster.
 - `@axi/dashboard`: Vite React signal dashboard.
@@ -298,8 +353,10 @@ docker compose --profile infra up -d
   metrics engine.
 - `dev/risk-engine-candidate-lifecycle` contains local risk snapshots and
   candidate lifecycle decisions.
+- `dev/solana-chain-verifier` contains the optional read-only Solana chain
+  verifier.
 
 This project still has no wallet UI, no private-key loading, no live trading,
-no Solana transaction signing, no real risk-data provider, no direct Solana RPC
+no Solana transaction signing, no transaction sending, no real risk-data
 provider, no metered PumpPortal trade streams, no Axiom private API usage, and
 no Axiom scraping.

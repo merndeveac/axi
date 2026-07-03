@@ -7,11 +7,14 @@ import type { CandidateDecision, OverlaySignal, RiskSnapshot } from "@axi/shared
 import {
   closeStorage,
   createReplayStream,
+  getLatestChainVerification,
   getLatestCandidateDecision,
   getLatestRiskSnapshot,
   getStorageStats,
   initStorage,
   listCandidateDecisionsForReplay,
+  listChainVerifications,
+  listChainVerificationsForReplay,
   listCandidateDecisions,
   listFeedEvents,
   listPaperOrders,
@@ -21,6 +24,7 @@ import {
   listRiskSnapshots,
   listSignalsForReplay,
   saveCandidateDecision,
+  saveChainVerification,
   saveFeedEvent,
   savePaperOrder,
   saveRiskSnapshot,
@@ -51,6 +55,7 @@ describe("@axi/storage", () => {
     expect(handle.databasePath).toBe(databasePath);
     expect(stats.databasePath).toBe(databasePath);
     expect(stats.signalCount).toBe(0);
+    expect(stats.chainVerificationCount).toBe(0);
     expect(stats.riskSnapshotCount).toBe(0);
     expect(stats.candidateDecisionCount).toBe(0);
   });
@@ -148,8 +153,23 @@ describe("@axi/storage", () => {
     expect(latest?.action).toBe("PAPER_BUY_READY");
   });
 
+  it("chain verification can be saved, listed, and fetched by mint", () => {
+    initStorage({ databasePath });
+    const saved = saveChainVerification(createChainVerification());
+    const listed = listChainVerifications(10);
+    const latest = getLatestChainVerification(mint);
+
+    expect(saved.id).toBeGreaterThan(0);
+    expect(saved.status).toBe("verified");
+    expect(listed).toHaveLength(1);
+    expect(latest?.mint).toBe(mint);
+    expect(latest?.reasonCodes).toContain("ON_CHAIN_MINT_VERIFIED");
+    expect(latest?.topHolderPct).toBe(12.5);
+  });
+
   it("storage stats return counts", () => {
     initStorage({ databasePath });
+    saveChainVerification(createChainVerification());
     saveFeedEvent(createFeedEvent());
     saveRiskSnapshot(createRiskSnapshot());
     saveCandidateDecision(createCandidateDecision());
@@ -179,6 +199,7 @@ describe("@axi/storage", () => {
 
     expect(stats.feedEventCount).toBe(1);
     expect(stats.signalCount).toBe(1);
+    expect(stats.chainVerificationCount).toBe(1);
     expect(stats.riskSnapshotCount).toBe(1);
     expect(stats.candidateDecisionCount).toBe(1);
     expect(stats.paperOrderCount).toBe(1);
@@ -196,11 +217,14 @@ describe("@axi/storage", () => {
     const signals = listSignalsForReplay(10);
     const riskSnapshot = saveRiskSnapshot(createRiskSnapshot());
     const candidateDecision = saveCandidateDecision(createCandidateDecision());
+    const chainVerification = saveChainVerification(createChainVerification());
     const riskSnapshots = listRiskSnapshotsForReplay(10);
     const candidateDecisions = listCandidateDecisionsForReplay(10);
+    const chainVerifications = listChainVerificationsForReplay(10);
     const replayItems = [];
     const riskReplayItems = [];
     const candidateReplayItems = [];
+    const chainReplayItems = [];
 
     for await (const item of createReplayStream({
       limit: 10,
@@ -226,6 +250,14 @@ describe("@axi/storage", () => {
       candidateReplayItems.push(item);
     }
 
+    for await (const item of createReplayStream({
+      limit: 10,
+      speed: 0,
+      type: "chain_verifications"
+    })) {
+      chainReplayItems.push(item);
+    }
+
     expect(feedEvents.map((event) => event.createdAt)).toEqual([
       "2026-01-01T00:00:01.000Z",
       "2026-01-01T00:00:02.000Z"
@@ -233,10 +265,12 @@ describe("@axi/storage", () => {
     expect(signals).toHaveLength(1);
     expect(riskSnapshots[0]?.id).toBe(riskSnapshot.id);
     expect(candidateDecisions[0]?.id).toBe(candidateDecision.id);
+    expect(chainVerifications[0]?.id).toBe(chainVerification.id);
     expect(replayItems).toHaveLength(2);
     expect(replayItems[0]?.source).toBe("feed_events");
     expect(riskReplayItems[0]?.source).toBe("risk_snapshots");
     expect(candidateReplayItems[0]?.source).toBe("candidate_decisions");
+    expect(chainReplayItems[0]?.source).toBe("chain_verifications");
   });
 });
 
@@ -299,6 +333,25 @@ function createRiskSnapshot(): RiskSnapshot {
     reasonCodes: ["BASELINE_RISK"],
     humanSummary: "low risk",
     updatedAt: "2026-01-01T00:00:00.000Z"
+  };
+}
+
+function createChainVerification() {
+  return {
+    mint,
+    status: "verified" as const,
+    reasonCodes: ["ON_CHAIN_MINT_VERIFIED", "ON_CHAIN_SUPPLY_VERIFIED"],
+    mintAuthorityActive: false,
+    freezeAuthorityActive: false,
+    supplyUi: 1_000_000,
+    topHolderPct: 12.5,
+    top10HolderPct: 34.2,
+    payload: {
+      mint,
+      source: "test"
+    },
+    inspectedAt: "2026-01-01T00:00:03.000Z",
+    createdAt: "2026-01-01T00:00:03.000Z"
   };
 }
 

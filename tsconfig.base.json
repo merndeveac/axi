@@ -26,6 +26,7 @@
       "@axi/execution": ["packages/execution/src/index.ts"],
       "@axi/metrics": ["packages/metrics/src/index.ts"],
       "@axi/risk": ["packages/risk/src/index.ts"],
+      "@axi/solana-chain": ["packages/solana-chain/src/index.ts"],
       "@axi/storage": ["packages/storage/src/index.ts"]
     }
   }

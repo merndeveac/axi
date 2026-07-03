@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
   CandidateDecision,
+  ChainVerificationStatus,
   OverlaySignal,
   RiskSnapshot,
   RollingMetricsSnapshot
@@ -13,6 +14,7 @@ type StorageStats = {
   databasePath: string;
   feedEventCount: number;
   signalCount: number;
+  chainVerificationCount: number;
   riskSnapshotCount: number;
   candidateDecisionCount: number;
   paperOrderCount: number;
@@ -23,6 +25,8 @@ type StorageStats = {
 type HealthStatus = {
   candidateCount: number;
   candidateLifecycleEnabled: boolean;
+  chainVerificationCount: number;
+  chainVerifier: ChainVerifierStatus;
   feedProvider: string;
   metricsEnabled: boolean;
   mode: string;
@@ -33,12 +37,33 @@ type HealthStatus = {
   trackedTokenCount: number;
 };
 
+type ChainVerifierStatus = {
+  cacheSize: number;
+  configured: boolean;
+  enabled: boolean;
+  inFlightCount: number;
+  maxConcurrent: number;
+  onMigration: boolean;
+  onMock: boolean;
+  onNewToken: boolean;
+  paperOnly: true;
+  rpcHttpUrlConfigured: boolean;
+  status: "disabled" | "config_error" | "ready";
+};
+
 type CandidateApiRow = {
   mint: string;
   symbol?: string;
   name?: string;
   source?: string;
   lifecycleState: string;
+  chainVerificationStatus?: ChainVerificationStatus;
+  chainVerifiedAt?: string;
+  chainReasonCodes?: string[];
+  onChainMintAuthorityActive?: boolean | null;
+  onChainFreezeAuthorityActive?: boolean | null;
+  onChainTopHolderPct?: number | null;
+  onChainTop10HolderPct?: number | null;
   latestDecision?: CandidateDecision;
   latestMetrics?: RollingMetricsSnapshot;
   latestRisk?: RiskSnapshot;
@@ -67,6 +92,7 @@ export function App() {
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
   const [candidates, setCandidates] = useState<CandidateApiRow[]>([]);
   const [healthStatus, setHealthStatus] = useState<HealthStatus | null>(null);
+  const [chainStatus, setChainStatus] = useState<ChainVerifierStatus | null>(null);
   const [storageStats, setStorageStats] = useState<StorageStats | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>("never");
 
@@ -124,13 +150,24 @@ export function App() {
 
     const loadApiStatus = async () => {
       try {
-        const [healthResponse, statsResponse, candidatesResponse] = await Promise.all([
+        const [
+          healthResponse,
+          statsResponse,
+          candidatesResponse,
+          chainResponse
+        ] = await Promise.all([
           fetch(`${apiBaseUrl}/health`),
           fetch(`${apiBaseUrl}/storage/stats`),
-          fetch(`${apiBaseUrl}/candidates`)
+          fetch(`${apiBaseUrl}/candidates`),
+          fetch(`${apiBaseUrl}/chain/status`)
         ]);
 
-        if (!healthResponse.ok || !statsResponse.ok || !candidatesResponse.ok) {
+        if (
+          !healthResponse.ok ||
+          !statsResponse.ok ||
+          !candidatesResponse.ok ||
+          !chainResponse.ok
+        ) {
           throw new Error("API status check failed");
         }
 
@@ -138,10 +175,13 @@ export function App() {
         const stats = (await statsResponse.json()) as StorageStats;
         const nextCandidates =
           (await candidatesResponse.json()) as CandidateApiRow[];
+        const nextChainStatus =
+          (await chainResponse.json()) as ChainVerifierStatus;
 
         if (!cancelled) {
           setApiStatus("connected");
           setCandidates(nextCandidates);
+          setChainStatus(nextChainStatus);
           setHealthStatus(health);
           setStorageStats(stats);
         }
@@ -248,6 +288,22 @@ export function App() {
           <strong>{healthStatus?.candidateLifecycleEnabled ? "on" : "off"}</strong>
         </div>
         <div>
+          <span>Chain</span>
+          <strong>{chainStatus?.status ?? healthStatus?.chainVerifier.status ?? "unknown"}</strong>
+        </div>
+        <div>
+          <span>RPC</span>
+          <strong>{chainStatus?.rpcHttpUrlConfigured ? "configured" : "unset"}</strong>
+        </div>
+        <div>
+          <span>Chain Reads</span>
+          <strong>{storageStats?.chainVerificationCount ?? 0}</strong>
+        </div>
+        <div>
+          <span>Chain Cache</span>
+          <strong>{chainStatus?.cacheSize ?? 0}</strong>
+        </div>
+        <div>
           <span>Tracked</span>
           <strong>{healthStatus?.trackedTokenCount ?? 0}</strong>
         </div>
@@ -307,6 +363,12 @@ export function App() {
               <th>Score</th>
               <th>Risk</th>
               <th>Hard Reject</th>
+              <th>Chain</th>
+              <th>Mint Auth</th>
+              <th>Freeze Auth</th>
+              <th>Top Holder</th>
+              <th>Top 10</th>
+              <th>Chain Reasons</th>
               <th>Reasons</th>
               <th>10s Vol</th>
               <th>Vol Vel</th>
@@ -353,6 +415,12 @@ export function App() {
                     </span>
                   </td>
                   <td>{decision?.hardReject || risk?.hardReject ? "yes" : "no"}</td>
+                  <td>{candidate.chainVerificationStatus ?? "not_checked"}</td>
+                  <td>{formatNullableBoolean(candidate.onChainMintAuthorityActive)}</td>
+                  <td>{formatNullableBoolean(candidate.onChainFreezeAuthorityActive)}</td>
+                  <td>{formatPercent(candidate.onChainTopHolderPct)}</td>
+                  <td>{formatPercent(candidate.onChainTop10HolderPct)}</td>
+                  <td>{topReasonCodes(candidate.chainReasonCodes)}</td>
                   <td>{topReasonCodes(decision?.combinedReasonCodes)}</td>
                   <td>{formatUsd(candidate.latestMetrics?.windows["10s"].totalVolumeUsd ?? 0)}</td>
                   <td>{formatNumber(candidate.latestMetrics?.volumeVelocityUsdPerSec)}</td>
@@ -366,7 +434,7 @@ export function App() {
             })}
             {sortedCandidates.length === 0 ? (
               <tr>
-                <td colSpan={15} className="empty-state">
+                <td colSpan={21} className="empty-state">
                   {statusMessage}
                 </td>
               </tr>
@@ -499,6 +567,18 @@ function formatUsd(value: number): string {
   }
 
   return `$${value.toFixed(0)}`;
+}
+
+function formatPercent(value: number | null | undefined): string {
+  return value === null || value === undefined ? "-" : `${value.toFixed(2)}%`;
+}
+
+function formatNullableBoolean(value: boolean | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "-";
+  }
+
+  return value ? "yes" : "no";
 }
 
 function formatTimestamp(timestamp: string | null | undefined): string {

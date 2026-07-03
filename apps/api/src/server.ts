@@ -14,6 +14,16 @@ const pumpPortal: PumpPortalFeedProviderOptions = {
   subscribeNewToken: config.PUMPPORTAL_SUBSCRIBE_NEW_TOKEN
 };
 const options: ApiServerOptions = {
+  chainVerifier: {
+    cacheTtlMs: config.CHAIN_VERIFIER_CACHE_TTL_MS,
+    commitment: config.SOLANA_RPC_COMMITMENT,
+    enabled: config.CHAIN_VERIFIER_ENABLED,
+    maxConcurrent: config.CHAIN_VERIFIER_MAX_CONCURRENT,
+    onMigration: config.CHAIN_VERIFIER_ON_MIGRATION,
+    onMock: config.CHAIN_VERIFIER_ON_MOCK,
+    onNewToken: config.CHAIN_VERIFIER_ON_NEW_TOKEN,
+    requestTimeoutMs: config.CHAIN_VERIFIER_REQUEST_TIMEOUT_MS
+  },
   dataFeed: config.DATA_FEED,
   host: config.API_HOST,
   logLevel: config.LOG_LEVEL,
@@ -35,6 +45,10 @@ if (config.MOCK_FEED_SEED !== undefined) {
 
 if (config.STORAGE_DATABASE_PATH !== undefined) {
   options.storageDatabasePath = config.STORAGE_DATABASE_PATH;
+}
+
+if (config.SOLANA_RPC_HTTP !== undefined && options.chainVerifier) {
+  options.chainVerifier.rpcHttpUrl = config.SOLANA_RPC_HTTP;
 }
 
 if (config.PUMPPORTAL_API_KEY !== undefined) {
@@ -66,6 +80,7 @@ server.app.log.info(
     feedProvider: server.feed.name,
     paperAutoOrder: config.PAPER_AUTO_ORDER,
     port: config.API_PORT,
+    chainVerifier: server.chainVerifier.getStatus(),
     signalIntervalMs: config.SIGNAL_INTERVAL_MS,
     storagePath: server.storage.databasePath
   },

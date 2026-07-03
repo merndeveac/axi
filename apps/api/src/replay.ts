@@ -21,6 +21,7 @@ import type {
 type ReplayArgs = {
   db?: string;
   candidates: boolean;
+  chain: boolean;
   limit: number;
   metrics: boolean;
   risk: boolean;
@@ -86,6 +87,7 @@ if (process.env.LOG_LEVEL === "debug") {
 function parseArgs(argv: string[]): ReplayArgs {
   const parsed: ReplayArgs = {
     candidates: false,
+    chain: false,
     limit: 50,
     metrics: false,
     risk: false,
@@ -132,12 +134,18 @@ function parseArgs(argv: string[]): ReplayArgs {
       continue;
     }
 
+    if (arg === "--chain") {
+      parsed.chain = parseBoolean(readValue(argv, index, arg), arg);
+      index += 1;
+      continue;
+    }
+
     if (arg === "--type") {
       const type = readValue(argv, index, arg);
 
       if (!isReplaySource(type)) {
         throw new Error(
-          "--type must be candidate_decisions, feed_events, risk_snapshots, or signals"
+          "--type must be candidate_decisions, chain_verifications, feed_events, risk_snapshots, or signals"
         );
       }
 
@@ -153,6 +161,12 @@ function parseArgs(argv: string[]): ReplayArgs {
 
   if (!Number.isFinite(parsed.speed) || parsed.speed < 0) {
     throw new Error("--speed must be zero or a positive number");
+  }
+
+  if (parsed.chain) {
+    throw new Error(
+      "--chain true is not supported. Replay is local-only and never calls live RPC."
+    );
   }
 
   return parsed;
@@ -183,6 +197,7 @@ function parseBoolean(value: string, arg: string): boolean {
 function isReplaySource(value: string): value is ReplaySource {
   return (
     value === "candidate_decisions" ||
+    value === "chain_verifications" ||
     value === "feed_events" ||
     value === "risk_snapshots" ||
     value === "signals"

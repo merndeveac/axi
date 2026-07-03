@@ -1,5 +1,7 @@
 import type { FeedEvent } from "@axi/data-feeds";
 import type {
+  ChainVerificationSummary,
+  ChainVerificationStatus,
   CandidateDecision,
   CandidateDecisionAction,
   CandidateLifecycleState,
@@ -37,6 +39,15 @@ export type CandidateState = {
   latestRisk?: RiskSnapshot;
   latestScore?: ScoreBreakdown;
   latestDecision?: CandidateDecision;
+  chainVerificationStatus?: ChainVerificationStatus;
+  chainVerification?: ChainVerificationSummary;
+  chainVerifiedAt?: string;
+  chainReasonCodes?: string[];
+  onChainMintAuthorityActive?: boolean | null;
+  onChainFreezeAuthorityActive?: boolean | null;
+  onChainSupplyUi?: number | null;
+  onChainTopHolderPct?: number | null;
+  onChainTop10HolderPct?: number | null;
   decisionHistory: CandidateDecision[];
   ignoredReasonCodes: string[];
   rejectedReasonCodes: string[];
@@ -151,6 +162,43 @@ export class CandidateLifecycleEngine {
     }
 
     state.latestScore = score;
+    return state;
+  }
+
+  updateChainVerification(
+    mint: string,
+    summary: ChainVerificationSummary
+  ): CandidateState | undefined {
+    const state = this.candidates.get(mint);
+
+    if (!state) {
+      return undefined;
+    }
+
+    state.chainVerification = summary;
+    state.chainVerificationStatus = summary.status;
+    state.chainReasonCodes = summary.reasonCodes;
+    state.lastUpdatedAt = summary.inspectedAt ?? state.lastUpdatedAt;
+
+    if (summary.inspectedAt) {
+      state.chainVerifiedAt = summary.inspectedAt;
+    }
+
+    state.onChainMintAuthorityActive =
+      summary.mintAuthorityActive === undefined
+        ? null
+        : summary.mintAuthorityActive;
+    state.onChainFreezeAuthorityActive =
+      summary.freezeAuthorityActive === undefined
+        ? null
+        : summary.freezeAuthorityActive;
+    state.onChainSupplyUi =
+      summary.supplyUi === undefined ? null : summary.supplyUi;
+    state.onChainTopHolderPct =
+      summary.topHolderPct === undefined ? null : summary.topHolderPct;
+    state.onChainTop10HolderPct =
+      summary.top10HolderPct === undefined ? null : summary.top10HolderPct;
+
     return state;
   }
 
@@ -281,6 +329,7 @@ export class CandidateLifecycleEngine {
     const riskSummary = createRiskSummary(risk);
     const riskReasonCodes = risk?.reasonCodes ?? ["UNKNOWN_RISK"];
     const scoreReasonCodes = score?.reasonCodes ?? ["NO_SCORE_YET"];
+    const chainReasonCodes = state.chainReasonCodes ?? [];
     const lifecycleReasonCodes: string[] = [];
     let lifecycleState: CandidateLifecycleState = state.lifecycleState;
     let action: CandidateDecisionAction = "IGNORE";
@@ -345,7 +394,8 @@ export class CandidateLifecycleEngine {
       combinedReasonCodes: unique([
         ...lifecycleReasonCodes,
         ...riskReasonCodes,
-        ...scoreReasonCodes
+        ...scoreReasonCodes,
+        ...chainReasonCodes
       ]),
       metricsSummary,
       riskSnapshotSummary: riskSummary,
@@ -363,6 +413,42 @@ export class CandidateLifecycleEngine {
 
     if (state.source) {
       decision.source = state.source;
+    }
+
+    if (state.chainVerification) {
+      decision.chainVerification = state.chainVerification;
+    }
+
+    if (state.chainVerificationStatus) {
+      decision.chainVerificationStatus = state.chainVerificationStatus;
+    }
+
+    if (state.chainVerifiedAt) {
+      decision.chainVerifiedAt = state.chainVerifiedAt;
+    }
+
+    if (state.chainReasonCodes) {
+      decision.chainReasonCodes = state.chainReasonCodes;
+    }
+
+    if (state.onChainMintAuthorityActive !== undefined) {
+      decision.onChainMintAuthorityActive = state.onChainMintAuthorityActive;
+    }
+
+    if (state.onChainFreezeAuthorityActive !== undefined) {
+      decision.onChainFreezeAuthorityActive = state.onChainFreezeAuthorityActive;
+    }
+
+    if (state.onChainSupplyUi !== undefined) {
+      decision.onChainSupplyUi = state.onChainSupplyUi;
+    }
+
+    if (state.onChainTopHolderPct !== undefined) {
+      decision.onChainTopHolderPct = state.onChainTopHolderPct;
+    }
+
+    if (state.onChainTop10HolderPct !== undefined) {
+      decision.onChainTop10HolderPct = state.onChainTop10HolderPct;
     }
 
     return decision;

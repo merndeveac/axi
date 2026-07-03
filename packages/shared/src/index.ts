@@ -44,6 +44,34 @@ export type CandidateDecisionAction = z.infer<
   typeof CandidateDecisionActionSchema
 >;
 
+export const ChainVerificationStatusSchema = z.enum([
+  "disabled",
+  "config_error",
+  "pending",
+  "verified",
+  "failed"
+]);
+export type ChainVerificationStatus = z.infer<
+  typeof ChainVerificationStatusSchema
+>;
+
+export const ChainVerificationSummarySchema = z.object({
+  mint: z.string().min(32),
+  status: ChainVerificationStatusSchema,
+  reasonCodes: z.array(z.string().min(1)),
+  inspectedAt: z.string().datetime().optional(),
+  mintAuthorityActive: z.boolean().nullable().optional(),
+  freezeAuthorityActive: z.boolean().nullable().optional(),
+  supplyUi: z.number().nonnegative().nullable().optional(),
+  topHolderPct: z.number().min(0).max(100).nullable().optional(),
+  top10HolderPct: z.number().min(0).max(100).nullable().optional(),
+  errorCode: z.string().min(1).optional(),
+  errorMessage: z.string().min(1).optional()
+});
+export type ChainVerificationSummary = z.infer<
+  typeof ChainVerificationSummarySchema
+>;
+
 export const TokenIdSchema = z.object({
   chain: z.literal("solana"),
   mint: z.string().min(32)
@@ -287,6 +315,15 @@ export const CandidateDecisionSchema = z.object({
   riskReasonCodes: z.array(z.string().min(1)),
   scoreReasonCodes: z.array(z.string().min(1)),
   combinedReasonCodes: z.array(z.string().min(1)),
+  chainVerification: ChainVerificationSummarySchema.optional(),
+  chainVerificationStatus: ChainVerificationStatusSchema.optional(),
+  chainVerifiedAt: z.string().datetime().optional(),
+  chainReasonCodes: z.array(z.string().min(1)).optional(),
+  onChainMintAuthorityActive: z.boolean().nullable().optional(),
+  onChainFreezeAuthorityActive: z.boolean().nullable().optional(),
+  onChainSupplyUi: z.number().nonnegative().nullable().optional(),
+  onChainTopHolderPct: z.number().min(0).max(100).nullable().optional(),
+  onChainTop10HolderPct: z.number().min(0).max(100).nullable().optional(),
   metricsSummary: CandidateMetricsSummarySchema,
   riskSnapshotSummary: CandidateRiskSummarySchema,
   createdAt: z.string().datetime(),
@@ -304,6 +341,8 @@ export const OverlaySignalSchema = z.object({
   buySellRatio: z.number().nonnegative().optional(),
   candidateDecision: CandidateDecisionSchema.optional(),
   candidateDecisionAction: CandidateDecisionActionSchema.optional(),
+  chainVerification: ChainVerificationSummarySchema.optional(),
+  chainVerificationStatus: ChainVerificationStatusSchema.optional(),
   combinedReasonCodes: z.array(z.string().min(1)).optional(),
   feedProvider: z.string().min(1).optional(),
   insufficientMetrics: z.boolean().optional(),

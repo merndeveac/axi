@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
 import {
@@ -24,6 +24,7 @@ import { scoreCandidate } from "@axi/scoring";
 import {
   BotModeSchema,
   type BotMode,
+  type ChainVerificationSummary,
   type CandidateDecision,
   type OverlaySignal,
   type RiskFlags,
@@ -36,12 +37,15 @@ import {
 } from "@axi/shared";
 import {
   closeStorage,
+  getLatestChainVerification,
   getStorageStats,
   initStorage,
+  listChainVerifications,
   listPaperOrders,
   listPaperPositions,
   listRecentSignals,
   saveCandidateDecision,
+  saveChainVerification,
   saveFeedEvent,
   savePaperOrder,
   saveRiskSnapshot,
@@ -49,6 +53,13 @@ import {
   type StorageHandle,
   upsertPaperPosition
 } from "@axi/storage";
+import {
+  ChainVerifierUnavailableError,
+  createChainVerifierService,
+  type ChainVerificationRecord,
+  type ChainVerifierOptions,
+  type ChainVerifierService
+} from "./chain-verifier";
 
 const logLevelSchema = z.enum([
   "fatal",
@@ -65,6 +76,26 @@ export const apiConfigSchema = z.object({
   BOT_MODE: BotModeSchema.default("paper"),
   DATA_FEED: z.enum(["mock", "pumpportal"]).default("mock"),
   PAPER_AUTO_ORDER: z.preprocess(parseBooleanEnv, z.boolean()).default(false),
+  CHAIN_VERIFIER_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  SOLANA_RPC_HTTP: z
+    .preprocess((value) => (value === "" ? undefined : value), z.string().url().optional()),
+  SOLANA_RPC_COMMITMENT: z
+    .enum(["processed", "confirmed", "finalized"])
+    .default("confirmed"),
+  CHAIN_VERIFIER_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
+  CHAIN_VERIFIER_CACHE_TTL_MS: z.coerce.number().int().nonnegative().default(60000),
+  CHAIN_VERIFIER_MAX_CONCURRENT: z.coerce.number().int().positive().default(2),
+  CHAIN_VERIFIER_ON_NEW_TOKEN: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  CHAIN_VERIFIER_ON_MIGRATION: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  CHAIN_VERIFIER_ON_MOCK: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
   API_HOST: z.string().default("0.0.0.0"),
   API_PORT: z.coerce.number().int().positive().default(8787),
   SIGNAL_INTERVAL_MS: z.coerce.number().int().min(0).default(2000),
@@ -96,6 +127,7 @@ export type ApiLogLevel = z.infer<typeof logLevelSchema>;
 
 export type ApiServerOptions = {
   closeStorageOnClose?: boolean;
+  chainVerifier?: ChainVerifierOptions;
   dataFeed?: "mock" | "pumpportal";
   feedProvider?: TokenFeedProvider;
   host?: string;
@@ -122,6 +154,7 @@ export type ApiServer = {
   startFeed: () => void;
   stopFeed: () => Promise<void>;
   storage: StorageHandle;
+  chainVerifier: ChainVerifierService;
 };
 
 const limitQuerySchema = z.object({
@@ -129,6 +162,9 @@ const limitQuerySchema = z.object({
 });
 const mintParamSchema = z.object({
   mint: z.string().min(32)
+});
+const chainVerifyBodySchema = z.object({
+  mint: z.string().min(1)
 });
 
 export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
@@ -163,6 +199,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const metricsEngine = createRollingMetricsEngine();
   const riskEngine = createRiskEngine();
   const candidateEngine = createCandidateLifecycleEngine();
+  const chainVerifier = createChainVerifierService(options.chainVerifier);
   const paperAutoOrder = options.paperAutoOrder ?? false;
   const storage = options.storageDatabasePath
     ? initStorage({ databasePath: options.storageDatabasePath })
@@ -176,7 +213,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   app.addHook("onRequest", (request, reply, done) => {
     reply.header("Access-Control-Allow-Origin", "*");
-    reply.header("Access-Control-Allow-Methods", "GET,OPTIONS");
+    reply.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
     reply.header("Access-Control-Allow-Headers", "content-type");
 
     if (request.method === "OPTIONS") {
@@ -188,6 +225,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   });
 
   app.get("/health", async () => ({
+    chainVerifier: chainVerifier.getStatus(),
+    chainVerificationCount: getStorageStats().chainVerificationCount,
     feedProvider: feed.name,
     metricsEnabled: true,
     riskEnabled: true,
@@ -254,6 +293,37 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   app.get("/positions", async () => executor.getPositions());
 
   app.get("/storage/stats", async () => getStorageStats());
+
+  app.get("/chain/status", async () => chainVerifier.getStatus());
+
+  app.get("/chain/verifications", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return listChainVerifications(query.limit);
+  });
+
+  app.get("/chain/verifications/:mint", async (request, reply) => {
+    const params = mintParamSchema.parse(request.params);
+    const verification = getLatestChainVerification(params.mint);
+
+    if (!verification) {
+      return reply.code(404).send({
+        error: "not_found",
+        message: `No chain verification stored for mint ${params.mint}`
+      });
+    }
+
+    return verification;
+  });
+
+  app.get("/chain/verify/:mint", async (request, reply) => {
+    const params = chainVerifyBodySchema.parse(request.params);
+    return verifyMintForHttp(params.mint, reply);
+  });
+
+  app.post("/chain/verify", async (request, reply) => {
+    const body = chainVerifyBodySchema.parse(request.body);
+    return verifyMintForHttp(body.mint, reply);
+  });
 
   app.get("/signals/recent", async (request) => {
     const query = limitQuerySchema.parse(request.query);
@@ -337,6 +407,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       getLegacyMetrics(event),
       latestMetrics
     );
+    const shouldVerifyOnChain = chainVerifier.shouldVerifyFeedEvent(event);
+
+    if (shouldVerifyOnChain) {
+      candidateEngine.updateChainVerification(
+        candidate.mint,
+        createPendingChainVerificationSummary(candidate.mint, event.timestamp)
+      );
+    }
+
     const riskSnapshot = riskEngine.evaluateRisk(
       createRiskInput({
         candidate,
@@ -407,6 +486,131 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       type: "signal",
       signal
     });
+
+    if (shouldVerifyOnChain) {
+      void verifyAndApplyChainResult({
+        event,
+        mint: candidate.mint
+      });
+    }
+  }
+
+  async function verifyMintForHttp(
+    mint: string,
+    reply: FastifyReply
+  ): Promise<unknown> {
+    try {
+      const record = await chainVerifier.verifyMint(mint);
+      const stored = saveChainVerification(chainVerifier.toStorageInput(record));
+      applyChainVerificationToCandidate({
+        event: undefined,
+        record
+      });
+      return {
+        ...stored,
+        summary: record.summary
+      };
+    } catch (error) {
+      if (error instanceof ChainVerifierUnavailableError) {
+        return reply.code(409).send({
+          error: error.code,
+          message: error.message,
+          chainVerifier: chainVerifier.getStatus()
+        });
+      }
+
+      throw error;
+    }
+  }
+
+  async function verifyAndApplyChainResult(options: {
+    event: FeedEvent;
+    mint: string;
+  }): Promise<void> {
+    try {
+      const record = await chainVerifier.verifyMint(options.mint);
+      saveChainVerification(chainVerifier.toStorageInput(record));
+      applyChainVerificationToCandidate({
+        event: options.event,
+        record
+      });
+    } catch (error) {
+      app.log.warn(
+        {
+          error,
+          mint: options.mint
+        },
+        "Read-only chain verification failed"
+      );
+    }
+  }
+
+  function applyChainVerificationToCandidate(options: {
+    event: FeedEvent | undefined;
+    record: ChainVerificationRecord;
+  }): void {
+    const candidate = candidateEngine.getCandidate(options.record.mint);
+
+    if (!candidate) {
+      return;
+    }
+
+    candidateEngine.updateChainVerification(
+      options.record.mint,
+      options.record.summary
+    );
+
+    const latestMetrics = metricsEngine.getMetrics(options.record.mint);
+    const effectiveMetrics = mergeRollingIntoLegacyMetrics(
+      options.event ? getLegacyMetrics(options.event) : fallbackMetricsFromCandidate(candidate),
+      latestMetrics
+    );
+    const riskSnapshot = withChainReasonCodes(
+      riskEngine.evaluateRisk(
+        createRiskInput({
+          candidate,
+          event: options.event,
+          metrics: effectiveMetrics,
+          rollingMetrics: latestMetrics,
+          chainRiskPatch: options.record.riskInputPatch
+        })
+      ),
+      options.record.reasonCodes
+    );
+    riskSnapshots.set(candidate.mint, riskSnapshot);
+    saveRiskSnapshot(riskSnapshot);
+    candidateEngine.updateRisk(candidate.mint, riskSnapshot);
+
+    const score = scoreFeedCandidate({
+      candidate,
+      event: options.event,
+      metrics: effectiveMetrics,
+      riskSnapshot,
+      rollingMetrics: latestMetrics
+    });
+    candidateEngine.updateScore(candidate.mint, score);
+    const decision = candidateEngine.evaluateCandidate(candidate.mint);
+
+    if (!decision) {
+      return;
+    }
+
+    saveCandidateDecision(decision);
+
+    const signal = createOverlaySignal({
+      candidate,
+      decision,
+      metrics: effectiveMetrics,
+      riskSnapshot,
+      rollingMetrics: latestMetrics,
+      score
+    });
+    saveSignal(signal);
+    cacheSignal(signal);
+    broadcast({
+      type: "signal",
+      signal
+    });
   }
 
   function createOverlaySignal(options: {
@@ -437,6 +641,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       candidateDecision: options.decision,
       candidateDecisionAction: options.decision.action,
       combinedReasonCodes: options.decision.combinedReasonCodes,
+      ...(options.decision.chainVerification
+        ? { chainVerification: options.decision.chainVerification }
+        : {}),
+      ...(options.decision.chainVerificationStatus
+        ? { chainVerificationStatus: options.decision.chainVerificationStatus }
+        : {}),
       insufficientMetrics: options.decision.metricsSummary.insufficientMetrics,
       lifecycleState: options.decision.lifecycleState,
       riskLevel: options.riskSnapshot.riskLevel,
@@ -473,7 +683,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   function scoreFeedCandidate(options: {
     candidate: CandidateState;
-    event: FeedEvent;
+    event: FeedEvent | undefined;
     metrics: RollingMetrics;
     riskSnapshot: RiskSnapshot;
     rollingMetrics: RollingMetricsSnapshot | undefined;
@@ -494,11 +704,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const score = scoreCandidate(
       createTokenCandidateFromState(options.candidate),
       options.metrics,
-      getRiskFlags(options.event),
+      options.event
+        ? getRiskFlags(options.event)
+        : createRiskFlagsFromSnapshot(options.riskSnapshot),
       scoringOptions
     );
 
     if (
+      !options.event ||
       options.event.source !== "pumpportal" ||
       options.event.metricsComplete !== false
     ) {
@@ -595,6 +808,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     getSignals: () => Array.from(signals.values()),
     metrics: metricsEngine,
     risk: riskEngine,
+    chainVerifier,
     startFeed,
     stopFeed,
     storage
@@ -603,19 +817,25 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
 function createRiskInput(options: {
   candidate: CandidateState;
-  event: FeedEvent;
+  chainRiskPatch?: ChainVerificationRecord["riskInputPatch"];
+  event: FeedEvent | undefined;
   metrics: RollingMetrics;
   rollingMetrics: RollingMetricsSnapshot | undefined;
 }): RiskInput {
-  const riskFlags = getRiskFlags(options.event);
+  const riskFlags = options.event
+    ? getRiskFlags(options.event)
+    : options.candidate.latestRisk
+      ? createRiskFlagsFromSnapshot(options.candidate.latestRisk)
+      : createFallbackRiskFlags();
   const rolling = options.rollingMetrics;
-  const scenario = getMockScenario(options.candidate.source ?? options.event.source);
+  const source = options.candidate.source ?? options.event?.source ?? "unknown";
+  const scenario = getMockScenario(source);
   const incompleteRealFeed =
-    options.event.source === "pumpportal" && options.event.metricsComplete === false;
+    options.event?.source === "pumpportal" && options.event.metricsComplete === false;
 
   const input: RiskInput = {
     mint: options.candidate.mint,
-    source: options.candidate.source ?? options.event.source,
+    source,
     mintAuthorityActive: incompleteRealFeed ? null : riskFlags.mintAuthorityActive,
     freezeAuthorityActive: incompleteRealFeed ? null : riskFlags.freezeAuthorityActive,
     metadataMutable: incompleteRealFeed ? null : riskFlags.mutableMetadata,
@@ -641,7 +861,7 @@ function createRiskInput(options: {
     largestTradeShare: rolling?.largestTradeShare ?? null,
     sampleCount: rolling?.sampleCount ?? null,
     insufficientMetrics:
-      rolling?.insufficientMetrics ?? (options.event.metricsComplete === false ? true : null),
+      rolling?.insufficientMetrics ?? (options.event?.metricsComplete === false ? true : null),
     liquidityUsd: incompleteRealFeed ? null : options.metrics.liquidityUsd,
     marketCapUsd: incompleteRealFeed ? null : options.metrics.marketCapUsd,
     fdvUsd: incompleteRealFeed ? null : options.metrics.marketCapUsd,
@@ -662,7 +882,7 @@ function createRiskInput(options: {
     input.name = options.candidate.name;
   }
 
-  return input;
+  return mergeChainRiskPatch(input, options.chainRiskPatch);
 }
 
 function createTokenCandidateFromState(state: CandidateState): TokenCandidate {
@@ -688,6 +908,102 @@ function getRiskFlags(event: FeedEvent): RiskFlags {
   return event.riskFlags;
 }
 
+function createPendingChainVerificationSummary(
+  mint: string,
+  inspectedAt: string
+): ChainVerificationSummary {
+  return {
+    mint,
+    status: "pending",
+    reasonCodes: ["CHAIN_VERIFICATION_PENDING"],
+    inspectedAt
+  };
+}
+
+function withChainReasonCodes(
+  snapshot: RiskSnapshot,
+  reasonCodes: string[]
+): RiskSnapshot {
+  return {
+    ...snapshot,
+    reasonCodes: uniqueReasonCodes([
+      ...snapshot.reasonCodes,
+      ...reasonCodes
+    ])
+  };
+}
+
+function fallbackMetricsFromCandidate(candidate: CandidateState): RollingMetrics {
+  const metrics = candidate.latestMetrics;
+
+  if (!metrics) {
+    return createEmptyLegacyMetrics();
+  }
+
+  return {
+    priceUsd: metrics.latestPriceUsd,
+    marketCapUsd: 0,
+    liquidityUsd: 0,
+    volume1mUsd: metrics.windows["60s"].totalVolumeUsd,
+    volume5mUsd: metrics.windows["60s"].totalVolumeUsd,
+    volume15mUsd: metrics.windows["60s"].totalVolumeUsd,
+    buyCount1m: metrics.windows["60s"].buyTradeCount,
+    buyCount5m: metrics.windows["60s"].buyTradeCount,
+    sellCount1m: metrics.windows["60s"].sellTradeCount,
+    sellCount5m: metrics.windows["60s"].sellTradeCount,
+    uniqueBuyers1m: metrics.windows["60s"].uniqueBuyers,
+    uniqueBuyers5m: metrics.windows["60s"].uniqueBuyers,
+    uniqueSellers1m: metrics.windows["60s"].uniqueSellers,
+    uniqueSellers5m: metrics.windows["60s"].uniqueSellers,
+    holderCount: 0,
+    topHolderPercent: 0,
+    top10HolderPercent: 0,
+    priceChange1mPct: metrics.windows["60s"].priceChangePct,
+    priceChange5mPct: metrics.windows["10s"].priceChangePct,
+    volumeVelocity: Math.max(0, metrics.volumeVelocityUsdPerSec),
+    buyerVelocity: Math.max(0, metrics.buyerVelocityPerSec)
+  };
+}
+
+function createEmptyLegacyMetrics(): RollingMetrics {
+  return {
+    priceUsd: 0,
+    marketCapUsd: 0,
+    liquidityUsd: 0,
+    volume1mUsd: 0,
+    volume5mUsd: 0,
+    volume15mUsd: 0,
+    buyCount1m: 0,
+    buyCount5m: 0,
+    sellCount1m: 0,
+    sellCount5m: 0,
+    uniqueBuyers1m: 0,
+    uniqueBuyers5m: 0,
+    uniqueSellers1m: 0,
+    uniqueSellers5m: 0,
+    holderCount: 0,
+    topHolderPercent: 0,
+    top10HolderPercent: 0,
+    priceChange1mPct: 0,
+    priceChange5mPct: 0,
+    volumeVelocity: 0,
+    buyerVelocity: 0
+  };
+}
+
+function createFallbackRiskFlags(): RiskFlags {
+  return {
+    mintAuthorityActive: false,
+    freezeAuthorityActive: false,
+    topHolderConcentrationHigh: false,
+    mutableMetadata: false,
+    suspiciousName: false,
+    lowLiquidity: false,
+    washTradingSuspected: false,
+    honeypotSuspected: false
+  };
+}
+
 function createRiskFlagsFromSnapshot(snapshot: RiskSnapshot): RiskFlags {
   return {
     mintAuthorityActive: snapshot.flags.mintAuthorityActive === true,
@@ -701,6 +1017,29 @@ function createRiskFlagsFromSnapshot(snapshot: RiskSnapshot): RiskFlags {
     lowLiquidity: snapshot.reasonCodes.includes("LIQUIDITY_TOO_LOW"),
     washTradingSuspected: snapshot.flags.washTradingSuspected === true,
     honeypotSuspected: snapshot.flags.honeypotSuspected === true
+  };
+}
+
+function mergeChainRiskPatch(
+  input: RiskInput,
+  patch: ChainVerificationRecord["riskInputPatch"] | undefined
+): RiskInput {
+  if (!patch) {
+    return input;
+  }
+
+  return {
+    ...input,
+    estimatedSellSlippagePct:
+      patch.estimatedSellSlippagePct ?? input.estimatedSellSlippagePct,
+    freezeAuthorityActive:
+      patch.freezeAuthorityActive ?? input.freezeAuthorityActive,
+    holderCount: patch.holderCount ?? input.holderCount,
+    liquidityUsd: patch.liquidityUsd ?? input.liquidityUsd,
+    mintAuthorityActive:
+      patch.mintAuthorityActive ?? input.mintAuthorityActive,
+    top10HolderPct: patch.top10HolderPct ?? input.top10HolderPct,
+    topHolderPct: patch.topHolderPct ?? input.topHolderPct
   };
 }
 

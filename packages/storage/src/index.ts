@@ -7,6 +7,8 @@ import { z } from "zod";
 import type { FeedEvent } from "@axi/data-feeds";
 import {
   CandidateDecisionSchema,
+  ChainVerificationStatusSchema,
+  type ChainVerificationStatus,
   OverlaySignalSchema,
   RiskSnapshotSchema,
   type CandidateDecision,
@@ -49,12 +51,13 @@ export type StoredSignal = {
 export type ReplaySource =
   | "candidate_decisions"
   | "feed_events"
+  | "chain_verifications"
   | "risk_snapshots"
   | "signals";
 
 export type ReplayItem = {
   createdAt: string;
-  payload: CandidateDecision | FeedEvent | OverlaySignal | RiskSnapshot;
+  payload: unknown;
   sequence: number;
   source: ReplaySource;
 };
@@ -103,6 +106,7 @@ export type StorageStats = {
   databasePath: string;
   feedEventCount: number;
   signalCount: number;
+  chainVerificationCount: number;
   riskSnapshotCount: number;
   candidateDecisionCount: number;
   paperOrderCount: number;
@@ -132,6 +136,29 @@ export type StoredCandidateDecision = {
   hardReject: boolean;
   combinedReasonCodes: string[];
   payload: CandidateDecision;
+  createdAt: string;
+};
+
+export type ChainVerificationInput = {
+  mint: string;
+  status: ChainVerificationStatus;
+  reasonCodes: string[];
+  mintAuthorityActive?: boolean | null;
+  freezeAuthorityActive?: boolean | null;
+  supplyUi?: number | null;
+  topHolderPct?: number | null;
+  top10HolderPct?: number | null;
+  payload: unknown;
+  inspectedAt?: string;
+  createdAt?: string;
+};
+
+export type StoredChainVerification = Omit<
+  ChainVerificationInput,
+  "createdAt" | "inspectedAt"
+> & {
+  id: number;
+  inspectedAt: string;
   createdAt: string;
 };
 
@@ -207,6 +234,21 @@ type CandidateDecisionRow = {
   created_at: string;
 };
 
+type ChainVerificationRow = {
+  id: number;
+  mint: string;
+  status: ChainVerificationStatus;
+  reason_codes_json: string;
+  mint_authority_active: number | null;
+  freeze_authority_active: number | null;
+  supply_ui: number | null;
+  top_holder_pct: number | null;
+  top10_holder_pct: number | null;
+  payload_json: string;
+  inspected_at: string;
+  created_at: string;
+};
+
 type CountRow = {
   count: number;
 };
@@ -244,6 +286,20 @@ const paperPositionInputSchema = z.object({
   payload: z.unknown(),
   openedAt: z.string().datetime().optional(),
   updatedAt: z.string().datetime().optional()
+});
+
+const chainVerificationInputSchema = z.object({
+  mint: z.string().min(32),
+  status: ChainVerificationStatusSchema,
+  reasonCodes: z.array(z.string().min(1)),
+  mintAuthorityActive: z.boolean().nullable().optional(),
+  freezeAuthorityActive: z.boolean().nullable().optional(),
+  supplyUi: z.number().nonnegative().nullable().optional(),
+  topHolderPct: z.number().min(0).max(100).nullable().optional(),
+  top10HolderPct: z.number().min(0).max(100).nullable().optional(),
+  payload: z.unknown(),
+  inspectedAt: z.string().datetime().optional(),
+  createdAt: z.string().datetime().optional()
 });
 
 const limitSchema = z.number().int().positive().max(1000);
@@ -575,6 +631,110 @@ export function listCandidateDecisionsForReplay(
   return rows.map(mapCandidateDecisionRow);
 }
 
+export function saveChainVerification(
+  verification: ChainVerificationInput
+): StoredChainVerification {
+  const parsed = chainVerificationInputSchema.parse(verification);
+  const now = new Date().toISOString();
+  const inspectedAt = parsed.inspectedAt ?? now;
+  const createdAt = parsed.createdAt ?? inspectedAt;
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into chain_verifications (
+        mint,
+        status,
+        reason_codes_json,
+        mint_authority_active,
+        freeze_authority_active,
+        supply_ui,
+        top_holder_pct,
+        top10_holder_pct,
+        payload_json,
+        inspected_at,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.mint,
+      parsed.status,
+      stringifyJson(parsed.reasonCodes),
+      boolToNullableInt(parsed.mintAuthorityActive),
+      boolToNullableInt(parsed.freezeAuthorityActive),
+      parsed.supplyUi ?? null,
+      parsed.topHolderPct ?? null,
+      parsed.top10HolderPct ?? null,
+      stringifyJson(parsed.payload),
+      inspectedAt,
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    mint: parsed.mint,
+    status: parsed.status,
+    reasonCodes: parsed.reasonCodes,
+    mintAuthorityActive: parsed.mintAuthorityActive ?? null,
+    freezeAuthorityActive: parsed.freezeAuthorityActive ?? null,
+    supplyUi: parsed.supplyUi ?? null,
+    topHolderPct: parsed.topHolderPct ?? null,
+    top10HolderPct: parsed.top10HolderPct ?? null,
+    payload: parsed.payload,
+    inspectedAt,
+    createdAt
+  };
+}
+
+export function listChainVerifications(
+  limit = 50
+): StoredChainVerification[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from chain_verifications
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as ChainVerificationRow[];
+
+  return rows.map(mapChainVerificationRow);
+}
+
+export function listChainVerificationsForReplay(
+  limit = 50
+): StoredChainVerification[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from chain_verifications
+       order by datetime(created_at) asc, id asc
+       limit ?`
+    )
+    .all(parsedLimit) as ChainVerificationRow[];
+
+  return rows.map(mapChainVerificationRow);
+}
+
+export function getLatestChainVerification(
+  mint: string
+): StoredChainVerification | null {
+  const row = getDb()
+    .prepare(
+      `select *
+       from chain_verifications
+       where mint = ?
+       order by datetime(created_at) desc, id desc
+       limit 1`
+    )
+    .get(mint) as ChainVerificationRow | undefined;
+
+  return row ? mapChainVerificationRow(row) : null;
+}
+
 export async function* createReplayStream(options: {
   limit?: number;
   speed?: number;
@@ -617,6 +777,7 @@ function getReplayRecords(
   limit: number | undefined
 ): Array<
   | StoredCandidateDecision
+  | StoredChainVerification
   | StoredFeedEvent
   | StoredRiskSnapshot
   | StoredSignal
@@ -624,6 +785,8 @@ function getReplayRecords(
   switch (type) {
     case "candidate_decisions":
       return listCandidateDecisionsForReplay(limit);
+    case "chain_verifications":
+      return listChainVerificationsForReplay(limit);
     case "risk_snapshots":
       return listRiskSnapshotsForReplay(limit);
     case "signals":
@@ -771,6 +934,7 @@ export function getStorageStats(): StorageStats {
     databasePath: getStoragePath(),
     feedEventCount: countRows(db, "feed_events"),
     signalCount: countRows(db, "signals"),
+    chainVerificationCount: countRows(db, "chain_verifications"),
     riskSnapshotCount: countRows(db, "risk_snapshots"),
     candidateDecisionCount: countRows(db, "candidate_decisions"),
     paperOrderCount: countRows(db, "paper_orders"),
@@ -910,6 +1074,36 @@ function runMigrations(db: DatabaseSync): void {
       `insert into storage_migrations (id, name, applied_at)
        values (?, ?, ?)`
     ).run(2, "risk_and_candidate_decisions", new Date().toISOString());
+  }
+
+  if (!hasMigration(db, 3)) {
+    db.exec(`
+      create table if not exists chain_verifications (
+        id integer primary key autoincrement,
+        mint text not null,
+        status text not null,
+        reason_codes_json text not null,
+        mint_authority_active integer,
+        freeze_authority_active integer,
+        supply_ui real,
+        top_holder_pct real,
+        top10_holder_pct real,
+        payload_json text not null,
+        inspected_at text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_chain_verifications_created_at
+        on chain_verifications(created_at);
+
+      create index if not exists idx_chain_verifications_mint
+        on chain_verifications(mint);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(3, "chain_verifications", new Date().toISOString());
   }
 }
 
@@ -1052,6 +1246,25 @@ function mapPaperPositionRow(row: PaperPositionRow): StoredPaperPosition {
   };
 }
 
+function mapChainVerificationRow(
+  row: ChainVerificationRow
+): StoredChainVerification {
+  return {
+    id: row.id,
+    mint: row.mint,
+    status: row.status,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    mintAuthorityActive: nullableIntToBool(row.mint_authority_active),
+    freezeAuthorityActive: nullableIntToBool(row.freeze_authority_active),
+    supplyUi: row.supply_ui,
+    topHolderPct: row.top_holder_pct,
+    top10HolderPct: row.top10_holder_pct,
+    payload: JSON.parse(row.payload_json),
+    inspectedAt: row.inspected_at,
+    createdAt: row.created_at
+  };
+}
+
 function mapRiskSnapshotRow(row: RiskSnapshotRow): StoredRiskSnapshot {
   return {
     id: row.id,
@@ -1087,4 +1300,20 @@ function mapCandidateDecisionRow(
 
 function toRowId(rowId: number | bigint): number {
   return typeof rowId === "bigint" ? Number(rowId) : rowId;
+}
+
+function boolToNullableInt(value: boolean | null | undefined): number | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  return value ? 1 : 0;
+}
+
+function nullableIntToBool(value: number | null): boolean | null {
+  if (value === null) {
+    return null;
+  }
+
+  return value === 1;
 }
