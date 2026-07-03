@@ -60,6 +60,13 @@ import {
   type ChainVerifierOptions,
   type ChainVerifierService
 } from "./chain-verifier";
+import {
+  ChainEventsUnavailableError,
+  createChainEventsService,
+  type ChainEventsService,
+  type ChainEventsServiceOptions
+} from "./chain-events-service";
+import type { WatchedAddressInput, WatchedAddressKind } from "@axi/chain-events";
 
 const logLevelSchema = z.enum([
   "fatal",
@@ -96,6 +103,29 @@ export const apiConfigSchema = z.object({
   CHAIN_VERIFIER_ON_MOCK: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(false),
+  CHAIN_EVENTS_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  SOLANA_RPC_WS: z
+    .preprocess((value) => (value === "" ? undefined : value), z.string().url().optional()),
+  CHAIN_EVENTS_WATCHED_ADDRESSES: z
+    .preprocess((value) => (value === "" ? undefined : value), z.string().optional()),
+  CHAIN_EVENTS_MAX_WATCHED_ADDRESSES: z.coerce.number().int().positive().default(25),
+  CHAIN_EVENTS_BACKFILL_ON_START: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  CHAIN_EVENTS_BACKFILL_LIMIT_PER_ADDRESS: z.coerce.number().int().positive().default(25),
+  CHAIN_EVENTS_FETCH_TRANSACTION_ON_LOG: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  CHAIN_EVENTS_MAX_CONCURRENT_FETCHES: z.coerce.number().int().positive().default(4),
+  CHAIN_EVENTS_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
+  CHAIN_EVENTS_ON_NEW_CANDIDATE: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  CHAIN_EVENTS_ON_CHAIN_VERIFIED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
   API_HOST: z.string().default("0.0.0.0"),
   API_PORT: z.coerce.number().int().positive().default(8787),
   SIGNAL_INTERVAL_MS: z.coerce.number().int().min(0).default(2000),
@@ -126,6 +156,7 @@ export type ApiConfig = z.infer<typeof apiConfigSchema>;
 export type ApiLogLevel = z.infer<typeof logLevelSchema>;
 
 export type ApiServerOptions = {
+  chainEvents?: ChainEventsServiceOptions;
   closeStorageOnClose?: boolean;
   chainVerifier?: ChainVerifierOptions;
   dataFeed?: "mock" | "pumpportal";
@@ -154,6 +185,7 @@ export type ApiServer = {
   startFeed: () => void;
   stopFeed: () => Promise<void>;
   storage: StorageHandle;
+  chainEvents: ChainEventsService;
   chainVerifier: ChainVerifierService;
 };
 
@@ -165,6 +197,20 @@ const mintParamSchema = z.object({
 });
 const chainVerifyBodySchema = z.object({
   mint: z.string().min(1)
+});
+const chainEventsWatchBodySchema = z.object({
+  address: z.string().min(1),
+  kind: z
+    .enum(["mint", "pool", "bonding_curve", "program", "token_account", "wallet", "unknown"])
+    .default("unknown"),
+  mint: z.string().min(1).optional(),
+  label: z.string().min(1).optional()
+});
+const chainEventsAddressParamSchema = z.object({
+  address: z.string().min(1)
+});
+const signatureParamSchema = z.object({
+  signature: z.string().min(1)
 });
 
 export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
@@ -200,6 +246,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const riskEngine = createRiskEngine();
   const candidateEngine = createCandidateLifecycleEngine();
   const chainVerifier = createChainVerifierService(options.chainVerifier);
+  const chainEvents = createChainEventsService({
+    ...options.chainEvents,
+    onSafeFeedEvent: handleFeedEvent
+  });
   const paperAutoOrder = options.paperAutoOrder ?? false;
   const storage = options.storageDatabasePath
     ? initStorage({ databasePath: options.storageDatabasePath })
@@ -213,7 +263,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   app.addHook("onRequest", (request, reply, done) => {
     reply.header("Access-Control-Allow-Origin", "*");
-    reply.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    reply.header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
     reply.header("Access-Control-Allow-Headers", "content-type");
 
     if (request.method === "OPTIONS") {
@@ -224,21 +274,32 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     done();
   });
 
-  app.get("/health", async () => ({
-    chainVerifier: chainVerifier.getStatus(),
-    chainVerificationCount: getStorageStats().chainVerificationCount,
-    feedProvider: feed.name,
-    metricsEnabled: true,
-    riskEnabled: true,
-    candidateLifecycleEnabled: true,
-    status: "ok",
-    mode,
-    candidateCount: candidateEngine.getAllCandidates().length,
-    paperAutoOrder,
-    paperOnly: true,
-    trackedTokenCount: metricsEngine.getAllMetrics().length,
-    uptimeSeconds: Math.round(process.uptime())
-  }));
+  app.get("/health", async () => {
+    const stats = getStorageStats();
+    const chainEventsStatus = chainEvents.getStatus();
+
+    return {
+      chainEvents: chainEventsStatus,
+      chainEventsConfigured: chainEventsStatus.configured,
+      chainEventsEnabled: chainEventsStatus.enabled,
+      chainTradeEventCount: stats.chainTradeEventCount,
+      chainTransactionEventCount: stats.chainTransactionEventCount,
+      chainVerifier: chainVerifier.getStatus(),
+      chainVerificationCount: stats.chainVerificationCount,
+      chainWatchedAddressCount: chainEventsStatus.watchedAddressCount,
+      feedProvider: feed.name,
+      metricsEnabled: true,
+      riskEnabled: true,
+      candidateLifecycleEnabled: true,
+      status: "ok",
+      mode,
+      candidateCount: candidateEngine.getAllCandidates().length,
+      paperAutoOrder,
+      paperOnly: true,
+      trackedTokenCount: metricsEngine.getAllMetrics().length,
+      uptimeSeconds: Math.round(process.uptime())
+    };
+  });
 
   app.get("/signals", async () => Array.from(signals.values()));
 
@@ -325,6 +386,85 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     return verifyMintForHttp(body.mint, reply);
   });
 
+  app.get("/chain/events/status", async () => chainEvents.getStatus());
+
+  app.get("/chain/events/watches", async () => chainEvents.getWatchedAddresses());
+
+  app.post("/chain/events/watch", async (request, reply) => {
+    const body = chainEventsWatchBodySchema.parse(request.body);
+
+    try {
+      const watchInput: WatchedAddressInput = {
+        address: body.address,
+        kind: body.kind as WatchedAddressKind,
+        reasonCodes: ["MANUAL_READ_ONLY_WATCH"]
+      };
+
+      if (body.mint) {
+        watchInput.mint = body.mint;
+      }
+
+      if (body.label) {
+        watchInput.label = body.label;
+      }
+
+      return chainEvents.watchAddress(watchInput);
+    } catch (error) {
+      if (error instanceof ChainEventsUnavailableError) {
+        return reply.code(409).send({
+          error: error.code,
+          message: error.message,
+          chainEvents: chainEvents.getStatus()
+        });
+      }
+
+      if (error instanceof Error) {
+        return reply.code(400).send({
+          error: "CHAIN_EVENTS_WATCH_REJECTED",
+          message: error.message,
+          chainEvents: chainEvents.getStatus()
+        });
+      }
+
+      throw error;
+    }
+  });
+
+  app.delete("/chain/events/watch/:address", async (request) => {
+    const params = chainEventsAddressParamSchema.parse(request.params);
+    const removed = await chainEvents.unwatchAddress(params.address);
+
+    return {
+      address: params.address,
+      removed,
+      paperOnly: true
+    };
+  });
+
+  app.get("/chain/events/transactions", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return chainEvents.getRecentChainEvents(query.limit);
+  });
+
+  app.get("/chain/events/trades", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return chainEvents.getRecentChainTradeEvents(query.limit);
+  });
+
+  app.get("/chain/events/transactions/:signature", async (request, reply) => {
+    const params = signatureParamSchema.parse(request.params);
+    const event = chainEvents.getChainTransactionEvent(params.signature);
+
+    if (!event) {
+      return reply.code(404).send({
+        error: "not_found",
+        message: `No chain transaction event stored for signature ${params.signature}`
+      });
+    }
+
+    return event;
+  });
+
   app.get("/signals/recent", async (request) => {
     const query = limitQuerySchema.parse(request.query);
     return listRecentSignals(query.limit);
@@ -364,6 +504,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   });
 
   app.addHook("onClose", async () => {
+    await chainEvents.stop();
     await stopFeed();
 
     for (const client of clients) {
@@ -384,6 +525,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
     feedStarted = true;
     void feed.start(handleFeedEvent);
+    void chainEvents.start();
   }
 
   async function stopFeed(): Promise<void> {
@@ -393,12 +535,21 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
     feedStarted = false;
     await feed.stop();
+    await chainEvents.stop();
   }
 
   function handleFeedEvent(event: FeedEvent): void {
     saveFeedEvent(event);
     const rollingMetrics = metricsEngine.ingestFeedEvent(event);
     const candidate = candidateEngine.ingestFeedEvent(event);
+    chainEvents.maybeWatchCandidate({
+      address: candidate.mint,
+      kind: "mint",
+      mint: candidate.mint,
+      ...(candidate.symbol ? { symbol: candidate.symbol } : {}),
+      ...(candidate.source ? { source: candidate.source } : {}),
+      reasonCodes: ["CHAIN_EVENTS_CANDIDATE_MINT"]
+    });
     const latestMetrics =
       rollingMetrics ?? metricsEngine.getMetrics(candidate.mint);
     candidateEngine.updateMetrics(candidate.mint, latestMetrics);
@@ -559,6 +710,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       options.record.mint,
       options.record.summary
     );
+    chainEvents.maybeWatchChainVerified({
+      address: options.record.mint,
+      kind: "mint",
+      mint: options.record.mint,
+      ...(candidate.symbol ? { symbol: candidate.symbol } : {}),
+      ...(candidate.source ? { source: candidate.source } : {}),
+      reasonCodes: ["CHAIN_EVENTS_CHAIN_VERIFIED_MINT"]
+    });
 
     const latestMetrics = metricsEngine.getMetrics(options.record.mint);
     const effectiveMetrics = mergeRollingIntoLegacyMetrics(
@@ -710,6 +869,17 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       scoringOptions
     );
 
+    if (options.event?.source === "solana_rpc") {
+      return {
+        ...score,
+        reasonCodes: uniqueReasonCodes([
+          "CHAIN_TRADE_EVENT",
+          ...(options.event.reasonCodes ?? []),
+          ...score.reasonCodes
+        ])
+      };
+    }
+
     if (
       !options.event ||
       options.event.source !== "pumpportal" ||
@@ -802,6 +972,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   return {
     app,
     candidates: candidateEngine,
+    chainEvents,
     close: () => app.close(),
     emitFeedEvent: handleFeedEvent,
     feed,

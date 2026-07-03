@@ -8,7 +8,8 @@ import {
   initStorage,
   type ReplaySource
 } from "@axi/storage";
-import type { FeedEvent } from "@axi/data-feeds";
+import type { FeedEvent, TokenTradeEvent } from "@axi/data-feeds";
+import type { NormalizedChainTradeEvent } from "@axi/chain-events";
 import type {
   CandidateDecision,
   RiskFlags,
@@ -47,14 +48,31 @@ try {
     speed: args.speed,
     type: args.type
   })) {
+    const replayFeedEvent = getReplayFeedEvent(item.source, item.payload);
     const metrics =
-      metricsEngine && item.source === "feed_events" && isFeedEvent(item.payload)
-        ? metricsEngine.ingestFeedEvent(item.payload)
-        : undefined;
+      metricsEngine && replayFeedEvent
+        ? metricsEngine.ingestFeedEvent(replayFeedEvent)
+        : metricsEngine &&
+            item.source === "chain_trade_events" &&
+            isChainTradeEvent(item.payload)
+          ? metricsEngine.ingestTradeObservation({
+              mint: item.payload.mint,
+              side: item.payload.side,
+              ...(item.payload.priceUsd !== undefined
+                ? { priceUsd: item.payload.priceUsd }
+                : {}),
+              ...(item.payload.symbol ? { symbol: item.payload.symbol } : {}),
+              timestamp: item.payload.timestamp,
+              ...(item.payload.trader ? { trader: item.payload.trader } : {}),
+              ...(item.payload.volumeUsd !== undefined
+                ? { volumeUsd: item.payload.volumeUsd }
+                : {})
+            })
+          : undefined;
     const replayEvaluation =
-      item.source === "feed_events" && isFeedEvent(item.payload)
+      replayFeedEvent
         ? evaluateReplayFeedEvent({
-            event: item.payload,
+            event: replayFeedEvent,
             metrics,
             metricsEngine,
             riskEngine,
@@ -68,6 +86,10 @@ try {
         candidateDecision: args.candidates
           ? replayEvaluation.candidateDecision
           : undefined,
+        chainObservationOnly:
+          item.source === "chain_trade_events" && !replayFeedEvent
+            ? true
+            : undefined,
         metrics: args.metrics ? metrics : undefined,
         payload: item.payload,
         riskSnapshot: args.risk ? replayEvaluation.riskSnapshot : undefined,
@@ -145,7 +167,7 @@ function parseArgs(argv: string[]): ReplayArgs {
 
       if (!isReplaySource(type)) {
         throw new Error(
-          "--type must be candidate_decisions, chain_verifications, feed_events, risk_snapshots, or signals"
+          "--type must be candidate_decisions, chain_transaction_events, chain_trade_events, chain_verifications, feed_events, risk_snapshots, or signals"
         );
       }
 
@@ -197,6 +219,8 @@ function parseBoolean(value: string, arg: string): boolean {
 function isReplaySource(value: string): value is ReplaySource {
   return (
     value === "candidate_decisions" ||
+    value === "chain_transaction_events" ||
+    value === "chain_trade_events" ||
     value === "chain_verifications" ||
     value === "feed_events" ||
     value === "risk_snapshots" ||
@@ -211,6 +235,112 @@ function isFeedEvent(value: unknown): value is FeedEvent {
     "type" in value &&
     (value.type === "token_created" || value.type === "trade")
   );
+}
+
+function isChainTradeEvent(value: unknown): value is NormalizedChainTradeEvent {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === "trade" &&
+    "source" in value &&
+    value.source === "solana_rpc" &&
+    "mint" in value &&
+    typeof value.mint === "string"
+  );
+}
+
+function getReplayFeedEvent(
+  source: ReplaySource,
+  payload: unknown
+): FeedEvent | undefined {
+  if (source === "feed_events" && isFeedEvent(payload)) {
+    return payload;
+  }
+
+  if (source === "chain_trade_events" && isChainTradeEvent(payload)) {
+    return chainTradeToFeedEvent(payload) ?? undefined;
+  }
+
+  return undefined;
+}
+
+function chainTradeToFeedEvent(
+  event: NormalizedChainTradeEvent
+): TokenTradeEvent | null {
+  if (event.confidence === "low" || event.side === "unknown") {
+    return null;
+  }
+
+  if (
+    event.priceUsd === null ||
+    event.priceUsd === undefined ||
+    event.volumeUsd === null ||
+    event.volumeUsd === undefined ||
+    !Number.isFinite(event.priceUsd) ||
+    !Number.isFinite(event.volumeUsd)
+  ) {
+    return null;
+  }
+
+  const riskFlags = createSafeRiskFlags();
+  const metrics: RollingMetrics = {
+    priceUsd: event.priceUsd,
+    marketCapUsd: 0,
+    liquidityUsd: 0,
+    volume1mUsd: event.volumeUsd,
+    volume5mUsd: event.volumeUsd,
+    volume15mUsd: event.volumeUsd,
+    buyCount1m: event.side === "buy" ? 1 : 0,
+    buyCount5m: event.side === "buy" ? 1 : 0,
+    sellCount1m: event.side === "sell" ? 1 : 0,
+    sellCount5m: event.side === "sell" ? 1 : 0,
+    uniqueBuyers1m: event.side === "buy" ? 1 : 0,
+    uniqueBuyers5m: event.side === "buy" ? 1 : 0,
+    uniqueSellers1m: event.side === "sell" ? 1 : 0,
+    uniqueSellers5m: event.side === "sell" ? 1 : 0,
+    holderCount: 0,
+    topHolderPercent: 0,
+    top10HolderPercent: 0,
+    priceChange1mPct: 0,
+    priceChange5mPct: 0,
+    volumeVelocity: 0,
+    buyerVelocity: 0
+  };
+
+  return {
+    type: "trade",
+    mint: event.mint,
+    source: "solana_rpc",
+    ...(event.symbol ? { symbol: event.symbol } : {}),
+    ...(event.name ? { name: event.name } : {}),
+    token: {
+      chain: "solana",
+      mint: event.mint
+    },
+    side: event.side,
+    priceUsd: event.priceUsd,
+    volumeUsd: event.volumeUsd,
+    ...(event.tokenAmount !== null && event.tokenAmount !== undefined
+      ? { tokenAmount: event.tokenAmount }
+      : {}),
+    ...(event.trader ? { trader: event.trader } : {}),
+    signature: event.signature,
+    metrics,
+    metricsComplete: true,
+    raw: event,
+    rawSourceEventType: "chain_trade",
+    reasonCodes: [
+      "CHAIN_TRADE_EVENT",
+      event.confidence === "high"
+        ? "CHAIN_EVENT_HIGH_CONFIDENCE"
+        : "CHAIN_EVENT_MEDIUM_CONFIDENCE",
+      ...event.reasonCodes
+    ],
+    receivedAt: event.timestamp,
+    riskFlags,
+    timestamp: event.timestamp
+  };
 }
 
 function evaluateReplayFeedEvent(options: {
@@ -539,4 +669,17 @@ function mockBundlerPct(scenario: ReturnType<typeof getMockScenario>): number | 
   }
 
   return scenario === "rug" ? 26 : scenario === "momentum" ? 3 : 7;
+}
+
+function createSafeRiskFlags(): RiskFlags {
+  return {
+    mintAuthorityActive: false,
+    freezeAuthorityActive: false,
+    topHolderConcentrationHigh: false,
+    mutableMetadata: false,
+    suspiciousName: false,
+    lowLiquidity: false,
+    washTradingSuspected: false,
+    honeypotSuspected: false
+  };
 }

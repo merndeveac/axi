@@ -10,6 +10,7 @@
   "include": ["src"],
   "references": [
     { "path": "../../packages/candidates" },
+    { "path": "../../packages/chain-events" },
     { "path": "../../packages/shared" },
     { "path": "../../packages/scoring" },
     { "path": "../../packages/data-feeds" },

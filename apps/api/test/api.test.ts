@@ -32,6 +32,10 @@ describe("@axi/api", () => {
     const body = response.json() as {
       candidateCount: number;
       candidateLifecycleEnabled: boolean;
+      chainEventsConfigured: boolean;
+      chainEventsEnabled: boolean;
+      chainTradeEventCount: number;
+      chainTransactionEventCount: number;
       feedProvider: string;
       metricsEnabled: boolean;
       mode: string;
@@ -44,6 +48,10 @@ describe("@axi/api", () => {
 
     expect(response.statusCode).toBe(200);
     expect(body.candidateLifecycleEnabled).toBe(true);
+    expect(body.chainEventsEnabled).toBe(false);
+    expect(body.chainEventsConfigured).toBe(false);
+    expect(body.chainTransactionEventCount).toBe(0);
+    expect(body.chainTradeEventCount).toBe(0);
     expect(body.candidateCount).toBeGreaterThan(0);
     expect(body.feedProvider).toBe("mock");
     expect(body.metricsEnabled).toBe(true);
@@ -66,6 +74,8 @@ describe("@axi/api", () => {
       feedEventCount: number;
       candidateDecisionCount: number;
       chainVerificationCount: number;
+      chainTransactionEventCount: number;
+      chainTradeEventCount: number;
       paperOrderCount: number;
       paperPositionCount: number;
       riskSnapshotCount: number;
@@ -76,6 +86,8 @@ describe("@axi/api", () => {
     expect(body.feedEventCount).toBeGreaterThan(0);
     expect(body.signalCount).toBeGreaterThan(0);
     expect(body.chainVerificationCount).toBe(0);
+    expect(body.chainTransactionEventCount).toBe(0);
+    expect(body.chainTradeEventCount).toBe(0);
     expect(body.riskSnapshotCount).toBeGreaterThan(0);
     expect(body.candidateDecisionCount).toBeGreaterThan(0);
     expect(body.paperOrderCount).toBe(0);
@@ -271,6 +283,102 @@ describe("@axi/api", () => {
 
     expect(response.statusCode).toBe(200);
     expect(body).toEqual([]);
+  });
+
+  it("GET /chain/events/status reports disabled by default", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/chain/events/status"
+    });
+    const body = response.json() as {
+      enabled: boolean;
+      configured: boolean;
+      paperOnly: boolean;
+      status: string;
+      watchedAddressCount: number;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.enabled).toBe(false);
+    expect(body.configured).toBe(false);
+    expect(body.paperOnly).toBe(true);
+    expect(body.status).toBe("disabled");
+    expect(body.watchedAddressCount).toBe(0);
+  });
+
+  it("POST /chain/events/watch returns clear error when disabled", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/chain/events/watch",
+      payload: {
+        address: "11111111111111111111111111111111",
+        kind: "wallet"
+      }
+    });
+    const body = response.json() as {
+      error: string;
+      chainEvents: {
+        status: string;
+      };
+    };
+
+    expect(response.statusCode).toBe(409);
+    expect(body.error).toBe("CHAIN_EVENTS_DISABLED");
+    expect(body.chainEvents.status).toBe("disabled");
+  });
+
+  it("GET /chain/events/watches returns an array", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/chain/events/watches"
+    });
+    const body = response.json() as unknown[];
+
+    expect(response.statusCode).toBe(200);
+    expect(body).toEqual([]);
+  });
+
+  it("GET /chain/events/transactions returns an array", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/chain/events/transactions"
+    });
+    const body = response.json() as unknown[];
+
+    expect(response.statusCode).toBe(200);
+    expect(body).toEqual([]);
+  });
+
+  it("GET /chain/events/trades returns an array", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/chain/events/trades"
+    });
+    const body = response.json() as unknown[];
+
+    expect(response.statusCode).toBe(200);
+    expect(body).toEqual([]);
+  });
+
+  it("GET /chain/events/transactions/:signature returns 404 for unknown signature", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/chain/events/transactions/unknown-signature"
+    });
+
+    expect(response.statusCode).toBe(404);
   });
 
   it("POST /chain/verify returns config error when enabled without RPC", async () => {

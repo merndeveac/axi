@@ -14,6 +14,16 @@ export type RollingMetricsEngineOptions = {
   minSamplesForComplete?: number;
 };
 
+export type TradeObservationInput = {
+  mint: string;
+  symbol?: string;
+  side: "buy" | "sell" | "unknown";
+  priceUsd?: number | null;
+  timestamp: string;
+  trader?: string | null;
+  volumeUsd?: number | null;
+};
+
 type TradeSample = {
   mint: string;
   symbol?: string;
@@ -99,6 +109,93 @@ export class RollingMetricsEngine {
     this.pruneTrades(state, timestampMs);
 
     return this.buildSnapshot(state, timestampMs);
+  }
+
+  ingestTradeObservation(
+    event: TradeObservationInput
+  ): RollingMetricsSnapshot | undefined {
+    const stateInput: {
+      firstSeenAt: string;
+      mint: string;
+      symbol?: string;
+    } = {
+      firstSeenAt: event.timestamp,
+      mint: event.mint
+    };
+
+    if (event.symbol) {
+      stateInput.symbol = event.symbol;
+    }
+
+    const state = this.ensureState(stateInput);
+    const priceUsd = event.priceUsd;
+    const volumeUsd = event.volumeUsd;
+
+    if (
+      event.side === "unknown" ||
+      priceUsd === null ||
+      priceUsd === undefined ||
+      volumeUsd === null ||
+      volumeUsd === undefined ||
+      !Number.isFinite(priceUsd) ||
+      !Number.isFinite(volumeUsd)
+    ) {
+      return this.getMetrics(state.mint);
+    }
+
+    const trade: TokenTradeEvent = {
+      type: "trade",
+      mint: event.mint,
+      source: "solana_rpc",
+      ...(event.symbol ? { symbol: event.symbol } : {}),
+      token: {
+        chain: "solana",
+        mint: event.mint
+      },
+      side: event.side,
+      priceUsd,
+      volumeUsd,
+      tokenAmount: priceUsd > 0 ? volumeUsd / priceUsd : 0,
+      ...(event.trader ? { trader: event.trader } : {}),
+      metrics: {
+        priceUsd,
+        marketCapUsd: 0,
+        liquidityUsd: 0,
+        volume1mUsd: volumeUsd,
+        volume5mUsd: volumeUsd,
+        volume15mUsd: volumeUsd,
+        buyCount1m: event.side === "buy" ? 1 : 0,
+        buyCount5m: event.side === "buy" ? 1 : 0,
+        sellCount1m: event.side === "sell" ? 1 : 0,
+        sellCount5m: event.side === "sell" ? 1 : 0,
+        uniqueBuyers1m: event.side === "buy" ? 1 : 0,
+        uniqueBuyers5m: event.side === "buy" ? 1 : 0,
+        uniqueSellers1m: event.side === "sell" ? 1 : 0,
+        uniqueSellers5m: event.side === "sell" ? 1 : 0,
+        holderCount: 0,
+        topHolderPercent: 0,
+        top10HolderPercent: 0,
+        priceChange1mPct: 0,
+        priceChange5mPct: 0,
+        volumeVelocity: 0,
+        buyerVelocity: 0
+      },
+      metricsComplete: true,
+      receivedAt: event.timestamp,
+      riskFlags: {
+        mintAuthorityActive: false,
+        freezeAuthorityActive: false,
+        topHolderConcentrationHigh: false,
+        mutableMetadata: false,
+        suspiciousName: false,
+        lowLiquidity: false,
+        washTradingSuspected: false,
+        honeypotSuspected: false
+      },
+      timestamp: event.timestamp
+    };
+
+    return this.ingestTradeEvent(trade);
   }
 
   getMetrics(mint: string): RollingMetricsSnapshot | undefined {

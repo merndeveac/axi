@@ -3,10 +3,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FeedEvent } from "@axi/data-feeds";
+import type {
+  ChainTransactionEvent,
+  NormalizedChainTradeEvent
+} from "@axi/chain-events";
 import type { CandidateDecision, OverlaySignal, RiskSnapshot } from "@axi/shared";
 import {
   closeStorage,
   createReplayStream,
+  getChainTradeEvent,
+  getChainTransactionEvent,
   getLatestChainVerification,
   getLatestCandidateDecision,
   getLatestRiskSnapshot,
@@ -15,6 +21,10 @@ import {
   listCandidateDecisionsForReplay,
   listChainVerifications,
   listChainVerificationsForReplay,
+  listChainTradeEvents,
+  listChainTradeEventsForReplay,
+  listChainTransactionEvents,
+  listChainTransactionEventsForReplay,
   listCandidateDecisions,
   listFeedEvents,
   listPaperOrders,
@@ -25,6 +35,8 @@ import {
   listSignalsForReplay,
   saveCandidateDecision,
   saveChainVerification,
+  saveChainTradeEvent,
+  saveChainTransactionEvent,
   saveFeedEvent,
   savePaperOrder,
   saveRiskSnapshot,
@@ -56,6 +68,8 @@ describe("@axi/storage", () => {
     expect(stats.databasePath).toBe(databasePath);
     expect(stats.signalCount).toBe(0);
     expect(stats.chainVerificationCount).toBe(0);
+    expect(stats.chainTransactionEventCount).toBe(0);
+    expect(stats.chainTradeEventCount).toBe(0);
     expect(stats.riskSnapshotCount).toBe(0);
     expect(stats.candidateDecisionCount).toBe(0);
   });
@@ -167,9 +181,37 @@ describe("@axi/storage", () => {
     expect(latest?.topHolderPct).toBe(12.5);
   });
 
+  it("chain transaction event can be saved, listed, and fetched by signature", () => {
+    initStorage({ databasePath });
+    const saved = saveChainTransactionEvent(createChainTransactionEvent());
+    const listed = listChainTransactionEvents(10);
+    const fetched = getChainTransactionEvent(saved.signature);
+
+    expect(saved.id).toBeGreaterThan(0);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.status).toBe("parsed");
+    expect(fetched?.signature).toBe(saved.signature);
+    expect(fetched?.reasonCodes).toContain("WATCHED_ADDRESS_LOG");
+  });
+
+  it("chain trade event can be saved, listed, and fetched by signature", () => {
+    initStorage({ databasePath });
+    const saved = saveChainTradeEvent(createChainTradeEvent());
+    const listed = listChainTradeEvents(10);
+    const fetched = getChainTradeEvent(saved.signature);
+
+    expect(saved.id).toBeGreaterThan(0);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.side).toBe("buy");
+    expect(fetched?.signature).toBe(saved.signature);
+    expect(fetched?.confidence).toBe("medium");
+  });
+
   it("storage stats return counts", () => {
     initStorage({ databasePath });
     saveChainVerification(createChainVerification());
+    saveChainTransactionEvent(createChainTransactionEvent());
+    saveChainTradeEvent(createChainTradeEvent());
     saveFeedEvent(createFeedEvent());
     saveRiskSnapshot(createRiskSnapshot());
     saveCandidateDecision(createCandidateDecision());
@@ -200,6 +242,8 @@ describe("@axi/storage", () => {
     expect(stats.feedEventCount).toBe(1);
     expect(stats.signalCount).toBe(1);
     expect(stats.chainVerificationCount).toBe(1);
+    expect(stats.chainTransactionEventCount).toBe(1);
+    expect(stats.chainTradeEventCount).toBe(1);
     expect(stats.riskSnapshotCount).toBe(1);
     expect(stats.candidateDecisionCount).toBe(1);
     expect(stats.paperOrderCount).toBe(1);
@@ -218,13 +262,21 @@ describe("@axi/storage", () => {
     const riskSnapshot = saveRiskSnapshot(createRiskSnapshot());
     const candidateDecision = saveCandidateDecision(createCandidateDecision());
     const chainVerification = saveChainVerification(createChainVerification());
+    const chainTransactionEvent = saveChainTransactionEvent(
+      createChainTransactionEvent()
+    );
+    const chainTradeEvent = saveChainTradeEvent(createChainTradeEvent());
     const riskSnapshots = listRiskSnapshotsForReplay(10);
     const candidateDecisions = listCandidateDecisionsForReplay(10);
     const chainVerifications = listChainVerificationsForReplay(10);
+    const chainTransactionEvents = listChainTransactionEventsForReplay(10);
+    const chainTradeEvents = listChainTradeEventsForReplay(10);
     const replayItems = [];
     const riskReplayItems = [];
     const candidateReplayItems = [];
     const chainReplayItems = [];
+    const chainTransactionReplayItems = [];
+    const chainTradeReplayItems = [];
 
     for await (const item of createReplayStream({
       limit: 10,
@@ -258,6 +310,22 @@ describe("@axi/storage", () => {
       chainReplayItems.push(item);
     }
 
+    for await (const item of createReplayStream({
+      limit: 10,
+      speed: 0,
+      type: "chain_transaction_events"
+    })) {
+      chainTransactionReplayItems.push(item);
+    }
+
+    for await (const item of createReplayStream({
+      limit: 10,
+      speed: 0,
+      type: "chain_trade_events"
+    })) {
+      chainTradeReplayItems.push(item);
+    }
+
     expect(feedEvents.map((event) => event.createdAt)).toEqual([
       "2026-01-01T00:00:01.000Z",
       "2026-01-01T00:00:02.000Z"
@@ -266,11 +334,17 @@ describe("@axi/storage", () => {
     expect(riskSnapshots[0]?.id).toBe(riskSnapshot.id);
     expect(candidateDecisions[0]?.id).toBe(candidateDecision.id);
     expect(chainVerifications[0]?.id).toBe(chainVerification.id);
+    expect(chainTransactionEvents[0]?.id).toBe(chainTransactionEvent.id);
+    expect(chainTradeEvents[0]?.id).toBe(chainTradeEvent.id);
     expect(replayItems).toHaveLength(2);
     expect(replayItems[0]?.source).toBe("feed_events");
     expect(riskReplayItems[0]?.source).toBe("risk_snapshots");
     expect(candidateReplayItems[0]?.source).toBe("candidate_decisions");
     expect(chainReplayItems[0]?.source).toBe("chain_verifications");
+    expect(chainTransactionReplayItems[0]?.source).toBe(
+      "chain_transaction_events"
+    );
+    expect(chainTradeReplayItems[0]?.source).toBe("chain_trade_events");
   });
 });
 
@@ -352,6 +426,58 @@ function createChainVerification() {
     },
     inspectedAt: "2026-01-01T00:00:03.000Z",
     createdAt: "2026-01-01T00:00:03.000Z"
+  };
+}
+
+function createChainTransactionEvent(): ChainTransactionEvent {
+  return {
+    type: "chain_transaction",
+    source: "solana_rpc",
+    signature:
+      "5NfL6eiYVQhnL5rtZJkR2Jqg7YbNLsC6Gc8a5YVwWnSb1E4qMvERqE1mUu3PF4aZ75xMwHj7pFaGgQ8z7R5dHnNU",
+    slot: 123,
+    blockTime: 1_767_225_600,
+    watchedAddress: "11111111111111111111111111111111",
+    watchedAddressKind: "wallet",
+    mint,
+    status: "parsed",
+    reasonCodes: [
+      "WATCHED_ADDRESS_LOG",
+      "TRANSACTION_FETCHED",
+      "TOKEN_BALANCE_CHANGES_FOUND"
+    ],
+    raw: {
+      source: "test"
+    },
+    receivedAt: "2026-01-01T00:00:04.000Z"
+  };
+}
+
+function createChainTradeEvent(): NormalizedChainTradeEvent {
+  return {
+    type: "trade",
+    source: "solana_rpc",
+    mint,
+    symbol: "MOCK",
+    side: "buy",
+    priceUsd: null,
+    volumeUsd: null,
+    tokenAmount: 42,
+    trader: "11111111111111111111111111111111",
+    signature:
+      "5NfL6eiYVQhnL5rtZJkR2Jqg7YbNLsC6Gc8a5YVwWnSb1E4qMvERqE1mUu3PF4aZ75xMwHj7pFaGgQ8z7R5dHnNU",
+    slot: 123,
+    timestamp: "2026-01-01T00:00:05.000Z",
+    watchedAddress: "11111111111111111111111111111111",
+    confidence: "medium",
+    reasonCodes: [
+      "CHAIN_TRADE_EVENT",
+      "POSSIBLE_TOKEN_BUY",
+      "INSUFFICIENT_PRICE_DATA"
+    ],
+    raw: {
+      source: "test"
+    }
   };
 }
 

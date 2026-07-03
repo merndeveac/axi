@@ -15,6 +15,7 @@ export type NormalizedFeedMetadata = {
   raw?: unknown;
   rawSourceEventType?: string | undefined;
   receivedAt?: string | undefined;
+  reasonCodes?: string[] | undefined;
   signature?: string | undefined;
   source: FeedSource;
 };

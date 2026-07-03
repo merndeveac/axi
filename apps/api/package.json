@@ -11,11 +11,14 @@
     "test": "vitest run",
     "replay": "tsx --conditions=development src/replay.ts",
     "chain:verify": "tsx --conditions=development src/chain-verify.ts",
+    "chain:events:backfill": "tsx --conditions=development src/chain-events-backfill.ts",
+    "chain:events:watch": "tsx --conditions=development src/chain-events-watch.ts",
     "feed:probe": "tsx --conditions=development src/feed-probe.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {
     "@axi/candidates": "workspace:*",
+    "@axi/chain-events": "workspace:*",
     "@axi/data-feeds": "workspace:*",
     "@axi/execution": "workspace:*",
     "@axi/metrics": "workspace:*",

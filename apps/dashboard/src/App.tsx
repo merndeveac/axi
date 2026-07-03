@@ -15,6 +15,8 @@ type StorageStats = {
   feedEventCount: number;
   signalCount: number;
   chainVerificationCount: number;
+  chainTransactionEventCount: number;
+  chainTradeEventCount: number;
   riskSnapshotCount: number;
   candidateDecisionCount: number;
   paperOrderCount: number;
@@ -25,6 +27,11 @@ type StorageStats = {
 type HealthStatus = {
   candidateCount: number;
   candidateLifecycleEnabled: boolean;
+  chainEventsConfigured: boolean;
+  chainEventsEnabled: boolean;
+  chainTradeEventCount: number;
+  chainTransactionEventCount: number;
+  chainWatchedAddressCount: number;
   chainVerificationCount: number;
   chainVerifier: ChainVerifierStatus;
   feedProvider: string;
@@ -49,6 +56,59 @@ type ChainVerifierStatus = {
   paperOnly: true;
   rpcHttpUrlConfigured: boolean;
   status: "disabled" | "config_error" | "ready";
+};
+
+type ChainEventsStatus = {
+  backfillOnStart: boolean;
+  configured: boolean;
+  enabled: boolean;
+  fetchTransactionOnLog: boolean;
+  lastError: string | null;
+  maxWatchedAddresses: number;
+  paperOnly: true;
+  rpcHttpConfigured: boolean;
+  rpcWsConfigured: boolean;
+  status: "disabled" | "config_error" | "ready" | "running";
+  subscriptions: number;
+  watchedAddressCount: number;
+};
+
+type WatchedAddressRow = {
+  address: string;
+  addedAt: string;
+  kind: string;
+  label?: string;
+  mint?: string;
+  reasonCodes: string[];
+  source?: string;
+  symbol?: string;
+};
+
+type ChainTransactionRow = {
+  id: number;
+  signature: string;
+  watchedAddress: string;
+  watchedAddressKind: string;
+  mint?: string;
+  status: string;
+  reasonCodes: string[];
+  receivedAt: string;
+  createdAt: string;
+};
+
+type ChainTradeRow = {
+  id: number;
+  signature: string;
+  mint: string;
+  side: string;
+  confidence: string;
+  priceUsd?: number | null;
+  volumeUsd?: number | null;
+  tokenAmount?: number | null;
+  watchedAddress: string;
+  reasonCodes: string[];
+  timestamp: string;
+  createdAt: string;
 };
 
 type CandidateApiRow = {
@@ -93,6 +153,15 @@ export function App() {
   const [candidates, setCandidates] = useState<CandidateApiRow[]>([]);
   const [healthStatus, setHealthStatus] = useState<HealthStatus | null>(null);
   const [chainStatus, setChainStatus] = useState<ChainVerifierStatus | null>(null);
+  const [chainEventsStatus, setChainEventsStatus] =
+    useState<ChainEventsStatus | null>(null);
+  const [chainTransactions, setChainTransactions] = useState<
+    ChainTransactionRow[]
+  >([]);
+  const [chainTrades, setChainTrades] = useState<ChainTradeRow[]>([]);
+  const [watchedAddresses, setWatchedAddresses] = useState<WatchedAddressRow[]>(
+    []
+  );
   const [storageStats, setStorageStats] = useState<StorageStats | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>("never");
 
@@ -154,19 +223,31 @@ export function App() {
           healthResponse,
           statsResponse,
           candidatesResponse,
-          chainResponse
+          chainResponse,
+          chainEventsResponse,
+          watchedAddressesResponse,
+          chainTransactionsResponse,
+          chainTradesResponse
         ] = await Promise.all([
           fetch(`${apiBaseUrl}/health`),
           fetch(`${apiBaseUrl}/storage/stats`),
           fetch(`${apiBaseUrl}/candidates`),
-          fetch(`${apiBaseUrl}/chain/status`)
+          fetch(`${apiBaseUrl}/chain/status`),
+          fetch(`${apiBaseUrl}/chain/events/status`),
+          fetch(`${apiBaseUrl}/chain/events/watches`),
+          fetch(`${apiBaseUrl}/chain/events/transactions?limit=10`),
+          fetch(`${apiBaseUrl}/chain/events/trades?limit=10`)
         ]);
 
         if (
           !healthResponse.ok ||
           !statsResponse.ok ||
           !candidatesResponse.ok ||
-          !chainResponse.ok
+          !chainResponse.ok ||
+          !chainEventsResponse.ok ||
+          !watchedAddressesResponse.ok ||
+          !chainTransactionsResponse.ok ||
+          !chainTradesResponse.ok
         ) {
           throw new Error("API status check failed");
         }
@@ -177,11 +258,23 @@ export function App() {
           (await candidatesResponse.json()) as CandidateApiRow[];
         const nextChainStatus =
           (await chainResponse.json()) as ChainVerifierStatus;
+        const nextChainEventsStatus =
+          (await chainEventsResponse.json()) as ChainEventsStatus;
+        const nextWatchedAddresses =
+          (await watchedAddressesResponse.json()) as WatchedAddressRow[];
+        const nextChainTransactions =
+          (await chainTransactionsResponse.json()) as ChainTransactionRow[];
+        const nextChainTrades =
+          (await chainTradesResponse.json()) as ChainTradeRow[];
 
         if (!cancelled) {
           setApiStatus("connected");
           setCandidates(nextCandidates);
           setChainStatus(nextChainStatus);
+          setChainEventsStatus(nextChainEventsStatus);
+          setWatchedAddresses(nextWatchedAddresses);
+          setChainTransactions(nextChainTransactions);
+          setChainTrades(nextChainTrades);
           setHealthStatus(health);
           setStorageStats(stats);
         }
@@ -292,6 +385,42 @@ export function App() {
           <strong>{chainStatus?.status ?? healthStatus?.chainVerifier.status ?? "unknown"}</strong>
         </div>
         <div>
+          <span>Chain Events</span>
+          <strong>{chainEventsStatus?.status ?? "unknown"}</strong>
+        </div>
+        <div>
+          <span>Chain Event RPC</span>
+          <strong>{chainEventsStatus?.configured ? "configured" : "unset"}</strong>
+        </div>
+        <div>
+          <span>Watched</span>
+          <strong>
+            {chainEventsStatus?.watchedAddressCount ??
+              healthStatus?.chainWatchedAddressCount ??
+              0}
+          </strong>
+        </div>
+        <div>
+          <span>Chain Tx</span>
+          <strong>
+            {storageStats?.chainTransactionEventCount ??
+              healthStatus?.chainTransactionEventCount ??
+              0}
+          </strong>
+        </div>
+        <div>
+          <span>Chain Trades</span>
+          <strong>
+            {storageStats?.chainTradeEventCount ??
+              healthStatus?.chainTradeEventCount ??
+              0}
+          </strong>
+        </div>
+        <div>
+          <span>Paper Only</span>
+          <strong>{healthStatus?.paperOnly ? "yes" : "unknown"}</strong>
+        </div>
+        <div>
           <span>RPC</span>
           <strong>{chainStatus?.rpcHttpUrlConfigured ? "configured" : "unset"}</strong>
         </div>
@@ -347,6 +476,143 @@ export function App() {
 
       <section className="status-message" aria-live="polite">
         {statusMessage}
+      </section>
+
+      <section className="table-region chain-events-region" aria-label="Chain events">
+        <div className="table-heading">
+          <h2>Read-Only Chain Events</h2>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Kind</th>
+              <th>Address</th>
+              <th>Mint</th>
+              <th>Source</th>
+              <th>Reasons</th>
+              <th>Observed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {watchedAddresses.map((watch) => (
+              <tr key={watch.address}>
+                <td>{watch.kind}</td>
+                <td className="mono" title={watch.address}>
+                  {shortMint(watch.address)}
+                </td>
+                <td className="mono" title={watch.mint ?? ""}>
+                  {watch.mint ? shortMint(watch.mint) : "-"}
+                </td>
+                <td>{watch.source ?? "manual"}</td>
+                <td>{topReasonCodes(watch.reasonCodes)}</td>
+                <td>{formatTimestamp(watch.addedAt)}</td>
+              </tr>
+            ))}
+            {watchedAddresses.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="empty-state compact-empty">
+                  No read-only watched addresses
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </section>
+
+      <section className="table-region chain-events-region" aria-label="Recent chain transactions">
+        <div className="table-heading">
+          <h2>Recent Chain Transactions</h2>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Signature</th>
+              <th>Status</th>
+              <th>Watched</th>
+              <th>Kind</th>
+              <th>Mint</th>
+              <th>Reasons</th>
+              <th>Observed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {chainTransactions.map((event) => (
+              <tr key={`${event.id}-${event.signature}`}>
+                <td className="mono" title={event.signature}>
+                  {shortMint(event.signature)}
+                </td>
+                <td>{event.status}</td>
+                <td className="mono" title={event.watchedAddress}>
+                  {shortMint(event.watchedAddress)}
+                </td>
+                <td>{event.watchedAddressKind}</td>
+                <td className="mono" title={event.mint ?? ""}>
+                  {event.mint ? shortMint(event.mint) : "-"}
+                </td>
+                <td>{topReasonCodes(event.reasonCodes)}</td>
+                <td>{formatTimestamp(event.receivedAt ?? event.createdAt)}</td>
+              </tr>
+            ))}
+            {chainTransactions.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="empty-state compact-empty">
+                  No persisted chain transactions
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </section>
+
+      <section className="table-region chain-events-region" aria-label="Recent chain trades">
+        <div className="table-heading">
+          <h2>Recent Chain Trades</h2>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Signature</th>
+              <th>Mint</th>
+              <th>Side</th>
+              <th>Confidence</th>
+              <th>Price</th>
+              <th>Volume</th>
+              <th>Tokens</th>
+              <th>Watched</th>
+              <th>Reasons</th>
+              <th>Observed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {chainTrades.map((event) => (
+              <tr key={`${event.id}-${event.signature}`}>
+                <td className="mono" title={event.signature}>
+                  {shortMint(event.signature)}
+                </td>
+                <td className="mono" title={event.mint}>
+                  {shortMint(event.mint)}
+                </td>
+                <td>{event.side}</td>
+                <td>{event.confidence}</td>
+                <td>{event.priceUsd == null ? "-" : formatUsd(event.priceUsd)}</td>
+                <td>{event.volumeUsd == null ? "-" : formatUsd(event.volumeUsd)}</td>
+                <td>{formatNullableNumber(event.tokenAmount)}</td>
+                <td className="mono" title={event.watchedAddress}>
+                  {shortMint(event.watchedAddress)}
+                </td>
+                <td>{topReasonCodes(event.reasonCodes)}</td>
+                <td>{formatTimestamp(event.timestamp ?? event.createdAt)}</td>
+              </tr>
+            ))}
+            {chainTrades.length === 0 ? (
+              <tr>
+                <td colSpan={10} className="empty-state compact-empty">
+                  No persisted chain trades
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
       </section>
 
       <section className="table-region candidate-region" aria-label="Candidate lifecycle">
@@ -559,6 +825,10 @@ function topReasonCodes(reasonCodes: string[] | undefined): string {
 
 function formatNumber(value: number | undefined): string {
   return value === undefined ? "-" : value.toFixed(2);
+}
+
+function formatNullableNumber(value: number | null | undefined): string {
+  return value === null || value === undefined ? "-" : value.toFixed(4);
 }
 
 function formatUsd(value: number): string {

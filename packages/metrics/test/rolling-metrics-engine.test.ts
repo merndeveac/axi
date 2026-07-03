@@ -136,6 +136,43 @@ describe("RollingMetricsEngine", () => {
     expect(metrics?.priceVelocityPctPerSec).toBe(0);
   });
 
+  it("ignores null and unknown chain trade observations safely", () => {
+    const engine = createRollingMetricsEngine();
+    const timestamp = new Date(Date.UTC(2026, 0, 1, 0, 0, 0)).toISOString();
+
+    engine.ingestTradeObservation({
+      mint,
+      priceUsd: null,
+      side: "unknown",
+      timestamp,
+      volumeUsd: null
+    });
+    const metrics = engine.getMetrics(mint);
+
+    expect(metrics?.sampleCount).toBe(0);
+    expect(metrics?.latestPriceUsd).toBe(0);
+    expect(metrics?.windows["5s"].totalVolumeUsd).toBe(0);
+  });
+
+  it("valid chain trade observations update metrics safely", () => {
+    const engine = createRollingMetricsEngine();
+    const timestamp = new Date(Date.UTC(2026, 0, 1, 0, 0, 0)).toISOString();
+
+    engine.ingestTradeObservation({
+      mint,
+      priceUsd: 2,
+      side: "buy",
+      timestamp,
+      trader: "chain-trader",
+      volumeUsd: 150
+    });
+    const metrics = engine.getMetrics(mint);
+
+    expect(metrics?.sampleCount).toBe(1);
+    expect(metrics?.latestPriceUsd).toBe(2);
+    expect(metrics?.windows["5s"].buyVolumeUsd).toBe(150);
+  });
+
   it("is deterministic given the same event sequence", () => {
     const first = createRollingMetricsEngine();
     const second = createRollingMetricsEngine();

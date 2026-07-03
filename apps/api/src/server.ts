@@ -14,6 +14,19 @@ const pumpPortal: PumpPortalFeedProviderOptions = {
   subscribeNewToken: config.PUMPPORTAL_SUBSCRIBE_NEW_TOKEN
 };
 const options: ApiServerOptions = {
+  chainEvents: {
+    backfillLimitPerAddress: config.CHAIN_EVENTS_BACKFILL_LIMIT_PER_ADDRESS,
+    backfillOnStart: config.CHAIN_EVENTS_BACKFILL_ON_START,
+    commitment: config.SOLANA_RPC_COMMITMENT,
+    enabled: config.CHAIN_EVENTS_ENABLED,
+    fetchTransactionOnLog: config.CHAIN_EVENTS_FETCH_TRANSACTION_ON_LOG,
+    maxConcurrentFetches: config.CHAIN_EVENTS_MAX_CONCURRENT_FETCHES,
+    maxWatchedAddresses: config.CHAIN_EVENTS_MAX_WATCHED_ADDRESSES,
+    onChainVerified: config.CHAIN_EVENTS_ON_CHAIN_VERIFIED,
+    onNewCandidate: config.CHAIN_EVENTS_ON_NEW_CANDIDATE,
+    requestTimeoutMs: config.CHAIN_EVENTS_REQUEST_TIMEOUT_MS,
+    watchedAddresses: parseWatchedAddresses(config.CHAIN_EVENTS_WATCHED_ADDRESSES)
+  },
   chainVerifier: {
     cacheTtlMs: config.CHAIN_VERIFIER_CACHE_TTL_MS,
     commitment: config.SOLANA_RPC_COMMITMENT,
@@ -51,6 +64,14 @@ if (config.SOLANA_RPC_HTTP !== undefined && options.chainVerifier) {
   options.chainVerifier.rpcHttpUrl = config.SOLANA_RPC_HTTP;
 }
 
+if (config.SOLANA_RPC_HTTP !== undefined && options.chainEvents) {
+  options.chainEvents.rpcHttpUrl = config.SOLANA_RPC_HTTP;
+}
+
+if (config.SOLANA_RPC_WS !== undefined && options.chainEvents) {
+  options.chainEvents.rpcWsUrl = config.SOLANA_RPC_WS;
+}
+
 if (config.PUMPPORTAL_API_KEY !== undefined) {
   pumpPortal.apiKey = config.PUMPPORTAL_API_KEY;
 }
@@ -80,9 +101,27 @@ server.app.log.info(
     feedProvider: server.feed.name,
     paperAutoOrder: config.PAPER_AUTO_ORDER,
     port: config.API_PORT,
+    chainEvents: server.chainEvents.getStatus(),
     chainVerifier: server.chainVerifier.getStatus(),
     signalIntervalMs: config.SIGNAL_INTERVAL_MS,
     storagePath: server.storage.databasePath
   },
   "AXI API started in paper mode"
 );
+
+function parseWatchedAddresses(value: string | undefined) {
+  if (!value) {
+    return [];
+  }
+
+  return value
+    .split(",")
+    .map((address) => address.trim())
+    .filter(Boolean)
+    .map((address) => ({
+      address,
+      kind: "unknown" as const,
+      source: "env",
+      reasonCodes: ["CHAIN_EVENTS_ENV_WATCH"]
+    }));
+}

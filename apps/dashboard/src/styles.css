@@ -141,6 +141,10 @@ h1 {
   min-width: 1700px;
 }
 
+.chain-events-region table {
+  min-width: 980px;
+}
+
 table {
   width: 100%;
   min-width: 1900px;
@@ -288,6 +292,10 @@ tr:last-child td {
   color: #667085;
   text-align: center;
   vertical-align: middle;
+}
+
+.compact-empty {
+  height: 96px;
 }
 
 @media (max-width: 760px) {

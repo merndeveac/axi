@@ -39,12 +39,12 @@ Paper-mode development data is stored in a local SQLite database:
 
 The API initializes the database automatically, creates the current schema, and
 stores mock feed events, risk snapshots, candidate decisions, read-only chain
-verifications, overlay signals, paper orders, and paper positions. This
-database is local-only and is ignored by git.
+verifications, read-only watched-address chain events, overlay signals, paper
+orders, and paper positions. This database is local-only and is ignored by git.
 
 Current persistence tables include `feed_events`, `signals`, `risk_snapshots`,
-`candidate_decisions`, `chain_verifications`, `paper_orders`, and
-`paper_positions`.
+`candidate_decisions`, `chain_verifications`, `chain_transaction_events`,
+`chain_trade_events`, `paper_orders`, and `paper_positions`.
 
 Clear local paper data with:
 
@@ -118,6 +118,47 @@ CHAIN_VERIFIER_ENABLED=true SOLANA_RPC_HTTP=https://... pnpm --filter @axi/api d
 
 Verification results are cached, persisted to SQLite, and merged into paper-mode
 risk decisions when available. Replay never calls live RPC.
+
+## Read-Only Solana Transaction Ingestor
+
+`@axi/chain-events` provides optional read-only Solana transaction observation
+for explicitly watched addresses. It uses Solana RPC/WebSocket only when
+enabled, creates one `logsSubscribe` watch per address, and never loads wallets,
+signs, sends transactions, creates orders, or trades.
+
+The ingestor is disabled by default:
+
+```bash
+CHAIN_EVENTS_ENABLED=false
+SOLANA_RPC_WS=
+CHAIN_EVENTS_WATCHED_ADDRESSES=
+CHAIN_EVENTS_MAX_WATCHED_ADDRESSES=25
+CHAIN_EVENTS_BACKFILL_ON_START=false
+CHAIN_EVENTS_BACKFILL_LIMIT_PER_ADDRESS=25
+CHAIN_EVENTS_FETCH_TRANSACTION_ON_LOG=true
+CHAIN_EVENTS_MAX_CONCURRENT_FETCHES=4
+CHAIN_EVENTS_REQUEST_TIMEOUT_MS=10000
+CHAIN_EVENTS_ON_NEW_CANDIDATE=false
+CHAIN_EVENTS_ON_CHAIN_VERIFIED=false
+```
+
+Enable it only with explicit read-only HTTP and WebSocket RPC URLs:
+
+```bash
+CHAIN_EVENTS_ENABLED=true SOLANA_RPC_HTTP=https://... SOLANA_RPC_WS=wss://... pnpm --filter @axi/api dev
+```
+
+Generic transaction normalization is conservative. It records unclassified
+transactions, token/SOL balance changes, and possible low/medium-confidence
+trade observations. It does not invent USD prices. Chain trades with missing
+price or volume are persisted as observation-only and are not used for
+volume/price metrics.
+
+Limitations: watched mints may not catch every swap; pool, bonding-curve, token
+account, or program addresses may be better watch targets. This is not a
+full-market indexer, does not do DEX-specific decoding yet, does not provide
+real USD pricing yet, does not use Geyser/gRPC/shreds, does not use metered
+PumpPortal trade streams, and does not use Axiom private APIs or scraping.
 
 ## Install
 
@@ -225,6 +266,13 @@ Endpoints:
 - `GET /chain/verifications/:mint`
 - `GET /chain/verify/:mint`
 - `POST /chain/verify`
+- `GET /chain/events/status`
+- `GET /chain/events/watches`
+- `POST /chain/events/watch`
+- `DELETE /chain/events/watch/:address`
+- `GET /chain/events/transactions`
+- `GET /chain/events/trades`
+- `GET /chain/events/transactions/:signature`
 - `GET /paper/orders`
 - `GET /paper/positions`
 - `ws://localhost:8787/ws/signals`
@@ -245,6 +293,11 @@ misconfigured, or ready. `POST /chain/verify` accepts `{ "mint": "..." }` and
 runs one read-only verification only when the verifier is enabled and
 `SOLANA_RPC_HTTP` is configured.
 
+`GET /chain/events/status` reports whether read-only watched-address ingestion
+is disabled, misconfigured, ready, or running. `POST /chain/events/watch` adds a
+read-only watched address only when `CHAIN_EVENTS_ENABLED=true` and both
+`SOLANA_RPC_HTTP` and `SOLANA_RPC_WS` are configured.
+
 ## Replay Local Data
 
 Replay persisted fake paper data from SQLite without starting the API,
@@ -259,6 +312,9 @@ pnpm --filter @axi/api replay -- --type feed_events --metrics true --risk true -
 pnpm --filter @axi/api replay -- --type risk_snapshots --limit 25 --speed 0
 pnpm --filter @axi/api replay -- --type candidate_decisions --limit 25 --speed 0
 pnpm --filter @axi/api replay -- --type chain_verifications --limit 25 --speed 0
+pnpm --filter @axi/api replay -- --type chain_transaction_events --limit 25 --speed 0
+pnpm --filter @axi/api replay -- --type chain_trade_events --limit 25 --speed 0
+pnpm --filter @axi/api replay -- --type chain_trade_events --metrics true --risk true --candidates true --limit 100 --speed 0
 pnpm --filter @axi/api replay -- --type feed_events --chain false
 ```
 
@@ -279,6 +335,16 @@ pnpm --filter @axi/api chain:verify -- --mint <MINT> --rpc https://... --commitm
 
 The CLI validates malformed mints before creating an RPC client and never
 performs wallet loading, signing, sending, buying, or selling.
+
+Run read-only chain event probes without starting the API server or persisting:
+
+```bash
+SOLANA_RPC_HTTP=https://... pnpm --filter @axi/api chain:events:backfill -- --address <ADDRESS> --limit 10
+SOLANA_RPC_HTTP=https://... SOLANA_RPC_WS=wss://... pnpm --filter @axi/api chain:events:watch -- --address <ADDRESS> --timeout 30000 --limit 10
+```
+
+Both commands print JSON lines and validate malformed addresses before creating
+RPC clients. They never load wallets, sign, send transactions, buy, or sell.
 
 ## Probe Feeds
 
@@ -336,6 +402,7 @@ docker compose --profile infra up -d
 - `@axi/risk`: pure local risk/scam-filter snapshots and reason codes.
 - `@axi/candidates`: pure local candidate lifecycle decisions.
 - `@axi/solana-chain`: optional read-only Solana RPC verification helpers.
+- `@axi/chain-events`: optional read-only watched-address transaction ingestion.
 - `@axi/storage`: local SQLite persistence for paper-mode development.
 - `@axi/api`: Fastify API and local WebSocket broadcaster.
 - `@axi/dashboard`: Vite React signal dashboard.
@@ -355,8 +422,11 @@ docker compose --profile infra up -d
   candidate lifecycle decisions.
 - `dev/solana-chain-verifier` contains the optional read-only Solana chain
   verifier.
+- `dev/solana-transaction-ingestor` contains optional read-only watched-address
+  transaction ingestion.
 
 This project still has no wallet UI, no private-key loading, no live trading,
 no Solana transaction signing, no transaction sending, no real risk-data
-provider, no metered PumpPortal trade streams, no Axiom private API usage, and
+provider, no DEX-specific decoding, no full-market indexing, no Geyser/gRPC
+streaming, no metered PumpPortal trade streams, no Axiom private API usage, and
 no Axiom scraping.

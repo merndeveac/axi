@@ -5,6 +5,10 @@ import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import type { FeedEvent } from "@axi/data-feeds";
+import type {
+  ChainTransactionEvent,
+  NormalizedChainTradeEvent
+} from "@axi/chain-events";
 import {
   CandidateDecisionSchema,
   ChainVerificationStatusSchema,
@@ -50,6 +54,8 @@ export type StoredSignal = {
 
 export type ReplaySource =
   | "candidate_decisions"
+  | "chain_transaction_events"
+  | "chain_trade_events"
   | "feed_events"
   | "chain_verifications"
   | "risk_snapshots"
@@ -107,6 +113,8 @@ export type StorageStats = {
   feedEventCount: number;
   signalCount: number;
   chainVerificationCount: number;
+  chainTransactionEventCount: number;
+  chainTradeEventCount: number;
   riskSnapshotCount: number;
   candidateDecisionCount: number;
   paperOrderCount: number;
@@ -159,6 +167,20 @@ export type StoredChainVerification = Omit<
 > & {
   id: number;
   inspectedAt: string;
+  createdAt: string;
+};
+
+export type ChainTransactionEventInput = ChainTransactionEvent;
+
+export type StoredChainTransactionEvent = ChainTransactionEventInput & {
+  id: number;
+  createdAt: string;
+};
+
+export type ChainTradeEventInput = NormalizedChainTradeEvent;
+
+export type StoredChainTradeEvent = ChainTradeEventInput & {
+  id: number;
   createdAt: string;
 };
 
@@ -249,6 +271,33 @@ type ChainVerificationRow = {
   created_at: string;
 };
 
+type ChainTransactionEventRow = {
+  id: number;
+  signature: string;
+  watched_address: string;
+  watched_address_kind: ChainTransactionEvent["watchedAddressKind"];
+  mint: string | null;
+  status: ChainTransactionEvent["status"];
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
+type ChainTradeEventRow = {
+  id: number;
+  signature: string;
+  mint: string;
+  side: NormalizedChainTradeEvent["side"];
+  confidence: NormalizedChainTradeEvent["confidence"];
+  price_usd: number | null;
+  volume_usd: number | null;
+  token_amount: number | null;
+  watched_address: string;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
 type CountRow = {
   count: number;
 };
@@ -300,6 +349,49 @@ const chainVerificationInputSchema = z.object({
   payload: z.unknown(),
   inspectedAt: z.string().datetime().optional(),
   createdAt: z.string().datetime().optional()
+});
+
+const chainTransactionEventInputSchema = z.object({
+  type: z.literal("chain_transaction"),
+  source: z.literal("solana_rpc"),
+  signature: z.string().min(1),
+  slot: z.number().int().nonnegative().optional(),
+  blockTime: z.number().int().nonnegative().nullable().optional(),
+  watchedAddress: z.string().min(1),
+  watchedAddressKind: z.enum([
+    "mint",
+    "pool",
+    "bonding_curve",
+    "program",
+    "token_account",
+    "wallet",
+    "unknown"
+  ]),
+  mint: z.string().min(1).optional(),
+  status: z.enum(["parsed", "unclassified", "errored"]),
+  reasonCodes: z.array(z.string().min(1)),
+  raw: z.unknown().optional(),
+  receivedAt: z.string().datetime()
+});
+
+const chainTradeEventInputSchema = z.object({
+  type: z.literal("trade"),
+  source: z.literal("solana_rpc"),
+  mint: z.string().min(1),
+  symbol: z.string().min(1).optional(),
+  name: z.string().min(1).optional(),
+  side: z.enum(["buy", "sell", "unknown"]),
+  priceUsd: z.number().nonnegative().nullable().optional(),
+  volumeUsd: z.number().nonnegative().nullable().optional(),
+  tokenAmount: z.number().nonnegative().nullable().optional(),
+  trader: z.string().min(1).nullable().optional(),
+  signature: z.string().min(1),
+  slot: z.number().int().nonnegative().optional(),
+  timestamp: z.string().datetime(),
+  watchedAddress: z.string().min(1),
+  confidence: z.enum(["low", "medium", "high"]),
+  reasonCodes: z.array(z.string().min(1)),
+  raw: z.unknown().optional()
 });
 
 const limitSchema = z.number().int().positive().max(1000);
@@ -735,6 +827,186 @@ export function getLatestChainVerification(
   return row ? mapChainVerificationRow(row) : null;
 }
 
+export function saveChainTransactionEvent(
+  event: ChainTransactionEventInput
+): StoredChainTransactionEvent {
+  const parsed = chainTransactionEventInputSchema.parse(
+    event
+  ) as ChainTransactionEvent;
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into chain_transaction_events (
+        signature,
+        watched_address,
+        watched_address_kind,
+        mint,
+        status,
+        reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.signature,
+      parsed.watchedAddress,
+      parsed.watchedAddressKind,
+      parsed.mint ?? null,
+      parsed.status,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(parsed),
+      parsed.receivedAt
+    );
+
+  return {
+    ...parsed,
+    id: toRowId(result.lastInsertRowid),
+    createdAt: parsed.receivedAt
+  };
+}
+
+export function listChainTransactionEvents(
+  limit = 50
+): StoredChainTransactionEvent[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from chain_transaction_events
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as ChainTransactionEventRow[];
+
+  return rows.map(mapChainTransactionEventRow);
+}
+
+export function listChainTransactionEventsForReplay(
+  limit = 50
+): StoredChainTransactionEvent[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from chain_transaction_events
+       order by datetime(created_at) asc, id asc
+       limit ?`
+    )
+    .all(parsedLimit) as ChainTransactionEventRow[];
+
+  return rows.map(mapChainTransactionEventRow);
+}
+
+export function getChainTransactionEvent(
+  signature: string
+): StoredChainTransactionEvent | null {
+  const row = getDb()
+    .prepare(
+      `select *
+       from chain_transaction_events
+       where signature = ?
+       order by datetime(created_at) desc, id desc
+       limit 1`
+    )
+    .get(signature) as ChainTransactionEventRow | undefined;
+
+  return row ? mapChainTransactionEventRow(row) : null;
+}
+
+export function saveChainTradeEvent(
+  event: ChainTradeEventInput
+): StoredChainTradeEvent {
+  const parsed = chainTradeEventInputSchema.parse(
+    event
+  ) as NormalizedChainTradeEvent;
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into chain_trade_events (
+        signature,
+        mint,
+        side,
+        confidence,
+        price_usd,
+        volume_usd,
+        token_amount,
+        watched_address,
+        reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.signature,
+      parsed.mint,
+      parsed.side,
+      parsed.confidence,
+      parsed.priceUsd ?? null,
+      parsed.volumeUsd ?? null,
+      parsed.tokenAmount ?? null,
+      parsed.watchedAddress,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(parsed),
+      parsed.timestamp
+    );
+
+  return {
+    ...parsed,
+    id: toRowId(result.lastInsertRowid),
+    createdAt: parsed.timestamp
+  };
+}
+
+export function listChainTradeEvents(limit = 50): StoredChainTradeEvent[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from chain_trade_events
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as ChainTradeEventRow[];
+
+  return rows.map(mapChainTradeEventRow);
+}
+
+export function listChainTradeEventsForReplay(
+  limit = 50
+): StoredChainTradeEvent[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from chain_trade_events
+       order by datetime(created_at) asc, id asc
+       limit ?`
+    )
+    .all(parsedLimit) as ChainTradeEventRow[];
+
+  return rows.map(mapChainTradeEventRow);
+}
+
+export function getChainTradeEvent(
+  signature: string
+): StoredChainTradeEvent | null {
+  const row = getDb()
+    .prepare(
+      `select *
+       from chain_trade_events
+       where signature = ?
+       order by datetime(created_at) desc, id desc
+       limit 1`
+    )
+    .get(signature) as ChainTradeEventRow | undefined;
+
+  return row ? mapChainTradeEventRow(row) : null;
+}
+
 export async function* createReplayStream(options: {
   limit?: number;
   speed?: number;
@@ -765,11 +1037,31 @@ export async function* createReplayStream(options: {
 
     yield {
       createdAt: record.createdAt,
-      payload: record.payload,
+      payload: getReplayPayload(record),
       sequence: index + 1,
       source: type
     };
   }
+}
+
+function getReplayPayload(
+  record:
+    | StoredCandidateDecision
+    | StoredChainTransactionEvent
+    | StoredChainTradeEvent
+    | StoredChainVerification
+    | StoredFeedEvent
+    | StoredRiskSnapshot
+    | StoredSignal
+): unknown {
+  if ("payload" in record) {
+    return record.payload;
+  }
+
+  const payload = { ...record } as Record<string, unknown>;
+  delete payload.createdAt;
+  delete payload.id;
+  return payload;
 }
 
 function getReplayRecords(
@@ -777,6 +1069,8 @@ function getReplayRecords(
   limit: number | undefined
 ): Array<
   | StoredCandidateDecision
+  | StoredChainTransactionEvent
+  | StoredChainTradeEvent
   | StoredChainVerification
   | StoredFeedEvent
   | StoredRiskSnapshot
@@ -785,6 +1079,10 @@ function getReplayRecords(
   switch (type) {
     case "candidate_decisions":
       return listCandidateDecisionsForReplay(limit);
+    case "chain_transaction_events":
+      return listChainTransactionEventsForReplay(limit);
+    case "chain_trade_events":
+      return listChainTradeEventsForReplay(limit);
     case "chain_verifications":
       return listChainVerificationsForReplay(limit);
     case "risk_snapshots":
@@ -935,6 +1233,8 @@ export function getStorageStats(): StorageStats {
     feedEventCount: countRows(db, "feed_events"),
     signalCount: countRows(db, "signals"),
     chainVerificationCount: countRows(db, "chain_verifications"),
+    chainTransactionEventCount: countRows(db, "chain_transaction_events"),
+    chainTradeEventCount: countRows(db, "chain_trade_events"),
     riskSnapshotCount: countRows(db, "risk_snapshots"),
     candidateDecisionCount: countRows(db, "candidate_decisions"),
     paperOrderCount: countRows(db, "paper_orders"),
@@ -1102,8 +1402,62 @@ function runMigrations(db: DatabaseSync): void {
 
     db.prepare(
       `insert into storage_migrations (id, name, applied_at)
-       values (?, ?, ?)`
+      values (?, ?, ?)`
     ).run(3, "chain_verifications", new Date().toISOString());
+  }
+
+  if (!hasMigration(db, 4)) {
+    db.exec(`
+      create table if not exists chain_transaction_events (
+        id integer primary key autoincrement,
+        signature text not null,
+        watched_address text not null,
+        watched_address_kind text not null,
+        mint text,
+        status text not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_chain_transaction_events_created_at
+        on chain_transaction_events(created_at);
+
+      create index if not exists idx_chain_transaction_events_signature
+        on chain_transaction_events(signature);
+
+      create index if not exists idx_chain_transaction_events_watched_address
+        on chain_transaction_events(watched_address);
+
+      create table if not exists chain_trade_events (
+        id integer primary key autoincrement,
+        signature text not null,
+        mint text not null,
+        side text not null,
+        confidence text not null,
+        price_usd real,
+        volume_usd real,
+        token_amount real,
+        watched_address text not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_chain_trade_events_created_at
+        on chain_trade_events(created_at);
+
+      create index if not exists idx_chain_trade_events_signature
+        on chain_trade_events(signature);
+
+      create index if not exists idx_chain_trade_events_mint
+        on chain_trade_events(mint);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(4, "chain_transaction_events", new Date().toISOString());
   }
 }
 
@@ -1261,6 +1615,34 @@ function mapChainVerificationRow(
     top10HolderPct: row.top10_holder_pct,
     payload: JSON.parse(row.payload_json),
     inspectedAt: row.inspected_at,
+    createdAt: row.created_at
+  };
+}
+
+function mapChainTransactionEventRow(
+  row: ChainTransactionEventRow
+): StoredChainTransactionEvent {
+  const payload = chainTransactionEventInputSchema.parse(
+    JSON.parse(row.payload_json)
+  ) as ChainTransactionEvent;
+
+  return {
+    ...payload,
+    id: row.id,
+    createdAt: row.created_at
+  };
+}
+
+function mapChainTradeEventRow(
+  row: ChainTradeEventRow
+): StoredChainTradeEvent {
+  const payload = chainTradeEventInputSchema.parse(
+    JSON.parse(row.payload_json)
+  ) as NormalizedChainTradeEvent;
+
+  return {
+    ...payload,
+    id: row.id,
     createdAt: row.created_at
   };
 }

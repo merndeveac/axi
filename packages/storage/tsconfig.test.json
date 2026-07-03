@@ -7,6 +7,7 @@
     "baseUrl": ".",
     "paths": {
       "@axi/shared": ["../shared/dist/index.d.ts"],
+      "@axi/chain-events": ["../chain-events/dist/index.d.ts"],
       "@axi/data-feeds": ["../data-feeds/dist/index.d.ts"]
     }
   },
