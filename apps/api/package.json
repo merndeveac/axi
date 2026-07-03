@@ -16,6 +16,8 @@
     "market:decode": "tsx --conditions=development src/market-decode.ts",
     "watch:plan": "tsx --conditions=development src/watch-plan.ts",
     "feed:probe": "tsx --conditions=development src/feed-probe.ts",
+    "actual-data:status": "tsx --conditions=development src/actual-data-status.ts",
+    "actual-data:probe": "tsx --conditions=development src/actual-data-probe.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {

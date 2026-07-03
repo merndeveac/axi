@@ -24,6 +24,9 @@ type StorageStats = {
   chainTransactionEventCount: number;
   chainTradeEventCount: number;
   marketObservationCount: number;
+  pumpPortalTokenTradeEventCount: number;
+  actualDataSubscriptionCount: number;
+  actualDataSessionCount: number;
   watchPlanCount: number;
   watchActionCount: number;
   riskSnapshotCount: number;
@@ -34,6 +37,9 @@ type StorageStats = {
 };
 
 type HealthStatus = {
+  actualData: ActualDataStatus;
+  actualDataSessionCount: number;
+  actualDataSubscriptionCount: number;
   candidateCount: number;
   candidateLifecycleEnabled: boolean;
   chainEventsConfigured: boolean;
@@ -47,6 +53,7 @@ type HealthStatus = {
   marketDataEnabled: boolean;
   marketDataMinConfidence: string;
   marketObservationCount: number;
+  pumpPortalTokenTradeEventCount: number;
   watchOrchestratorEnabled: boolean;
   watchPlanCount: number;
   watchActionCount: number;
@@ -58,6 +65,28 @@ type HealthStatus = {
   status: string;
   trackedTokenCount: number;
   solUsdConfigured: boolean;
+};
+
+type ActualDataStatus = {
+  acknowledgedMetered: boolean;
+  apiKeyConfigured: boolean;
+  autoSubscribe: boolean;
+  autoSubscribeOnMigration: boolean;
+  autoSubscribeOnNewToken: boolean;
+  autoSubscribeOnQualified: boolean;
+  budgetReached: boolean;
+  compatibleProvider: boolean;
+  enabled: boolean;
+  estimatedMeteredCostSol: number | null;
+  manualMintCount: number;
+  maxEventsPerMint: number;
+  maxEventsPerSession: number;
+  maxSubscribedTokens: number;
+  paperOnly: true;
+  provider: string;
+  reasonCodes: string[];
+  subscribedTokenCount: number;
+  totalEventsThisSession: number;
 };
 
 type ChainVerifierStatus = {
@@ -207,6 +236,33 @@ type MarketObservationRow = {
   createdAt: string;
 };
 
+type ActualDataSummary = {
+  eventCount: number;
+  latestPriceSol: number | null;
+  latestRealTradeAt: string | null;
+  latestVolumeSol: number | null;
+  observationOnly: true;
+  paperOnly: true;
+  provider: "pumpportal";
+  reasonCodes: string[];
+  subscriptionStatus: string;
+};
+
+type PumpPortalTradeRow = {
+  id: number;
+  mint: string;
+  signature: string | null;
+  side: string;
+  trader: string | null;
+  priceSol: number | null;
+  volumeSol: number | null;
+  tokenAmount: number | null;
+  confidence: string;
+  usableForMetrics: boolean;
+  reasonCodes: string[];
+  createdAt: string;
+};
+
 type CandidateApiRow = {
   mint: string;
   symbol?: string;
@@ -224,6 +280,7 @@ type CandidateApiRow = {
   latestMetrics?: RollingMetricsSnapshot;
   latestRisk?: RiskSnapshot;
   latestMarketObservationSummary?: MarketObservationSummary;
+  actualData?: ActualDataSummary;
   latestWatchPlanSummary?: WatchPlanSummary;
   lastUpdatedAt: string;
   marketReasonCodes?: string[];
@@ -256,6 +313,9 @@ export function App() {
   const [chainEventsStatus, setChainEventsStatus] =
     useState<ChainEventsStatus | null>(null);
   const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
+  const [actualDataStatus, setActualDataStatus] =
+    useState<ActualDataStatus | null>(null);
+  const [actualTrades, setActualTrades] = useState<PumpPortalTradeRow[]>([]);
   const [watchStatus, setWatchStatus] = useState<WatchStatus | null>(null);
   const [chainTransactions, setChainTransactions] = useState<
     ChainTransactionRow[]
@@ -333,6 +393,8 @@ export function App() {
           chainResponse,
           chainEventsResponse,
           marketStatusResponse,
+          actualDataStatusResponse,
+          actualTradesResponse,
           watchStatusResponse,
           watchedAddressesResponse,
           chainTransactionsResponse,
@@ -347,6 +409,8 @@ export function App() {
           fetch(`${apiBaseUrl}/chain/status`),
           fetch(`${apiBaseUrl}/chain/events/status`),
           fetch(`${apiBaseUrl}/market/status`),
+          fetch(`${apiBaseUrl}/actual-data/status`),
+          fetch(`${apiBaseUrl}/actual-data/trades?limit=10`),
           fetch(`${apiBaseUrl}/watch/status`),
           fetch(`${apiBaseUrl}/chain/events/watches`),
           fetch(`${apiBaseUrl}/chain/events/transactions?limit=10`),
@@ -363,6 +427,8 @@ export function App() {
           !chainResponse.ok ||
           !chainEventsResponse.ok ||
           !marketStatusResponse.ok ||
+          !actualDataStatusResponse.ok ||
+          !actualTradesResponse.ok ||
           !watchStatusResponse.ok ||
           !watchedAddressesResponse.ok ||
           !chainTransactionsResponse.ok ||
@@ -384,6 +450,10 @@ export function App() {
           (await chainEventsResponse.json()) as ChainEventsStatus;
         const nextMarketStatus =
           (await marketStatusResponse.json()) as MarketStatus;
+        const nextActualDataStatus =
+          (await actualDataStatusResponse.json()) as ActualDataStatus;
+        const nextActualTrades =
+          (await actualTradesResponse.json()) as PumpPortalTradeRow[];
         const nextWatchStatus =
           (await watchStatusResponse.json()) as WatchStatus;
         const nextWatchedAddresses =
@@ -405,6 +475,8 @@ export function App() {
           setChainStatus(nextChainStatus);
           setChainEventsStatus(nextChainEventsStatus);
           setMarketStatus(nextMarketStatus);
+          setActualDataStatus(nextActualDataStatus);
+          setActualTrades(nextActualTrades);
           setWatchStatus(nextWatchStatus);
           setWatchedAddresses(nextWatchedAddresses);
           setChainTransactions(nextChainTransactions);
@@ -490,6 +562,13 @@ export function App() {
       : connectionStatus === "connecting"
         ? "warning"
         : "offline";
+  const actualData = actualDataStatus ?? healthStatus?.actualData ?? null;
+  const actualDataLabel =
+    actualData?.enabled && actualData.compatibleProvider
+      ? "REAL/PUMPPORTAL"
+      : feedLabel === "MOCK"
+        ? "MOCK"
+        : "PAPER FEED";
 
   return (
     <main className="app-shell">
@@ -572,6 +651,24 @@ export function App() {
           tone={marketStatus?.enabled ? "good" : "neutral"}
         />
         <MetricValue
+          label="data mode"
+          value={actualDataLabel}
+          detail="observation only"
+          tone={actualData?.enabled ? "warn" : "neutral"}
+        />
+        <MetricValue
+          label="actual trades"
+          value={formatCompactNumber(actualData?.totalEventsThisSession ?? 0)}
+          detail={`${formatCompactNumber(storageStats?.pumpPortalTokenTradeEventCount ?? 0)} stored`}
+          tone={(actualData?.totalEventsThisSession ?? 0) > 0 ? "good" : "neutral"}
+        />
+        <MetricValue
+          label="actual subs"
+          value={`${actualData?.subscribedTokenCount ?? 0}/${actualData?.maxSubscribedTokens ?? 0}`}
+          detail={actualData?.budgetReached ? "budget reached" : "token trades"}
+          tone={actualData?.budgetReached ? "bad" : actualData?.enabled ? "warn" : "neutral"}
+        />
+        <MetricValue
           label="watch orch"
           value={(watchStatus?.enabled ?? healthStatus?.watchOrchestratorEnabled) ? "[ON]" : "[OFF]"}
           detail={`${storageStats?.watchPlanCount ?? watchStatus?.watchPlanCount ?? 0} plans / ${storageStats?.watchActionCount ?? watchStatus?.watchActionCount ?? 0} actions`}
@@ -593,6 +690,108 @@ export function App() {
       <section className="console-line" aria-live="polite">
         <span className="prompt">&gt;</span>
         <span>{statusMessage}</span>
+      </section>
+
+      <section className="table-region actual-data-region" aria-label="Actual data status">
+        <div className="table-heading">
+          <h2>Actual Data Status</h2>
+          <span className="table-meta">PAPER ONLY / OBSERVATION ONLY</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Enabled</th>
+              <th>Metered Ack</th>
+              <th>API Key</th>
+              <th>Provider</th>
+              <th>Compatible</th>
+              <th>Subscribed</th>
+              <th>Events</th>
+              <th>Session Max</th>
+              <th>Mint Max</th>
+              <th>Budget</th>
+              <th>Est Cost SOL</th>
+              <th>Reasons</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>{actualData?.enabled ? "yes" : "no"}</td>
+              <td>{actualData?.acknowledgedMetered ? "yes" : "no"}</td>
+              <td>{actualData?.apiKeyConfigured ? "yes" : "no"}</td>
+              <td>{actualData?.provider ?? "unknown"}</td>
+              <td>{actualData?.compatibleProvider ? "yes" : "no"}</td>
+              <td>
+                {actualData?.subscribedTokenCount ?? 0}/
+                {actualData?.maxSubscribedTokens ?? 0}
+              </td>
+              <td>{formatCompactNumber(actualData?.totalEventsThisSession ?? 0)}</td>
+              <td>{formatCompactNumber(actualData?.maxEventsPerSession ?? 0)}</td>
+              <td>{formatCompactNumber(actualData?.maxEventsPerMint ?? 0)}</td>
+              <td>{actualData?.budgetReached ? "reached" : "open"}</td>
+              <td>{formatNullableNumber(actualData?.estimatedMeteredCostSol)}</td>
+              <td>
+                <ReasonCodes codes={actualData?.reasonCodes} />
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section className="table-region actual-data-region" aria-label="Actual PumpPortal trades">
+        <div className="table-heading">
+          <h2>Actual PumpPortal Trades</h2>
+          <span className="table-meta">{actualTrades.length} rows</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Mint</th>
+              <th>Side</th>
+              <th>Price SOL</th>
+              <th>Volume SOL</th>
+              <th>Token Amt</th>
+              <th>Trader</th>
+              <th>Confidence</th>
+              <th>Usable</th>
+              <th>Reasons</th>
+              <th>Signature</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody>
+            {actualTrades.map((trade) => (
+              <tr key={trade.id}>
+                <td className="mono" title={trade.mint}>
+                  {shortMint(trade.mint)}
+                </td>
+                <td>{trade.side}</td>
+                <td>{formatNullableNumber(trade.priceSol)}</td>
+                <td>{formatNullableNumber(trade.volumeSol)}</td>
+                <td>{formatNullableNumber(trade.tokenAmount)}</td>
+                <td className="mono" title={trade.trader ?? ""}>
+                  {trade.trader ? shortMint(trade.trader) : "--"}
+                </td>
+                <td>{trade.confidence}</td>
+                <td>{trade.usableForMetrics ? "yes" : "no"}</td>
+                <td>
+                  <ReasonCodes codes={trade.reasonCodes} />
+                </td>
+                <td className="mono" title={trade.signature ?? ""}>
+                  {trade.signature ? shortMint(trade.signature) : "--"}
+                </td>
+                <td>{formatTimestamp(trade.createdAt)}</td>
+              </tr>
+            ))}
+            {actualTrades.length === 0 ? (
+              <tr>
+                <td colSpan={11} className="empty-state compact-empty">
+                  No actual PumpPortal token trades
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
       </section>
 
       <section className="table-region watch-region" aria-label="Watch orchestration plans">
@@ -920,6 +1119,11 @@ export function App() {
               <th>Watch Targets</th>
               <th>Watch Status</th>
               <th>Watch Reasons</th>
+              <th>Actual Trades</th>
+              <th>Actual Sub</th>
+              <th>Real Trade</th>
+              <th>Price SOL</th>
+              <th>Volume SOL</th>
               <th>Reasons</th>
               <th>10s USD</th>
               <th>10s SOL</th>
@@ -983,6 +1187,11 @@ export function App() {
                   <td>
                     <ReasonCodes codes={candidate.watchReasonCodes} />
                   </td>
+                  <td>{candidate.actualData?.eventCount ?? 0}</td>
+                  <td>{candidate.actualData?.subscriptionStatus ?? "none"}</td>
+                  <td>{formatTimestamp(candidate.actualData?.latestRealTradeAt)}</td>
+                  <td>{formatNullableNumber(candidate.actualData?.latestPriceSol)}</td>
+                  <td>{formatNullableNumber(candidate.actualData?.latestVolumeSol)}</td>
                   <td>
                     <ReasonCodes codes={decision?.combinedReasonCodes} />
                   </td>
@@ -1002,7 +1211,7 @@ export function App() {
             })}
             {sortedCandidates.length === 0 ? (
               <tr>
-                <td colSpan={26} className="empty-state">
+                <td colSpan={31} className="empty-state">
                   {statusMessage}
                 </td>
               </tr>
@@ -1028,6 +1237,8 @@ export function App() {
               <th>Risk</th>
               <th>Reasons</th>
               <th>Feed</th>
+              <th>Data</th>
+              <th>Actual Events</th>
               <th>Insufficient</th>
               <th>1s Vol</th>
               <th>5s Vol</th>
@@ -1073,6 +1284,8 @@ export function App() {
                   <ReasonCodes codes={signal.reasonCodes} />
                 </td>
                 <td>{signal.feedProvider ?? healthStatus?.feedProvider ?? "unknown"}</td>
+                <td>{formatSignalDataMode(signal, healthStatus?.feedProvider)}</td>
+                <td>{signal.actualData?.eventCount ?? 0}</td>
                 <td>{signal.insufficientMetrics ? "yes" : "no"}</td>
                 <td>{formatUsd(metricVolume(signal, "1s"))}</td>
                 <td>{formatUsd(metricVolume(signal, "5s"))}</td>
@@ -1091,7 +1304,7 @@ export function App() {
             ))}
             {sortedSignals.length === 0 ? (
               <tr>
-                <td colSpan={22} className="empty-state">
+                <td colSpan={24} className="empty-state">
                   {statusMessage}
                 </td>
               </tr>
@@ -1188,6 +1401,19 @@ function formatWatchSummary(summary: WatchPlanSummary | undefined): string {
   }
 
   return "dry-run";
+}
+
+function formatSignalDataMode(
+  signal: OverlaySignal,
+  fallbackFeed: string | undefined
+): string {
+  if (signal.actualData) {
+    return "REAL/PUMPPORTAL";
+  }
+
+  const feed = signal.feedProvider ?? fallbackFeed ?? "unknown";
+
+  return feed === "mock" ? "MOCK" : "PAPER ONLY";
 }
 
 function formatNumber(value: number | undefined): string {

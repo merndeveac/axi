@@ -50,6 +50,9 @@ import {
   savePaperOrder,
   saveRiskSnapshot,
   saveSignal,
+  listActualDataSubscriptions,
+  listPumpPortalTokenTradeEvents,
+  listPumpPortalTokenTradeEventsByMint,
   type StorageHandle,
   upsertPaperPosition
 } from "@axi/storage";
@@ -73,6 +76,14 @@ import {
   createWatchPlanSummary,
   type WatchOrchestrationService
 } from "./watch-orchestration-service";
+import {
+  ActualDataServiceError,
+  createActualDataConfig,
+  createActualDataService,
+  type ActualDataCandidateSummary,
+  type ActualDataService,
+  type ActualDataServiceConfig
+} from "./actual-data-service";
 
 const logLevelSchema = z.enum([
   "fatal",
@@ -209,6 +220,55 @@ export const apiConfigSchema = z.object({
   PUMPPORTAL_SUBSCRIBE_MIGRATION: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(true),
+  PUMPPORTAL_TOKEN_TRADES_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  PUMPPORTAL_TOKEN_TRADES_ACK_METERED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  PUMPPORTAL_TOKEN_TRADES_MANUAL_MINTS: z
+    .preprocess((value) => (value === "" ? undefined : value), z.string().optional()),
+  PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE_ON_NEW_TOKEN: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE_ON_MIGRATION: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE_ON_QUALIFIED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(10),
+  PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(5000),
+  PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_MINT: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(1000),
+  PUMPPORTAL_TOKEN_TRADES_UNSUBSCRIBE_AFTER_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(300000),
+  PUMPPORTAL_TOKEN_TRADES_MIN_SCORE_TO_AUTO_SUBSCRIBE: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .default(60),
+  PUMPPORTAL_TOKEN_TRADES_REQUIRE_API_KEY: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
   LOG_LEVEL: logLevelSchema.default("info")
 });
 
@@ -228,6 +288,7 @@ export type ApiServerOptions = {
   paperAutoOrder?: boolean;
   port?: number;
   pumpPortal?: PumpPortalFeedProviderOptions | undefined;
+  actualData?: ActualDataServiceConfig;
   signalIntervalMs?: number;
   startFeed?: boolean;
   storageDatabasePath?: string;
@@ -249,6 +310,7 @@ export type ApiServer = {
   chainEvents: ChainEventsService;
   chainVerifier: ChainVerifierService;
   watchOrchestration: WatchOrchestrationService;
+  actualData: ActualDataService;
 };
 
 const limitQuerySchema = z.object({
@@ -278,6 +340,10 @@ const watchPlanBodySchema = z.object({
   mint: z.string().min(1),
   event: z.unknown().optional(),
   source: z.string().min(1).optional()
+});
+const actualDataSubscribeBodySchema = z.object({
+  mint: z.string().min(1),
+  reason: z.string().min(1).default("manual")
 });
 
 export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
@@ -316,6 +382,13 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const chainEvents = createChainEventsService({
     ...options.chainEvents,
     onSafeFeedEvent: handleFeedEvent
+  });
+  const actualData = createActualDataService({
+    config: options.actualData ?? createActualDataConfig(),
+    providerName: feed.name,
+    ...(feed instanceof PumpPortalFeedProvider
+      ? { pumpPortalProvider: feed }
+      : {})
   });
   const paperAutoOrder = options.paperAutoOrder ?? false;
   const storage = options.storageDatabasePath
@@ -372,11 +445,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       chainVerifier: chainVerifier.getStatus(),
       chainVerificationCount: stats.chainVerificationCount,
       chainWatchedAddressCount: chainEventsStatus.watchedAddressCount,
+      actualData: actualData.getStatus(),
+      actualDataSessionCount: stats.actualDataSessionCount,
+      actualDataSubscriptionCount: stats.actualDataSubscriptionCount,
       feedProvider: feed.name,
       marketData: marketStatus,
       marketDataEnabled: marketStatus.enabled,
       marketDataMinConfidence: marketStatus.minConfidenceForMetrics,
       marketObservationCount: stats.marketObservationCount,
+      pumpPortalTokenTradeEventCount: stats.pumpPortalTokenTradeEventCount,
       watchOrchestrator: watchStatus,
       watchOrchestratorEnabled: watchStatus.enabled,
       watchPlanCount: stats.watchPlanCount,
@@ -413,7 +490,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     return metrics;
   });
 
-  app.get("/candidates", async () => candidateEngine.getAllCandidates());
+  app.get("/candidates", async () =>
+    candidateEngine.getAllCandidates().map(enrichCandidateWithActualData)
+  );
 
   app.get("/candidates/:mint", async (request, reply) => {
     const params = mintParamSchema.parse(request.params);
@@ -426,7 +505,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       });
     }
 
-    return candidate;
+    return enrichCandidateWithActualData(candidate);
   });
 
   app.get("/risk", async () => Array.from(riskSnapshots.values()));
@@ -448,6 +527,57 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   app.get("/positions", async () => executor.getPositions());
 
   app.get("/storage/stats", async () => getStorageStats());
+
+  app.get("/actual-data/status", async () => actualData.getStatus());
+
+  app.get("/actual-data/subscriptions", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+
+    return {
+      current: actualData.getSubscriptions(),
+      recent: listActualDataSubscriptions(query.limit),
+      status: actualData.getStatus()
+    };
+  });
+
+  app.post("/actual-data/subscribe", async (request, reply) => {
+    const body = actualDataSubscribeBodySchema.parse(request.body);
+
+    try {
+      return actualData.subscribeMint(body.mint, body.reason);
+    } catch (error) {
+      if (error instanceof ActualDataServiceError) {
+        return reply.code(error.statusCode).send({
+          actualData: actualData.getStatus(),
+          error: error.code,
+          message: error.message,
+          paperOnly: true
+        });
+      }
+
+      throw error;
+    }
+  });
+
+  app.delete("/actual-data/subscribe/:mint", async (request) => {
+    const params = mintParamSchema.parse(request.params);
+
+    return {
+      paperOnly: true,
+      subscription: actualData.unsubscribeMint(params.mint, "manual_delete")
+    };
+  });
+
+  app.get("/actual-data/trades", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return listPumpPortalTokenTradeEvents(query.limit);
+  });
+
+  app.get("/actual-data/trades/:mint", async (request) => {
+    const params = mintParamSchema.parse(request.params);
+    const query = limitQuerySchema.parse(request.query);
+    return listPumpPortalTokenTradeEventsByMint(params.mint, query.limit);
+  });
 
   app.get("/chain/status", async () => chainVerifier.getStatus());
 
@@ -682,6 +812,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     }
 
     feedStarted = true;
+    actualData.start();
     void feed.start(handleFeedEvent);
     void chainEvents.start();
   }
@@ -692,11 +823,17 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     }
 
     feedStarted = false;
+    actualData.stop();
     await feed.stop();
     await chainEvents.stop();
   }
 
   function handleFeedEvent(event: FeedEvent): void {
+    const actualDataSummary =
+      event.type === "trade" && event.source === "pumpportal"
+        ? actualData.handlePumpPortalTradeEvent(event)
+        : undefined;
+
     saveFeedEvent(event);
     const rollingMetrics = metricsEngine.ingestFeedEvent(event);
     const candidate = candidateEngine.ingestFeedEvent(event);
@@ -777,8 +914,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     }
 
     saveCandidateDecision(decision);
+    actualData.maybeAutoSubscribeForEvent(event, decision);
 
+    const nextActualDataSummary =
+      actualDataSummary ?? actualData.getCandidateSummary(candidate.mint);
     const signal = createOverlaySignal({
+      ...(nextActualDataSummary
+        ? { actualDataSummary: nextActualDataSummary }
+        : {}),
       candidate,
       decision,
       metrics: effectiveMetrics,
@@ -957,6 +1100,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   }
 
   function createOverlaySignal(options: {
+    actualDataSummary?: ActualDataCandidateSummary;
     candidate: CandidateState;
     decision: CandidateDecision;
     metrics: RollingMetrics;
@@ -972,6 +1116,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       updatedAt:
         options.rollingMetrics?.lastUpdatedAt ?? options.decision.updatedAt
     };
+    const actualDataSummary =
+      options.actualDataSummary ??
+      actualData.getCandidateSummary(options.candidate.mint);
 
     const signal: OverlaySignal = {
       mint: options.candidate.mint,
@@ -998,6 +1145,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       ...(options.decision.marketReasonCodes
         ? { marketReasonCodes: options.decision.marketReasonCodes }
         : {}),
+      ...(actualDataSummary ? { actualData: actualDataSummary } : {}),
       ...(options.decision.watchPlanSummary
         ? { watchPlanSummary: options.decision.watchPlanSummary }
         : {}),
@@ -1155,6 +1303,19 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     }
   }
 
+  function enrichCandidateWithActualData(candidate: CandidateState):
+    | CandidateState
+    | (CandidateState & { actualData: ActualDataCandidateSummary }) {
+    const actualDataSummary = actualData.getCandidateSummary(candidate.mint);
+
+    return actualDataSummary
+      ? {
+          ...candidate,
+          actualData: actualDataSummary
+        }
+      : candidate;
+  }
+
   function sendJson(socket: WebSocket, payload: unknown): void {
     if (socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify(payload));
@@ -1166,6 +1327,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   }
 
   return {
+    actualData,
     app,
     candidates: candidateEngine,
     chainEvents,
@@ -1199,7 +1361,9 @@ function createRiskInput(options: {
   const source = options.candidate.source ?? options.event?.source ?? "unknown";
   const scenario = getMockScenario(source);
   const incompleteRealFeed =
-    options.event?.source === "pumpportal" && options.event.metricsComplete === false;
+    options.event?.source === "pumpportal" &&
+    (options.event.metricsComplete === false ||
+      options.event.reasonCodes?.includes("PUMPPORTAL_TOKEN_TRADE") === true);
 
   const input: RiskInput = {
     mint: options.candidate.mint,

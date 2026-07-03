@@ -1,7 +1,7 @@
 # AXI
 
-Local Solana token scanner, paper trading signal engine, and future Axiom
-overlay. This repository is paper-mode only in this first pass.
+Local Solana token scanner, paper trading signal engine, read-only actual data
+ingestion, and future Axiom overlay. This repository remains paper-mode only.
 
 No wallet loading, private key handling, transaction signing, or live trading
 exists here yet.
@@ -13,9 +13,9 @@ exists here yet.
 - No private keys, seed phrases, wallet files, API keys, or auth tokens should be
   stored in this repo.
 - No Axiom private APIs are used or reverse engineered.
-- New external data feeds and all trade execution require later, explicit
-  development. Existing public feed/RPC helpers are read-only and disabled or
-  conservative by default.
+- Direct Solana RPC verification, watched-address transaction ingestion, local
+  market-data normalization, and optional PumpPortal token-trade ingestion
+  exist, but all are read-only/paper-only and disabled or gated by default.
 
 ## Architecture
 
@@ -25,10 +25,12 @@ data feeds -> watch orchestration -> metrics -> risk -> candidates -> scoring ->
 
 Default implementation uses `MockFeedProvider`. It emits safe fake token events
 for local development. A public PumpPortal feed provider is available behind
-`DATA_FEED=pumpportal` for new-token and migration events only.
+`DATA_FEED=pumpportal` for new-token and migration events, plus opt-in metered
+`subscribeTokenTrade` ingestion for selected mints only.
 
-All current signal and risk data is fake, mock-generated, incomplete, or
-placeholder-only, and remains paper-only.
+Signal and risk data can be fake, mock-generated, incomplete, normalized from
+read-only Solana observations, or normalized from explicitly enabled PumpPortal
+token trades. It remains paper-only.
 
 ## Local Persistence
 
@@ -47,7 +49,8 @@ database is local-only and is ignored by git.
 Current persistence tables include `feed_events`, `signals`, `risk_snapshots`,
 `candidate_decisions`, `chain_verifications`, `chain_transaction_events`,
 `chain_trade_events`, `market_observations`, `watch_plans`, `watch_actions`,
-`paper_orders`, and `paper_positions`.
+`pumpportal_token_trade_events`, `actual_data_subscriptions`,
+`actual_data_sessions`, `paper_orders`, and `paper_positions`.
 
 Clear local paper data with:
 
@@ -73,6 +76,8 @@ SOL-denominated metrics are used as a paper-mode fallback only when USD is
 unknown. The mock feed emits deterministic fake trade events to exercise this
 engine locally. These mock trades are not real market data and remain
 paper-only.
+Opt-in PumpPortal token trades can update SOL-denominated rolling metrics when
+they include usable SOL and token amounts.
 
 ## Risk And Candidate Lifecycle
 
@@ -162,8 +167,8 @@ volume/price metrics.
 Limitations: watched mints may not catch every swap; pool, bonding-curve, token
 account, or program addresses may be better watch targets. This is not a
 full-market indexer, does not do DEX-specific decoding yet, does not provide
-real USD pricing yet, does not use Geyser/gRPC/shreds, does not use metered
-PumpPortal trade streams, and does not use Axiom private APIs or scraping.
+real USD pricing yet, does not use Geyser/gRPC/shreds, does not subscribe to
+account-trade streams, and does not use Axiom private APIs or scraping.
 
 ## Read-Only Market Data Normalizer
 
@@ -310,15 +315,59 @@ Public PumpPortal paper-feed mode can be started explicitly:
 DATA_FEED=pumpportal PUMPPORTAL_API_KEY=... pnpm --filter @axi/api dev
 ```
 
-PumpPortal support uses one WebSocket connection and subscribes only to:
+PumpPortal support uses one WebSocket connection and subscribes by default only
+to:
 
 - `subscribeNewToken`
 - `subscribeMigration`
 
-`subscribeTokenTrade` and `subscribeAccountTrade` are intentionally not
-implemented because they are metered streams. PumpPortal events are normalized
-with conservative placeholder metrics until a later metrics source exists, so
-they are marked with `INSUFFICIENT_METRICS` and remain paper-only.
+`subscribeTokenTrade` is implemented only as explicit, opt-in actual data
+ingestion for selected mints. It is metered, disabled by default, requires
+`PUMPPORTAL_TOKEN_TRADES_ACK_METERED=true`, and is budget-limited. Account trade
+streams and PumpPortal trading APIs are not implemented.
+
+New-token and migration events are normalized with conservative placeholder
+metrics until a later metrics source exists, so they are marked with
+`INSUFFICIENT_METRICS` and remain paper-only. Usable token-trade events can
+update SOL-denominated rolling metrics.
+
+## Actual PumpPortal Token Trade Data
+
+Actual PumpPortal token trade ingestion is disabled by default and remains
+read-only, observation-only, and paper-only. It requires:
+
+- `DATA_FEED=pumpportal`
+- `PUMPPORTAL_API_KEY=...`
+- `PUMPPORTAL_TOKEN_TRADES_ENABLED=true`
+- `PUMPPORTAL_TOKEN_TRADES_ACK_METERED=true`
+
+Only selected token mints are subscribed. One WebSocket connection is used.
+`subscribeAccountTrade`, PumpPortal trading APIs, wallet loading, private-key
+handling, signing, transaction sending, and live trading are not implemented.
+
+Safe manual run:
+
+```bash
+DATA_FEED=pumpportal \
+PUMPPORTAL_API_KEY=... \
+PUMPPORTAL_TOKEN_TRADES_ENABLED=true \
+PUMPPORTAL_TOKEN_TRADES_ACK_METERED=true \
+PUMPPORTAL_TOKEN_TRADES_MANUAL_MINTS=<MINT> \
+PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION=1000 \
+pnpm local:restart
+```
+
+Probe token trades without starting the API server or persisting data:
+
+```bash
+PUMPPORTAL_API_KEY=... pnpm --filter @axi/api actual-data:probe -- --mint <MINT> --limit 25 --ack-metered
+```
+
+Show env-derived actual-data status without connecting:
+
+```bash
+pnpm --filter @axi/api actual-data:status
+```
 
 Endpoints:
 
@@ -333,6 +382,12 @@ Endpoints:
 - `GET /metrics/:mint`
 - `GET /positions`
 - `GET /storage/stats`
+- `GET /actual-data/status`
+- `GET /actual-data/subscriptions`
+- `POST /actual-data/subscribe`
+- `DELETE /actual-data/subscribe/:mint`
+- `GET /actual-data/trades`
+- `GET /actual-data/trades/:mint`
 - `GET /chain/status`
 - `GET /chain/verifications`
 - `GET /chain/verifications/:mint`
@@ -369,6 +424,12 @@ tracked.
 `GET /candidates` and `GET /risk` return the current in-memory candidate
 lifecycle and risk snapshots. The persisted history is available through SQLite
 and replay.
+
+`GET /actual-data/status` reports the actual-data safety gates, provider
+compatibility, metered acknowledgement, API-key configured boolean, subscription
+counts, event budgets, and `paperOnly: true`. `POST /actual-data/subscribe`
+accepts `{ "mint": "...", "reason": "manual" }` and subscribes read-only to
+PumpPortal token trades only when all gates pass.
 
 `GET /chain/status` reports whether the read-only verifier is disabled,
 misconfigured, or ready. `POST /chain/verify` accepts `{ "mint": "..." }` and
@@ -407,6 +468,10 @@ pnpm --filter @axi/api replay -- --type chain_verifications --limit 25 --speed 0
 pnpm --filter @axi/api replay -- --type chain_transaction_events --limit 25 --speed 0
 pnpm --filter @axi/api replay -- --type chain_trade_events --limit 25 --speed 0
 pnpm --filter @axi/api replay -- --type market_observations --limit 25 --speed 0
+pnpm --filter @axi/api replay -- --type pumpportal_token_trade_events --limit 25 --speed 0
+pnpm --filter @axi/api replay -- --type pumpportal_token_trade_events --metrics true --risk true --candidates true --limit 100 --speed 0
+pnpm --filter @axi/api replay -- --type actual_data_subscriptions --limit 25 --speed 0
+pnpm --filter @axi/api replay -- --type actual_data_sessions --limit 25 --speed 0
 pnpm --filter @axi/api replay -- --type chain_trade_events --metrics true --risk true --candidates true --limit 100 --speed 0
 pnpm --filter @axi/api replay -- --type chain_trade_events --market true --metrics true --risk true --candidates true --limit 100 --speed 0
 pnpm --filter @axi/api replay -- --type chain_transaction_events --market true --limit 100 --speed 0
@@ -477,7 +542,17 @@ DATA_FEED=pumpportal PUMPPORTAL_API_KEY=... pnpm --filter @axi/api feed:probe --
 DATA_FEED=pumpportal pnpm --filter @axi/api feed:probe -- --new-token true --migration false --timeout 30000
 ```
 
-Do not put real API keys in source files, tests, commits, or `.env.example`.
+Probe actual PumpPortal token trades for explicit mints only. This requires an
+API key and explicit metered acknowledgement:
+
+```bash
+PUMPPORTAL_API_KEY=... pnpm --filter @axi/api actual-data:probe -- --mint <MINT> --limit 25 --ack-metered
+pnpm --filter @axi/api actual-data:status
+```
+
+Do not run a real metered probe unless you intend to spend metered PumpPortal
+usage. Do not put real API keys in source files, tests, commits, or
+`.env.example`.
 
 ## Run The Dashboard
 
@@ -520,7 +595,8 @@ docker compose --profile infra up -d
 
 - `@axi/shared`: shared Zod schemas and TypeScript types.
 - `@axi/scoring`: pure scoring functions and unit tests.
-- `@axi/data-feeds`: feed interfaces plus a mock feed provider.
+- `@axi/data-feeds`: feed interfaces plus mock and PumpPortal feed providers,
+  including gated token-trade subscription helpers.
 - `@axi/execution`: in-memory paper execution only.
 - `@axi/metrics`: local rolling-window metrics for paper-mode signal features.
 - `@axi/risk`: pure local risk/scam-filter snapshots and reason codes.
@@ -558,11 +634,14 @@ docker compose --profile infra up -d
   orchestration planning and API/dashboard visibility.
 - `dev/dashboard-terminal-ui-pass` contains the terminal-style dashboard UI
   refinement.
+- `dev/actual-data-pumpportal-trades` contains opt-in PumpPortal token-trade
+  ingestion for selected mints.
 
 Direct Solana RPC verification and watched-address transaction ingestion exist,
 and local market-data normalization and watch orchestration exist, but they are
 read-only and disabled or conservative by default. This project still has no
 wallet UI, no private-key loading, no live trading, no Solana transaction
 signing, no transaction sending, no real risk-data provider, no DEX-specific
-decoding, no full-market indexing, no Geyser/gRPC streaming, no metered
-PumpPortal trade streams, no Axiom private API usage, and no Axiom scraping.
+decoding, no full-market indexing, no Geyser/gRPC streaming, no account-trade
+streams, no PumpPortal trading API usage, no Axiom private API usage, and no
+Axiom scraping.

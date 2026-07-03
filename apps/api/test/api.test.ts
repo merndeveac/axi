@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { TokenCreatedEvent } from "@axi/data-feeds";
 import type { ApiServer } from "../src/app";
 import { createApiServer } from "../src/app";
+import { createActualDataConfig } from "../src/actual-data-service";
 
 let server: ApiServer | undefined;
 let testDirectory: string;
@@ -30,6 +31,13 @@ describe("@axi/api", () => {
       url: "/health"
     });
     const body = response.json() as {
+      actualData: {
+        enabled: boolean;
+        paperOnly: boolean;
+        reasonCodes: string[];
+      };
+      actualDataSessionCount: number;
+      actualDataSubscriptionCount: number;
       candidateCount: number;
       candidateLifecycleEnabled: boolean;
       chainEventsConfigured: boolean;
@@ -40,6 +48,7 @@ describe("@axi/api", () => {
       marketDataEnabled: boolean;
       marketDataMinConfidence: string;
       marketObservationCount: number;
+      pumpPortalTokenTradeEventCount: number;
       watchOrchestratorEnabled: boolean;
       watchPlanCount: number;
       watchActionCount: number;
@@ -53,6 +62,11 @@ describe("@axi/api", () => {
     };
 
     expect(response.statusCode).toBe(200);
+    expect(body.actualData.enabled).toBe(false);
+    expect(body.actualData.paperOnly).toBe(true);
+    expect(body.actualData.reasonCodes).toContain("ACTUAL_DATA_DISABLED");
+    expect(body.actualDataSessionCount).toBe(0);
+    expect(body.actualDataSubscriptionCount).toBe(0);
     expect(body.candidateLifecycleEnabled).toBe(true);
     expect(body.chainEventsEnabled).toBe(false);
     expect(body.chainEventsConfigured).toBe(false);
@@ -61,6 +75,7 @@ describe("@axi/api", () => {
     expect(body.marketDataEnabled).toBe(true);
     expect(body.marketDataMinConfidence).toBe("medium");
     expect(body.marketObservationCount).toBe(0);
+    expect(body.pumpPortalTokenTradeEventCount).toBe(0);
     expect(body.watchOrchestratorEnabled).toBe(false);
     expect(body.watchPlanCount).toBe(0);
     expect(body.watchActionCount).toBe(0);
@@ -89,6 +104,9 @@ describe("@axi/api", () => {
       chainTransactionEventCount: number;
       chainTradeEventCount: number;
       marketObservationCount: number;
+      pumpPortalTokenTradeEventCount: number;
+      actualDataSubscriptionCount: number;
+      actualDataSessionCount: number;
       watchPlanCount: number;
       watchActionCount: number;
       paperOrderCount: number;
@@ -104,6 +122,9 @@ describe("@axi/api", () => {
     expect(body.chainTransactionEventCount).toBe(0);
     expect(body.chainTradeEventCount).toBe(0);
     expect(body.marketObservationCount).toBe(0);
+    expect(body.pumpPortalTokenTradeEventCount).toBe(0);
+    expect(body.actualDataSubscriptionCount).toBe(0);
+    expect(body.actualDataSessionCount).toBe(0);
     expect(body.watchPlanCount).toBe(0);
     expect(body.watchActionCount).toBe(0);
     expect(body.riskSnapshotCount).toBeGreaterThan(0);
@@ -269,6 +290,126 @@ describe("@axi/api", () => {
     expect(response.statusCode).toBe(200);
     expect(body).toEqual(expect.any(Array));
     expect(body).toHaveLength(0);
+  });
+
+  it("GET /actual-data/status is disabled by default", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/actual-data/status"
+    });
+    const body = response.json() as {
+      enabled: boolean;
+      acknowledgedMetered: boolean;
+      paperOnly: boolean;
+      reasonCodes: string[];
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.enabled).toBe(false);
+    expect(body.acknowledgedMetered).toBe(false);
+    expect(body.paperOnly).toBe(true);
+    expect(body.reasonCodes).toContain("ACTUAL_DATA_DISABLED");
+  });
+
+  it("GET /actual-data/status reports metered not acknowledged", async () => {
+    server = createActualDataTestServer({
+      acknowledgedMetered: false,
+      enabled: true
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/actual-data/status"
+    });
+    const body = response.json() as {
+      enabled: boolean;
+      reasonCodes: string[];
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.enabled).toBe(true);
+    expect(body.reasonCodes).toContain("METERED_STREAM_NOT_ACKNOWLEDGED");
+  });
+
+  it("POST /actual-data/subscribe rejects when disabled", async () => {
+    server = createActualDataTestServer({
+      acknowledgedMetered: true,
+      enabled: false
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/actual-data/subscribe",
+      payload: {
+        mint: "So11111111111111111111111111111111111111112",
+        reason: "manual"
+      }
+    });
+    const body = response.json() as {
+      error: string;
+    };
+
+    expect(response.statusCode).toBe(409);
+    expect(body.error).toBe("ACTUAL_DATA_DISABLED");
+  });
+
+  it("POST /actual-data/subscribe rejects when ack is missing", async () => {
+    server = createActualDataTestServer({
+      acknowledgedMetered: false,
+      enabled: true
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/actual-data/subscribe",
+      payload: {
+        mint: "So11111111111111111111111111111111111111112",
+        reason: "manual"
+      }
+    });
+    const body = response.json() as {
+      error: string;
+    };
+
+    expect(response.statusCode).toBe(409);
+    expect(body.error).toBe("METERED_STREAM_NOT_ACKNOWLEDGED");
+  });
+
+  it("POST /actual-data/subscribe rejects invalid mint", async () => {
+    server = createActualDataTestServer({
+      acknowledgedMetered: true,
+      enabled: true
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/actual-data/subscribe",
+      payload: {
+        mint: "INVALID_MINT",
+        reason: "manual"
+      }
+    });
+    const body = response.json() as {
+      error: string;
+    };
+
+    expect(response.statusCode).toBe(400);
+    expect(body.error).toBe("INVALID_MINT");
+  });
+
+  it("GET /actual-data/trades returns an array", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/actual-data/trades"
+    });
+    const body = response.json() as unknown[];
+
+    expect(response.statusCode).toBe(200);
+    expect(body).toEqual([]);
   });
 
   it("GET /chain/status reports disabled by default", async () => {
@@ -661,6 +802,30 @@ function createTestServer(): ApiServer {
     },
     paperAutoOrder: false,
     startFeed: true,
+    storageDatabasePath: databasePath
+  });
+}
+
+function createActualDataTestServer(options: {
+  acknowledgedMetered: boolean;
+  enabled: boolean;
+}): ApiServer {
+  return createApiServer({
+    actualData: createActualDataConfig({
+      acknowledgedMetered: options.acknowledgedMetered,
+      apiKeyConfigured: true,
+      enabled: options.enabled,
+      requireApiKey: true
+    }),
+    dataFeed: "pumpportal",
+    logLevel: false,
+    pumpPortal: {
+      apiKey: "test-api-key",
+      subscribeMigration: false,
+      subscribeNewToken: false,
+      wsUrl: "wss://example.test/pumpportal"
+    },
+    startFeed: false,
     storageDatabasePath: databasePath
   });
 }

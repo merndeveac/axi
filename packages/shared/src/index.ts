@@ -149,6 +149,19 @@ export const WatchPlanSummarySchema = z.object({
 });
 export type WatchPlanSummary = z.infer<typeof WatchPlanSummarySchema>;
 
+export const ActualDataSummarySchema = z.object({
+  provider: z.literal("pumpportal"),
+  subscriptionStatus: z.string().min(1),
+  eventCount: z.number().int().nonnegative(),
+  latestRealTradeAt: z.string().datetime().nullable(),
+  latestPriceSol: z.number().nonnegative().nullable(),
+  latestVolumeSol: z.number().nonnegative().nullable(),
+  reasonCodes: z.array(z.string().min(1)),
+  observationOnly: z.literal(true),
+  paperOnly: z.literal(true)
+});
+export type ActualDataSummary = z.infer<typeof ActualDataSummarySchema>;
+
 export const RollingMetricsSchema = z.object({
   priceUsd: z.number().nonnegative(),
   priceSol: z.number().nonnegative().nullable().optional(),
@@ -419,6 +432,7 @@ export const CandidateDecisionSchema = z.object({
   onChainTop10HolderPct: z.number().min(0).max(100).nullable().optional(),
   marketObservationSummary: MarketObservationSummarySchema.optional(),
   marketReasonCodes: z.array(z.string().min(1)).optional(),
+  actualData: ActualDataSummarySchema.optional(),
   watchPlanSummary: WatchPlanSummarySchema.optional(),
   watchReasonCodes: z.array(z.string().min(1)).optional(),
   metricsSummary: CandidateMetricsSummarySchema,
@@ -446,6 +460,7 @@ export const OverlaySignalSchema = z.object({
   lifecycleState: CandidateLifecycleStateSchema.optional(),
   marketObservationSummary: MarketObservationSummarySchema.optional(),
   marketReasonCodes: z.array(z.string().min(1)).optional(),
+  actualData: ActualDataSummarySchema.optional(),
   watchPlanSummary: WatchPlanSummarySchema.optional(),
   watchReasonCodes: z.array(z.string().min(1)).optional(),
   netBuyPressure: z.number().min(-1).max(1).optional(),

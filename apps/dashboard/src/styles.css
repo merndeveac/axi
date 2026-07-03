@@ -304,23 +304,27 @@ h1 {
 }
 
 .candidate-region {
-  order: 3;
-}
-
-.signal-region {
   order: 4;
 }
 
-.watch-region {
+.signal-region {
   order: 5;
 }
 
-.chain-events-region {
+.watch-region {
   order: 6;
 }
 
-.market-region {
+.chain-events-region {
   order: 7;
+}
+
+.market-region {
+  order: 8;
+}
+
+.actual-data-region {
+  order: 3;
 }
 
 .table-heading {
@@ -351,11 +355,11 @@ h1 {
 }
 
 .candidate-region table {
-  min-width: 2100px;
+  min-width: 2450px;
 }
 
 .signal-region table {
-  min-width: 1900px;
+  min-width: 2080px;
 }
 
 .chain-events-region table {
@@ -368,6 +372,10 @@ h1 {
 
 .market-region table {
   min-width: 1660px;
+}
+
+.actual-data-region table {
+  min-width: 1380px;
 }
 
 table {

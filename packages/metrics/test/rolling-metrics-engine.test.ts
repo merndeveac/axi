@@ -198,6 +198,45 @@ describe("RollingMetricsEngine", () => {
     expect(metrics?.usedSolMetricsFallback).toBe(true);
   });
 
+  it("usable PumpPortal token trades update SOL volume metrics", () => {
+    const engine = createRollingMetricsEngine();
+
+    engine.ingestTradeEvent(
+      createTrade({
+        priceSol: 0.01,
+        priceUsd: 0,
+        source: "pumpportal",
+        volumeUsd: 0,
+        volumeSol: 2
+      })
+    );
+    const metrics = engine.getMetrics(mint);
+
+    expect(metrics?.sampleCount).toBe(1);
+    expect(metrics?.windows["5s"].buyVolumeSol).toBe(2);
+    expect(metrics?.latestPriceSol).toBe(0.01);
+    expect(metrics?.usedSolMetricsFallback).toBe(true);
+  });
+
+  it("unusable PumpPortal token trades do not corrupt metrics", () => {
+    const engine = createRollingMetricsEngine();
+
+    engine.ingestTradeEvent(
+      createTrade({
+        priceSol: null,
+        source: "pumpportal",
+        usableForMetrics: false,
+        volumeSol: null
+      })
+    );
+    const metrics = engine.getMetrics(mint);
+
+    expect(metrics?.sampleCount).toBe(0);
+    expect(metrics?.windows["5s"].totalVolumeSol).toBe(0);
+    expect(metrics?.latestPriceSol).toBe(0);
+    expect(metrics?.volumeVelocitySolPerSec).toBe(0);
+  });
+
   it("computes SOL rolling volume and velocity", () => {
     const engine = createRollingMetricsEngine();
 
@@ -270,10 +309,14 @@ function createSolObservation(options: {
 
 function createTrade(options: {
   priceUsd?: number;
+  priceSol?: number | null;
   seconds?: number;
   side?: "buy" | "sell";
+  source?: "mock" | "pumpportal";
   trader?: string;
+  usableForMetrics?: boolean;
   volumeUsd?: number;
+  volumeSol?: number | null;
 } = {}): TokenTradeEvent {
   const seconds = options.seconds ?? 0;
   const timestamp = new Date(Date.UTC(2026, 0, 1, 0, 0, seconds)).toISOString();
@@ -284,7 +327,7 @@ function createTrade(options: {
   return {
     type: "trade",
     mint,
-    source: "mock",
+    source: options.source ?? "mock",
     symbol: "MET",
     token: {
       chain: "solana",
@@ -293,16 +336,26 @@ function createTrade(options: {
     side,
     priceUsd,
     volumeUsd,
+    ...(options.priceSol !== undefined ? { priceSol: options.priceSol } : {}),
+    ...(options.volumeSol !== undefined ? { volumeSol: options.volumeSol } : {}),
+    ...(options.usableForMetrics !== undefined
+      ? { usableForMetrics: options.usableForMetrics }
+      : {}),
     tokenAmount: priceUsd > 0 ? volumeUsd / priceUsd : 0,
     trader: options.trader ?? `${side}-${seconds}`,
     timestamp,
     metrics: {
       priceUsd,
+      ...(options.priceSol !== undefined ? { priceSol: options.priceSol } : {}),
       marketCapUsd: 0,
       liquidityUsd: 0,
       volume1mUsd: 0,
       volume5mUsd: 0,
       volume15mUsd: 0,
+      ...(options.volumeSol !== undefined ? { volumeSol: options.volumeSol } : {}),
+      ...(options.usableForMetrics !== undefined
+        ? { usableForMetrics: options.usableForMetrics }
+        : {}),
       buyCount1m: 0,
       buyCount5m: 0,
       sellCount1m: 0,

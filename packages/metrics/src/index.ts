@@ -105,6 +105,11 @@ export class RollingMetricsEngine {
     }
 
     const state = this.ensureState(stateInput);
+
+    if (event.side === "unknown") {
+      return this.buildSnapshot(state, timestampMs);
+    }
+
     const sample = createTradeSample({
       mint,
       ...(event.confidence ? { confidence: event.confidence } : {}),

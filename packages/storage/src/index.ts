@@ -4,7 +4,7 @@ import { cwd } from "node:process";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
-import type { FeedEvent } from "@axi/data-feeds";
+import type { FeedEvent, TokenTradeEvent } from "@axi/data-feeds";
 import type {
   ChainTransactionEvent,
   NormalizedChainTradeEvent
@@ -59,11 +59,14 @@ export type StoredSignal = {
 };
 
 export type ReplaySource =
+  | "actual_data_sessions"
+  | "actual_data_subscriptions"
   | "candidate_decisions"
   | "chain_transaction_events"
   | "chain_trade_events"
   | "feed_events"
   | "market_observations"
+  | "pumpportal_token_trade_events"
   | "watch_actions"
   | "watch_plans"
   | "chain_verifications"
@@ -125,6 +128,9 @@ export type StorageStats = {
   chainTransactionEventCount: number;
   chainTradeEventCount: number;
   marketObservationCount: number;
+  pumpPortalTokenTradeEventCount: number;
+  actualDataSubscriptionCount: number;
+  actualDataSessionCount: number;
   watchPlanCount: number;
   watchActionCount: number;
   riskSnapshotCount: number;
@@ -201,6 +207,76 @@ export type MarketObservationInput = MarketObservation;
 export type StoredMarketObservation = MarketObservationInput & {
   id: number;
   createdAt: string;
+};
+
+export type PumpPortalTokenTradeEventInput = {
+  mint: string;
+  signature?: string | null;
+  side: TokenTradeEvent["side"];
+  trader?: string | null;
+  priceSol?: number | null;
+  volumeSol?: number | null;
+  tokenAmount?: number | null;
+  confidence: NonNullable<TokenTradeEvent["confidence"]>;
+  usableForMetrics: boolean;
+  reasonCodes: string[];
+  payload: unknown;
+  createdAt?: string;
+};
+
+export type StoredPumpPortalTokenTradeEvent = Omit<
+  PumpPortalTokenTradeEventInput,
+  "createdAt"
+> & {
+  id: number;
+  createdAt: string;
+};
+
+export type ActualDataSubscriptionInput = {
+  mint: string;
+  provider: string;
+  status: string;
+  reason: string;
+  eventCount: number;
+  maxEvents: number;
+  subscribedAt?: string | null;
+  unsubscribedAt?: string | null;
+  reasonCodes: string[];
+  payload: unknown;
+  createdAt?: string;
+};
+
+export type StoredActualDataSubscription = Omit<
+  ActualDataSubscriptionInput,
+  "createdAt"
+> & {
+  id: number;
+  createdAt: string;
+  subscribedAt: string | null;
+  unsubscribedAt: string | null;
+};
+
+export type ActualDataSessionInput = {
+  provider: string;
+  status: string;
+  totalEventCount: number;
+  subscribedTokenCount: number;
+  budgetEventLimit: number;
+  startedAt?: string | null;
+  stoppedAt?: string | null;
+  reasonCodes: string[];
+  payload: unknown;
+  createdAt?: string;
+};
+
+export type StoredActualDataSession = Omit<
+  ActualDataSessionInput,
+  "createdAt"
+> & {
+  id: number;
+  createdAt: string;
+  startedAt: string | null;
+  stoppedAt: string | null;
 };
 
 export type WatchPlanInput = CandidateWatchPlan & {
@@ -365,6 +441,51 @@ type MarketObservationRow = {
   created_at: string;
 };
 
+type PumpPortalTokenTradeEventRow = {
+  id: number;
+  mint: string;
+  signature: string | null;
+  side: TokenTradeEvent["side"];
+  trader: string | null;
+  price_sol: number | null;
+  volume_sol: number | null;
+  token_amount: number | null;
+  confidence: NonNullable<TokenTradeEvent["confidence"]>;
+  usable_for_metrics: number;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
+type ActualDataSubscriptionRow = {
+  id: number;
+  mint: string;
+  provider: string;
+  status: string;
+  reason: string;
+  event_count: number;
+  max_events: number;
+  subscribed_at: string | null;
+  unsubscribed_at: string | null;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
+type ActualDataSessionRow = {
+  id: number;
+  provider: string;
+  status: string;
+  total_event_count: number;
+  subscribed_token_count: number;
+  budget_event_limit: number;
+  started_at: string | null;
+  stopped_at: string | null;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
 type WatchPlanRow = {
   id: number;
   mint: string;
@@ -524,6 +645,48 @@ const marketObservationInputSchema = z.object({
   reasonCodes: z.array(z.string().min(1)),
   raw: z.unknown().optional(),
   createdAt: z.string().datetime()
+});
+
+const pumpPortalTokenTradeEventInputSchema = z.object({
+  mint: z.string().min(1),
+  signature: z.string().min(1).nullable().optional(),
+  side: z.enum(["buy", "sell", "unknown"]),
+  trader: z.string().min(1).nullable().optional(),
+  priceSol: z.number().nonnegative().nullable().optional(),
+  volumeSol: z.number().nonnegative().nullable().optional(),
+  tokenAmount: z.number().nonnegative().nullable().optional(),
+  confidence: z.enum(["low", "medium", "high"]),
+  usableForMetrics: z.boolean(),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown(),
+  createdAt: z.string().datetime().optional()
+});
+
+const actualDataSubscriptionInputSchema = z.object({
+  mint: z.string().min(1),
+  provider: z.string().min(1),
+  status: z.string().min(1),
+  reason: z.string().min(1),
+  eventCount: z.number().int().nonnegative(),
+  maxEvents: z.number().int().nonnegative(),
+  subscribedAt: z.string().datetime().nullable().optional(),
+  unsubscribedAt: z.string().datetime().nullable().optional(),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown(),
+  createdAt: z.string().datetime().optional()
+});
+
+const actualDataSessionInputSchema = z.object({
+  provider: z.string().min(1),
+  status: z.string().min(1),
+  totalEventCount: z.number().int().nonnegative(),
+  subscribedTokenCount: z.number().int().nonnegative(),
+  budgetEventLimit: z.number().int().nonnegative(),
+  startedAt: z.string().datetime().nullable().optional(),
+  stoppedAt: z.string().datetime().nullable().optional(),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown(),
+  createdAt: z.string().datetime().optional()
 });
 
 const watchTargetSchema = z.object({
@@ -1333,6 +1496,314 @@ export function getLatestMarketObservation(
   return row ? mapMarketObservationRow(row) : null;
 }
 
+export function savePumpPortalTokenTradeEvent(
+  event: PumpPortalTokenTradeEventInput
+): StoredPumpPortalTokenTradeEvent {
+  const parsed = pumpPortalTokenTradeEventInputSchema.parse(event);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into pumpportal_token_trade_events (
+        mint,
+        signature,
+        side,
+        trader,
+        price_sol,
+        volume_sol,
+        token_amount,
+        confidence,
+        usable_for_metrics,
+        reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.mint,
+      parsed.signature ?? null,
+      parsed.side,
+      parsed.trader ?? null,
+      parsed.priceSol ?? null,
+      parsed.volumeSol ?? null,
+      parsed.tokenAmount ?? null,
+      parsed.confidence,
+      parsed.usableForMetrics ? 1 : 0,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(parsed.payload),
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    mint: parsed.mint,
+    signature: parsed.signature ?? null,
+    side: parsed.side,
+    trader: parsed.trader ?? null,
+    priceSol: parsed.priceSol ?? null,
+    volumeSol: parsed.volumeSol ?? null,
+    tokenAmount: parsed.tokenAmount ?? null,
+    confidence: parsed.confidence,
+    usableForMetrics: parsed.usableForMetrics,
+    reasonCodes: parsed.reasonCodes,
+    payload: parsed.payload,
+    createdAt
+  };
+}
+
+export function listPumpPortalTokenTradeEvents(
+  limit = 50
+): StoredPumpPortalTokenTradeEvent[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from pumpportal_token_trade_events
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as PumpPortalTokenTradeEventRow[];
+
+  return rows.map(mapPumpPortalTokenTradeEventRow);
+}
+
+export function listPumpPortalTokenTradeEventsForReplay(
+  limit = 50
+): StoredPumpPortalTokenTradeEvent[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from pumpportal_token_trade_events
+       order by datetime(created_at) asc, id asc
+       limit ?`
+    )
+    .all(parsedLimit) as PumpPortalTokenTradeEventRow[];
+
+  return rows.map(mapPumpPortalTokenTradeEventRow);
+}
+
+export function listPumpPortalTokenTradeEventsByMint(
+  mint: string,
+  limit = 50
+): StoredPumpPortalTokenTradeEvent[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from pumpportal_token_trade_events
+       where mint = ?
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(mint, parsedLimit) as PumpPortalTokenTradeEventRow[];
+
+  return rows.map(mapPumpPortalTokenTradeEventRow);
+}
+
+export function getPumpPortalTokenTradeEvent(
+  signature: string
+): StoredPumpPortalTokenTradeEvent | null {
+  const row = getDb()
+    .prepare(
+      `select *
+       from pumpportal_token_trade_events
+       where signature = ?
+       order by datetime(created_at) desc, id desc
+       limit 1`
+    )
+    .get(signature) as PumpPortalTokenTradeEventRow | undefined;
+
+  return row ? mapPumpPortalTokenTradeEventRow(row) : null;
+}
+
+export function saveActualDataSubscription(
+  subscription: ActualDataSubscriptionInput
+): StoredActualDataSubscription {
+  const parsed = actualDataSubscriptionInputSchema.parse(subscription);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into actual_data_subscriptions (
+        mint,
+        provider,
+        status,
+        reason,
+        event_count,
+        max_events,
+        subscribed_at,
+        unsubscribed_at,
+        reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.mint,
+      parsed.provider,
+      parsed.status,
+      parsed.reason,
+      parsed.eventCount,
+      parsed.maxEvents,
+      parsed.subscribedAt ?? null,
+      parsed.unsubscribedAt ?? null,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(parsed.payload),
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    mint: parsed.mint,
+    provider: parsed.provider,
+    status: parsed.status,
+    reason: parsed.reason,
+    eventCount: parsed.eventCount,
+    maxEvents: parsed.maxEvents,
+    subscribedAt: parsed.subscribedAt ?? null,
+    unsubscribedAt: parsed.unsubscribedAt ?? null,
+    reasonCodes: parsed.reasonCodes,
+    payload: parsed.payload,
+    createdAt
+  };
+}
+
+export function listActualDataSubscriptions(
+  limit = 50
+): StoredActualDataSubscription[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from actual_data_subscriptions
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as ActualDataSubscriptionRow[];
+
+  return rows.map(mapActualDataSubscriptionRow);
+}
+
+export function listActualDataSubscriptionsForReplay(
+  limit = 50
+): StoredActualDataSubscription[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from actual_data_subscriptions
+       order by datetime(created_at) asc, id asc
+       limit ?`
+    )
+    .all(parsedLimit) as ActualDataSubscriptionRow[];
+
+  return rows.map(mapActualDataSubscriptionRow);
+}
+
+export function listActualDataSubscriptionsByMint(
+  mint: string,
+  limit = 50
+): StoredActualDataSubscription[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from actual_data_subscriptions
+       where mint = ?
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(mint, parsedLimit) as ActualDataSubscriptionRow[];
+
+  return rows.map(mapActualDataSubscriptionRow);
+}
+
+export function saveActualDataSession(
+  session: ActualDataSessionInput
+): StoredActualDataSession {
+  const parsed = actualDataSessionInputSchema.parse(session);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into actual_data_sessions (
+        provider,
+        status,
+        total_event_count,
+        subscribed_token_count,
+        budget_event_limit,
+        started_at,
+        stopped_at,
+        reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.provider,
+      parsed.status,
+      parsed.totalEventCount,
+      parsed.subscribedTokenCount,
+      parsed.budgetEventLimit,
+      parsed.startedAt ?? null,
+      parsed.stoppedAt ?? null,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(parsed.payload),
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    provider: parsed.provider,
+    status: parsed.status,
+    totalEventCount: parsed.totalEventCount,
+    subscribedTokenCount: parsed.subscribedTokenCount,
+    budgetEventLimit: parsed.budgetEventLimit,
+    startedAt: parsed.startedAt ?? null,
+    stoppedAt: parsed.stoppedAt ?? null,
+    reasonCodes: parsed.reasonCodes,
+    payload: parsed.payload,
+    createdAt
+  };
+}
+
+export function listActualDataSessions(limit = 50): StoredActualDataSession[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from actual_data_sessions
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as ActualDataSessionRow[];
+
+  return rows.map(mapActualDataSessionRow);
+}
+
+export function listActualDataSessionsForReplay(
+  limit = 50
+): StoredActualDataSession[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from actual_data_sessions
+       order by datetime(created_at) asc, id asc
+       limit ?`
+    )
+    .all(parsedLimit) as ActualDataSessionRow[];
+
+  return rows.map(mapActualDataSessionRow);
+}
+
 export function saveWatchPlan(plan: WatchPlanInput): StoredWatchPlan {
   const parsed = watchPlanInputSchema.parse(plan) as WatchPlanInput;
   const payload = parsed.payload ?? parsed;
@@ -1545,12 +2016,15 @@ export async function* createReplayStream(options: {
 
 function getReplayPayload(
   record:
+    | StoredActualDataSession
+    | StoredActualDataSubscription
     | StoredCandidateDecision
     | StoredChainTransactionEvent
     | StoredChainTradeEvent
     | StoredChainVerification
     | StoredFeedEvent
     | StoredMarketObservation
+    | StoredPumpPortalTokenTradeEvent
     | StoredRiskSnapshot
     | StoredSignal
     | StoredWatchAction
@@ -1570,18 +2044,25 @@ function getReplayRecords(
   type: ReplaySource,
   limit: number | undefined
 ): Array<
+  | StoredActualDataSession
+  | StoredActualDataSubscription
   | StoredCandidateDecision
   | StoredChainTransactionEvent
   | StoredChainTradeEvent
   | StoredChainVerification
   | StoredFeedEvent
   | StoredMarketObservation
+  | StoredPumpPortalTokenTradeEvent
   | StoredRiskSnapshot
   | StoredSignal
   | StoredWatchAction
   | StoredWatchPlan
 > {
   switch (type) {
+    case "actual_data_sessions":
+      return listActualDataSessionsForReplay(limit);
+    case "actual_data_subscriptions":
+      return listActualDataSubscriptionsForReplay(limit);
     case "candidate_decisions":
       return listCandidateDecisionsForReplay(limit);
     case "chain_transaction_events":
@@ -1598,6 +2079,8 @@ function getReplayRecords(
       return listFeedEvents(limit);
     case "market_observations":
       return listMarketObservationsForReplay(limit);
+    case "pumpportal_token_trade_events":
+      return listPumpPortalTokenTradeEventsForReplay(limit);
     case "watch_actions":
       return listWatchActionsForReplay(limit);
     case "watch_plans":
@@ -1747,6 +2230,12 @@ export function getStorageStats(): StorageStats {
     chainTransactionEventCount: countRows(db, "chain_transaction_events"),
     chainTradeEventCount: countRows(db, "chain_trade_events"),
     marketObservationCount: countRows(db, "market_observations"),
+    pumpPortalTokenTradeEventCount: countRows(
+      db,
+      "pumpportal_token_trade_events"
+    ),
+    actualDataSubscriptionCount: countRows(db, "actual_data_subscriptions"),
+    actualDataSessionCount: countRows(db, "actual_data_sessions"),
     watchPlanCount: countRows(db, "watch_plans"),
     watchActionCount: countRows(db, "watch_actions"),
     riskSnapshotCount: countRows(db, "risk_snapshots"),
@@ -2060,8 +2549,80 @@ function runMigrations(db: DatabaseSync): void {
 
     db.prepare(
       `insert into storage_migrations (id, name, applied_at)
-       values (?, ?, ?)`
+      values (?, ?, ?)`
     ).run(6, "watch_orchestration", new Date().toISOString());
+  }
+
+  if (!hasMigration(db, 7)) {
+    db.exec(`
+      create table if not exists pumpportal_token_trade_events (
+        id integer primary key autoincrement,
+        mint text not null,
+        signature text,
+        side text not null,
+        trader text,
+        price_sol real,
+        volume_sol real,
+        token_amount real,
+        confidence text not null,
+        usable_for_metrics integer not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_pumpportal_token_trade_events_created_at
+        on pumpportal_token_trade_events(created_at);
+
+      create index if not exists idx_pumpportal_token_trade_events_mint
+        on pumpportal_token_trade_events(mint);
+
+      create index if not exists idx_pumpportal_token_trade_events_signature
+        on pumpportal_token_trade_events(signature);
+
+      create table if not exists actual_data_subscriptions (
+        id integer primary key autoincrement,
+        mint text not null,
+        provider text not null,
+        status text not null,
+        reason text not null,
+        event_count integer not null,
+        max_events integer not null,
+        subscribed_at text,
+        unsubscribed_at text,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_actual_data_subscriptions_created_at
+        on actual_data_subscriptions(created_at);
+
+      create index if not exists idx_actual_data_subscriptions_mint
+        on actual_data_subscriptions(mint);
+
+      create table if not exists actual_data_sessions (
+        id integer primary key autoincrement,
+        provider text not null,
+        status text not null,
+        total_event_count integer not null,
+        subscribed_token_count integer not null,
+        budget_event_limit integer not null,
+        started_at text,
+        stopped_at text,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_actual_data_sessions_created_at
+        on actual_data_sessions(created_at);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(7, "actual_data_pumpportal_trades", new Date().toISOString());
   }
 }
 
@@ -2261,6 +2822,63 @@ function mapMarketObservationRow(
   return {
     ...payload,
     id: row.id,
+    createdAt: row.created_at
+  };
+}
+
+function mapPumpPortalTokenTradeEventRow(
+  row: PumpPortalTokenTradeEventRow
+): StoredPumpPortalTokenTradeEvent {
+  return {
+    id: row.id,
+    mint: row.mint,
+    signature: row.signature,
+    side: row.side,
+    trader: row.trader,
+    priceSol: row.price_sol,
+    volumeSol: row.volume_sol,
+    tokenAmount: row.token_amount,
+    confidence: row.confidence,
+    usableForMetrics: Boolean(row.usable_for_metrics),
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at
+  };
+}
+
+function mapActualDataSubscriptionRow(
+  row: ActualDataSubscriptionRow
+): StoredActualDataSubscription {
+  return {
+    id: row.id,
+    mint: row.mint,
+    provider: row.provider,
+    status: row.status,
+    reason: row.reason,
+    eventCount: row.event_count,
+    maxEvents: row.max_events,
+    subscribedAt: row.subscribed_at,
+    unsubscribedAt: row.unsubscribed_at,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at
+  };
+}
+
+function mapActualDataSessionRow(
+  row: ActualDataSessionRow
+): StoredActualDataSession {
+  return {
+    id: row.id,
+    provider: row.provider,
+    status: row.status,
+    totalEventCount: row.total_event_count,
+    subscribedTokenCount: row.subscribed_token_count,
+    budgetEventLimit: row.budget_event_limit,
+    startedAt: row.started_at,
+    stoppedAt: row.stopped_at,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
     createdAt: row.created_at
   };
 }

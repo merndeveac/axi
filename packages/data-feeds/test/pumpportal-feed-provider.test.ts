@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildPumpPortalWsUrl,
   maskPumpPortalUrl,
+  normalizePumpPortalTokenTradePayload,
   PumpPortalFeedProvider,
   type FeedEvent,
   type PumpPortalFeedProviderOptions,
@@ -95,6 +96,65 @@ describe("PumpPortalFeedProvider", () => {
     provider.stop();
   });
 
+  it("subscribes and unsubscribes token trades on the existing websocket", () => {
+    const provider = createProvider({
+      subscribeMigration: false,
+      subscribeNewToken: false
+    });
+
+    provider.start(() => undefined);
+    FakeWebSocket.instances[0]?.emit("open");
+    const subscribed = provider.subscribeTokenTrades([
+      "So11111111111111111111111111111111111111112"
+    ]);
+    const unsubscribed = provider.unsubscribeTokenTrades([
+      "So11111111111111111111111111111111111111112"
+    ]);
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(subscribed.subscribed).toEqual([
+      "So11111111111111111111111111111111111111112"
+    ]);
+    expect(unsubscribed.unsubscribed).toEqual([
+      "So11111111111111111111111111111111111111112"
+    ]);
+    expect(sentPayloads()).toContainEqual({
+      keys: ["So11111111111111111111111111111111111111112"],
+      method: "subscribeTokenTrade"
+    });
+    expect(sentPayloads()).toContainEqual({
+      keys: ["So11111111111111111111111111111111111111112"],
+      method: "unsubscribeTokenTrade"
+    });
+    provider.stop();
+  });
+
+  it("de-duplicates token trade mints and enforces max subscriptions", () => {
+    const provider = createProvider({
+      maxTokenTradeSubscriptions: 1,
+      subscribeMigration: false,
+      subscribeNewToken: false
+    });
+
+    provider.start(() => undefined);
+    FakeWebSocket.instances[0]?.emit("open");
+    const result = provider.subscribeTokenTrades([
+      "So11111111111111111111111111111111111111112",
+      "So11111111111111111111111111111111111111112",
+      "11111111111111111111111111111111"
+    ]);
+
+    expect(result.subscribed).toEqual([
+      "So11111111111111111111111111111111111111112"
+    ]);
+    expect(result.rejected).toEqual(["11111111111111111111111111111111"]);
+    expect(result.reasonCodes).toContain("PUMPPORTAL_TRADE_MAX_TOKENS_REACHED");
+    expect(provider.getTokenTradeSubscriptions()).toEqual([
+      "So11111111111111111111111111111111111111112"
+    ]);
+    provider.stop();
+  });
+
   it("normalizes a token-creation payload", () => {
     const events: FeedEvent[] = [];
     const provider = createProvider();
@@ -154,6 +214,83 @@ describe("PumpPortalFeedProvider", () => {
     provider.stop();
   });
 
+  it("normalizes buy token trade payloads with SOL metrics", () => {
+    const event = normalizePumpPortalTokenTradePayload(
+      {
+        mint: "So11111111111111111111111111111111111111112",
+        signature: "sig-buy",
+        solAmount: 2,
+        tokenAmount: 100,
+        traderPublicKey: "11111111111111111111111111111111",
+        txType: "buy"
+      },
+      {
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(event?.type).toBe("trade");
+    expect(event?.side).toBe("buy");
+    expect(event?.priceSol).toBe(0.02);
+    expect(event?.volumeSol).toBe(2);
+    expect(event?.usableForMetrics).toBe(true);
+    expect(event?.confidence).toBe("high");
+    expect(event?.reasonCodes).toContain("PUMPPORTAL_TRADE_USABLE_FOR_METRICS");
+  });
+
+  it("normalizes sell token trade payloads", () => {
+    const event = normalizePumpPortalTokenTradePayload(
+      {
+        mint: "So11111111111111111111111111111111111111112",
+        solAmount: "1.5",
+        tokenAmount: "50",
+        txSignature: "sig-sell",
+        txType: "sell"
+      },
+      {
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(event?.side).toBe("sell");
+    expect(event?.priceSol).toBe(0.03);
+    expect(event?.volumeSol).toBe(1.5);
+    expect(event?.usableForMetrics).toBe(true);
+  });
+
+  it("handles unknown trade payloads safely", () => {
+    const event = normalizePumpPortalTokenTradePayload(
+      {
+        mint: "So11111111111111111111111111111111111111112",
+        type: "trade"
+      },
+      {
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(event?.side).toBe("unknown");
+    expect(event?.usableForMetrics).toBe(false);
+    expect(event?.reasonCodes).toContain("PUMPPORTAL_TRADE_UNKNOWN_SIDE");
+    expect(event?.reasonCodes).toContain("PUMPPORTAL_TRADE_MISSING_AMOUNT");
+  });
+
+  it("missing amounts produce unusable metrics events", () => {
+    const event = normalizePumpPortalTokenTradePayload(
+      {
+        mint: "So11111111111111111111111111111111111111112",
+        txType: "buy"
+      },
+      {
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(event?.usableForMetrics).toBe(false);
+    expect(event?.metrics.usableForMetrics).toBe(false);
+    expect(event?.reasonCodes).toContain("PUMPPORTAL_TRADE_MISSING_AMOUNT");
+  });
+
   it("unknown payload does not crash", () => {
     const logger = {
       debug: vi.fn(),
@@ -204,6 +341,22 @@ describe("PumpPortalFeedProvider", () => {
     expect(JSON.stringify(logger.info.mock.calls)).not.toContain("do-not-log");
     provider.stop();
   });
+
+  it("does not subscribe to account trades", () => {
+    const provider = createProvider({
+      subscribeMigration: false,
+      subscribeNewToken: false
+    });
+
+    provider.start(() => undefined);
+    FakeWebSocket.instances[0]?.emit("open");
+    provider.subscribeTokenTrades([
+      "So11111111111111111111111111111111111111112"
+    ]);
+
+    expect(sentMethods()).not.toContain("subscribeAccountTrade");
+    provider.stop();
+  });
 });
 
 function createProvider(
@@ -222,5 +375,11 @@ function sentMethods(): string[] {
     FakeWebSocket.instances[0]?.sent.map(
       (message) => (JSON.parse(message) as { method: string }).method
     ) ?? []
+  );
+}
+
+function sentPayloads(): unknown[] {
+  return (
+    FakeWebSocket.instances[0]?.sent.map((message) => JSON.parse(message)) ?? []
   );
 }

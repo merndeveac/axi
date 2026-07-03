@@ -12,6 +12,7 @@ import type { CandidateDecision, OverlaySignal, RiskSnapshot } from "@axi/shared
 import {
   closeStorage,
   createReplayStream,
+  getPumpPortalTokenTradeEvent,
   getChainTradeEvent,
   getChainTransactionEvent,
   getLatestChainVerification,
@@ -34,6 +35,12 @@ import {
   listMarketObservations,
   listMarketObservationsByMint,
   listMarketObservationsForReplay,
+  listActualDataSessions,
+  listActualDataSubscriptions,
+  listActualDataSubscriptionsByMint,
+  listPumpPortalTokenTradeEvents,
+  listPumpPortalTokenTradeEventsByMint,
+  listPumpPortalTokenTradeEventsForReplay,
   listPaperOrders,
   listPaperPositions,
   listRecentSignals,
@@ -51,7 +58,10 @@ import {
   saveChainTransactionEvent,
   saveFeedEvent,
   saveMarketObservation,
+  saveActualDataSession,
+  saveActualDataSubscription,
   savePaperOrder,
+  savePumpPortalTokenTradeEvent,
   saveRiskSnapshot,
   saveSignal,
   saveWatchAction,
@@ -297,6 +307,74 @@ describe("@axi/storage", () => {
     expect(listed[0]?.usableForMetrics).toBe(false);
   });
 
+  it("pumpportal token trade event can be saved, listed, and fetched by signature", () => {
+    initStorage({ databasePath });
+    const saved = savePumpPortalTokenTradeEvent(createPumpPortalTradeEvent());
+    const listed = listPumpPortalTokenTradeEvents(10);
+    const fetched = getPumpPortalTokenTradeEvent("pumpportal-signature-1");
+
+    expect(saved.id).toBeGreaterThan(0);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.mint).toBe(mint);
+    expect(fetched?.signature).toBe("pumpportal-signature-1");
+    expect(fetched?.usableForMetrics).toBe(true);
+  });
+
+  it("pumpportal token trade events can be listed by mint", () => {
+    initStorage({ databasePath });
+    savePumpPortalTokenTradeEvent(createPumpPortalTradeEvent());
+    savePumpPortalTokenTradeEvent({
+      ...createPumpPortalTradeEvent(),
+      mint: "So11111111111111111111111111111111111111112",
+      signature: "pumpportal-signature-2"
+    });
+
+    const listed = listPumpPortalTokenTradeEventsByMint(mint, 10);
+
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.mint).toBe(mint);
+  });
+
+  it("pumpportal token trade event preserves null price fields", () => {
+    initStorage({ databasePath });
+    savePumpPortalTokenTradeEvent({
+      ...createPumpPortalTradeEvent(),
+      priceSol: null,
+      volumeSol: null,
+      usableForMetrics: false,
+      reasonCodes: ["PUMPPORTAL_TRADE_UNUSABLE_FOR_METRICS"]
+    });
+
+    const listed = listPumpPortalTokenTradeEvents(10);
+
+    expect(listed[0]?.priceSol).toBeNull();
+    expect(listed[0]?.volumeSol).toBeNull();
+    expect(listed[0]?.usableForMetrics).toBe(false);
+  });
+
+  it("actual data subscription can be saved and listed", () => {
+    initStorage({ databasePath });
+    const saved = saveActualDataSubscription(createActualDataSubscription());
+    const listed = listActualDataSubscriptions(10);
+    const byMint = listActualDataSubscriptionsByMint(mint, 10);
+
+    expect(saved.id).toBeGreaterThan(0);
+    expect(listed).toHaveLength(1);
+    expect(byMint[0]?.status).toBe("subscribed");
+    expect(byMint[0]?.reasonCodes).toContain("PUMPPORTAL_TRADE_SUBSCRIBED");
+  });
+
+  it("actual data session can be saved and listed", () => {
+    initStorage({ databasePath });
+    const saved = saveActualDataSession(createActualDataSession());
+    const listed = listActualDataSessions(10);
+
+    expect(saved.id).toBeGreaterThan(0);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.provider).toBe("pumpportal");
+    expect(listed[0]?.budgetEventLimit).toBe(5000);
+  });
+
   it("watch plan can be saved and listed", () => {
     initStorage({ databasePath });
     const saved = saveWatchPlan(createWatchPlanFixture());
@@ -349,6 +427,9 @@ describe("@axi/storage", () => {
     saveChainTransactionEvent(createChainTransactionEvent());
     saveChainTradeEvent(createChainTradeEvent());
     saveMarketObservation(createMarketObservation());
+    savePumpPortalTokenTradeEvent(createPumpPortalTradeEvent());
+    saveActualDataSubscription(createActualDataSubscription());
+    saveActualDataSession(createActualDataSession());
     saveWatchPlan(createWatchPlanFixture());
     saveWatchAction(createWatchActionFixture());
     saveFeedEvent(createFeedEvent());
@@ -384,6 +465,9 @@ describe("@axi/storage", () => {
     expect(stats.chainTransactionEventCount).toBe(1);
     expect(stats.chainTradeEventCount).toBe(1);
     expect(stats.marketObservationCount).toBe(1);
+    expect(stats.pumpPortalTokenTradeEventCount).toBe(1);
+    expect(stats.actualDataSubscriptionCount).toBe(1);
+    expect(stats.actualDataSessionCount).toBe(1);
     expect(stats.watchPlanCount).toBe(1);
     expect(stats.watchActionCount).toBe(1);
     expect(stats.riskSnapshotCount).toBe(1);
@@ -409,6 +493,13 @@ describe("@axi/storage", () => {
     );
     const chainTradeEvent = saveChainTradeEvent(createChainTradeEvent());
     const marketObservation = saveMarketObservation(createMarketObservation());
+    const pumpPortalTrade = savePumpPortalTokenTradeEvent(
+      createPumpPortalTradeEvent()
+    );
+    const actualDataSubscription = saveActualDataSubscription(
+      createActualDataSubscription()
+    );
+    const actualDataSession = saveActualDataSession(createActualDataSession());
     const watchPlan = saveWatchPlan(createWatchPlanFixture());
     const watchAction = saveWatchAction(createWatchActionFixture());
     const riskSnapshots = listRiskSnapshotsForReplay(10);
@@ -417,6 +508,7 @@ describe("@axi/storage", () => {
     const chainTransactionEvents = listChainTransactionEventsForReplay(10);
     const chainTradeEvents = listChainTradeEventsForReplay(10);
     const marketObservations = listMarketObservationsForReplay(10);
+    const pumpPortalTrades = listPumpPortalTokenTradeEventsForReplay(10);
     const watchPlans = listWatchPlansForReplay(10);
     const watchActions = listWatchActionsForReplay(10);
     const replayItems = [];
@@ -426,6 +518,9 @@ describe("@axi/storage", () => {
     const chainTransactionReplayItems = [];
     const chainTradeReplayItems = [];
     const marketReplayItems = [];
+    const pumpPortalTradeReplayItems = [];
+    const actualDataSubscriptionReplayItems = [];
+    const actualDataSessionReplayItems = [];
     const watchPlanReplayItems = [];
     const watchActionReplayItems = [];
 
@@ -488,6 +583,30 @@ describe("@axi/storage", () => {
     for await (const item of createReplayStream({
       limit: 10,
       speed: 0,
+      type: "pumpportal_token_trade_events"
+    })) {
+      pumpPortalTradeReplayItems.push(item);
+    }
+
+    for await (const item of createReplayStream({
+      limit: 10,
+      speed: 0,
+      type: "actual_data_subscriptions"
+    })) {
+      actualDataSubscriptionReplayItems.push(item);
+    }
+
+    for await (const item of createReplayStream({
+      limit: 10,
+      speed: 0,
+      type: "actual_data_sessions"
+    })) {
+      actualDataSessionReplayItems.push(item);
+    }
+
+    for await (const item of createReplayStream({
+      limit: 10,
+      speed: 0,
       type: "watch_plans"
     })) {
       watchPlanReplayItems.push(item);
@@ -512,6 +631,9 @@ describe("@axi/storage", () => {
     expect(chainTransactionEvents[0]?.id).toBe(chainTransactionEvent.id);
     expect(chainTradeEvents[0]?.id).toBe(chainTradeEvent.id);
     expect(marketObservations[0]?.id).toBe(marketObservation.id);
+    expect(pumpPortalTrades[0]?.id).toBe(pumpPortalTrade.id);
+    expect(actualDataSubscription.id).toBeGreaterThan(0);
+    expect(actualDataSession.id).toBeGreaterThan(0);
     expect(watchPlans[0]?.id).toBe(watchPlan.id);
     expect(watchActions[0]?.id).toBe(watchAction.id);
     expect(replayItems).toHaveLength(2);
@@ -524,6 +646,15 @@ describe("@axi/storage", () => {
     );
     expect(chainTradeReplayItems[0]?.source).toBe("chain_trade_events");
     expect(marketReplayItems[0]?.source).toBe("market_observations");
+    expect(pumpPortalTradeReplayItems[0]?.source).toBe(
+      "pumpportal_token_trade_events"
+    );
+    expect(actualDataSubscriptionReplayItems[0]?.source).toBe(
+      "actual_data_subscriptions"
+    );
+    expect(actualDataSessionReplayItems[0]?.source).toBe(
+      "actual_data_sessions"
+    );
     expect(watchPlanReplayItems[0]?.source).toBe("watch_plans");
     expect(watchActionReplayItems[0]?.source).toBe("watch_actions");
   });
@@ -699,6 +830,69 @@ function createMarketObservation(
       source: "test"
     },
     createdAt
+  };
+}
+
+function createPumpPortalTradeEvent() {
+  return {
+    mint,
+    signature: "pumpportal-signature-1",
+    side: "buy" as const,
+    trader: "11111111111111111111111111111111",
+    priceSol: 0.02,
+    volumeSol: 1.5,
+    tokenAmount: 75,
+    confidence: "high" as const,
+    usableForMetrics: true,
+    reasonCodes: [
+      "PUMPPORTAL_TOKEN_TRADE",
+      "PUMPPORTAL_TRADE_USABLE_FOR_METRICS"
+    ],
+    payload: {
+      type: "trade",
+      source: "pumpportal",
+      mint
+    },
+    createdAt: "2026-01-01T00:00:06.500Z"
+  };
+}
+
+function createActualDataSubscription() {
+  return {
+    mint,
+    provider: "pumpportal",
+    status: "subscribed",
+    reason: "manual",
+    eventCount: 2,
+    maxEvents: 1000,
+    subscribedAt: "2026-01-01T00:00:06.500Z",
+    unsubscribedAt: null,
+    reasonCodes: [
+      "PUMPPORTAL_TRADE_STREAM_METERED",
+      "PUMPPORTAL_TRADE_SUBSCRIBED"
+    ],
+    payload: {
+      mint,
+      status: "subscribed"
+    },
+    createdAt: "2026-01-01T00:00:06.500Z"
+  };
+}
+
+function createActualDataSession() {
+  return {
+    provider: "pumpportal",
+    status: "running",
+    totalEventCount: 2,
+    subscribedTokenCount: 1,
+    budgetEventLimit: 5000,
+    startedAt: "2026-01-01T00:00:06.000Z",
+    stoppedAt: null,
+    reasonCodes: ["PUMPPORTAL_TRADE_STREAM_METERED", "PAPER_ONLY"],
+    payload: {
+      status: "running"
+    },
+    createdAt: "2026-01-01T00:00:06.000Z"
   };
 }
 

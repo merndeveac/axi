@@ -212,7 +212,7 @@ function parseArgs(argv: string[]): ReplayArgs {
 
       if (!isReplaySource(type)) {
         throw new Error(
-          "--type must be candidate_decisions, chain_transaction_events, chain_trade_events, chain_verifications, feed_events, market_observations, risk_snapshots, signals, watch_actions, or watch_plans"
+          "--type must be actual_data_sessions, actual_data_subscriptions, candidate_decisions, chain_transaction_events, chain_trade_events, chain_verifications, feed_events, market_observations, pumpportal_token_trade_events, risk_snapshots, signals, watch_actions, or watch_plans"
         );
       }
 
@@ -263,12 +263,15 @@ function parseBoolean(value: string, arg: string): boolean {
 
 function isReplaySource(value: string): value is ReplaySource {
   return (
+    value === "actual_data_sessions" ||
+    value === "actual_data_subscriptions" ||
     value === "candidate_decisions" ||
     value === "chain_transaction_events" ||
     value === "chain_trade_events" ||
     value === "chain_verifications" ||
     value === "feed_events" ||
     value === "market_observations" ||
+    value === "pumpportal_token_trade_events" ||
     value === "watch_actions" ||
     value === "watch_plans" ||
     value === "risk_snapshots" ||
@@ -377,6 +380,10 @@ function getReplayFeedEvent(
   payload: unknown
 ): FeedEvent | undefined {
   if (source === "feed_events" && isFeedEvent(payload)) {
+    return payload;
+  }
+
+  if (source === "pumpportal_token_trade_events" && isFeedEvent(payload)) {
     return payload;
   }
 
@@ -666,7 +673,8 @@ function createRiskInput(options: {
   );
   const incompleteRealFeed =
     options.event.source === "pumpportal" &&
-    options.event.metricsComplete === false;
+    (options.event.metricsComplete === false ||
+      options.event.reasonCodes?.includes("PUMPPORTAL_TOKEN_TRADE") === true);
   const input: RiskInput = {
     mint: getEventMint(options.event),
     source: options.event.source,

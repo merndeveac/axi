@@ -29,7 +29,7 @@ export type TokenTradeEvent = NormalizedFeedMetadata & {
   mint: string;
   symbol?: string;
   name?: string;
-  side: "buy" | "sell";
+  side: "buy" | "sell" | "unknown";
   priceUsd: number | null;
   volumeUsd: number | null;
   priceSol?: number | null;
@@ -94,13 +94,34 @@ export type PumpPortalFeedProviderOptions = {
   apiKey?: string | undefined;
   logger?: PumpPortalLogger;
   maxEvents?: number | undefined;
+  maxTokenTradeEventsPerMint?: number;
+  maxTokenTradeEventsPerSession?: number;
+  maxTokenTradeSubscriptions?: number;
   now?: () => Date;
   reconnectInitialDelayMs?: number;
   reconnectMaxDelayMs?: number;
+  subscribedTokenTradeMints?: string[];
   subscribeMigration?: boolean;
   subscribeNewToken?: boolean;
   webSocketConstructor?: WebSocketConstructor;
   wsUrl?: string | undefined;
+};
+
+export type PumpPortalTokenTradeStats = {
+  budgetReached: boolean;
+  maxEventsPerMint: number;
+  maxEventsPerSession: number;
+  maxSubscribedTokens: number;
+  perMintEventCounts: Record<string, number>;
+  subscribedTokenCount: number;
+  totalEventsThisSession: number;
+};
+
+export type PumpPortalTradeSubscriptionResult = {
+  reasonCodes: string[];
+  rejected: string[];
+  subscribed: string[];
+  unsubscribed: string[];
 };
 
 export const defaultPumpPortalWsUrl = "wss://pumpportal.fun/api/data";
@@ -510,6 +531,13 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
   private readonly subscribeNewToken: boolean;
   private readonly webSocketConstructor: WebSocketConstructor;
   private readonly wsUrl: string;
+  private readonly maxTokenTradeEventsPerMint: number;
+  private readonly maxTokenTradeEventsPerSession: number;
+  private readonly maxTokenTradeSubscriptions: number;
+  private readonly tokenTradeEventCounts = new Map<string, number>();
+  private readonly tokenTradeSubscriptions = new Set<string>();
+  private socketOpen = false;
+  private tokenTradeBudgetReached = false;
 
   constructor(options: PumpPortalFeedProviderOptions = {}) {
     this.apiKey = options.apiKey;
@@ -521,6 +549,11 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     this.reconnectDelayMs = this.reconnectInitialDelayMs;
     this.subscribeMigration = options.subscribeMigration ?? true;
     this.subscribeNewToken = options.subscribeNewToken ?? true;
+    this.maxTokenTradeEventsPerMint =
+      options.maxTokenTradeEventsPerMint ?? Number.POSITIVE_INFINITY;
+    this.maxTokenTradeEventsPerSession =
+      options.maxTokenTradeEventsPerSession ?? Number.POSITIVE_INFINITY;
+    this.maxTokenTradeSubscriptions = options.maxTokenTradeSubscriptions ?? 10;
     this.webSocketConstructor =
       options.webSocketConstructor ??
       (WebSocket as unknown as WebSocketConstructor);
@@ -528,6 +561,12 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       apiKey: options.apiKey,
       wsUrl: options.wsUrl
     });
+
+    for (const mint of options.subscribedTokenTradeMints ?? []) {
+      if (isValidSolanaMint(mint)) {
+        this.tokenTradeSubscriptions.add(mint);
+      }
+    }
   }
 
   start(handler: FeedEventHandler): void {
@@ -544,8 +583,90 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       this.reconnectTimer = undefined;
     }
 
+    this.socketOpen = false;
     this.socket?.close();
     this.socket = undefined;
+  }
+
+  subscribeTokenTrades(mints: string[]): PumpPortalTradeSubscriptionResult {
+    const result = createEmptyTradeSubscriptionResult();
+
+    if (this.tokenTradeBudgetReached) {
+      result.rejected = normalizeMintList(mints);
+      result.reasonCodes.push("PUMPPORTAL_TRADE_BUDGET_REACHED");
+      return result;
+    }
+
+    for (const mint of normalizeMintList(mints)) {
+      if (!isValidSolanaMint(mint)) {
+        result.rejected.push(mint);
+        continue;
+      }
+
+      if (this.tokenTradeSubscriptions.has(mint)) {
+        continue;
+      }
+
+      if (this.tokenTradeSubscriptions.size >= this.maxTokenTradeSubscriptions) {
+        result.rejected.push(mint);
+        result.reasonCodes.push("PUMPPORTAL_TRADE_MAX_TOKENS_REACHED");
+        continue;
+      }
+
+      this.tokenTradeSubscriptions.add(mint);
+      result.subscribed.push(mint);
+    }
+
+    if (result.rejected.length > 0) {
+      result.reasonCodes.push("INVALID_OR_REJECTED_MINT");
+    }
+
+    if (result.subscribed.length > 0) {
+      result.reasonCodes.push(
+        "PUMPPORTAL_TRADE_STREAM_METERED",
+        "PUMPPORTAL_TRADE_SUBSCRIBED"
+      );
+      this.sendTokenTradeSubscription(result.subscribed);
+    }
+
+    result.reasonCodes = uniqueReasonCodes(result.reasonCodes);
+    return result;
+  }
+
+  unsubscribeTokenTrades(mints: string[]): PumpPortalTradeSubscriptionResult {
+    const result = createEmptyTradeSubscriptionResult();
+
+    for (const mint of normalizeMintList(mints)) {
+      if (this.tokenTradeSubscriptions.delete(mint)) {
+        result.unsubscribed.push(mint);
+      }
+    }
+
+    if (result.unsubscribed.length > 0) {
+      result.reasonCodes.push("PUMPPORTAL_TRADE_UNSUBSCRIBED");
+      this.sendTokenTradeUnsubscription(result.unsubscribed);
+    }
+
+    return result;
+  }
+
+  getTokenTradeSubscriptions(): string[] {
+    return Array.from(this.tokenTradeSubscriptions).sort();
+  }
+
+  getPumpPortalTradeStats(): PumpPortalTokenTradeStats {
+    return {
+      budgetReached: this.tokenTradeBudgetReached,
+      maxEventsPerMint: finiteOrZero(this.maxTokenTradeEventsPerMint),
+      maxEventsPerSession: finiteOrZero(this.maxTokenTradeEventsPerSession),
+      maxSubscribedTokens: this.maxTokenTradeSubscriptions,
+      perMintEventCounts: Object.fromEntries(this.tokenTradeEventCounts),
+      subscribedTokenCount: this.tokenTradeSubscriptions.size,
+      totalEventsThisSession: Array.from(this.tokenTradeEventCounts.values()).reduce(
+        (total, count) => total + count,
+        0
+      )
+    };
   }
 
   private connect(): void {
@@ -560,6 +681,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     });
 
     socket.on("open", () => {
+      this.socketOpen = true;
       this.reconnectDelayMs = this.reconnectInitialDelayMs;
       this.sendSubscriptions(socket);
     });
@@ -576,6 +698,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     });
 
     socket.on("close", () => {
+      this.socketOpen = false;
       this.logger.debug?.("PumpPortal websocket closed");
       this.scheduleReconnect();
     });
@@ -597,6 +720,17 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
         })
       );
     }
+
+    const tokenTradeMints = this.getTokenTradeSubscriptions();
+
+    if (tokenTradeMints.length > 0) {
+      socket.send(
+        JSON.stringify({
+          keys: tokenTradeMints,
+          method: "subscribeTokenTrade"
+        })
+      );
+    }
   }
 
   private handleMessage(data: unknown): void {
@@ -606,7 +740,10 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       return;
     }
 
-    const event = this.normalizePayload(payload);
+    const event =
+      normalizePumpPortalTokenTradePayload(payload, {
+        now: this.now
+      }) ?? this.normalizePayload(payload);
 
     if (!event) {
       this.logger.debug?.("Skipping unknown PumpPortal payload");
@@ -614,10 +751,64 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     }
 
     this.emitted += 1;
+
+    if (isPumpPortalTokenTradeEvent(event)) {
+      this.recordTokenTradeEvent(event);
+    }
+
     this.handler?.(event);
 
     if (this.maxEvents !== undefined && this.emitted >= this.maxEvents) {
       this.stop();
+    }
+  }
+
+  private sendTokenTradeSubscription(mints: string[]): void {
+    if (!this.socket || !this.socketOpen || mints.length === 0) {
+      return;
+    }
+
+    this.socket.send(
+      JSON.stringify({
+        keys: mints,
+        method: "subscribeTokenTrade"
+      })
+    );
+  }
+
+  private sendTokenTradeUnsubscription(mints: string[]): void {
+    if (!this.socket || !this.socketOpen || mints.length === 0) {
+      return;
+    }
+
+    this.socket.send(
+      JSON.stringify({
+        keys: mints,
+        method: "unsubscribeTokenTrade"
+      })
+    );
+  }
+
+  private recordTokenTradeEvent(event: TokenTradeEvent): void {
+    const previousCount = this.tokenTradeEventCounts.get(event.mint) ?? 0;
+    const nextCount = previousCount + 1;
+
+    this.tokenTradeEventCounts.set(event.mint, nextCount);
+
+    const totalEvents = Array.from(this.tokenTradeEventCounts.values()).reduce(
+      (total, count) => total + count,
+      0
+    );
+    const reachedMintBudget = nextCount >= this.maxTokenTradeEventsPerMint;
+    const reachedSessionBudget = totalEvents >= this.maxTokenTradeEventsPerSession;
+
+    if (reachedMintBudget) {
+      this.unsubscribeTokenTrades([event.mint]);
+    }
+
+    if (reachedSessionBudget) {
+      this.tokenTradeBudgetReached = true;
+      this.unsubscribeTokenTrades(this.getTokenTradeSubscriptions());
     }
   }
 
@@ -808,6 +999,165 @@ function readTimestamp(payload: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
+export function normalizePumpPortalTokenTradePayload(
+  payload: Record<string, unknown>,
+  options: {
+    now?: () => Date;
+  } = {}
+): TokenTradeEvent | null {
+  if (!looksLikePumpPortalTokenTradePayload(payload)) {
+    return null;
+  }
+
+  const now = options.now ?? (() => new Date());
+  const receivedAt = now().toISOString();
+  const rawMint = readString(payload, [
+    "mint",
+    "tokenMint",
+    "ca",
+    "address",
+    "contractAddress"
+  ]);
+  const mint = rawMint ?? "UNKNOWN_MINT";
+  const side = normalizeTradeSide(readString(payload, ["txType", "type", "side"]));
+  const solAmount = readNumber(payload, ["solAmount", "sol_amount", "sol"]);
+  const tokenAmount = readNumber(payload, [
+    "tokenAmount",
+    "tokensAmount",
+    "token_amount",
+    "amount"
+  ]);
+  const priceSol =
+    solAmount !== null &&
+    tokenAmount !== null &&
+    solAmount > 0 &&
+    tokenAmount > 0
+      ? roundMetric(solAmount / tokenAmount)
+      : null;
+  const volumeSol = solAmount !== null && solAmount > 0 ? solAmount : null;
+  const validMint = rawMint !== undefined && isValidSolanaMint(rawMint);
+  const usableForMetrics =
+    validMint &&
+    (side === "buy" || side === "sell") &&
+    tokenAmount !== null &&
+    tokenAmount > 0 &&
+    solAmount !== null &&
+    solAmount > 0 &&
+    priceSol !== null &&
+    Number.isFinite(priceSol) &&
+    volumeSol !== null &&
+    Number.isFinite(volumeSol);
+  const reasonCodes = createPumpPortalTradeReasonCodes({
+    priceSol,
+    rawMint,
+    side,
+    solAmount,
+    tokenAmount,
+    usableForMetrics,
+    validMint,
+    volumeSol
+  });
+  const timestamp =
+    readTimestamp(payload) ?? readTimestampFromReceivedAt(payload) ?? receivedAt;
+  const signature = readString(payload, [
+    "signature",
+    "txSignature",
+    "transactionSignature"
+  ]);
+  const trader = readString(payload, ["traderPublicKey", "trader", "user"]);
+  const symbol = readString(payload, ["symbol", "ticker"]);
+  const metrics = createPumpPortalTradeMetrics({
+    priceSol,
+    reasonCodes,
+    side,
+    tokenAmount,
+    usableForMetrics,
+    volumeSol
+  });
+
+  const event: TokenTradeEvent = {
+    type: "trade",
+    mint,
+    source: "pumpportal",
+    token: {
+      chain: "solana",
+      mint
+    },
+    side,
+    priceUsd: null,
+    volumeUsd: null,
+    priceSol,
+    volumeSol,
+    priceQuote: priceSol,
+    volumeQuote: volumeSol,
+    quoteAsset: "SOL",
+    quoteMint: null,
+    usableForMetrics,
+    confidence: createPumpPortalTradeConfidence({
+      signature,
+      trader,
+      usableForMetrics
+    }),
+    metrics,
+    metricsComplete: usableForMetrics,
+    raw: payload,
+    rawSourceEventType: "token_trade",
+    reasonCodes,
+    receivedAt,
+    riskFlags: { ...safeRiskFlags },
+    timestamp
+  };
+
+  if (tokenAmount !== null) {
+    event.tokenAmount = tokenAmount;
+  }
+
+  if (trader) {
+    event.trader = trader;
+  }
+
+  if (signature) {
+    event.signature = signature;
+  }
+
+  const bondingCurve = readString(payload, [
+    "bondingCurve",
+    "bondingCurveKey",
+    "bondingCurveAddress"
+  ]);
+  const pool = readString(payload, ["pool"]);
+
+  if (symbol) {
+    event.symbol = symbol;
+  }
+
+  if (bondingCurve) {
+    event.bondingCurve = bondingCurve;
+  }
+
+  if (pool) {
+    event.marketObservation = {
+      signature: signature ?? `pumpportal:${mint}:${timestamp}`,
+      side,
+      quoteAsset: "SOL",
+      confidence: event.confidence ?? "low",
+      usableForMetrics,
+      reasonCodes,
+      priceSol,
+      priceUsd: null,
+      volumeSol,
+      volumeUsd: null,
+      createdAt: timestamp
+    };
+  }
+
+  return event;
+}
+
+export function isValidSolanaMint(mint: string): boolean {
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint.trim());
+}
+
 function readString(
   payload: Record<string, unknown>,
   keys: string[]
@@ -821,6 +1171,240 @@ function readString(
   }
 
   return undefined;
+}
+
+function readTimestampFromReceivedAt(
+  payload: Record<string, unknown>
+): string | undefined {
+  const value = payload["receivedAt"];
+
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+function readNumber(
+  payload: Record<string, unknown>,
+  keys: string[]
+): number | null {
+  for (const key of keys) {
+    const value = payload[key];
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+
+    if (typeof value === "string" && value.trim().length > 0) {
+      const parsed = Number(value);
+
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+
+  return null;
+}
+
+function looksLikePumpPortalTokenTradePayload(
+  payload: Record<string, unknown>
+): boolean {
+  const rawType = readString(payload, ["txType", "type", "side"]);
+  const normalizedType = rawType?.trim().toLowerCase();
+  const side = normalizeTradeSide(rawType);
+
+  if (
+    normalizedType === "create" ||
+    normalizedType === "created" ||
+    normalizedType === "new_token" ||
+    normalizedType === "migrate" ||
+    normalizedType === "migration"
+  ) {
+    return false;
+  }
+
+  if (side === "buy" || side === "sell") {
+    return true;
+  }
+
+  if (normalizedType?.includes("trade")) {
+    return true;
+  }
+
+  return (
+    readNumber(payload, ["solAmount", "sol_amount", "sol"]) !== null ||
+    readNumber(payload, [
+      "tokenAmount",
+      "tokensAmount",
+      "token_amount",
+      "amount"
+    ]) !== null
+  );
+}
+
+function normalizeTradeSide(
+  value: string | undefined
+): "buy" | "sell" | "unknown" {
+  const normalized = value?.trim().toLowerCase();
+
+  if (normalized === "buy" || normalized === "sell") {
+    return normalized;
+  }
+
+  if (normalized === "purchase") {
+    return "buy";
+  }
+
+  return "unknown";
+}
+
+function createPumpPortalTradeReasonCodes(input: {
+  priceSol: number | null;
+  rawMint: string | undefined;
+  side: "buy" | "sell" | "unknown";
+  solAmount: number | null;
+  tokenAmount: number | null;
+  usableForMetrics: boolean;
+  validMint: boolean;
+  volumeSol: number | null;
+}): string[] {
+  const reasonCodes = [
+    "PUMPPORTAL_TOKEN_TRADE",
+    "PUMPPORTAL_TRADE_STREAM_METERED",
+    "PUMPPORTAL_TRADE_PAYLOAD_NORMALIZED"
+  ];
+
+  if (!input.rawMint || !input.validMint) {
+    reasonCodes.push("PUMPPORTAL_TRADE_MISSING_MINT");
+  }
+
+  if (input.side === "unknown") {
+    reasonCodes.push("PUMPPORTAL_TRADE_UNKNOWN_SIDE");
+  }
+
+  if (
+    input.solAmount === null ||
+    input.solAmount <= 0 ||
+    input.tokenAmount === null ||
+    input.tokenAmount <= 0
+  ) {
+    reasonCodes.push("PUMPPORTAL_TRADE_MISSING_AMOUNT");
+  }
+
+  if (input.priceSol !== null) {
+    reasonCodes.push("PUMPPORTAL_TRADE_PRICE_SOL_COMPUTED");
+  }
+
+  if (input.volumeSol !== null) {
+    reasonCodes.push("PUMPPORTAL_TRADE_VOLUME_SOL_COMPUTED");
+  }
+
+  reasonCodes.push(
+    input.usableForMetrics
+      ? "PUMPPORTAL_TRADE_USABLE_FOR_METRICS"
+      : "PUMPPORTAL_TRADE_UNUSABLE_FOR_METRICS"
+  );
+
+  return uniqueReasonCodes(reasonCodes);
+}
+
+function createPumpPortalTradeConfidence(input: {
+  signature: string | undefined;
+  trader: string | undefined;
+  usableForMetrics: boolean;
+}): ObservationConfidence {
+  if (!input.usableForMetrics) {
+    return "low";
+  }
+
+  return input.signature && input.trader ? "high" : "medium";
+}
+
+function createPumpPortalTradeMetrics(input: {
+  priceSol: number | null;
+  reasonCodes: string[];
+  side: "buy" | "sell" | "unknown";
+  tokenAmount: number | null;
+  usableForMetrics: boolean;
+  volumeSol: number | null;
+}): RollingMetrics {
+  const isBuy = input.side === "buy";
+  const isSell = input.side === "sell";
+
+  return {
+    priceUsd: 0,
+    priceSol: input.priceSol,
+    priceQuote: input.priceSol,
+    marketCapUsd: 0,
+    liquidityUsd: 0,
+    volume1mUsd: 0,
+    volume5mUsd: 0,
+    volume15mUsd: 0,
+    volumeSol: input.volumeSol,
+    volumeQuote: input.volumeSol,
+    quoteAsset: "SOL",
+    quoteMint: null,
+    usableForMetrics: input.usableForMetrics,
+    confidence: input.usableForMetrics ? "medium" : "low",
+    reasonCodes: input.reasonCodes,
+    buyCount1m: isBuy ? 1 : 0,
+    buyCount5m: isBuy ? 1 : 0,
+    sellCount1m: isSell ? 1 : 0,
+    sellCount5m: isSell ? 1 : 0,
+    uniqueBuyers1m: isBuy ? 1 : 0,
+    uniqueBuyers5m: isBuy ? 1 : 0,
+    uniqueSellers1m: isSell ? 1 : 0,
+    uniqueSellers5m: isSell ? 1 : 0,
+    holderCount: 0,
+    topHolderPercent: 0,
+    top10HolderPercent: 0,
+    priceChange1mPct: 0,
+    priceChange5mPct: 0,
+    volumeVelocity: 0,
+    buyerVelocity: 0
+  };
+}
+
+function isPumpPortalTokenTradeEvent(event: FeedEvent): event is TokenTradeEvent {
+  return (
+    event.type === "trade" &&
+    event.source === "pumpportal" &&
+    event.reasonCodes?.includes("PUMPPORTAL_TOKEN_TRADE") === true
+  );
+}
+
+function normalizeMintList(mints: string[]): string[] {
+  return Array.from(
+    new Set(
+      mints
+        .map((mint) => mint.trim())
+        .filter((mint) => mint.length > 0)
+    )
+  );
+}
+
+function createEmptyTradeSubscriptionResult(): PumpPortalTradeSubscriptionResult {
+  return {
+    reasonCodes: [],
+    rejected: [],
+    subscribed: [],
+    unsubscribed: []
+  };
+}
+
+function uniqueReasonCodes(values: string[]): string[] {
+  return Array.from(new Set(values));
+}
+
+function finiteOrZero(value: number): number {
+  return Number.isFinite(value) ? value : 0;
+}
+
+function roundMetric(value: number): number {
+  return Number(value.toFixed(12));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -4,12 +4,19 @@ import type {
   MockFeedProviderOptions,
   PumpPortalFeedProviderOptions
 } from "@axi/data-feeds";
+import { createActualDataConfig, parseManualMints } from "./actual-data-service";
 
 const config = loadApiConfig();
 const mockFeed: MockFeedProviderOptions = {
   scenario: config.MOCK_FEED_SCENARIO
 };
 const pumpPortal: PumpPortalFeedProviderOptions = {
+  maxTokenTradeEventsPerMint:
+    config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_MINT,
+  maxTokenTradeEventsPerSession:
+    config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION,
+  maxTokenTradeSubscriptions:
+    config.PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS,
   subscribeMigration: config.PUMPPORTAL_SUBSCRIBE_MIGRATION,
   subscribeNewToken: config.PUMPPORTAL_SUBSCRIBE_NEW_TOKEN
 };
@@ -52,6 +59,31 @@ const options: ApiServerOptions = {
   mockFeed,
   mode: config.BOT_MODE,
   paperAutoOrder: config.PAPER_AUTO_ORDER,
+  actualData: createActualDataConfig({
+    acknowledgedMetered: config.PUMPPORTAL_TOKEN_TRADES_ACK_METERED,
+    apiKeyConfigured: config.PUMPPORTAL_API_KEY !== undefined,
+    autoSubscribe: config.PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE,
+    autoSubscribeOnMigration:
+      config.PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE_ON_MIGRATION,
+    autoSubscribeOnNewToken:
+      config.PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE_ON_NEW_TOKEN,
+    autoSubscribeOnQualified:
+      config.PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE_ON_QUALIFIED,
+    enabled: config.PUMPPORTAL_TOKEN_TRADES_ENABLED,
+    manualMints: parseManualMints(
+      config.PUMPPORTAL_TOKEN_TRADES_MANUAL_MINTS
+    ),
+    maxEventsPerMint: config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_MINT,
+    maxEventsPerSession:
+      config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION,
+    maxSubscribedTokens:
+      config.PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS,
+    minScoreToAutoSubscribe:
+      config.PUMPPORTAL_TOKEN_TRADES_MIN_SCORE_TO_AUTO_SUBSCRIBE,
+    requireApiKey: config.PUMPPORTAL_TOKEN_TRADES_REQUIRE_API_KEY,
+    unsubscribeAfterMs:
+      config.PUMPPORTAL_TOKEN_TRADES_UNSUBSCRIBE_AFTER_MS
+  }),
   pumpPortal,
   port: config.API_PORT,
   signalIntervalMs: config.SIGNAL_INTERVAL_MS
@@ -131,6 +163,7 @@ server.app.log.info(
     marketData: server.chainEvents.getMarketStatus(),
     watchOrchestrator: server.watchOrchestration.getStatus(),
     chainVerifier: server.chainVerifier.getStatus(),
+    actualData: server.actualData.getStatus(),
     signalIntervalMs: config.SIGNAL_INTERVAL_MS,
     storagePath: server.storage.databasePath
   },
