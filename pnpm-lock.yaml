@@ -86,6 +86,9 @@ importers:
       '@axi/storage':
         specifier: workspace:*
         version: link:../../packages/storage
+      '@axi/watch-orchestrator':
+        specifier: workspace:*
+        version: link:../../packages/watch-orchestrator
       fastify:
         specifier: ^5.0.0
         version: 5.9.0
@@ -203,9 +206,21 @@ importers:
       '@axi/shared':
         specifier: workspace:*
         version: link:../shared
+      '@axi/watch-orchestrator':
+        specifier: workspace:*
+        version: link:../watch-orchestrator
       zod:
         specifier: ^3.25.0
         version: 3.25.76
+
+  packages/watch-orchestrator:
+    dependencies:
+      '@axi/chain-events':
+        specifier: workspace:*
+        version: link:../chain-events
+      '@axi/data-feeds':
+        specifier: workspace:*
+        version: link:../data-feeds
 
 packages:
 

@@ -20,6 +20,7 @@ import {
   normalizeChainTransactionToMarketObservations,
   type MarketObservation
 } from "@axi/market-data";
+import { createWatchPlan, type CandidateWatchPlan } from "@axi/watch-orchestrator";
 import type {
   CandidateDecision,
   RiskFlags,
@@ -39,6 +40,7 @@ type ReplayArgs = {
   risk: boolean;
   speed: number;
   type: ReplaySource;
+  watch: boolean;
 };
 
 const args = parseArgs(process.argv.slice(2));
@@ -97,6 +99,10 @@ try {
             candidateEngine
           })
         : {};
+    const watchPlan =
+      args.watch && replayFeedEvent && item.source === "feed_events"
+        ? createReplayWatchPlan(replayFeedEvent)
+        : undefined;
 
     console.log(
       JSON.stringify({
@@ -118,7 +124,8 @@ try {
         payload: item.payload,
         riskSnapshot: args.risk ? replayEvaluation.riskSnapshot : undefined,
         sequence: item.sequence,
-        source: item.source
+        source: item.source,
+        watchPlan
       })
     );
   }
@@ -139,7 +146,8 @@ function parseArgs(argv: string[]): ReplayArgs {
     metrics: false,
     risk: false,
     speed: 0,
-    type: "feed_events"
+    type: "feed_events",
+    watch: false
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -187,6 +195,12 @@ function parseArgs(argv: string[]): ReplayArgs {
       continue;
     }
 
+    if (arg === "--watch") {
+      parsed.watch = parseBoolean(readValue(argv, index, arg), arg);
+      index += 1;
+      continue;
+    }
+
     if (arg === "--chain") {
       parsed.chain = parseBoolean(readValue(argv, index, arg), arg);
       index += 1;
@@ -198,7 +212,7 @@ function parseArgs(argv: string[]): ReplayArgs {
 
       if (!isReplaySource(type)) {
         throw new Error(
-          "--type must be candidate_decisions, chain_transaction_events, chain_trade_events, chain_verifications, feed_events, market_observations, risk_snapshots, or signals"
+          "--type must be candidate_decisions, chain_transaction_events, chain_trade_events, chain_verifications, feed_events, market_observations, risk_snapshots, signals, watch_actions, or watch_plans"
         );
       }
 
@@ -255,9 +269,24 @@ function isReplaySource(value: string): value is ReplaySource {
     value === "chain_verifications" ||
     value === "feed_events" ||
     value === "market_observations" ||
+    value === "watch_actions" ||
+    value === "watch_plans" ||
     value === "risk_snapshots" ||
     value === "signals"
   );
+}
+
+function createReplayWatchPlan(event: FeedEvent): CandidateWatchPlan {
+  return createWatchPlan({
+    event,
+    options: {
+      enabled: true,
+      verifyOnNewToken: true,
+      verifyOnMigration: true,
+      watchOnNewToken: true,
+      watchOnMigration: true
+    }
+  });
 }
 
 function isFeedEvent(value: unknown): value is FeedEvent {

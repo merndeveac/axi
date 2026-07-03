@@ -1,5 +1,5 @@
 {
-  "name": "@axi/storage",
+  "name": "@axi/watch-orchestrator",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -18,10 +18,6 @@
   },
   "dependencies": {
     "@axi/chain-events": "workspace:*",
-    "@axi/data-feeds": "workspace:*",
-    "@axi/market-data": "workspace:*",
-    "@axi/shared": "workspace:*",
-    "@axi/watch-orchestrator": "workspace:*",
-    "zod": "^3.25.0"
+    "@axi/data-feeds": "workspace:*"
   }
 }

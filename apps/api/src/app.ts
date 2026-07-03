@@ -53,6 +53,7 @@ import {
   type StorageHandle,
   upsertPaperPosition
 } from "@axi/storage";
+import type { WatchOrchestratorOptions } from "@axi/watch-orchestrator";
 import {
   ChainVerifierUnavailableError,
   createChainVerifierService,
@@ -67,6 +68,11 @@ import {
   type ChainEventsServiceOptions
 } from "./chain-events-service";
 import type { WatchedAddressInput, WatchedAddressKind } from "@axi/chain-events";
+import {
+  createWatchOrchestrationService,
+  createWatchPlanSummary,
+  type WatchOrchestrationService
+} from "./watch-orchestration-service";
 
 const logLevelSchema = z.enum([
   "fatal",
@@ -142,6 +148,44 @@ export const apiConfigSchema = z.object({
   MARKET_DATA_ALLOW_USD_FROM_STABLE_QUOTES: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(true),
+  WATCH_ORCHESTRATOR_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  WATCH_ORCHESTRATOR_VERIFY_ON_NEW_TOKEN: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  WATCH_ORCHESTRATOR_VERIFY_ON_MIGRATION: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  WATCH_ORCHESTRATOR_WATCH_ON_NEW_TOKEN: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  WATCH_ORCHESTRATOR_WATCH_ON_MIGRATION: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  WATCH_ORCHESTRATOR_MAX_TARGETS_PER_CANDIDATE: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(3),
+  WATCH_ORCHESTRATOR_ALLOW_MINT_WATCH: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  WATCH_ORCHESTRATOR_ALLOW_BONDING_CURVE_WATCH: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  WATCH_ORCHESTRATOR_ALLOW_POOL_WATCH: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  WATCH_ORCHESTRATOR_ALLOW_PROGRAM_WATCH: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  WATCH_ORCHESTRATOR_ALLOW_WALLET_WATCH: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  WATCH_ORCHESTRATOR_MIN_CONFIDENCE_TO_WATCH: z
+    .enum(["low", "medium", "high"])
+    .default("medium"),
   API_HOST: z.string().default("0.0.0.0"),
   API_PORT: z.coerce.number().int().positive().default(8787),
   SIGNAL_INTERVAL_MS: z.coerce.number().int().min(0).default(2000),
@@ -187,6 +231,7 @@ export type ApiServerOptions = {
   signalIntervalMs?: number;
   startFeed?: boolean;
   storageDatabasePath?: string;
+  watchOrchestrator?: WatchOrchestratorOptions;
 };
 
 export type ApiServer = {
@@ -203,6 +248,7 @@ export type ApiServer = {
   storage: StorageHandle;
   chainEvents: ChainEventsService;
   chainVerifier: ChainVerifierService;
+  watchOrchestration: WatchOrchestrationService;
 };
 
 const limitQuerySchema = z.object({
@@ -227,6 +273,11 @@ const chainEventsAddressParamSchema = z.object({
 });
 const signatureParamSchema = z.object({
   signature: z.string().min(1)
+});
+const watchPlanBodySchema = z.object({
+  mint: z.string().min(1),
+  event: z.unknown().optional(),
+  source: z.string().min(1).optional()
 });
 
 export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
@@ -270,6 +321,22 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const storage = options.storageDatabasePath
     ? initStorage({ databasePath: options.storageDatabasePath })
     : initStorage();
+  const watchOrchestration = createWatchOrchestrationService({
+    ...(options.watchOrchestrator ?? {}),
+    chainEvents,
+    chainVerifier,
+    logger: {
+      warn: (message, context) => {
+        app.log.warn(context ?? {}, message);
+      }
+    },
+    scheduleVerification: (mint, event) => {
+      void verifyAndApplyChainResult({
+        event,
+        mint
+      });
+    }
+  });
   const signals = new Map<string, OverlaySignal>();
   const riskSnapshots = new Map<string, RiskSnapshot>();
   const clients = new Set<WebSocket>();
@@ -294,6 +361,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const stats = getStorageStats();
     const chainEventsStatus = chainEvents.getStatus();
     const marketStatus = chainEvents.getMarketStatus();
+    const watchStatus = watchOrchestration.getStatus();
 
     return {
       chainEvents: chainEventsStatus,
@@ -309,6 +377,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       marketDataEnabled: marketStatus.enabled,
       marketDataMinConfidence: marketStatus.minConfidenceForMetrics,
       marketObservationCount: stats.marketObservationCount,
+      watchOrchestrator: watchStatus,
+      watchOrchestratorEnabled: watchStatus.enabled,
+      watchPlanCount: stats.watchPlanCount,
+      watchActionCount: stats.watchActionCount,
       metricsEnabled: true,
       riskEnabled: true,
       candidateLifecycleEnabled: true,
@@ -514,6 +586,43 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     return chainEvents.getMarketObservationsByMint(params.mint, query.limit);
   });
 
+  app.get("/watch/status", async () => watchOrchestration.getStatus());
+
+  app.get("/watch/plans", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return watchOrchestration.getWatchPlans(query.limit);
+  });
+
+  app.get("/watch/plans/:mint", async (request, reply) => {
+    const params = mintParamSchema.parse(request.params);
+    const plan = watchOrchestration.getWatchPlan(params.mint);
+
+    if (!plan) {
+      return reply.code(404).send({
+        error: "not_found",
+        message: `No watch plan stored for mint ${params.mint}`
+      });
+    }
+
+    return plan;
+  });
+
+  app.get("/watch/actions", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return watchOrchestration.getRecentActions(query.limit);
+  });
+
+  app.get("/watch/actions/:mint", async (request) => {
+    const params = mintParamSchema.parse(request.params);
+    const query = limitQuerySchema.parse(request.query);
+    return watchOrchestration.getRecentActionsByMint(params.mint, query.limit);
+  });
+
+  app.post("/watch/plan", async (request) => {
+    const body = watchPlanBodySchema.parse(request.body);
+    return watchOrchestration.createManualPlan(body);
+  });
+
   app.get("/signals/recent", async (request) => {
     const query = limitQuerySchema.parse(request.query);
     return listRecentSignals(query.limit);
@@ -591,6 +700,18 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     saveFeedEvent(event);
     const rollingMetrics = metricsEngine.ingestFeedEvent(event);
     const candidate = candidateEngine.ingestFeedEvent(event);
+    const watchPlan = watchOrchestration.handleFeedEvent(event, {
+      mint: candidate.mint,
+      ...(candidate.symbol ? { symbol: candidate.symbol } : {}),
+      ...(candidate.source ? { source: candidate.source } : {})
+    });
+
+    if (watchPlan) {
+      candidateEngine.updateWatchPlan(
+        candidate.mint,
+        createWatchPlanSummary(watchPlan)
+      );
+    }
 
     if (event.type === "trade" && event.marketObservation) {
       candidateEngine.updateMarketObservation(
@@ -599,14 +720,16 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       );
     }
 
-    chainEvents.maybeWatchCandidate({
-      address: candidate.mint,
-      kind: "mint",
-      mint: candidate.mint,
-      ...(candidate.symbol ? { symbol: candidate.symbol } : {}),
-      ...(candidate.source ? { source: candidate.source } : {}),
-      reasonCodes: ["CHAIN_EVENTS_CANDIDATE_MINT"]
-    });
+    if (!watchOrchestration.getStatus().enabled) {
+      chainEvents.maybeWatchCandidate({
+        address: candidate.mint,
+        kind: "mint",
+        mint: candidate.mint,
+        ...(candidate.symbol ? { symbol: candidate.symbol } : {}),
+        ...(candidate.source ? { source: candidate.source } : {}),
+        reasonCodes: ["CHAIN_EVENTS_CANDIDATE_MINT"]
+      });
+    }
     const latestMetrics =
       rollingMetrics ?? metricsEngine.getMetrics(candidate.mint);
     candidateEngine.updateMetrics(candidate.mint, latestMetrics);
@@ -615,7 +738,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       getLegacyMetrics(event),
       latestMetrics
     );
-    const shouldVerifyOnChain = chainVerifier.shouldVerifyFeedEvent(event);
+    const shouldVerifyOnChain =
+      !watchOrchestration.getStatus().enabled &&
+      chainVerifier.shouldVerifyFeedEvent(event);
 
     if (shouldVerifyOnChain) {
       candidateEngine.updateChainVerification(
@@ -732,7 +857,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   }
 
   async function verifyAndApplyChainResult(options: {
-    event: FeedEvent;
+    event: FeedEvent | undefined;
     mint: string;
   }): Promise<void> {
     try {
@@ -767,14 +892,16 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       options.record.mint,
       options.record.summary
     );
-    chainEvents.maybeWatchChainVerified({
-      address: options.record.mint,
-      kind: "mint",
-      mint: options.record.mint,
-      ...(candidate.symbol ? { symbol: candidate.symbol } : {}),
-      ...(candidate.source ? { source: candidate.source } : {}),
-      reasonCodes: ["CHAIN_EVENTS_CHAIN_VERIFIED_MINT"]
-    });
+    if (!watchOrchestration.getStatus().enabled) {
+      chainEvents.maybeWatchChainVerified({
+        address: options.record.mint,
+        kind: "mint",
+        mint: options.record.mint,
+        ...(candidate.symbol ? { symbol: candidate.symbol } : {}),
+        ...(candidate.source ? { source: candidate.source } : {}),
+        reasonCodes: ["CHAIN_EVENTS_CHAIN_VERIFIED_MINT"]
+      });
+    }
 
     const latestMetrics = metricsEngine.getMetrics(options.record.mint);
     const effectiveMetrics = mergeRollingIntoLegacyMetrics(
@@ -870,6 +997,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         : {}),
       ...(options.decision.marketReasonCodes
         ? { marketReasonCodes: options.decision.marketReasonCodes }
+        : {}),
+      ...(options.decision.watchPlanSummary
+        ? { watchPlanSummary: options.decision.watchPlanSummary }
+        : {}),
+      ...(options.decision.watchReasonCodes
+        ? { watchReasonCodes: options.decision.watchReasonCodes }
         : {}),
       riskLevel: options.riskSnapshot.riskLevel,
       riskReasonCodes: options.riskSnapshot.reasonCodes,
@@ -1043,6 +1176,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     metrics: metricsEngine,
     risk: riskEngine,
     chainVerifier,
+    watchOrchestration,
     startFeed,
     stopFeed,
     storage

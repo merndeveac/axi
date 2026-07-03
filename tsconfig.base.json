@@ -22,6 +22,7 @@
       "@axi/candidates": ["packages/candidates/src/index.ts"],
       "@axi/chain-events": ["packages/chain-events/src/index.ts"],
       "@axi/market-data": ["packages/market-data/src/index.ts"],
+      "@axi/watch-orchestrator": ["packages/watch-orchestrator/src/index.ts"],
       "@axi/shared": ["packages/shared/src/index.ts"],
       "@axi/scoring": ["packages/scoring/src/index.ts"],
       "@axi/data-feeds": ["packages/data-feeds/src/index.ts"],

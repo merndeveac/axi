@@ -40,6 +40,9 @@ describe("@axi/api", () => {
       marketDataEnabled: boolean;
       marketDataMinConfidence: string;
       marketObservationCount: number;
+      watchOrchestratorEnabled: boolean;
+      watchPlanCount: number;
+      watchActionCount: number;
       metricsEnabled: boolean;
       mode: string;
       paperAutoOrder: boolean;
@@ -58,6 +61,9 @@ describe("@axi/api", () => {
     expect(body.marketDataEnabled).toBe(true);
     expect(body.marketDataMinConfidence).toBe("medium");
     expect(body.marketObservationCount).toBe(0);
+    expect(body.watchOrchestratorEnabled).toBe(false);
+    expect(body.watchPlanCount).toBe(0);
+    expect(body.watchActionCount).toBe(0);
     expect(body.candidateCount).toBeGreaterThan(0);
     expect(body.feedProvider).toBe("mock");
     expect(body.metricsEnabled).toBe(true);
@@ -83,6 +89,8 @@ describe("@axi/api", () => {
       chainTransactionEventCount: number;
       chainTradeEventCount: number;
       marketObservationCount: number;
+      watchPlanCount: number;
+      watchActionCount: number;
       paperOrderCount: number;
       paperPositionCount: number;
       riskSnapshotCount: number;
@@ -96,6 +104,8 @@ describe("@axi/api", () => {
     expect(body.chainTransactionEventCount).toBe(0);
     expect(body.chainTradeEventCount).toBe(0);
     expect(body.marketObservationCount).toBe(0);
+    expect(body.watchPlanCount).toBe(0);
+    expect(body.watchActionCount).toBe(0);
     expect(body.riskSnapshotCount).toBeGreaterThan(0);
     expect(body.candidateDecisionCount).toBeGreaterThan(0);
     expect(body.paperOrderCount).toBe(0);
@@ -436,6 +446,113 @@ describe("@axi/api", () => {
     });
 
     expect(response.statusCode).toBe(404);
+  });
+
+  it("GET /watch/status reports disabled defaults", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/watch/status"
+    });
+    const body = response.json() as {
+      enabled: boolean;
+      paperOnly: boolean;
+      watchPlanCount: number;
+      watchActionCount: number;
+      chainVerifierEnabled: boolean;
+      chainEventsEnabled: boolean;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.enabled).toBe(false);
+    expect(body.paperOnly).toBe(true);
+    expect(body.watchPlanCount).toBe(0);
+    expect(body.watchActionCount).toBe(0);
+    expect(body.chainVerifierEnabled).toBe(false);
+    expect(body.chainEventsEnabled).toBe(false);
+  });
+
+  it("GET /watch/plans returns an array", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/watch/plans"
+    });
+    const body = response.json() as unknown[];
+
+    expect(response.statusCode).toBe(200);
+    expect(body).toEqual([]);
+  });
+
+  it("GET /watch/actions returns an array", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/watch/actions"
+    });
+    const body = response.json() as unknown[];
+
+    expect(response.statusCode).toBe(200);
+    expect(body).toEqual([]);
+  });
+
+  it("GET /watch/plans/:mint returns 404 for unknown mint", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/watch/plans/So11111111111111111111111111111111111111112"
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  it("GET /watch/actions/:mint returns an array", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/watch/actions/So11111111111111111111111111111111111111112"
+    });
+    const body = response.json() as unknown[];
+
+    expect(response.statusCode).toBe(200);
+    expect(body).toEqual([]);
+  });
+
+  it("POST /watch/plan validates input and returns a dry-run plan", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/watch/plan",
+      payload: {
+        mint: "So11111111111111111111111111111111111111112",
+        event: {
+          mint: "So11111111111111111111111111111111111111112",
+          bondingCurve: "11111111111111111111111111111111"
+        }
+      }
+    });
+    const body = response.json() as {
+      shouldVerifyMint: boolean;
+      shouldWatchEvents: boolean;
+      skippedTargets: unknown[];
+      reasonCodes: string[];
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.shouldVerifyMint).toBe(false);
+    expect(body.shouldWatchEvents).toBe(false);
+    expect(body.skippedTargets.length).toBeGreaterThan(0);
+    expect(body.reasonCodes).toContain("WATCH_ORCHESTRATOR_DISABLED");
   });
 
   it("GET /chain/events/transactions/:signature returns 404 for unknown signature", async () => {

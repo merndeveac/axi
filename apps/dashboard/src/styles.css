@@ -138,11 +138,15 @@ h1 {
 }
 
 .candidate-region table {
-  min-width: 1700px;
+  min-width: 1900px;
 }
 
 .chain-events-region table {
   min-width: 980px;
+}
+
+.watch-region table {
+  min-width: 1180px;
 }
 
 .market-region table {

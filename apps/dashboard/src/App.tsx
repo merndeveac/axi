@@ -5,7 +5,8 @@ import type {
   MarketObservationSummary,
   OverlaySignal,
   RiskSnapshot,
-  RollingMetricsSnapshot
+  RollingMetricsSnapshot,
+  WatchPlanSummary
 } from "@axi/shared";
 
 type ConnectionStatus = "connecting" | "open" | "closed";
@@ -19,6 +20,8 @@ type StorageStats = {
   chainTransactionEventCount: number;
   chainTradeEventCount: number;
   marketObservationCount: number;
+  watchPlanCount: number;
+  watchActionCount: number;
   riskSnapshotCount: number;
   candidateDecisionCount: number;
   paperOrderCount: number;
@@ -40,6 +43,9 @@ type HealthStatus = {
   marketDataEnabled: boolean;
   marketDataMinConfidence: string;
   marketObservationCount: number;
+  watchOrchestratorEnabled: boolean;
+  watchPlanCount: number;
+  watchActionCount: number;
   metricsEnabled: boolean;
   mode: string;
   paperAutoOrder: boolean;
@@ -87,6 +93,56 @@ type MarketStatus = {
   observationCount: number;
   paperOnly: true;
   solUsdConfigured: boolean;
+};
+
+type WatchStatus = {
+  enabled: boolean;
+  verifyOnNewToken: boolean;
+  verifyOnMigration: boolean;
+  watchOnNewToken: boolean;
+  watchOnMigration: boolean;
+  maxTargetsPerCandidate: number;
+  minConfidenceToWatch: string;
+  chainVerifierEnabled: boolean;
+  chainVerifierConfigured: boolean;
+  chainEventsEnabled: boolean;
+  chainEventsConfigured: boolean;
+  watchedAddressCount: number;
+  watchPlanCount: number;
+  watchActionCount: number;
+  paperOnly: true;
+};
+
+type WatchTargetRow = {
+  address: string;
+  kind: string;
+  confidence: string;
+  reasonCodes: string[];
+  source: string;
+};
+
+type WatchPlanRow = {
+  id: number;
+  mint: string;
+  symbol?: string;
+  source?: string;
+  shouldVerifyMint: boolean;
+  shouldWatchEvents: boolean;
+  watchTargets: WatchTargetRow[];
+  skippedTargets: WatchTargetRow[];
+  reasonCodes: string[];
+  createdAt: string;
+};
+
+type WatchActionRow = {
+  id: number;
+  mint: string;
+  action: string;
+  address: string;
+  addressKind: string;
+  status: string;
+  reasonCodes: string[];
+  createdAt: string;
 };
 
 type WatchedAddressRow = {
@@ -164,8 +220,10 @@ type CandidateApiRow = {
   latestMetrics?: RollingMetricsSnapshot;
   latestRisk?: RiskSnapshot;
   latestMarketObservationSummary?: MarketObservationSummary;
+  latestWatchPlanSummary?: WatchPlanSummary;
   lastUpdatedAt: string;
   marketReasonCodes?: string[];
+  watchReasonCodes?: string[];
   paperOrderStatus: string;
 };
 
@@ -194,6 +252,7 @@ export function App() {
   const [chainEventsStatus, setChainEventsStatus] =
     useState<ChainEventsStatus | null>(null);
   const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
+  const [watchStatus, setWatchStatus] = useState<WatchStatus | null>(null);
   const [chainTransactions, setChainTransactions] = useState<
     ChainTransactionRow[]
   >([]);
@@ -201,6 +260,8 @@ export function App() {
   const [marketObservations, setMarketObservations] = useState<
     MarketObservationRow[]
   >([]);
+  const [watchPlans, setWatchPlans] = useState<WatchPlanRow[]>([]);
+  const [watchActions, setWatchActions] = useState<WatchActionRow[]>([]);
   const [watchedAddresses, setWatchedAddresses] = useState<WatchedAddressRow[]>(
     []
   );
@@ -268,10 +329,13 @@ export function App() {
           chainResponse,
           chainEventsResponse,
           marketStatusResponse,
+          watchStatusResponse,
           watchedAddressesResponse,
           chainTransactionsResponse,
           chainTradesResponse,
-          marketObservationsResponse
+          marketObservationsResponse,
+          watchPlansResponse,
+          watchActionsResponse
         ] = await Promise.all([
           fetch(`${apiBaseUrl}/health`),
           fetch(`${apiBaseUrl}/storage/stats`),
@@ -279,10 +343,13 @@ export function App() {
           fetch(`${apiBaseUrl}/chain/status`),
           fetch(`${apiBaseUrl}/chain/events/status`),
           fetch(`${apiBaseUrl}/market/status`),
+          fetch(`${apiBaseUrl}/watch/status`),
           fetch(`${apiBaseUrl}/chain/events/watches`),
           fetch(`${apiBaseUrl}/chain/events/transactions?limit=10`),
           fetch(`${apiBaseUrl}/chain/events/trades?limit=10`),
-          fetch(`${apiBaseUrl}/market/observations?limit=10`)
+          fetch(`${apiBaseUrl}/market/observations?limit=10`),
+          fetch(`${apiBaseUrl}/watch/plans?limit=10`),
+          fetch(`${apiBaseUrl}/watch/actions?limit=10`)
         ]);
 
         if (
@@ -292,10 +359,13 @@ export function App() {
           !chainResponse.ok ||
           !chainEventsResponse.ok ||
           !marketStatusResponse.ok ||
+          !watchStatusResponse.ok ||
           !watchedAddressesResponse.ok ||
           !chainTransactionsResponse.ok ||
           !chainTradesResponse.ok ||
-          !marketObservationsResponse.ok
+          !marketObservationsResponse.ok ||
+          !watchPlansResponse.ok ||
+          !watchActionsResponse.ok
         ) {
           throw new Error("API status check failed");
         }
@@ -310,6 +380,8 @@ export function App() {
           (await chainEventsResponse.json()) as ChainEventsStatus;
         const nextMarketStatus =
           (await marketStatusResponse.json()) as MarketStatus;
+        const nextWatchStatus =
+          (await watchStatusResponse.json()) as WatchStatus;
         const nextWatchedAddresses =
           (await watchedAddressesResponse.json()) as WatchedAddressRow[];
         const nextChainTransactions =
@@ -318,6 +390,10 @@ export function App() {
           (await chainTradesResponse.json()) as ChainTradeRow[];
         const nextMarketObservations =
           (await marketObservationsResponse.json()) as MarketObservationRow[];
+        const nextWatchPlans =
+          (await watchPlansResponse.json()) as WatchPlanRow[];
+        const nextWatchActions =
+          (await watchActionsResponse.json()) as WatchActionRow[];
 
         if (!cancelled) {
           setApiStatus("connected");
@@ -325,10 +401,13 @@ export function App() {
           setChainStatus(nextChainStatus);
           setChainEventsStatus(nextChainEventsStatus);
           setMarketStatus(nextMarketStatus);
+          setWatchStatus(nextWatchStatus);
           setWatchedAddresses(nextWatchedAddresses);
           setChainTransactions(nextChainTransactions);
           setChainTrades(nextChainTrades);
           setMarketObservations(nextMarketObservations);
+          setWatchPlans(nextWatchPlans);
+          setWatchActions(nextWatchActions);
           setHealthStatus(health);
           setStorageStats(stats);
         }
@@ -447,6 +526,52 @@ export function App() {
           <strong>{marketStatus?.enabled ? "on" : "off"}</strong>
         </div>
         <div>
+          <span>Watch Orch</span>
+          <strong>
+            {(watchStatus?.enabled ?? healthStatus?.watchOrchestratorEnabled)
+              ? "on"
+              : "off"}
+          </strong>
+        </div>
+        <div>
+          <span>Verify Trigger</span>
+          <strong>
+            {watchStatus?.verifyOnNewToken || watchStatus?.verifyOnMigration
+              ? "on"
+              : "off"}
+          </strong>
+        </div>
+        <div>
+          <span>Watch Trigger</span>
+          <strong>
+            {watchStatus?.watchOnNewToken || watchStatus?.watchOnMigration
+              ? "on"
+              : "off"}
+          </strong>
+        </div>
+        <div>
+          <span>Watch Plans</span>
+          <strong>
+            {storageStats?.watchPlanCount ??
+              watchStatus?.watchPlanCount ??
+              healthStatus?.watchPlanCount ??
+              0}
+          </strong>
+        </div>
+        <div>
+          <span>Watch Actions</span>
+          <strong>
+            {storageStats?.watchActionCount ??
+              watchStatus?.watchActionCount ??
+              healthStatus?.watchActionCount ??
+              0}
+          </strong>
+        </div>
+        <div>
+          <span>Watch Min</span>
+          <strong>{watchStatus?.minConfidenceToWatch ?? "unknown"}</strong>
+        </div>
+        <div>
           <span>Market Obs</span>
           <strong>
             {storageStats?.marketObservationCount ??
@@ -560,6 +685,94 @@ export function App() {
 
       <section className="status-message" aria-live="polite">
         {statusMessage}
+      </section>
+
+      <section className="table-region watch-region" aria-label="Watch orchestration plans">
+        <div className="table-heading">
+          <h2>Watch Orchestration Plans</h2>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Mint</th>
+              <th>Symbol</th>
+              <th>Source</th>
+              <th>Verify</th>
+              <th>Watch</th>
+              <th>Selected</th>
+              <th>Skipped</th>
+              <th>Reasons</th>
+              <th>Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            {watchPlans.map((plan) => (
+              <tr key={plan.id}>
+                <td className="mono" title={plan.mint}>
+                  {shortMint(plan.mint)}
+                </td>
+                <td>{plan.symbol ?? "UNKNOWN"}</td>
+                <td>{plan.source ?? "unknown"}</td>
+                <td>{plan.shouldVerifyMint ? "yes" : "no"}</td>
+                <td>{plan.shouldWatchEvents ? "yes" : "no"}</td>
+                <td>{formatTargets(plan.watchTargets)}</td>
+                <td>{formatTargets(plan.skippedTargets)}</td>
+                <td>{topReasonCodes(plan.reasonCodes)}</td>
+                <td>{formatTimestamp(plan.createdAt)}</td>
+              </tr>
+            ))}
+            {watchPlans.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="empty-state compact-empty">
+                  No persisted watch plans
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </section>
+
+      <section className="table-region watch-region" aria-label="Watch orchestration actions">
+        <div className="table-heading">
+          <h2>Watch Orchestration Actions</h2>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Mint</th>
+              <th>Action</th>
+              <th>Address</th>
+              <th>Kind</th>
+              <th>Status</th>
+              <th>Reasons</th>
+              <th>Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            {watchActions.map((action) => (
+              <tr key={action.id}>
+                <td className="mono" title={action.mint}>
+                  {shortMint(action.mint)}
+                </td>
+                <td>{action.action}</td>
+                <td className="mono" title={action.address}>
+                  {shortMint(action.address)}
+                </td>
+                <td>{action.addressKind}</td>
+                <td>{action.status}</td>
+                <td>{topReasonCodes(action.reasonCodes)}</td>
+                <td>{formatTimestamp(action.createdAt)}</td>
+              </tr>
+            ))}
+            {watchActions.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="empty-state compact-empty">
+                  No persisted watch actions
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
       </section>
 
       <section className="table-region chain-events-region" aria-label="Chain events">
@@ -778,6 +991,9 @@ export function App() {
               <th>Top Holder</th>
               <th>Top 10</th>
               <th>Chain Reasons</th>
+              <th>Watch Targets</th>
+              <th>Watch Status</th>
+              <th>Watch Reasons</th>
               <th>Reasons</th>
               <th>10s USD</th>
               <th>10s SOL</th>
@@ -832,6 +1048,11 @@ export function App() {
                   <td>{formatPercent(candidate.onChainTopHolderPct)}</td>
                   <td>{formatPercent(candidate.onChainTop10HolderPct)}</td>
                   <td>{topReasonCodes(candidate.chainReasonCodes)}</td>
+                  <td>
+                    {candidate.latestWatchPlanSummary?.selectedTargetCount ?? 0}
+                  </td>
+                  <td>{formatWatchSummary(candidate.latestWatchPlanSummary)}</td>
+                  <td>{topReasonCodes(candidate.watchReasonCodes)}</td>
                   <td>{topReasonCodes(decision?.combinedReasonCodes)}</td>
                   <td>{formatUsd(candidate.latestMetrics?.windows["10s"].totalVolumeUsd ?? 0)}</td>
                   <td>{formatNullableNumber(candidate.latestMetrics?.windows["10s"].totalVolumeSol)}</td>
@@ -847,7 +1068,7 @@ export function App() {
             })}
             {sortedCandidates.length === 0 ? (
               <tr>
-                <td colSpan={23} className="empty-state">
+                <td colSpan={26} className="empty-state">
                   {statusMessage}
                 </td>
               </tr>
@@ -991,6 +1212,37 @@ function normalizeClassName(value: string): string {
 
 function topReasonCodes(reasonCodes: string[] | undefined): string {
   return reasonCodes?.slice(0, 3).join(", ") || "-";
+}
+
+function formatTargets(targets: WatchTargetRow[] | undefined): string {
+  if (!targets || targets.length === 0) {
+    return "-";
+  }
+
+  return targets
+    .slice(0, 3)
+    .map((target) => `${target.kind}:${shortMint(target.address)}`)
+    .join(", ");
+}
+
+function formatWatchSummary(summary: WatchPlanSummary | undefined): string {
+  if (!summary) {
+    return "-";
+  }
+
+  if (summary.shouldVerifyMint && summary.shouldWatchEvents) {
+    return "verify + watch";
+  }
+
+  if (summary.shouldVerifyMint) {
+    return "verify";
+  }
+
+  if (summary.shouldWatchEvents) {
+    return "watch";
+  }
+
+  return "dry-run";
 }
 
 function formatNumber(value: number | undefined): string {

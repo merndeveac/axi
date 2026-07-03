@@ -4,15 +4,11 @@
     "composite": true,
     "outDir": "dist",
     "rootDir": "src",
-    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo",
-    "types": ["node"]
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
   },
   "include": ["src"],
   "references": [
-    { "path": "../shared" },
     { "path": "../chain-events" },
-    { "path": "../data-feeds" },
-    { "path": "../market-data" },
-    { "path": "../watch-orchestrator" }
+    { "path": "../data-feeds" }
   ]
 }

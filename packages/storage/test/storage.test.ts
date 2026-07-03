@@ -19,6 +19,7 @@ import {
   getLatestMarketObservation,
   getMarketObservation,
   getLatestRiskSnapshot,
+  getLatestWatchPlan,
   getStorageStats,
   initStorage,
   listCandidateDecisionsForReplay,
@@ -39,6 +40,11 @@ import {
   listRiskSnapshotsForReplay,
   listRiskSnapshots,
   listSignalsForReplay,
+  listWatchActions,
+  listWatchActionsByMint,
+  listWatchActionsForReplay,
+  listWatchPlans,
+  listWatchPlansForReplay,
   saveCandidateDecision,
   saveChainVerification,
   saveChainTradeEvent,
@@ -48,6 +54,8 @@ import {
   savePaperOrder,
   saveRiskSnapshot,
   saveSignal,
+  saveWatchAction,
+  saveWatchPlan,
   upsertPaperPosition
 } from "../src/index";
 
@@ -78,6 +86,8 @@ describe("@axi/storage", () => {
     expect(stats.chainTransactionEventCount).toBe(0);
     expect(stats.chainTradeEventCount).toBe(0);
     expect(stats.marketObservationCount).toBe(0);
+    expect(stats.watchPlanCount).toBe(0);
+    expect(stats.watchActionCount).toBe(0);
     expect(stats.riskSnapshotCount).toBe(0);
     expect(stats.candidateDecisionCount).toBe(0);
   });
@@ -287,12 +297,60 @@ describe("@axi/storage", () => {
     expect(listed[0]?.usableForMetrics).toBe(false);
   });
 
+  it("watch plan can be saved and listed", () => {
+    initStorage({ databasePath });
+    const saved = saveWatchPlan(createWatchPlanFixture());
+    const listed = listWatchPlans(10);
+
+    expect(saved.id).toBeGreaterThan(0);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.mint).toBe(mint);
+    expect(listed[0]?.watchTargets[0]?.kind).toBe("mint");
+  });
+
+  it("latest watch plan can be fetched by mint", () => {
+    initStorage({ databasePath });
+    saveWatchPlan(createWatchPlanFixture("2026-01-01T00:00:07.000Z"));
+    saveWatchPlan(createWatchPlanFixture("2026-01-01T00:00:08.000Z"));
+
+    const latest = getLatestWatchPlan(mint);
+
+    expect(latest?.createdAt).toBe("2026-01-01T00:00:08.000Z");
+  });
+
+  it("watch action can be saved and listed", () => {
+    initStorage({ databasePath });
+    const saved = saveWatchAction(createWatchActionFixture());
+    const listed = listWatchActions(10);
+
+    expect(saved.id).toBeGreaterThan(0);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.action).toBe("verify_mint");
+  });
+
+  it("watch actions can be listed by mint", () => {
+    initStorage({ databasePath });
+    saveWatchAction(createWatchActionFixture());
+    saveWatchAction({
+      ...createWatchActionFixture(),
+      mint: "OtherMint111111111111111111111111111111111",
+      address: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+    });
+
+    const listed = listWatchActionsByMint(mint, 10);
+
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.mint).toBe(mint);
+  });
+
   it("storage stats return counts", () => {
     initStorage({ databasePath });
     saveChainVerification(createChainVerification());
     saveChainTransactionEvent(createChainTransactionEvent());
     saveChainTradeEvent(createChainTradeEvent());
     saveMarketObservation(createMarketObservation());
+    saveWatchPlan(createWatchPlanFixture());
+    saveWatchAction(createWatchActionFixture());
     saveFeedEvent(createFeedEvent());
     saveRiskSnapshot(createRiskSnapshot());
     saveCandidateDecision(createCandidateDecision());
@@ -326,6 +384,8 @@ describe("@axi/storage", () => {
     expect(stats.chainTransactionEventCount).toBe(1);
     expect(stats.chainTradeEventCount).toBe(1);
     expect(stats.marketObservationCount).toBe(1);
+    expect(stats.watchPlanCount).toBe(1);
+    expect(stats.watchActionCount).toBe(1);
     expect(stats.riskSnapshotCount).toBe(1);
     expect(stats.candidateDecisionCount).toBe(1);
     expect(stats.paperOrderCount).toBe(1);
@@ -349,12 +409,16 @@ describe("@axi/storage", () => {
     );
     const chainTradeEvent = saveChainTradeEvent(createChainTradeEvent());
     const marketObservation = saveMarketObservation(createMarketObservation());
+    const watchPlan = saveWatchPlan(createWatchPlanFixture());
+    const watchAction = saveWatchAction(createWatchActionFixture());
     const riskSnapshots = listRiskSnapshotsForReplay(10);
     const candidateDecisions = listCandidateDecisionsForReplay(10);
     const chainVerifications = listChainVerificationsForReplay(10);
     const chainTransactionEvents = listChainTransactionEventsForReplay(10);
     const chainTradeEvents = listChainTradeEventsForReplay(10);
     const marketObservations = listMarketObservationsForReplay(10);
+    const watchPlans = listWatchPlansForReplay(10);
+    const watchActions = listWatchActionsForReplay(10);
     const replayItems = [];
     const riskReplayItems = [];
     const candidateReplayItems = [];
@@ -362,6 +426,8 @@ describe("@axi/storage", () => {
     const chainTransactionReplayItems = [];
     const chainTradeReplayItems = [];
     const marketReplayItems = [];
+    const watchPlanReplayItems = [];
+    const watchActionReplayItems = [];
 
     for await (const item of createReplayStream({
       limit: 10,
@@ -419,6 +485,22 @@ describe("@axi/storage", () => {
       marketReplayItems.push(item);
     }
 
+    for await (const item of createReplayStream({
+      limit: 10,
+      speed: 0,
+      type: "watch_plans"
+    })) {
+      watchPlanReplayItems.push(item);
+    }
+
+    for await (const item of createReplayStream({
+      limit: 10,
+      speed: 0,
+      type: "watch_actions"
+    })) {
+      watchActionReplayItems.push(item);
+    }
+
     expect(feedEvents.map((event) => event.createdAt)).toEqual([
       "2026-01-01T00:00:01.000Z",
       "2026-01-01T00:00:02.000Z"
@@ -430,6 +512,8 @@ describe("@axi/storage", () => {
     expect(chainTransactionEvents[0]?.id).toBe(chainTransactionEvent.id);
     expect(chainTradeEvents[0]?.id).toBe(chainTradeEvent.id);
     expect(marketObservations[0]?.id).toBe(marketObservation.id);
+    expect(watchPlans[0]?.id).toBe(watchPlan.id);
+    expect(watchActions[0]?.id).toBe(watchAction.id);
     expect(replayItems).toHaveLength(2);
     expect(replayItems[0]?.source).toBe("feed_events");
     expect(riskReplayItems[0]?.source).toBe("risk_snapshots");
@@ -440,6 +524,8 @@ describe("@axi/storage", () => {
     );
     expect(chainTradeReplayItems[0]?.source).toBe("chain_trade_events");
     expect(marketReplayItems[0]?.source).toBe("market_observations");
+    expect(watchPlanReplayItems[0]?.source).toBe("watch_plans");
+    expect(watchActionReplayItems[0]?.source).toBe("watch_actions");
   });
 });
 
@@ -610,6 +696,57 @@ function createMarketObservation(
       "MARKET_OBSERVATION_USABLE"
     ],
     raw: {
+      source: "test"
+    },
+    createdAt
+  };
+}
+
+function createWatchPlanFixture(createdAt = "2026-01-01T00:00:07.000Z") {
+  const target = {
+    address: "11111111111111111111111111111111",
+    kind: "mint" as const,
+    mint,
+    symbol: "MOCK",
+    source: "pumpportal" as const,
+    confidence: "medium" as const,
+    reasonCodes: [
+      "WATCH_TARGET_MINT",
+      "WATCH_TARGET_MEDIUM_CONFIDENCE",
+      "WATCH_TARGET_SELECTED"
+    ],
+    createdAt
+  };
+
+  return {
+    mint,
+    symbol: "MOCK",
+    source: "pumpportal" as const,
+    shouldVerifyMint: true,
+    shouldWatchEvents: true,
+    watchTargets: [target],
+    skippedTargets: [],
+    reasonCodes: [
+      "WATCH_PLAN_CREATED",
+      "VERIFY_ON_NEW_TOKEN",
+      "WATCH_ON_NEW_TOKEN"
+    ],
+    payload: {
+      source: "test"
+    },
+    createdAt
+  };
+}
+
+function createWatchActionFixture(createdAt = "2026-01-01T00:00:08.000Z") {
+  return {
+    mint,
+    action: "verify_mint",
+    address: "11111111111111111111111111111111",
+    addressKind: "mint" as const,
+    status: "scheduled",
+    reasonCodes: ["ORCHESTRATION_VERIFICATION_SCHEDULED"],
+    payload: {
       source: "test"
     },
     createdAt

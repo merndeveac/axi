@@ -118,6 +118,37 @@ export type MarketObservationSummary = z.infer<
   typeof MarketObservationSummarySchema
 >;
 
+export const WatchTargetKindSchema = z.enum([
+  "mint",
+  "pool",
+  "bonding_curve",
+  "program",
+  "token_account",
+  "wallet",
+  "unknown"
+]);
+export type WatchTargetKind = z.infer<typeof WatchTargetKindSchema>;
+
+export const WatchTargetSummarySchema = z.object({
+  address: z.string().min(1),
+  kind: WatchTargetKindSchema,
+  confidence: ObservationConfidenceSchema,
+  reasonCodes: z.array(z.string().min(1)),
+  source: z.string().min(1)
+});
+export type WatchTargetSummary = z.infer<typeof WatchTargetSummarySchema>;
+
+export const WatchPlanSummarySchema = z.object({
+  shouldVerifyMint: z.boolean(),
+  shouldWatchEvents: z.boolean(),
+  selectedTargetCount: z.number().int().nonnegative(),
+  skippedTargetCount: z.number().int().nonnegative(),
+  selectedTargets: z.array(WatchTargetSummarySchema),
+  reasonCodes: z.array(z.string().min(1)),
+  createdAt: z.string().datetime()
+});
+export type WatchPlanSummary = z.infer<typeof WatchPlanSummarySchema>;
+
 export const RollingMetricsSchema = z.object({
   priceUsd: z.number().nonnegative(),
   priceSol: z.number().nonnegative().nullable().optional(),
@@ -388,6 +419,8 @@ export const CandidateDecisionSchema = z.object({
   onChainTop10HolderPct: z.number().min(0).max(100).nullable().optional(),
   marketObservationSummary: MarketObservationSummarySchema.optional(),
   marketReasonCodes: z.array(z.string().min(1)).optional(),
+  watchPlanSummary: WatchPlanSummarySchema.optional(),
+  watchReasonCodes: z.array(z.string().min(1)).optional(),
   metricsSummary: CandidateMetricsSummarySchema,
   riskSnapshotSummary: CandidateRiskSummarySchema,
   createdAt: z.string().datetime(),
@@ -413,6 +446,8 @@ export const OverlaySignalSchema = z.object({
   lifecycleState: CandidateLifecycleStateSchema.optional(),
   marketObservationSummary: MarketObservationSummarySchema.optional(),
   marketReasonCodes: z.array(z.string().min(1)).optional(),
+  watchPlanSummary: WatchPlanSummarySchema.optional(),
+  watchReasonCodes: z.array(z.string().min(1)).optional(),
   netBuyPressure: z.number().min(-1).max(1).optional(),
   priceVelocity: z.number().optional(),
   riskLevel: RiskLevelSchema.optional(),

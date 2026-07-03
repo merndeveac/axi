@@ -19,6 +19,7 @@
     { "path": "../../packages/metrics" },
     { "path": "../../packages/risk" },
     { "path": "../../packages/solana-chain" },
-    { "path": "../../packages/storage" }
+    { "path": "../../packages/storage" },
+    { "path": "../../packages/watch-orchestrator" }
   ]
 }

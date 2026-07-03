@@ -10,6 +10,11 @@ import type {
   NormalizedChainTradeEvent
 } from "@axi/chain-events";
 import type { MarketObservation } from "@axi/market-data";
+import type {
+  CandidateWatchPlan,
+  WatchTarget,
+  WatchTargetKind
+} from "@axi/watch-orchestrator";
 import {
   CandidateDecisionSchema,
   ChainVerificationStatusSchema,
@@ -59,6 +64,8 @@ export type ReplaySource =
   | "chain_trade_events"
   | "feed_events"
   | "market_observations"
+  | "watch_actions"
+  | "watch_plans"
   | "chain_verifications"
   | "risk_snapshots"
   | "signals";
@@ -118,6 +125,8 @@ export type StorageStats = {
   chainTransactionEventCount: number;
   chainTradeEventCount: number;
   marketObservationCount: number;
+  watchPlanCount: number;
+  watchActionCount: number;
   riskSnapshotCount: number;
   candidateDecisionCount: number;
   paperOrderCount: number;
@@ -190,6 +199,32 @@ export type StoredChainTradeEvent = ChainTradeEventInput & {
 export type MarketObservationInput = MarketObservation;
 
 export type StoredMarketObservation = MarketObservationInput & {
+  id: number;
+  createdAt: string;
+};
+
+export type WatchPlanInput = CandidateWatchPlan & {
+  payload?: unknown;
+};
+
+export type StoredWatchPlan = CandidateWatchPlan & {
+  id: number;
+  payload: unknown;
+  createdAt: string;
+};
+
+export type WatchActionInput = {
+  mint: string;
+  action: string;
+  address: string;
+  addressKind: WatchTargetKind;
+  status: string;
+  reasonCodes: string[];
+  payload: unknown;
+  createdAt?: string;
+};
+
+export type StoredWatchAction = Omit<WatchActionInput, "createdAt"> & {
   id: number;
   createdAt: string;
 };
@@ -330,6 +365,32 @@ type MarketObservationRow = {
   created_at: string;
 };
 
+type WatchPlanRow = {
+  id: number;
+  mint: string;
+  symbol: string | null;
+  source: string | null;
+  should_verify_mint: number;
+  should_watch_events: number;
+  watch_targets_json: string;
+  skipped_targets_json: string;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
+type WatchActionRow = {
+  id: number;
+  mint: string;
+  action: string;
+  address: string;
+  address_kind: WatchTargetKind;
+  status: string;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
 type CountRow = {
   count: number;
 };
@@ -463,6 +524,58 @@ const marketObservationInputSchema = z.object({
   reasonCodes: z.array(z.string().min(1)),
   raw: z.unknown().optional(),
   createdAt: z.string().datetime()
+});
+
+const watchTargetSchema = z.object({
+  address: z.string().min(1),
+  kind: z.enum([
+    "mint",
+    "pool",
+    "bonding_curve",
+    "program",
+    "token_account",
+    "wallet",
+    "unknown"
+  ]),
+  mint: z.string().min(1).optional(),
+  symbol: z.string().min(1).optional(),
+  label: z.string().min(1).optional(),
+  source: z.enum(["mock", "pumpportal", "manual", "derived", "unknown"]),
+  confidence: z.enum(["low", "medium", "high"]),
+  reasonCodes: z.array(z.string().min(1)),
+  createdAt: z.string().datetime()
+});
+
+const watchPlanInputSchema = z.object({
+  mint: z.string().min(1),
+  symbol: z.string().min(1).optional(),
+  source: z.enum(["mock", "pumpportal", "manual", "derived", "unknown"]).optional(),
+  shouldVerifyMint: z.boolean(),
+  shouldWatchEvents: z.boolean(),
+  watchTargets: z.array(watchTargetSchema),
+  skippedTargets: z.array(watchTargetSchema),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown().optional(),
+  createdAt: z.string().datetime()
+});
+
+const watchActionInputSchema = z.object({
+  mint: z.string().min(1),
+  action: z.string().min(1),
+  address: z.string().min(1),
+  addressKind: z.enum([
+    "mint",
+    "pool",
+    "bonding_curve",
+    "program",
+    "token_account",
+    "wallet",
+    "unknown"
+  ]),
+  status: z.string().min(1),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown(),
+  createdAt: z.string().datetime().optional()
 });
 
 const limitSchema = z.number().int().positive().max(1000);
@@ -1220,6 +1333,179 @@ export function getLatestMarketObservation(
   return row ? mapMarketObservationRow(row) : null;
 }
 
+export function saveWatchPlan(plan: WatchPlanInput): StoredWatchPlan {
+  const parsed = watchPlanInputSchema.parse(plan) as WatchPlanInput;
+  const payload = parsed.payload ?? parsed;
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into watch_plans (
+        mint,
+        symbol,
+        source,
+        should_verify_mint,
+        should_watch_events,
+        watch_targets_json,
+        skipped_targets_json,
+        reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.mint,
+      parsed.symbol ?? null,
+      parsed.source ?? null,
+      parsed.shouldVerifyMint ? 1 : 0,
+      parsed.shouldWatchEvents ? 1 : 0,
+      stringifyJson(parsed.watchTargets),
+      stringifyJson(parsed.skippedTargets),
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(payload),
+      parsed.createdAt
+    );
+
+  return {
+    ...parsed,
+    id: toRowId(result.lastInsertRowid),
+    payload,
+    createdAt: parsed.createdAt
+  };
+}
+
+export function listWatchPlans(limit = 50): StoredWatchPlan[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from watch_plans
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as WatchPlanRow[];
+
+  return rows.map(mapWatchPlanRow);
+}
+
+export function listWatchPlansForReplay(limit = 50): StoredWatchPlan[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from watch_plans
+       order by datetime(created_at) asc, id asc
+       limit ?`
+    )
+    .all(parsedLimit) as WatchPlanRow[];
+
+  return rows.map(mapWatchPlanRow);
+}
+
+export function getLatestWatchPlan(mint: string): StoredWatchPlan | null {
+  const row = getDb()
+    .prepare(
+      `select *
+       from watch_plans
+       where mint = ?
+       order by datetime(created_at) desc, id desc
+       limit 1`
+    )
+    .get(mint) as WatchPlanRow | undefined;
+
+  return row ? mapWatchPlanRow(row) : null;
+}
+
+export function saveWatchAction(action: WatchActionInput): StoredWatchAction {
+  const parsed = watchActionInputSchema.parse(action);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into watch_actions (
+        mint,
+        action,
+        address,
+        address_kind,
+        status,
+        reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.mint,
+      parsed.action,
+      parsed.address,
+      parsed.addressKind,
+      parsed.status,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(parsed.payload),
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    mint: parsed.mint,
+    action: parsed.action,
+    address: parsed.address,
+    addressKind: parsed.addressKind,
+    status: parsed.status,
+    reasonCodes: parsed.reasonCodes,
+    payload: parsed.payload,
+    createdAt
+  };
+}
+
+export function listWatchActions(limit = 50): StoredWatchAction[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from watch_actions
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as WatchActionRow[];
+
+  return rows.map(mapWatchActionRow);
+}
+
+export function listWatchActionsForReplay(limit = 50): StoredWatchAction[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from watch_actions
+       order by datetime(created_at) asc, id asc
+       limit ?`
+    )
+    .all(parsedLimit) as WatchActionRow[];
+
+  return rows.map(mapWatchActionRow);
+}
+
+export function listWatchActionsByMint(
+  mint: string,
+  limit = 50
+): StoredWatchAction[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from watch_actions
+       where mint = ?
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(mint, parsedLimit) as WatchActionRow[];
+
+  return rows.map(mapWatchActionRow);
+}
+
 export async function* createReplayStream(options: {
   limit?: number;
   speed?: number;
@@ -1267,6 +1553,8 @@ function getReplayPayload(
     | StoredMarketObservation
     | StoredRiskSnapshot
     | StoredSignal
+    | StoredWatchAction
+    | StoredWatchPlan
 ): unknown {
   if ("payload" in record) {
     return record.payload;
@@ -1290,6 +1578,8 @@ function getReplayRecords(
   | StoredMarketObservation
   | StoredRiskSnapshot
   | StoredSignal
+  | StoredWatchAction
+  | StoredWatchPlan
 > {
   switch (type) {
     case "candidate_decisions":
@@ -1308,6 +1598,10 @@ function getReplayRecords(
       return listFeedEvents(limit);
     case "market_observations":
       return listMarketObservationsForReplay(limit);
+    case "watch_actions":
+      return listWatchActionsForReplay(limit);
+    case "watch_plans":
+      return listWatchPlansForReplay(limit);
   }
 }
 
@@ -1453,6 +1747,8 @@ export function getStorageStats(): StorageStats {
     chainTransactionEventCount: countRows(db, "chain_transaction_events"),
     chainTradeEventCount: countRows(db, "chain_trade_events"),
     marketObservationCount: countRows(db, "market_observations"),
+    watchPlanCount: countRows(db, "watch_plans"),
+    watchActionCount: countRows(db, "watch_actions"),
     riskSnapshotCount: countRows(db, "risk_snapshots"),
     candidateDecisionCount: countRows(db, "candidate_decisions"),
     paperOrderCount: countRows(db, "paper_orders"),
@@ -1717,6 +2013,56 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(5, "market_observations", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 6)) {
+    db.exec(`
+      create table if not exists watch_plans (
+        id integer primary key autoincrement,
+        mint text not null,
+        symbol text,
+        source text,
+        should_verify_mint integer not null,
+        should_watch_events integer not null,
+        watch_targets_json text not null,
+        skipped_targets_json text not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_watch_plans_created_at
+        on watch_plans(created_at);
+
+      create index if not exists idx_watch_plans_mint
+        on watch_plans(mint);
+
+      create table if not exists watch_actions (
+        id integer primary key autoincrement,
+        mint text not null,
+        action text not null,
+        address text not null,
+        address_kind text not null,
+        status text not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_watch_actions_created_at
+        on watch_actions(created_at);
+
+      create index if not exists idx_watch_actions_mint
+        on watch_actions(mint);
+
+      create index if not exists idx_watch_actions_address
+        on watch_actions(address);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(6, "watch_orchestration", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -1915,6 +2261,51 @@ function mapMarketObservationRow(
   return {
     ...payload,
     id: row.id,
+    createdAt: row.created_at
+  };
+}
+
+function mapWatchPlanRow(row: WatchPlanRow): StoredWatchPlan {
+  const watchTargets = z.array(watchTargetSchema).parse(
+    JSON.parse(row.watch_targets_json)
+  ) as WatchTarget[];
+  const skippedTargets = z.array(watchTargetSchema).parse(
+    JSON.parse(row.skipped_targets_json)
+  ) as WatchTarget[];
+  const plan: CandidateWatchPlan = {
+    mint: row.mint,
+    ...(row.symbol ? { symbol: row.symbol } : {}),
+    ...(row.source
+      ? {
+          source: row.source as CandidateWatchPlan["source"]
+        }
+      : {}),
+    shouldVerifyMint: Boolean(row.should_verify_mint),
+    shouldWatchEvents: Boolean(row.should_watch_events),
+    watchTargets,
+    skippedTargets,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    createdAt: row.created_at
+  };
+
+  return {
+    ...plan,
+    id: row.id,
+    payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at
+  };
+}
+
+function mapWatchActionRow(row: WatchActionRow): StoredWatchAction {
+  return {
+    id: row.id,
+    mint: row.mint,
+    action: row.action,
+    address: row.address,
+    addressKind: row.address_kind,
+    status: row.status,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
     createdAt: row.created_at
   };
 }

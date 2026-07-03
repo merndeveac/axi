@@ -11,7 +11,8 @@ import type {
   RiskLevel,
   RiskSnapshot,
   RollingMetricsSnapshot,
-  ScoreBreakdown
+  ScoreBreakdown,
+  WatchPlanSummary
 } from "@axi/shared";
 
 export type CandidateLifecycleEngineOptions = {
@@ -46,6 +47,8 @@ export type CandidateState = {
   chainReasonCodes?: string[];
   latestMarketObservationSummary?: MarketObservationSummary;
   marketReasonCodes?: string[];
+  latestWatchPlanSummary?: WatchPlanSummary;
+  watchReasonCodes?: string[];
   onChainMintAuthorityActive?: boolean | null;
   onChainFreezeAuthorityActive?: boolean | null;
   onChainSupplyUi?: number | null;
@@ -222,6 +225,23 @@ export class CandidateLifecycleEngine {
     return state;
   }
 
+  updateWatchPlan(
+    mint: string,
+    summary: WatchPlanSummary
+  ): CandidateState | undefined {
+    const state = this.candidates.get(mint);
+
+    if (!state) {
+      return undefined;
+    }
+
+    state.latestWatchPlanSummary = summary;
+    state.watchReasonCodes = summary.reasonCodes;
+    state.lastUpdatedAt = summary.createdAt;
+
+    return state;
+  }
+
   markPaperOrderSubmitted(
     mint: string,
     reasonCodes: string[] = ["PAPER_ORDER_SUBMITTED"]
@@ -351,6 +371,7 @@ export class CandidateLifecycleEngine {
     const scoreReasonCodes = score?.reasonCodes ?? ["NO_SCORE_YET"];
     const chainReasonCodes = state.chainReasonCodes ?? [];
     const marketReasonCodes = state.marketReasonCodes ?? [];
+    const watchReasonCodes = state.watchReasonCodes ?? [];
     const lifecycleReasonCodes: string[] = [];
     let lifecycleState: CandidateLifecycleState = state.lifecycleState;
     let action: CandidateDecisionAction = "IGNORE";
@@ -417,7 +438,8 @@ export class CandidateLifecycleEngine {
         ...riskReasonCodes,
         ...scoreReasonCodes,
         ...chainReasonCodes,
-        ...marketReasonCodes
+        ...marketReasonCodes,
+        ...watchReasonCodes
       ]),
       metricsSummary,
       riskSnapshotSummary: riskSummary,
@@ -479,6 +501,14 @@ export class CandidateLifecycleEngine {
 
     if (state.marketReasonCodes) {
       decision.marketReasonCodes = state.marketReasonCodes;
+    }
+
+    if (state.latestWatchPlanSummary) {
+      decision.watchPlanSummary = state.latestWatchPlanSummary;
+    }
+
+    if (state.watchReasonCodes) {
+      decision.watchReasonCodes = state.watchReasonCodes;
     }
 
     return decision;

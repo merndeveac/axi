@@ -57,6 +57,23 @@ const options: ApiServerOptions = {
   signalIntervalMs: config.SIGNAL_INTERVAL_MS
 };
 
+options.watchOrchestrator = {
+  enabled: config.WATCH_ORCHESTRATOR_ENABLED,
+  verifyOnNewToken: config.WATCH_ORCHESTRATOR_VERIFY_ON_NEW_TOKEN,
+  verifyOnMigration: config.WATCH_ORCHESTRATOR_VERIFY_ON_MIGRATION,
+  watchOnNewToken: config.WATCH_ORCHESTRATOR_WATCH_ON_NEW_TOKEN,
+  watchOnMigration: config.WATCH_ORCHESTRATOR_WATCH_ON_MIGRATION,
+  maxTargetsPerCandidate:
+    config.WATCH_ORCHESTRATOR_MAX_TARGETS_PER_CANDIDATE,
+  allowMintWatch: config.WATCH_ORCHESTRATOR_ALLOW_MINT_WATCH,
+  allowBondingCurveWatch:
+    config.WATCH_ORCHESTRATOR_ALLOW_BONDING_CURVE_WATCH,
+  allowPoolWatch: config.WATCH_ORCHESTRATOR_ALLOW_POOL_WATCH,
+  allowProgramWatch: config.WATCH_ORCHESTRATOR_ALLOW_PROGRAM_WATCH,
+  allowWalletWatch: config.WATCH_ORCHESTRATOR_ALLOW_WALLET_WATCH,
+  minConfidenceToWatch: config.WATCH_ORCHESTRATOR_MIN_CONFIDENCE_TO_WATCH
+};
+
 if (config.MOCK_FEED_MAX_EVENTS !== undefined) {
   mockFeed.maxEvents = config.MOCK_FEED_MAX_EVENTS;
 }
@@ -112,6 +129,7 @@ server.app.log.info(
     port: config.API_PORT,
     chainEvents: server.chainEvents.getStatus(),
     marketData: server.chainEvents.getMarketStatus(),
+    watchOrchestrator: server.watchOrchestration.getStatus(),
     chainVerifier: server.chainVerifier.getStatus(),
     signalIntervalMs: config.SIGNAL_INTERVAL_MS,
     storagePath: server.storage.databasePath

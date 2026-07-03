@@ -13,13 +13,14 @@ exists here yet.
 - No private keys, seed phrases, wallet files, API keys, or auth tokens should be
   stored in this repo.
 - No Axiom private APIs are used or reverse engineered.
-- Real Solana data feeds and trade execution are TODOs for later, explicit
-  development.
+- New external data feeds and all trade execution require later, explicit
+  development. Existing public feed/RPC helpers are read-only and disabled or
+  conservative by default.
 
 ## Architecture
 
 ```text
-data feeds -> metrics -> risk -> candidates -> scoring -> API/WebSocket -> dashboard/overlay
+data feeds -> watch orchestration -> metrics -> risk -> candidates -> scoring -> API/WebSocket -> dashboard/overlay
 ```
 
 Default implementation uses `MockFeedProvider`. It emits safe fake token events
@@ -40,13 +41,13 @@ Paper-mode development data is stored in a local SQLite database:
 The API initializes the database automatically, creates the current schema, and
 stores mock feed events, risk snapshots, candidate decisions, read-only chain
 verifications, read-only watched-address chain events, market observations,
-overlay signals, paper orders, and paper positions. This database is local-only
-and is ignored by git.
+watch plans/actions, overlay signals, paper orders, and paper positions. This
+database is local-only and is ignored by git.
 
 Current persistence tables include `feed_events`, `signals`, `risk_snapshots`,
 `candidate_decisions`, `chain_verifications`, `chain_transaction_events`,
-`chain_trade_events`, `market_observations`, `paper_orders`, and
-`paper_positions`.
+`chain_trade_events`, `market_observations`, `watch_plans`, `watch_actions`,
+`paper_orders`, and `paper_positions`.
 
 Clear local paper data with:
 
@@ -195,6 +196,42 @@ MARKET_DATA_ALLOW_USD_FROM_STABLE_QUOTES=true
 events that already exist. If `CHAIN_EVENTS_ENABLED=false`, it does not start
 RPC or WebSocket activity.
 
+## Read-Only Watch Orchestrator
+
+`@axi/watch-orchestrator` is a pure TypeScript planner that decides which mint,
+pool, or bonding-curve addresses would be useful to verify or watch based on
+public feed payloads and candidate context. It is deterministic, makes no
+network calls, loads no wallets, signs nothing, sends no transactions, and does
+not trade.
+
+The API-side orchestrator is disabled by default. When enabled, it creates
+persisted watch plans and action records. It only schedules read-only mint
+verification if `CHAIN_VERIFIER_ENABLED=true` and the verifier is configured. It
+only adds read-only watched addresses if `CHAIN_EVENTS_ENABLED=true` and chain
+events are configured. It never starts RPC/WebSocket services by itself.
+
+Default watch settings:
+
+```bash
+WATCH_ORCHESTRATOR_ENABLED=false
+WATCH_ORCHESTRATOR_VERIFY_ON_NEW_TOKEN=false
+WATCH_ORCHESTRATOR_VERIFY_ON_MIGRATION=false
+WATCH_ORCHESTRATOR_WATCH_ON_NEW_TOKEN=false
+WATCH_ORCHESTRATOR_WATCH_ON_MIGRATION=false
+WATCH_ORCHESTRATOR_MAX_TARGETS_PER_CANDIDATE=3
+WATCH_ORCHESTRATOR_ALLOW_MINT_WATCH=true
+WATCH_ORCHESTRATOR_ALLOW_BONDING_CURVE_WATCH=true
+WATCH_ORCHESTRATOR_ALLOW_POOL_WATCH=true
+WATCH_ORCHESTRATOR_ALLOW_PROGRAM_WATCH=false
+WATCH_ORCHESTRATOR_ALLOW_WALLET_WATCH=false
+WATCH_ORCHESTRATOR_MIN_CONFIDENCE_TO_WATCH=medium
+```
+
+The planner inspects normalized feed fields first and then conservatively
+inspects preserved raw PumpPortal payloads for likely mint, pool, and
+bonding-curve addresses. Wallet and program targets are skipped by default.
+Plans explain selected and skipped targets with reason codes.
+
 ## Install
 
 ```bash
@@ -312,6 +349,12 @@ Endpoints:
 - `GET /market/observations`
 - `GET /market/observations/:mint`
 - `GET /market/observations/signature/:signature`
+- `GET /watch/status`
+- `GET /watch/plans`
+- `GET /watch/plans/:mint`
+- `GET /watch/actions`
+- `GET /watch/actions/:mint`
+- `POST /watch/plan`
 - `GET /paper/orders`
 - `GET /paper/positions`
 - `ws://localhost:8787/ws/signals`
@@ -342,6 +385,11 @@ observation count. `GET /market/observations` returns recent persisted
 observations, `GET /market/observations/:mint` filters by mint, and `GET
 /market/observations/signature/:signature` returns one observation or `404`.
 
+`GET /watch/status` reports watch orchestrator settings, read-only chain service
+configuration, watch counts, and `paperOnly: true`. `POST /watch/plan` accepts a
+mint plus an optional local/debug event payload and creates a read-only plan. It
+does not trade, sign, or send transactions.
+
 ## Replay Local Data
 
 Replay persisted fake paper data from SQLite without starting the API,
@@ -362,6 +410,9 @@ pnpm --filter @axi/api replay -- --type market_observations --limit 25 --speed 0
 pnpm --filter @axi/api replay -- --type chain_trade_events --metrics true --risk true --candidates true --limit 100 --speed 0
 pnpm --filter @axi/api replay -- --type chain_trade_events --market true --metrics true --risk true --candidates true --limit 100 --speed 0
 pnpm --filter @axi/api replay -- --type chain_transaction_events --market true --limit 100 --speed 0
+pnpm --filter @axi/api replay -- --type watch_plans --limit 25 --speed 0
+pnpm --filter @axi/api replay -- --type watch_actions --limit 25 --speed 0
+pnpm --filter @axi/api replay -- --type feed_events --watch true --limit 100 --speed 0
 pnpm --filter @axi/api replay -- --type feed_events --chain false
 ```
 
@@ -403,6 +454,17 @@ pnpm --filter @axi/api market:decode -- --file ./fixtures/example-transaction.js
 
 The decoder reads local JSON only. It can use `--sol-usd-price` for explicit
 SOL/USD conversion, but it never fetches prices.
+
+Create a dry-run watch plan from a local JSON file without RPC, persistence, or
+trading:
+
+```bash
+pnpm --filter @axi/api watch:plan -- --file ./fixtures/pumpportal-event.json
+pnpm --filter @axi/api watch:plan -- --file ./fixtures/pumpportal-event.json --mint <MINT> --source manual
+```
+
+The watch planner CLI reads local JSON only. It never starts the API, calls RPC,
+persists data, loads wallets, signs, sends transactions, buys, or sells.
 
 ## Probe Feeds
 
@@ -463,6 +525,8 @@ docker compose --profile infra up -d
 - `@axi/chain-events`: optional read-only watched-address transaction ingestion.
 - `@axi/market-data`: pure local market observation normalization from chain
   balance deltas.
+- `@axi/watch-orchestrator`: pure read-only planning for feed-derived
+  verification/watch targets.
 - `@axi/storage`: local SQLite persistence for paper-mode development.
 - `@axi/api`: Fastify API and local WebSocket broadcaster.
 - `@axi/dashboard`: Vite React signal dashboard.
@@ -486,10 +550,13 @@ docker compose --profile infra up -d
   transaction ingestion.
 - `dev/chain-market-data-normalizer` contains pure local market observation
   normalization and SOL/quote-aware paper metrics.
+- `dev/real-feed-watch-orchestrator` contains read-only feed-to-chain watch
+  orchestration planning and API/dashboard visibility.
 
 Direct Solana RPC verification and watched-address transaction ingestion exist,
-but they are read-only and disabled by default. This project still has no wallet
-UI, no private-key loading, no live trading, no Solana transaction signing, no
-transaction sending, no real risk-data provider, no DEX-specific decoding, no
-full-market indexing, no Geyser/gRPC streaming, no metered PumpPortal trade
-streams, no Axiom private API usage, and no Axiom scraping.
+and local market-data normalization and watch orchestration exist, but they are
+read-only and disabled or conservative by default. This project still has no
+wallet UI, no private-key loading, no live trading, no Solana transaction
+signing, no transaction sending, no real risk-data provider, no DEX-specific
+decoding, no full-market indexing, no Geyser/gRPC streaming, no metered
+PumpPortal trade streams, no Axiom private API usage, and no Axiom scraping.
