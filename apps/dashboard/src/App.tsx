@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import type { OverlaySignal } from "@axi/shared";
+import type {
+  CandidateDecision,
+  OverlaySignal,
+  RiskSnapshot,
+  RollingMetricsSnapshot
+} from "@axi/shared";
 
 type ConnectionStatus = "connecting" | "open" | "closed";
 type ApiStatus = "checking" | "connected" | "disconnected";
@@ -8,18 +13,37 @@ type StorageStats = {
   databasePath: string;
   feedEventCount: number;
   signalCount: number;
+  riskSnapshotCount: number;
+  candidateDecisionCount: number;
   paperOrderCount: number;
   paperPositionCount: number;
   lastSignalAt: string | null;
 };
 
 type HealthStatus = {
+  candidateCount: number;
+  candidateLifecycleEnabled: boolean;
   feedProvider: string;
   metricsEnabled: boolean;
   mode: string;
+  paperAutoOrder: boolean;
   paperOnly: boolean;
+  riskEnabled: boolean;
   status: string;
   trackedTokenCount: number;
+};
+
+type CandidateApiRow = {
+  mint: string;
+  symbol?: string;
+  name?: string;
+  source?: string;
+  lifecycleState: string;
+  latestDecision?: CandidateDecision;
+  latestMetrics?: RollingMetricsSnapshot;
+  latestRisk?: RiskSnapshot;
+  lastUpdatedAt: string;
+  paperOrderStatus: string;
 };
 
 type ServerMessage =
@@ -41,6 +65,7 @@ export function App() {
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("connecting");
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
+  const [candidates, setCandidates] = useState<CandidateApiRow[]>([]);
   const [healthStatus, setHealthStatus] = useState<HealthStatus | null>(null);
   const [storageStats, setStorageStats] = useState<StorageStats | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>("never");
@@ -99,20 +124,24 @@ export function App() {
 
     const loadApiStatus = async () => {
       try {
-        const [healthResponse, statsResponse] = await Promise.all([
+        const [healthResponse, statsResponse, candidatesResponse] = await Promise.all([
           fetch(`${apiBaseUrl}/health`),
-          fetch(`${apiBaseUrl}/storage/stats`)
+          fetch(`${apiBaseUrl}/storage/stats`),
+          fetch(`${apiBaseUrl}/candidates`)
         ]);
 
-        if (!healthResponse.ok || !statsResponse.ok) {
+        if (!healthResponse.ok || !statsResponse.ok || !candidatesResponse.ok) {
           throw new Error("API status check failed");
         }
 
         const health = (await healthResponse.json()) as HealthStatus;
         const stats = (await statsResponse.json()) as StorageStats;
+        const nextCandidates =
+          (await candidatesResponse.json()) as CandidateApiRow[];
 
         if (!cancelled) {
           setApiStatus("connected");
+          setCandidates(nextCandidates);
           setHealthStatus(health);
           setStorageStats(stats);
         }
@@ -139,6 +168,15 @@ export function App() {
     () => [...signals].sort((left, right) => right.score - left.score),
     [signals]
   );
+  const sortedCandidates = useMemo(
+    () =>
+      [...candidates].sort(
+        (left, right) =>
+          (right.latestDecision?.score ?? 0) -
+          (left.latestDecision?.score ?? 0)
+      ),
+    [candidates]
+  );
 
   const buyReadyCount = signals.filter(
     (signal) => signal.action === "BUY_READY"
@@ -152,6 +190,7 @@ export function App() {
     apiStatus,
     feedProvider: healthStatus?.feedProvider,
     incompleteMetricCount,
+    candidateCount: candidates.length,
     signalCount: signals.length,
     storageStats
   });
@@ -197,16 +236,40 @@ export function App() {
           <strong>{healthStatus?.feedProvider ?? "unknown"}</strong>
         </div>
         <div>
-          <span>Stored Signals</span>
-          <strong>{storageStats?.signalCount ?? signals.length}</strong>
-        </div>
-        <div>
           <span>Metrics</span>
           <strong>{healthStatus?.metricsEnabled ? "on" : "off"}</strong>
         </div>
         <div>
+          <span>Risk</span>
+          <strong>{healthStatus?.riskEnabled ? "on" : "off"}</strong>
+        </div>
+        <div>
+          <span>Lifecycle</span>
+          <strong>{healthStatus?.candidateLifecycleEnabled ? "on" : "off"}</strong>
+        </div>
+        <div>
           <span>Tracked</span>
           <strong>{healthStatus?.trackedTokenCount ?? 0}</strong>
+        </div>
+        <div>
+          <span>Candidates</span>
+          <strong>{healthStatus?.candidateCount ?? candidates.length}</strong>
+        </div>
+        <div>
+          <span>Stored Signals</span>
+          <strong>{storageStats?.signalCount ?? signals.length}</strong>
+        </div>
+        <div>
+          <span>Risk Snapshots</span>
+          <strong>{storageStats?.riskSnapshotCount ?? 0}</strong>
+        </div>
+        <div>
+          <span>Decisions</span>
+          <strong>{storageStats?.candidateDecisionCount ?? 0}</strong>
+        </div>
+        <div>
+          <span>Auto Paper</span>
+          <strong>{healthStatus?.paperAutoOrder ? "on" : "off"}</strong>
         </div>
         <div>
           <span>Paper Orders</span>
@@ -230,7 +293,92 @@ export function App() {
         {statusMessage}
       </section>
 
+      <section className="table-region candidate-region" aria-label="Candidate lifecycle">
+        <div className="table-heading">
+          <h2>Candidate Lifecycle</h2>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Mint</th>
+              <th>Symbol</th>
+              <th>State</th>
+              <th>Action</th>
+              <th>Score</th>
+              <th>Risk</th>
+              <th>Hard Reject</th>
+              <th>Reasons</th>
+              <th>10s Vol</th>
+              <th>Vol Vel</th>
+              <th>Buyer Vel</th>
+              <th>Buy/Sell</th>
+              <th>Net Pressure</th>
+              <th>Risk Warnings</th>
+              <th>Last Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sortedCandidates.map((candidate) => {
+              const decision = candidate.latestDecision;
+              const risk = candidate.latestRisk;
+
+              return (
+                <tr key={candidate.mint}>
+                  <td className="mono" title={candidate.mint}>
+                    {shortMint(candidate.mint)}
+                  </td>
+                  <td>{candidate.symbol ?? "UNKNOWN"}</td>
+                  <td>
+                    <span className={`state state-${candidate.lifecycleState}`}>
+                      {candidate.lifecycleState}
+                    </span>
+                  </td>
+                  <td>
+                    <span
+                      className={`action action-${normalizeClassName(
+                        decision?.action ?? "IGNORE"
+                      )}`}
+                    >
+                      {decision?.action ?? "IGNORE"}
+                    </span>
+                  </td>
+                  <td>
+                    <span className="score">{decision?.score ?? 0}</span>
+                  </td>
+                  <td>
+                    <span
+                      className={`risk-level risk-${risk?.riskLevel ?? "unknown"}`}
+                    >
+                      {risk?.riskLevel ?? "unknown"}
+                    </span>
+                  </td>
+                  <td>{decision?.hardReject || risk?.hardReject ? "yes" : "no"}</td>
+                  <td>{topReasonCodes(decision?.combinedReasonCodes)}</td>
+                  <td>{formatUsd(candidate.latestMetrics?.windows["10s"].totalVolumeUsd ?? 0)}</td>
+                  <td>{formatNumber(candidate.latestMetrics?.volumeVelocityUsdPerSec)}</td>
+                  <td>{formatNumber(candidate.latestMetrics?.buyerVelocityPerSec)}</td>
+                  <td>{formatNumber(candidate.latestMetrics?.buySellRatio)}</td>
+                  <td>{formatNumber(candidate.latestMetrics?.netBuyPressure)}</td>
+                  <td>{topReasonCodes(risk?.reasonCodes)}</td>
+                  <td>{formatTimestamp(candidate.lastUpdatedAt)}</td>
+                </tr>
+              );
+            })}
+            {sortedCandidates.length === 0 ? (
+              <tr>
+                <td colSpan={15} className="empty-state">
+                  {statusMessage}
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </section>
+
       <section className="table-region" aria-label="Live token signals">
+        <div className="table-heading">
+          <h2>Signals</h2>
+        </div>
         <table>
           <thead>
             <tr>
@@ -238,6 +386,8 @@ export function App() {
               <th>Symbol</th>
               <th>Score</th>
               <th>Action</th>
+              <th>State</th>
+              <th>Risk</th>
               <th>Reasons</th>
               <th>Feed</th>
               <th>Insufficient</th>
@@ -269,6 +419,16 @@ export function App() {
                     {signal.action}
                   </span>
                 </td>
+                <td>
+                  <span className={`state state-${signal.lifecycleState ?? "unknown"}`}>
+                    {signal.lifecycleState ?? "unknown"}
+                  </span>
+                </td>
+                <td>
+                  <span className={`risk-level risk-${signal.riskLevel ?? "unknown"}`}>
+                    {signal.riskLevel ?? "unknown"}
+                  </span>
+                </td>
                 <td>{signal.reasonCodes.slice(0, 3).join(", ")}</td>
                 <td>{signal.feedProvider ?? healthStatus?.feedProvider ?? "unknown"}</td>
                 <td>{signal.insufficientMetrics ? "yes" : "no"}</td>
@@ -287,7 +447,7 @@ export function App() {
             ))}
             {sortedSignals.length === 0 ? (
               <tr>
-                <td colSpan={18} className="empty-state">
+                <td colSpan={20} className="empty-state">
                   {statusMessage}
                 </td>
               </tr>
@@ -321,6 +481,14 @@ function metricVolume(
   return signal.rollingMetrics?.windows[window].totalVolumeUsd ?? 0;
 }
 
+function normalizeClassName(value: string): string {
+  return value.toLowerCase();
+}
+
+function topReasonCodes(reasonCodes: string[] | undefined): string {
+  return reasonCodes?.slice(0, 3).join(", ") || "-";
+}
+
 function formatNumber(value: number | undefined): string {
   return value === undefined ? "-" : value.toFixed(2);
 }
@@ -343,6 +511,7 @@ function formatTimestamp(timestamp: string | null | undefined): string {
 
 function getStatusMessage(options: {
   apiStatus: ApiStatus;
+  candidateCount: number;
   feedProvider: string | undefined;
   incompleteMetricCount: number;
   signalCount: number;
@@ -358,6 +527,10 @@ function getStatusMessage(options: {
 
   if (options.storageStats?.feedEventCount === 0) {
     return "API connected, no persisted mock events yet";
+  }
+
+  if (options.candidateCount === 0) {
+    return "API connected, waiting for candidate lifecycle data";
   }
 
   if (

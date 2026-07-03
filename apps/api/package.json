@@ -14,9 +14,11 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@axi/candidates": "workspace:*",
     "@axi/data-feeds": "workspace:*",
     "@axi/execution": "workspace:*",
     "@axi/metrics": "workspace:*",
+    "@axi/risk": "workspace:*",
     "@axi/scoring": "workspace:*",
     "@axi/shared": "workspace:*",
     "@axi/storage": "workspace:*",

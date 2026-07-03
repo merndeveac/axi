@@ -19,11 +19,13 @@
     "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
+      "@axi/candidates": ["packages/candidates/src/index.ts"],
       "@axi/shared": ["packages/shared/src/index.ts"],
       "@axi/scoring": ["packages/scoring/src/index.ts"],
       "@axi/data-feeds": ["packages/data-feeds/src/index.ts"],
       "@axi/execution": ["packages/execution/src/index.ts"],
       "@axi/metrics": ["packages/metrics/src/index.ts"],
+      "@axi/risk": ["packages/risk/src/index.ts"],
       "@axi/storage": ["packages/storage/src/index.ts"]
     }
   }

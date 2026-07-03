@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
   MetricWindow,
   RiskFlags,
+  RiskSnapshot,
   RollingMetrics,
   RollingMetricsSnapshot,
   RollingWindowMetrics,
@@ -176,6 +177,66 @@ describe("scoring", () => {
     expect(sellPressure.total).toBeLessThan(buyPressure.total);
     expect(sellPressure.reasonCodes).toContain("SELL_PRESSURE_HIGH");
   });
+
+  it("risk hard reject overrides score", () => {
+    const score = scoreCandidate(baseCandidate, baseMetrics, baseRiskFlags, {
+      riskSnapshot: createRiskSnapshot({
+        hardReject: true,
+        reasonCodes: ["HONEYPOT_SUSPECTED"],
+        riskLevel: "critical",
+        riskScore: 100
+      }),
+      rollingMetrics: createRollingMetrics({
+        insufficientMetrics: false,
+        sampleCount: 20
+      })
+    });
+
+    expect(score.hardReject).toBe(true);
+    expect(score.action).toBe("HARD_REJECT");
+    expect(score.reasonCodes).toContain("RISK_HARD_REJECT");
+  });
+
+  it("high risk penalizes score", () => {
+    const lowRisk = scoreCandidate(baseCandidate, baseMetrics, baseRiskFlags, {
+      riskSnapshot: createRiskSnapshot({
+        riskLevel: "low",
+        riskScore: 5
+      }),
+      rollingMetrics: createRollingMetrics({
+        insufficientMetrics: false,
+        sampleCount: 20
+      })
+    });
+    const highRisk = scoreCandidate(baseCandidate, baseMetrics, baseRiskFlags, {
+      riskSnapshot: createRiskSnapshot({
+        reasonCodes: ["HOLDER_CONCENTRATION_ELEVATED"],
+        riskLevel: "high",
+        riskScore: 70
+      }),
+      rollingMetrics: createRollingMetrics({
+        insufficientMetrics: false,
+        sampleCount: 20
+      })
+    });
+
+    expect(highRisk.total).toBeLessThan(lowRisk.total);
+    expect(highRisk.reasonCodes).toContain("RISK_LEVEL_HIGH");
+  });
+
+  it("minimum sample count prevents buy ready", () => {
+    const score = scoreCandidate(baseCandidate, baseMetrics, baseRiskFlags, {
+      minSampleCount: 8,
+      riskSnapshot: createRiskSnapshot(),
+      rollingMetrics: createRollingMetrics({
+        insufficientMetrics: false,
+        sampleCount: 3
+      })
+    });
+
+    expect(score.action).not.toBe("BUY_READY");
+    expect(score.reasonCodes).toContain("INSUFFICIENT_TRADE_METRICS");
+  });
 });
 
 function createRollingMetrics(
@@ -235,5 +296,59 @@ function createWindowRecord<T>(value: T): Record<MetricWindow, T> {
     "10s": value,
     "30s": value,
     "60s": value
+  };
+}
+
+function createRiskSnapshot(
+  overrides: Partial<RiskSnapshot> = {}
+): RiskSnapshot {
+  const timestamp = "2026-01-01T00:00:00.000Z";
+
+  return {
+    mint: baseCandidate.mint,
+    symbol: baseCandidate.symbol,
+    source: "mock",
+    riskLevel: "low",
+    hardReject: false,
+    riskScore: 10,
+    flags: {
+      mintAuthorityActive: false,
+      freezeAuthorityActive: false,
+      metadataMutable: false,
+      holderCount: 260,
+      topHolderPct: 8,
+      top10HolderPct: 36,
+      devHolderPct: 2,
+      insiderHolderPct: 4,
+      devSoldPct: 0,
+      devNetFlowUsd: 500,
+      priorLaunchCount: 1,
+      priorRugCount: 0,
+      buySellRatio: 4,
+      netBuyPressure: 0.6,
+      uniqueBuyers: 7,
+      uniqueSellers: 2,
+      volumeVelocity: 150,
+      volumeAcceleration: 35,
+      buyerVelocity: 0.7,
+      buyerAcceleration: 0.1,
+      priceVelocity: 1.6,
+      priceAcceleration: 0.2,
+      largestTradeShare: 0.2,
+      sampleCount: 10,
+      insufficientMetrics: false,
+      liquidityUsd: 18_000,
+      marketCapUsd: 48_000,
+      fdvUsd: 48_000,
+      estimatedSellSlippagePct: 4,
+      sniperPct: 3,
+      bundlerPct: 2,
+      washTradingSuspected: false,
+      honeypotSuspected: false
+    },
+    reasonCodes: ["BASELINE_RISK"],
+    humanSummary: "low risk",
+    updatedAt: timestamp,
+    ...overrides
   };
 }

@@ -19,6 +19,7 @@ const options: ApiServerOptions = {
   logLevel: config.LOG_LEVEL,
   mockFeed,
   mode: config.BOT_MODE,
+  paperAutoOrder: config.PAPER_AUTO_ORDER,
   pumpPortal,
   port: config.API_PORT,
   signalIntervalMs: config.SIGNAL_INTERVAL_MS
@@ -63,6 +64,7 @@ server.app.log.info(
   {
     mode: config.BOT_MODE,
     feedProvider: server.feed.name,
+    paperAutoOrder: config.PAPER_AUTO_ORDER,
     port: config.API_PORT,
     signalIntervalMs: config.SIGNAL_INTERVAL_MS,
     storagePath: server.storage.databasePath

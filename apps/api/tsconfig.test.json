@@ -6,11 +6,13 @@
     "rootDir": ".",
     "baseUrl": ".",
     "paths": {
+      "@axi/candidates": ["../../packages/candidates/dist/index.d.ts"],
       "@axi/shared": ["../../packages/shared/dist/index.d.ts"],
       "@axi/scoring": ["../../packages/scoring/dist/index.d.ts"],
       "@axi/data-feeds": ["../../packages/data-feeds/dist/index.d.ts"],
       "@axi/execution": ["../../packages/execution/dist/index.d.ts"],
       "@axi/metrics": ["../../packages/metrics/dist/index.d.ts"],
+      "@axi/risk": ["../../packages/risk/dist/index.d.ts"],
       "@axi/storage": ["../../packages/storage/dist/index.d.ts"]
     }
   },

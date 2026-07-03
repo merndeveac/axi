@@ -1,5 +1,6 @@
 import type {
   RiskFlags,
+  RiskSnapshot,
   RollingMetrics,
   RollingMetricsSnapshot,
   ScoreBreakdown,
@@ -12,6 +13,8 @@ export type HardRejectResult = {
 };
 
 export type ScoreCandidateOptions = {
+  minSampleCount?: number;
+  riskSnapshot?: RiskSnapshot;
   rollingMetrics?: RollingMetricsSnapshot;
 };
 
@@ -144,12 +147,14 @@ export function scoreCandidate(
   options: ScoreCandidateOptions = {}
 ): ScoreBreakdown {
   const rollingMetrics = options.rollingMetrics;
+  const riskSnapshot = options.riskSnapshot;
   const momentum = computeMomentumScore(metrics, rollingMetrics);
   const quality = computeQualityScore(metrics, riskFlags, rollingMetrics);
-  const riskPenalty = computeRiskPenalty(riskFlags);
+  const riskPenalty = computeCombinedRiskPenalty(riskFlags, riskSnapshot);
   const reject = hardReject(candidate, metrics, riskFlags);
+  const riskHardReject = riskSnapshot?.hardReject ?? false;
 
-  if (reject.rejected) {
+  if (reject.rejected || riskHardReject) {
     return {
       total: 0,
       momentum,
@@ -157,13 +162,24 @@ export function scoreCandidate(
       riskPenalty,
       hardReject: true,
       action: "HARD_REJECT",
-      reasonCodes: reject.reasonCodes
+      reasonCodes: uniqueReasonCodes([
+        ...reject.reasonCodes,
+        ...(riskSnapshot?.reasonCodes ?? []),
+        ...(riskHardReject ? ["RISK_HARD_REJECT"] : [])
+      ])
     };
   }
 
   const total = Math.round(clamp(momentum * 0.55 + quality * 0.55 - riskPenalty, 0, 100));
   const reasonCodes: string[] = [];
-  const insufficientMetrics = rollingMetrics?.insufficientMetrics ?? false;
+  const insufficientMetrics =
+    rollingMetrics?.insufficientMetrics ??
+    riskSnapshot?.flags.insufficientMetrics ??
+    false;
+  const belowMinSampleCount =
+    rollingMetrics !== undefined &&
+    rollingMetrics.sampleCount < (options.minSampleCount ?? 0);
+  const riskLevel = riskSnapshot?.riskLevel;
 
   if (momentum >= 65) {
     reasonCodes.push("STRONG_MOMENTUM");
@@ -214,6 +230,32 @@ export function scoreCandidate(
     }
   }
 
+  if (belowMinSampleCount) {
+    reasonCodes.push("INSUFFICIENT_TRADE_METRICS");
+  }
+
+  if (riskSnapshot) {
+    if (riskLevel === "critical") {
+      reasonCodes.push("RISK_LEVEL_CRITICAL");
+    }
+
+    if (riskLevel === "high") {
+      reasonCodes.push("RISK_LEVEL_HIGH");
+    }
+
+    if (
+      riskSnapshot.reasonCodes.includes("HOLDER_CONCENTRATION_ELEVATED") ||
+      riskSnapshot.reasonCodes.includes("TOP_HOLDER_TOO_HIGH") ||
+      riskSnapshot.reasonCodes.includes("TOP10_HOLDER_TOO_HIGH")
+    ) {
+      reasonCodes.push("HIGH_CONCENTRATION_RISK");
+    }
+
+    if (riskSnapshot.reasonCodes.includes("SELL_PRESSURE_ELEVATED")) {
+      reasonCodes.push("SELL_PRESSURE_HIGH");
+    }
+  }
+
   if (quality >= 55) {
     reasonCodes.push("QUALITY_LIQUIDITY_AND_DISTRIBUTION");
   }
@@ -226,24 +268,45 @@ export function scoreCandidate(
     reasonCodes.push("BASELINE_SIGNAL");
   }
 
-  const action =
-    total >= 75
-      ? insufficientMetrics
-        ? "WATCH"
-        : "BUY_READY"
-      : total >= 45
-        ? "WATCH"
-        : "IGNORE";
-
   return {
     total,
     momentum,
     quality,
     riskPenalty,
     hardReject: false,
-    action,
+    action: getScoreAction({
+      belowMinSampleCount,
+      insufficientMetrics,
+      riskLevel,
+      total
+    }),
     reasonCodes: uniqueReasonCodes(reasonCodes)
   };
+}
+
+function computeCombinedRiskPenalty(
+  riskFlags: RiskFlags,
+  riskSnapshot: RiskSnapshot | undefined
+): number {
+  const legacyPenalty = computeRiskPenalty(riskFlags);
+
+  if (!riskSnapshot) {
+    return legacyPenalty;
+  }
+
+  const levelPenalty =
+    riskSnapshot.riskLevel === "critical"
+      ? 100
+      : riskSnapshot.riskLevel === "high"
+        ? 45
+        : riskSnapshot.riskLevel === "medium"
+          ? 20
+          : riskSnapshot.riskLevel === "unknown"
+            ? 8
+            : 0;
+  const scorePenalty = clamp(riskSnapshot.riskScore * 0.45, 0, 45);
+
+  return clamp(Math.max(legacyPenalty, levelPenalty) + scorePenalty, 0, 100);
 }
 
 function computeRollingMomentumScore(metrics: RollingMetricsSnapshot): number {
@@ -287,4 +350,23 @@ function computeRollingMomentumScore(metrics: RollingMetricsSnapshot): number {
 
 function uniqueReasonCodes(reasonCodes: string[]): string[] {
   return Array.from(new Set(reasonCodes));
+}
+
+function getScoreAction(options: {
+  belowMinSampleCount: boolean;
+  insufficientMetrics: boolean;
+  riskLevel: RiskSnapshot["riskLevel"] | undefined;
+  total: number;
+}): ScoreBreakdown["action"] {
+  if (options.riskLevel === "critical") {
+    return "IGNORE";
+  }
+
+  if (options.total >= 75) {
+    return options.insufficientMetrics || options.belowMinSampleCount
+      ? "WATCH"
+      : "BUY_READY";
+  }
+
+  return options.total >= 45 ? "WATCH" : "IGNORE";
 }

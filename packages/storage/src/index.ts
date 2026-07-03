@@ -6,8 +6,13 @@ import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import type { FeedEvent } from "@axi/data-feeds";
 import {
+  CandidateDecisionSchema,
   OverlaySignalSchema,
+  RiskSnapshotSchema,
+  type CandidateDecision,
   type OverlaySignal,
+  type RiskLevel,
+  type RiskSnapshot,
   type SignalAction
 } from "@axi/shared";
 
@@ -41,11 +46,15 @@ export type StoredSignal = {
   createdAt: string;
 };
 
-export type ReplaySource = "feed_events" | "signals";
+export type ReplaySource =
+  | "candidate_decisions"
+  | "feed_events"
+  | "risk_snapshots"
+  | "signals";
 
 export type ReplayItem = {
   createdAt: string;
-  payload: FeedEvent | OverlaySignal;
+  payload: CandidateDecision | FeedEvent | OverlaySignal | RiskSnapshot;
   sequence: number;
   source: ReplaySource;
 };
@@ -94,9 +103,36 @@ export type StorageStats = {
   databasePath: string;
   feedEventCount: number;
   signalCount: number;
+  riskSnapshotCount: number;
+  candidateDecisionCount: number;
   paperOrderCount: number;
   paperPositionCount: number;
   lastSignalAt: string | null;
+};
+
+export type StoredRiskSnapshot = {
+  id: number;
+  mint: string;
+  riskLevel: RiskLevel;
+  hardReject: boolean;
+  riskScore: number;
+  reasonCodes: string[];
+  payload: RiskSnapshot;
+  createdAt: string;
+};
+
+export type StoredCandidateDecision = {
+  id: number;
+  mint: string;
+  symbol: string;
+  lifecycleState: CandidateDecision["lifecycleState"];
+  action: CandidateDecision["action"];
+  score: number;
+  riskLevel: RiskLevel;
+  hardReject: boolean;
+  combinedReasonCodes: string[];
+  payload: CandidateDecision;
+  createdAt: string;
 };
 
 type SignalRow = {
@@ -144,6 +180,31 @@ type PaperPositionRow = {
   payload_json: string;
   opened_at: string;
   updated_at: string;
+};
+
+type RiskSnapshotRow = {
+  id: number;
+  mint: string;
+  risk_level: RiskLevel;
+  hard_reject: number;
+  risk_score: number;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
+type CandidateDecisionRow = {
+  id: number;
+  mint: string;
+  symbol: string;
+  lifecycle_state: CandidateDecision["lifecycleState"];
+  action: CandidateDecision["action"];
+  score: number;
+  risk_level: RiskLevel;
+  hard_reject: number;
+  combined_reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
 };
 
 type CountRow = {
@@ -301,6 +362,159 @@ export function listRecentSignals(limit = 50): StoredSignal[] {
   return rows.map(mapSignalRow);
 }
 
+export function saveRiskSnapshot(snapshot: RiskSnapshot): StoredRiskSnapshot {
+  const parsed = RiskSnapshotSchema.parse(snapshot);
+  const createdAt = parsed.updatedAt;
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into risk_snapshots (
+        mint,
+        risk_level,
+        hard_reject,
+        risk_score,
+        reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.mint,
+      parsed.riskLevel,
+      parsed.hardReject ? 1 : 0,
+      parsed.riskScore,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(parsed),
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    mint: parsed.mint,
+    riskLevel: parsed.riskLevel,
+    hardReject: parsed.hardReject,
+    riskScore: parsed.riskScore,
+    reasonCodes: parsed.reasonCodes,
+    payload: parsed,
+    createdAt
+  };
+}
+
+export function listRiskSnapshots(limit = 50): StoredRiskSnapshot[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from risk_snapshots
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as RiskSnapshotRow[];
+
+  return rows.map(mapRiskSnapshotRow);
+}
+
+export function getLatestRiskSnapshot(
+  mint: string
+): StoredRiskSnapshot | null {
+  const row = getDb()
+    .prepare(
+      `select *
+       from risk_snapshots
+       where mint = ?
+       order by datetime(created_at) desc, id desc
+       limit 1`
+    )
+    .get(mint) as RiskSnapshotRow | undefined;
+
+  return row ? mapRiskSnapshotRow(row) : null;
+}
+
+export function saveCandidateDecision(
+  decision: CandidateDecision
+): StoredCandidateDecision {
+  const parsed = CandidateDecisionSchema.parse(decision);
+  const createdAt = parsed.updatedAt;
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into candidate_decisions (
+        mint,
+        symbol,
+        lifecycle_state,
+        action,
+        score,
+        risk_level,
+        hard_reject,
+        combined_reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.mint,
+      parsed.symbol ?? "UNKNOWN",
+      parsed.lifecycleState,
+      parsed.action,
+      parsed.score,
+      parsed.riskLevel,
+      parsed.hardReject ? 1 : 0,
+      stringifyJson(parsed.combinedReasonCodes),
+      stringifyJson(parsed),
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    mint: parsed.mint,
+    symbol: parsed.symbol ?? "UNKNOWN",
+    lifecycleState: parsed.lifecycleState,
+    action: parsed.action,
+    score: parsed.score,
+    riskLevel: parsed.riskLevel,
+    hardReject: parsed.hardReject,
+    combinedReasonCodes: parsed.combinedReasonCodes,
+    payload: parsed,
+    createdAt
+  };
+}
+
+export function listCandidateDecisions(
+  limit = 50
+): StoredCandidateDecision[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from candidate_decisions
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as CandidateDecisionRow[];
+
+  return rows.map(mapCandidateDecisionRow);
+}
+
+export function getLatestCandidateDecision(
+  mint: string
+): StoredCandidateDecision | null {
+  const row = getDb()
+    .prepare(
+      `select *
+       from candidate_decisions
+       where mint = ?
+       order by datetime(created_at) desc, id desc
+       limit 1`
+    )
+    .get(mint) as CandidateDecisionRow | undefined;
+
+  return row ? mapCandidateDecisionRow(row) : null;
+}
+
 export function listFeedEvents(limit = 50): StoredFeedEvent[] {
   const parsedLimit = limitSchema.parse(limit);
   const rows = getDb()
@@ -329,6 +543,38 @@ export function listSignalsForReplay(limit = 50): StoredSignal[] {
   return rows.map(mapSignalRow);
 }
 
+export function listRiskSnapshotsForReplay(
+  limit = 50
+): StoredRiskSnapshot[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from risk_snapshots
+       order by datetime(created_at) asc, id asc
+       limit ?`
+    )
+    .all(parsedLimit) as RiskSnapshotRow[];
+
+  return rows.map(mapRiskSnapshotRow);
+}
+
+export function listCandidateDecisionsForReplay(
+  limit = 50
+): StoredCandidateDecision[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from candidate_decisions
+       order by datetime(created_at) asc, id asc
+       limit ?`
+    )
+    .all(parsedLimit) as CandidateDecisionRow[];
+
+  return rows.map(mapCandidateDecisionRow);
+}
+
 export async function* createReplayStream(options: {
   limit?: number;
   speed?: number;
@@ -336,10 +582,7 @@ export async function* createReplayStream(options: {
 } = {}): AsyncGenerator<ReplayItem> {
   const type = options.type ?? "feed_events";
   const speed = options.speed ?? 0;
-  const records =
-    type === "signals"
-      ? listSignalsForReplay(options.limit)
-      : listFeedEvents(options.limit);
+  const records = getReplayRecords(type, options.limit);
   let previousTimestamp: number | undefined;
 
   for (const [index, record] of records.entries()) {
@@ -366,6 +609,27 @@ export async function* createReplayStream(options: {
       sequence: index + 1,
       source: type
     };
+  }
+}
+
+function getReplayRecords(
+  type: ReplaySource,
+  limit: number | undefined
+): Array<
+  | StoredCandidateDecision
+  | StoredFeedEvent
+  | StoredRiskSnapshot
+  | StoredSignal
+> {
+  switch (type) {
+    case "candidate_decisions":
+      return listCandidateDecisionsForReplay(limit);
+    case "risk_snapshots":
+      return listRiskSnapshotsForReplay(limit);
+    case "signals":
+      return listSignalsForReplay(limit);
+    case "feed_events":
+      return listFeedEvents(limit);
   }
 }
 
@@ -507,6 +771,8 @@ export function getStorageStats(): StorageStats {
     databasePath: getStoragePath(),
     feedEventCount: countRows(db, "feed_events"),
     signalCount: countRows(db, "signals"),
+    riskSnapshotCount: countRows(db, "risk_snapshots"),
+    candidateDecisionCount: countRows(db, "candidate_decisions"),
     paperOrderCount: countRows(db, "paper_orders"),
     paperPositionCount: countRows(db, "paper_positions"),
     lastSignalAt: lastSignal.last_signal_at
@@ -522,85 +788,129 @@ function runMigrations(db: DatabaseSync): void {
     )
   `);
 
-  if (hasMigration(db, 1)) {
-    return;
+  if (!hasMigration(db, 1)) {
+    db.exec(`
+      create table if not exists feed_events (
+        id integer primary key autoincrement,
+        event_type text not null,
+        mint text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_feed_events_created_at
+        on feed_events(created_at);
+
+      create index if not exists idx_feed_events_mint
+        on feed_events(mint);
+
+      create table if not exists signals (
+        id integer primary key autoincrement,
+        mint text not null,
+        symbol text not null,
+        action text not null,
+        score real not null,
+        hard_reject integer not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_signals_created_at
+        on signals(created_at);
+
+      create index if not exists idx_signals_mint
+        on signals(mint);
+
+      create table if not exists paper_orders (
+        id integer primary key autoincrement,
+        mint text not null,
+        symbol text not null,
+        side text not null,
+        status text not null,
+        size_sol real not null,
+        simulated_price real not null,
+        reason_codes_json text not null,
+        signal_id integer,
+        payload_json text not null,
+        created_at text not null,
+        foreign key(signal_id) references signals(id)
+      );
+
+      create index if not exists idx_paper_orders_created_at
+        on paper_orders(created_at);
+
+      create index if not exists idx_paper_orders_mint
+        on paper_orders(mint);
+
+      create table if not exists paper_positions (
+        id integer primary key autoincrement,
+        mint text not null unique,
+        symbol text not null,
+        size_sol real not null,
+        token_amount real not null,
+        entry_price real not null,
+        status text not null,
+        payload_json text not null,
+        opened_at text not null,
+        updated_at text not null
+      );
+
+      create index if not exists idx_paper_positions_updated_at
+        on paper_positions(updated_at);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(1, "initial_paper_storage", new Date().toISOString());
   }
 
-  db.exec(`
-    create table if not exists feed_events (
-      id integer primary key autoincrement,
-      event_type text not null,
-      mint text not null,
-      payload_json text not null,
-      created_at text not null
-    );
+  if (!hasMigration(db, 2)) {
+    db.exec(`
+      create table if not exists risk_snapshots (
+        id integer primary key autoincrement,
+        mint text not null,
+        risk_level text not null,
+        hard_reject integer not null,
+        risk_score real not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
 
-    create index if not exists idx_feed_events_created_at
-      on feed_events(created_at);
+      create index if not exists idx_risk_snapshots_created_at
+        on risk_snapshots(created_at);
 
-    create index if not exists idx_feed_events_mint
-      on feed_events(mint);
+      create index if not exists idx_risk_snapshots_mint
+        on risk_snapshots(mint);
 
-    create table if not exists signals (
-      id integer primary key autoincrement,
-      mint text not null,
-      symbol text not null,
-      action text not null,
-      score real not null,
-      hard_reject integer not null,
-      reason_codes_json text not null,
-      payload_json text not null,
-      created_at text not null
-    );
+      create table if not exists candidate_decisions (
+        id integer primary key autoincrement,
+        mint text not null,
+        symbol text not null,
+        lifecycle_state text not null,
+        action text not null,
+        score real not null,
+        risk_level text not null,
+        hard_reject integer not null,
+        combined_reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
 
-    create index if not exists idx_signals_created_at
-      on signals(created_at);
+      create index if not exists idx_candidate_decisions_created_at
+        on candidate_decisions(created_at);
 
-    create index if not exists idx_signals_mint
-      on signals(mint);
+      create index if not exists idx_candidate_decisions_mint
+        on candidate_decisions(mint);
+    `);
 
-    create table if not exists paper_orders (
-      id integer primary key autoincrement,
-      mint text not null,
-      symbol text not null,
-      side text not null,
-      status text not null,
-      size_sol real not null,
-      simulated_price real not null,
-      reason_codes_json text not null,
-      signal_id integer,
-      payload_json text not null,
-      created_at text not null,
-      foreign key(signal_id) references signals(id)
-    );
-
-    create index if not exists idx_paper_orders_created_at
-      on paper_orders(created_at);
-
-    create index if not exists idx_paper_orders_mint
-      on paper_orders(mint);
-
-    create table if not exists paper_positions (
-      id integer primary key autoincrement,
-      mint text not null unique,
-      symbol text not null,
-      size_sol real not null,
-      token_amount real not null,
-      entry_price real not null,
-      status text not null,
-      payload_json text not null,
-      opened_at text not null,
-      updated_at text not null
-    );
-
-    create index if not exists idx_paper_positions_updated_at
-      on paper_positions(updated_at);
-  `);
-
-  db.prepare(
-    `insert into storage_migrations (id, name, applied_at)
-     values (?, ?, ?)`
-  ).run(1, "initial_paper_storage", new Date().toISOString());
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(2, "risk_and_candidate_decisions", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -739,6 +1049,39 @@ function mapPaperPositionRow(row: PaperPositionRow): StoredPaperPosition {
     payload: JSON.parse(row.payload_json),
     openedAt: row.opened_at,
     updatedAt: row.updated_at
+  };
+}
+
+function mapRiskSnapshotRow(row: RiskSnapshotRow): StoredRiskSnapshot {
+  return {
+    id: row.id,
+    mint: row.mint,
+    riskLevel: row.risk_level,
+    hardReject: Boolean(row.hard_reject),
+    riskScore: row.risk_score,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: RiskSnapshotSchema.parse(JSON.parse(row.payload_json)),
+    createdAt: row.created_at
+  };
+}
+
+function mapCandidateDecisionRow(
+  row: CandidateDecisionRow
+): StoredCandidateDecision {
+  return {
+    id: row.id,
+    mint: row.mint,
+    symbol: row.symbol,
+    lifecycleState: row.lifecycle_state,
+    action: row.action,
+    score: row.score,
+    riskLevel: row.risk_level,
+    hardReject: Boolean(row.hard_reject),
+    combinedReasonCodes: JSON.parse(
+      row.combined_reason_codes_json
+    ) as string[],
+    payload: CandidateDecisionSchema.parse(JSON.parse(row.payload_json)),
+    createdAt: row.created_at
   };
 }
 

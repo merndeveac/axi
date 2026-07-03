@@ -53,6 +53,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@axi/candidates':
+        specifier: workspace:*
+        version: link:../../packages/candidates
       '@axi/data-feeds':
         specifier: workspace:*
         version: link:../../packages/data-feeds
@@ -62,6 +65,9 @@ importers:
       '@axi/metrics':
         specifier: workspace:*
         version: link:../../packages/metrics
+      '@axi/risk':
+        specifier: workspace:*
+        version: link:../../packages/risk
       '@axi/scoring':
         specifier: workspace:*
         version: link:../../packages/scoring
@@ -99,6 +105,15 @@ importers:
         specifier: workspace:*
         version: link:../../packages/shared
 
+  packages/candidates:
+    dependencies:
+      '@axi/data-feeds':
+        specifier: workspace:*
+        version: link:../data-feeds
+      '@axi/shared':
+        specifier: workspace:*
+        version: link:../shared
+
   packages/data-feeds:
     dependencies:
       '@axi/shared':
@@ -119,6 +134,12 @@ importers:
       '@axi/data-feeds':
         specifier: workspace:*
         version: link:../data-feeds
+      '@axi/shared':
+        specifier: workspace:*
+        version: link:../shared
+
+  packages/risk:
+    dependencies:
       '@axi/shared':
         specifier: workspace:*
         version: link:../shared

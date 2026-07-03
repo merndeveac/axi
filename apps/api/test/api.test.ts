@@ -30,20 +30,28 @@ describe("@axi/api", () => {
       url: "/health"
     });
     const body = response.json() as {
+      candidateCount: number;
+      candidateLifecycleEnabled: boolean;
       feedProvider: string;
       metricsEnabled: boolean;
       mode: string;
+      paperAutoOrder: boolean;
       paperOnly: boolean;
+      riskEnabled: boolean;
       status: string;
       trackedTokenCount: number;
     };
 
     expect(response.statusCode).toBe(200);
+    expect(body.candidateLifecycleEnabled).toBe(true);
+    expect(body.candidateCount).toBeGreaterThan(0);
     expect(body.feedProvider).toBe("mock");
     expect(body.metricsEnabled).toBe(true);
     expect(body.status).toBe("ok");
     expect(body.mode).toBe("paper");
+    expect(body.paperAutoOrder).toBe(false);
     expect(body.paperOnly).toBe(true);
+    expect(body.riskEnabled).toBe(true);
     expect(body.trackedTokenCount).toBeGreaterThan(0);
   });
 
@@ -56,28 +64,43 @@ describe("@axi/api", () => {
     });
     const body = response.json() as {
       feedEventCount: number;
+      candidateDecisionCount: number;
       paperOrderCount: number;
       paperPositionCount: number;
+      riskSnapshotCount: number;
       signalCount: number;
     };
 
     expect(response.statusCode).toBe(200);
     expect(body.feedEventCount).toBeGreaterThan(0);
     expect(body.signalCount).toBeGreaterThan(0);
-    expect(body.paperOrderCount).toBeGreaterThan(0);
-    expect(body.paperPositionCount).toBeGreaterThan(0);
+    expect(body.riskSnapshotCount).toBeGreaterThan(0);
+    expect(body.candidateDecisionCount).toBeGreaterThan(0);
+    expect(body.paperOrderCount).toBe(0);
+    expect(body.paperPositionCount).toBe(0);
   });
 
-  it("GET /signals returns an array", async () => {
+  it("GET /signals returns enriched signals", async () => {
     server = createTestServer();
 
     const response = await server.app.inject({
       method: "GET",
       url: "/signals"
     });
+    const body = response.json() as Array<{
+      candidateDecisionAction?: string;
+      lifecycleState?: string;
+      riskLevel?: string;
+      riskSnapshot?: unknown;
+    }>;
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual(expect.any(Array));
+    expect(body).toEqual(expect.any(Array));
+    expect(body.length).toBeGreaterThan(0);
+    expect(body[0]?.candidateDecisionAction).toEqual(expect.any(String));
+    expect(body[0]?.lifecycleState).toEqual(expect.any(String));
+    expect(body[0]?.riskLevel).toEqual(expect.any(String));
+    expect(body[0]?.riskSnapshot).toEqual(expect.any(Object));
   });
 
   it("GET /metrics returns tracked rolling metrics", async () => {
@@ -110,6 +133,70 @@ describe("@axi/api", () => {
     expect(response.statusCode).toBe(404);
   });
 
+  it("GET /candidates returns tracked candidates", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/candidates"
+    });
+    const candidates = response.json() as Array<{
+      latestDecision?: unknown;
+      latestRisk?: unknown;
+      lifecycleState: string;
+      mint: string;
+    }>;
+
+    expect(response.statusCode).toBe(200);
+    expect(candidates.length).toBeGreaterThan(0);
+    expect(candidates[0]?.mint).toEqual(expect.any(String));
+    expect(candidates[0]?.lifecycleState).toEqual(expect.any(String));
+    expect(candidates[0]?.latestDecision).toEqual(expect.any(Object));
+    expect(candidates[0]?.latestRisk).toEqual(expect.any(Object));
+  });
+
+  it("GET /candidates/:mint returns 404 for unknown mint", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/candidates/UnknownMint111111111111111111111111111"
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  it("GET /risk returns tracked risk snapshots", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/risk"
+    });
+    const riskSnapshots = response.json() as Array<{
+      mint: string;
+      reasonCodes: string[];
+      riskLevel: string;
+    }>;
+
+    expect(response.statusCode).toBe(200);
+    expect(riskSnapshots.length).toBeGreaterThan(0);
+    expect(riskSnapshots[0]?.mint).toEqual(expect.any(String));
+    expect(riskSnapshots[0]?.riskLevel).toEqual(expect.any(String));
+    expect(riskSnapshots[0]?.reasonCodes).toEqual(expect.any(Array));
+  });
+
+  it("GET /risk/:mint returns 404 for unknown mint", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/risk/UnknownMint111111111111111111111111111"
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+
   it("GET /signals/recent returns persisted recent signals", async () => {
     server = createTestServer();
 
@@ -135,7 +222,7 @@ describe("@axi/api", () => {
 
     expect(response.statusCode).toBe(200);
     expect(body).toEqual(expect.any(Array));
-    expect(body.length).toBeGreaterThan(0);
+    expect(body).toHaveLength(0);
   });
 
   it("GET /paper/positions returns an array", async () => {
@@ -149,7 +236,7 @@ describe("@axi/api", () => {
 
     expect(response.statusCode).toBe(200);
     expect(body).toEqual(expect.any(Array));
-    expect(body.length).toBeGreaterThan(0);
+    expect(body).toHaveLength(0);
   });
 
   it("unknown route returns 404", async () => {
@@ -198,6 +285,7 @@ describe("@axi/api", () => {
 
     expect(signals[0]?.action).toBe("IGNORE");
     expect(signals[0]?.reasonCodes).toContain("INSUFFICIENT_METRICS");
+    expect(signals[0]?.reasonCodes).toContain("INSUFFICIENT_RISK_DATA");
     expect(signals[0]?.reasonCodes).toContain("REAL_FEED_NEW_TOKEN_EVENT");
     expect(orders).toHaveLength(0);
   });
@@ -211,10 +299,11 @@ function createTestServer(): ApiServer {
     logLevel: false,
     mockFeed: {
       intervalMs: 0,
-      maxEvents: 8,
+      maxEvents: 12,
       scenario: "momentum",
       seed: 123
     },
+    paperAutoOrder: false,
     startFeed: true,
     storageDatabasePath: databasePath
   });

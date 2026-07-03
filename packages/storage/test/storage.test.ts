@@ -3,19 +3,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FeedEvent } from "@axi/data-feeds";
-import type { OverlaySignal } from "@axi/shared";
+import type { CandidateDecision, OverlaySignal, RiskSnapshot } from "@axi/shared";
 import {
   closeStorage,
   createReplayStream,
+  getLatestCandidateDecision,
+  getLatestRiskSnapshot,
   getStorageStats,
   initStorage,
+  listCandidateDecisionsForReplay,
+  listCandidateDecisions,
   listFeedEvents,
   listPaperOrders,
   listPaperPositions,
   listRecentSignals,
+  listRiskSnapshotsForReplay,
+  listRiskSnapshots,
   listSignalsForReplay,
+  saveCandidateDecision,
   saveFeedEvent,
   savePaperOrder,
+  saveRiskSnapshot,
   saveSignal,
   upsertPaperPosition
 } from "../src/index";
@@ -43,6 +51,8 @@ describe("@axi/storage", () => {
     expect(handle.databasePath).toBe(databasePath);
     expect(stats.databasePath).toBe(databasePath);
     expect(stats.signalCount).toBe(0);
+    expect(stats.riskSnapshotCount).toBe(0);
+    expect(stats.candidateDecisionCount).toBe(0);
   });
 
   it("signal can be saved and read", () => {
@@ -114,9 +124,35 @@ describe("@axi/storage", () => {
     expect(positions[0]?.tokenAmount).toBe(1190.46);
   });
 
+  it("risk snapshot can be saved, listed, and fetched by mint", () => {
+    initStorage({ databasePath });
+    const saved = saveRiskSnapshot(createRiskSnapshot());
+    const listed = listRiskSnapshots(10);
+    const latest = getLatestRiskSnapshot(mint);
+
+    expect(saved.id).toBeGreaterThan(0);
+    expect(listed).toHaveLength(1);
+    expect(latest?.mint).toBe(mint);
+    expect(latest?.reasonCodes).toContain("BASELINE_RISK");
+  });
+
+  it("candidate decision can be saved, listed, and fetched by mint", () => {
+    initStorage({ databasePath });
+    const saved = saveCandidateDecision(createCandidateDecision());
+    const listed = listCandidateDecisions(10);
+    const latest = getLatestCandidateDecision(mint);
+
+    expect(saved.id).toBeGreaterThan(0);
+    expect(listed).toHaveLength(1);
+    expect(latest?.mint).toBe(mint);
+    expect(latest?.action).toBe("PAPER_BUY_READY");
+  });
+
   it("storage stats return counts", () => {
     initStorage({ databasePath });
     saveFeedEvent(createFeedEvent());
+    saveRiskSnapshot(createRiskSnapshot());
+    saveCandidateDecision(createCandidateDecision());
     const signal = saveSignal(createSignal());
     savePaperOrder({
       mint,
@@ -143,6 +179,8 @@ describe("@axi/storage", () => {
 
     expect(stats.feedEventCount).toBe(1);
     expect(stats.signalCount).toBe(1);
+    expect(stats.riskSnapshotCount).toBe(1);
+    expect(stats.candidateDecisionCount).toBe(1);
     expect(stats.paperOrderCount).toBe(1);
     expect(stats.paperPositionCount).toBe(1);
     expect(stats.lastSignalAt).toEqual(expect.any(String));
@@ -156,7 +194,13 @@ describe("@axi/storage", () => {
 
     const feedEvents = listFeedEvents(10);
     const signals = listSignalsForReplay(10);
+    const riskSnapshot = saveRiskSnapshot(createRiskSnapshot());
+    const candidateDecision = saveCandidateDecision(createCandidateDecision());
+    const riskSnapshots = listRiskSnapshotsForReplay(10);
+    const candidateDecisions = listCandidateDecisionsForReplay(10);
     const replayItems = [];
+    const riskReplayItems = [];
+    const candidateReplayItems = [];
 
     for await (const item of createReplayStream({
       limit: 10,
@@ -166,13 +210,33 @@ describe("@axi/storage", () => {
       replayItems.push(item);
     }
 
+    for await (const item of createReplayStream({
+      limit: 10,
+      speed: 0,
+      type: "risk_snapshots"
+    })) {
+      riskReplayItems.push(item);
+    }
+
+    for await (const item of createReplayStream({
+      limit: 10,
+      speed: 0,
+      type: "candidate_decisions"
+    })) {
+      candidateReplayItems.push(item);
+    }
+
     expect(feedEvents.map((event) => event.createdAt)).toEqual([
       "2026-01-01T00:00:01.000Z",
       "2026-01-01T00:00:02.000Z"
     ]);
     expect(signals).toHaveLength(1);
+    expect(riskSnapshots[0]?.id).toBe(riskSnapshot.id);
+    expect(candidateDecisions[0]?.id).toBe(candidateDecision.id);
     expect(replayItems).toHaveLength(2);
     expect(replayItems[0]?.source).toBe("feed_events");
+    expect(riskReplayItems[0]?.source).toBe("risk_snapshots");
+    expect(candidateReplayItems[0]?.source).toBe("candidate_decisions");
   });
 });
 
@@ -186,6 +250,92 @@ function createFeedEvent(timestamp = "2026-01-01T00:00:00.000Z"): FeedEvent {
     riskFlags: createSignal().riskFlags,
     source: "mock",
     timestamp
+  };
+}
+
+function createRiskSnapshot(): RiskSnapshot {
+  return {
+    mint,
+    symbol: "MOCK",
+    source: "mock",
+    riskLevel: "low",
+    hardReject: false,
+    riskScore: 10,
+    flags: {
+      mintAuthorityActive: false,
+      freezeAuthorityActive: false,
+      metadataMutable: false,
+      holderCount: 260,
+      topHolderPct: 8,
+      top10HolderPct: 36,
+      devHolderPct: 2,
+      insiderHolderPct: 3,
+      devSoldPct: 0,
+      devNetFlowUsd: 100,
+      priorLaunchCount: 1,
+      priorRugCount: 0,
+      buySellRatio: 2,
+      netBuyPressure: 0.4,
+      uniqueBuyers: 30,
+      uniqueSellers: 12,
+      volumeVelocity: 150,
+      volumeAcceleration: 20,
+      buyerVelocity: 0.5,
+      buyerAcceleration: 0.1,
+      priceVelocity: 1,
+      priceAcceleration: 0.1,
+      largestTradeShare: 0.12,
+      sampleCount: 12,
+      insufficientMetrics: false,
+      liquidityUsd: 12_000,
+      marketCapUsd: 50_000,
+      fdvUsd: 50_000,
+      estimatedSellSlippagePct: 4,
+      sniperPct: 3,
+      bundlerPct: 2,
+      washTradingSuspected: false,
+      honeypotSuspected: false
+    },
+    reasonCodes: ["BASELINE_RISK"],
+    humanSummary: "low risk",
+    updatedAt: "2026-01-01T00:00:00.000Z"
+  };
+}
+
+function createCandidateDecision(): CandidateDecision {
+  return {
+    mint,
+    symbol: "MOCK",
+    source: "mock",
+    lifecycleState: "qualified",
+    action: "PAPER_BUY_READY",
+    score: 88,
+    riskLevel: "low",
+    hardReject: false,
+    riskReasonCodes: ["BASELINE_RISK"],
+    scoreReasonCodes: ["STRONG_MOMENTUM"],
+    combinedReasonCodes: ["PAPER_BUY_READY", "BASELINE_RISK", "STRONG_MOMENTUM"],
+    metricsSummary: {
+      sampleCount: 12,
+      insufficientMetrics: false,
+      volume10sUsd: 5_000,
+      volumeVelocity: 150,
+      volumeAcceleration: 20,
+      buyerVelocity: 0.5,
+      buyerAcceleration: 0.1,
+      priceVelocity: 1,
+      buySellRatio: 2,
+      netBuyPressure: 0.4,
+      lastUpdatedAt: "2026-01-01T00:00:00.000Z"
+    },
+    riskSnapshotSummary: {
+      riskLevel: "low",
+      riskScore: 10,
+      hardReject: false,
+      humanSummary: "low risk"
+    },
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z"
   };
 }
 

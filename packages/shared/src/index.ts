@@ -11,6 +11,39 @@ export const SignalActionSchema = z.enum([
 ]);
 export type SignalAction = z.infer<typeof SignalActionSchema>;
 
+export const RiskLevelSchema = z.enum([
+  "unknown",
+  "low",
+  "medium",
+  "high",
+  "critical"
+]);
+export type RiskLevel = z.infer<typeof RiskLevelSchema>;
+
+export const CandidateLifecycleStateSchema = z.enum([
+  "new",
+  "warming",
+  "watching",
+  "qualified",
+  "rejected",
+  "paper_ordered",
+  "ignored"
+]);
+export type CandidateLifecycleState = z.infer<
+  typeof CandidateLifecycleStateSchema
+>;
+
+export const CandidateDecisionActionSchema = z.enum([
+  "IGNORE",
+  "WATCH",
+  "REJECT",
+  "PAPER_BUY_READY",
+  "PAPER_ORDER_SUBMITTED"
+]);
+export type CandidateDecisionAction = z.infer<
+  typeof CandidateDecisionActionSchema
+>;
+
 export const TokenIdSchema = z.object({
   chain: z.literal("solana"),
   mint: z.string().min(32)
@@ -142,6 +175,58 @@ export const RiskFlagsSchema = z.object({
 });
 export type RiskFlags = z.infer<typeof RiskFlagsSchema>;
 
+export const RiskSnapshotFlagsSchema = z.object({
+  mintAuthorityActive: z.boolean().nullable(),
+  freezeAuthorityActive: z.boolean().nullable(),
+  metadataMutable: z.boolean().nullable(),
+  holderCount: z.number().int().nonnegative().nullable(),
+  topHolderPct: z.number().min(0).max(100).nullable(),
+  top10HolderPct: z.number().min(0).max(100).nullable(),
+  devHolderPct: z.number().min(0).max(100).nullable(),
+  insiderHolderPct: z.number().min(0).max(100).nullable(),
+  devSoldPct: z.number().min(0).max(100).nullable(),
+  devNetFlowUsd: z.number().nullable(),
+  priorLaunchCount: z.number().int().nonnegative().nullable(),
+  priorRugCount: z.number().int().nonnegative().nullable(),
+  buySellRatio: z.number().nonnegative().nullable(),
+  netBuyPressure: z.number().min(-1).max(1).nullable(),
+  uniqueBuyers: z.number().int().nonnegative().nullable(),
+  uniqueSellers: z.number().int().nonnegative().nullable(),
+  volumeVelocity: z.number().nullable(),
+  volumeAcceleration: z.number().nullable(),
+  buyerVelocity: z.number().nullable(),
+  buyerAcceleration: z.number().nullable(),
+  priceVelocity: z.number().nullable(),
+  priceAcceleration: z.number().nullable(),
+  largestTradeShare: z.number().min(0).max(1).nullable(),
+  sampleCount: z.number().int().nonnegative().nullable(),
+  insufficientMetrics: z.boolean().nullable(),
+  liquidityUsd: z.number().nonnegative().nullable(),
+  marketCapUsd: z.number().nonnegative().nullable(),
+  fdvUsd: z.number().nonnegative().nullable(),
+  estimatedSellSlippagePct: z.number().min(0).nullable(),
+  sniperPct: z.number().min(0).max(100).nullable(),
+  bundlerPct: z.number().min(0).max(100).nullable(),
+  washTradingSuspected: z.boolean().nullable(),
+  honeypotSuspected: z.boolean().nullable()
+});
+export type RiskSnapshotFlags = z.infer<typeof RiskSnapshotFlagsSchema>;
+
+export const RiskSnapshotSchema = z.object({
+  mint: z.string().min(32),
+  symbol: z.string().min(1).optional(),
+  name: z.string().min(1).optional(),
+  source: z.string().min(1).optional(),
+  riskLevel: RiskLevelSchema,
+  hardReject: z.boolean(),
+  riskScore: z.number().min(0).max(100),
+  flags: RiskSnapshotFlagsSchema,
+  reasonCodes: z.array(z.string().min(1)),
+  humanSummary: z.string().min(1),
+  updatedAt: z.string().datetime()
+});
+export type RiskSnapshot = z.infer<typeof RiskSnapshotSchema>;
+
 export const ScoreBreakdownSchema = z.object({
   total: z.number().min(0).max(100),
   momentum: z.number().min(0).max(100),
@@ -162,6 +247,53 @@ export const SignalStateSchema = z.object({
 });
 export type SignalState = z.infer<typeof SignalStateSchema>;
 
+export const CandidateMetricsSummarySchema = z.object({
+  sampleCount: z.number().int().nonnegative(),
+  insufficientMetrics: z.boolean(),
+  volume10sUsd: z.number().nonnegative(),
+  volumeVelocity: z.number(),
+  volumeAcceleration: z.number(),
+  buyerVelocity: z.number(),
+  buyerAcceleration: z.number(),
+  priceVelocity: z.number(),
+  buySellRatio: z.number().nonnegative(),
+  netBuyPressure: z.number().min(-1).max(1),
+  lastUpdatedAt: z.string().datetime()
+});
+export type CandidateMetricsSummary = z.infer<
+  typeof CandidateMetricsSummarySchema
+>;
+
+export const CandidateRiskSummarySchema = z.object({
+  riskLevel: RiskLevelSchema,
+  riskScore: z.number().min(0).max(100),
+  hardReject: z.boolean(),
+  humanSummary: z.string().min(1)
+});
+export type CandidateRiskSummary = z.infer<
+  typeof CandidateRiskSummarySchema
+>;
+
+export const CandidateDecisionSchema = z.object({
+  mint: z.string().min(32),
+  symbol: z.string().min(1).optional(),
+  name: z.string().min(1).optional(),
+  source: z.string().min(1).optional(),
+  lifecycleState: CandidateLifecycleStateSchema,
+  action: CandidateDecisionActionSchema,
+  score: z.number().min(0).max(100),
+  riskLevel: RiskLevelSchema,
+  hardReject: z.boolean(),
+  riskReasonCodes: z.array(z.string().min(1)),
+  scoreReasonCodes: z.array(z.string().min(1)),
+  combinedReasonCodes: z.array(z.string().min(1)),
+  metricsSummary: CandidateMetricsSummarySchema,
+  riskSnapshotSummary: CandidateRiskSummarySchema,
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+});
+export type CandidateDecision = z.infer<typeof CandidateDecisionSchema>;
+
 export const OverlaySignalSchema = z.object({
   mint: z.string().min(32),
   symbol: z.string().min(1),
@@ -170,10 +302,19 @@ export const OverlaySignalSchema = z.object({
   hardReject: z.boolean(),
   reasonCodes: z.array(z.string().min(1)),
   buySellRatio: z.number().nonnegative().optional(),
+  candidateDecision: CandidateDecisionSchema.optional(),
+  candidateDecisionAction: CandidateDecisionActionSchema.optional(),
+  combinedReasonCodes: z.array(z.string().min(1)).optional(),
   feedProvider: z.string().min(1).optional(),
   insufficientMetrics: z.boolean().optional(),
+  lifecycleState: CandidateLifecycleStateSchema.optional(),
   netBuyPressure: z.number().min(-1).max(1).optional(),
   priceVelocity: z.number().optional(),
+  riskLevel: RiskLevelSchema.optional(),
+  riskReasonCodes: z.array(z.string().min(1)).optional(),
+  riskScore: z.number().min(0).max(100).optional(),
+  riskSnapshot: RiskSnapshotSchema.optional(),
+  scoreReasonCodes: z.array(z.string().min(1)).optional(),
   rollingMetrics: RollingMetricsSnapshotSchema.optional(),
   volumeAcceleration: z.number().optional(),
   volumeVelocity: z.number().nonnegative(),

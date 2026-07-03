@@ -106,7 +106,7 @@ h1 {
 
 .storage-panel {
   display: grid;
-  grid-template-columns: repeat(9, minmax(120px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 12px;
   margin-bottom: 18px;
 }
@@ -122,6 +122,23 @@ h1 {
   border: 1px solid #d9e0e8;
   border-radius: 8px;
   background: #ffffff;
+  margin-bottom: 18px;
+}
+
+.table-heading {
+  padding: 12px 14px;
+  border-bottom: 1px solid #e7ebf0;
+  background: #ffffff;
+}
+
+.table-heading h2 {
+  margin: 0;
+  color: #344054;
+  font-size: 1rem;
+}
+
+.candidate-region table {
+  min-width: 1700px;
 }
 
 table {
@@ -195,6 +212,73 @@ tr:last-child td {
 }
 
 .action-hard_reject {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.action-paper_buy_ready,
+.action-paper_order_submitted {
+  background: #ccfbf1;
+  color: #115e59;
+}
+
+.action-reject {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.state,
+.risk-level {
+  display: inline-flex;
+  min-width: 88px;
+  justify-content: center;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.state-new,
+.state-warming,
+.state-unknown {
+  background: #eef2f7;
+  color: #344054;
+}
+
+.state-watching {
+  background: #fef3c7;
+  color: #713f12;
+}
+
+.state-qualified,
+.state-paper_ordered {
+  background: #ccfbf1;
+  color: #115e59;
+}
+
+.state-rejected {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.state-ignored {
+  background: #f1f5f9;
+  color: #475467;
+}
+
+.risk-unknown,
+.risk-low {
+  background: #eef2f7;
+  color: #344054;
+}
+
+.risk-medium {
+  background: #fef3c7;
+  color: #713f12;
+}
+
+.risk-high,
+.risk-critical {
   background: #fee2e2;
   color: #991b1b;
 }

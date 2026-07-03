@@ -1,0 +1,488 @@
+import type { FeedEvent } from "@axi/data-feeds";
+import type {
+  CandidateDecision,
+  CandidateDecisionAction,
+  CandidateLifecycleState,
+  CandidateMetricsSummary,
+  CandidateRiskSummary,
+  RiskLevel,
+  RiskSnapshot,
+  RollingMetricsSnapshot,
+  ScoreBreakdown
+} from "@axi/shared";
+
+export type CandidateLifecycleEngineOptions = {
+  maxAgeSeconds?: number;
+  maxDecisionHistory?: number;
+  maxRiskLevelForPaperBuyReady?: RiskLevel;
+  minAgeSeconds?: number;
+  minSampleCount?: number;
+  minScoreForPaperBuyReady?: number;
+  now?: () => Date;
+};
+
+export type PaperOrderStatus = "none" | "submitted" | "accepted" | "rejected";
+
+export type CandidateState = {
+  mint: string;
+  symbol?: string;
+  name?: string;
+  source?: string;
+  firstSeenAt: string;
+  lastUpdatedAt: string;
+  ageSeconds: number;
+  eventTypesSeen: string[];
+  lifecycleState: CandidateLifecycleState;
+  latestMetrics?: RollingMetricsSnapshot;
+  latestRisk?: RiskSnapshot;
+  latestScore?: ScoreBreakdown;
+  latestDecision?: CandidateDecision;
+  decisionHistory: CandidateDecision[];
+  ignoredReasonCodes: string[];
+  rejectedReasonCodes: string[];
+  paperOrderStatus: PaperOrderStatus;
+};
+
+type EngineConfig = Required<
+  Omit<CandidateLifecycleEngineOptions, "maxRiskLevelForPaperBuyReady" | "now">
+> & {
+  maxRiskLevelForPaperBuyReady: RiskLevel;
+  now: () => Date;
+};
+
+export class CandidateLifecycleEngine {
+  private readonly config: EngineConfig;
+  private readonly candidates = new Map<string, CandidateState>();
+
+  constructor(options: CandidateLifecycleEngineOptions = {}) {
+    this.config = {
+      maxAgeSeconds: options.maxAgeSeconds ?? 900,
+      maxDecisionHistory: options.maxDecisionHistory ?? 50,
+      maxRiskLevelForPaperBuyReady:
+        options.maxRiskLevelForPaperBuyReady ?? "medium",
+      minAgeSeconds: options.minAgeSeconds ?? 3,
+      minSampleCount: options.minSampleCount ?? 8,
+      minScoreForPaperBuyReady: options.minScoreForPaperBuyReady ?? 75,
+      now: options.now ?? (() => new Date())
+    };
+  }
+
+  ingestFeedEvent(event: FeedEvent): CandidateState {
+    const mint = getEventMint(event);
+    const state = this.ensureCandidate(mint, event);
+
+    state.lastUpdatedAt = getEventTimestamp(event);
+    state.eventTypesSeen = unique([...state.eventTypesSeen, event.type]);
+    state.ageSeconds = getEventAgeSeconds(event, state);
+
+    if (event.type === "token_created") {
+      state.symbol = event.candidate.symbol;
+      state.name = event.candidate.name;
+      state.source = event.candidate.source;
+      state.firstSeenAt = minIsoTimestamp(
+        state.firstSeenAt,
+        event.candidate.firstSeenAt
+      );
+    } else {
+      if (event.symbol) {
+        state.symbol = event.symbol;
+      }
+
+      if (event.name) {
+        state.name = event.name;
+      }
+
+      state.source = event.source;
+    }
+
+    if (state.lifecycleState === "new" && event.type === "trade") {
+      state.lifecycleState = "warming";
+    }
+
+    return state;
+  }
+
+  updateMetrics(
+    mint: string,
+    metrics: RollingMetricsSnapshot | undefined
+  ): CandidateState | undefined {
+    const state = this.candidates.get(mint);
+
+    if (!state || !metrics) {
+      return state;
+    }
+
+    state.latestMetrics = metrics;
+    state.lastUpdatedAt = metrics.lastUpdatedAt;
+
+    if (metrics.sampleCount > 0 && state.lifecycleState === "new") {
+      state.lifecycleState = metrics.insufficientMetrics ? "warming" : "watching";
+    }
+
+    return state;
+  }
+
+  updateRisk(mint: string, riskSnapshot: RiskSnapshot): CandidateState | undefined {
+    const state = this.candidates.get(mint);
+
+    if (!state) {
+      return undefined;
+    }
+
+    state.latestRisk = riskSnapshot;
+    state.lastUpdatedAt = riskSnapshot.updatedAt;
+
+    if (riskSnapshot.hardReject) {
+      state.lifecycleState = "rejected";
+      state.rejectedReasonCodes = unique([
+        ...state.rejectedReasonCodes,
+        ...riskSnapshot.reasonCodes
+      ]);
+    }
+
+    return state;
+  }
+
+  updateScore(mint: string, score: ScoreBreakdown): CandidateState | undefined {
+    const state = this.candidates.get(mint);
+
+    if (!state) {
+      return undefined;
+    }
+
+    state.latestScore = score;
+    return state;
+  }
+
+  markPaperOrderSubmitted(
+    mint: string,
+    reasonCodes: string[] = ["PAPER_ORDER_SUBMITTED"]
+  ): CandidateDecision | undefined {
+    const state = this.candidates.get(mint);
+
+    if (!state) {
+      return undefined;
+    }
+
+    state.paperOrderStatus = "submitted";
+    state.lifecycleState = "paper_ordered";
+    const decision = this.evaluateCandidate(mint);
+
+    if (!decision) {
+      return undefined;
+    }
+
+    decision.combinedReasonCodes = unique([
+      ...reasonCodes,
+      ...decision.combinedReasonCodes
+    ]);
+    state.latestDecision = decision;
+    state.decisionHistory = [decision, ...state.decisionHistory].slice(
+      0,
+      this.config.maxDecisionHistory
+    );
+    return decision;
+  }
+
+  evaluateCandidate(mint: string): CandidateDecision | undefined {
+    const state = this.candidates.get(mint);
+
+    if (!state) {
+      return undefined;
+    }
+
+    const decision = this.createDecision(state);
+    state.latestDecision = decision;
+    state.decisionHistory = [decision, ...state.decisionHistory].slice(
+      0,
+      this.config.maxDecisionHistory
+    );
+
+    if (decision.lifecycleState === "rejected") {
+      state.rejectedReasonCodes = unique([
+        ...state.rejectedReasonCodes,
+        ...decision.combinedReasonCodes
+      ]);
+    }
+
+    if (decision.lifecycleState === "ignored") {
+      state.ignoredReasonCodes = unique([
+        ...state.ignoredReasonCodes,
+        ...decision.combinedReasonCodes
+      ]);
+    }
+
+    state.lifecycleState = decision.lifecycleState;
+    return decision;
+  }
+
+  getCandidate(mint: string): CandidateState | undefined {
+    return this.candidates.get(mint);
+  }
+
+  getAllCandidates(): CandidateState[] {
+    return Array.from(this.candidates.values());
+  }
+
+  resetCandidate(mint: string): void {
+    this.candidates.delete(mint);
+  }
+
+  clear(): void {
+    this.candidates.clear();
+  }
+
+  private ensureCandidate(mint: string, event: FeedEvent): CandidateState {
+    const existing = this.candidates.get(mint);
+
+    if (existing) {
+      return existing;
+    }
+
+    const timestamp = getEventTimestamp(event);
+    const state: CandidateState = {
+      mint,
+      firstSeenAt: getFirstSeenAt(event),
+      lastUpdatedAt: timestamp,
+      ageSeconds: getEventAgeSeconds(event),
+      eventTypesSeen: [event.type],
+      lifecycleState: "new",
+      decisionHistory: [],
+      ignoredReasonCodes: [],
+      rejectedReasonCodes: [],
+      paperOrderStatus: "none"
+    };
+
+    if (event.type === "token_created") {
+      state.symbol = event.candidate.symbol;
+      state.name = event.candidate.name;
+      state.source = event.candidate.source;
+    } else {
+      if (event.symbol) {
+        state.symbol = event.symbol;
+      }
+
+      if (event.name) {
+        state.name = event.name;
+      }
+
+      state.source = event.source;
+    }
+
+    this.candidates.set(mint, state);
+    return state;
+  }
+
+  private createDecision(state: CandidateState): CandidateDecision {
+    const score = state.latestScore;
+    const risk = state.latestRisk;
+    const metrics = state.latestMetrics;
+    const metricsSummary = createMetricsSummary(metrics, state.lastUpdatedAt);
+    const riskSummary = createRiskSummary(risk);
+    const riskReasonCodes = risk?.reasonCodes ?? ["UNKNOWN_RISK"];
+    const scoreReasonCodes = score?.reasonCodes ?? ["NO_SCORE_YET"];
+    const lifecycleReasonCodes: string[] = [];
+    let lifecycleState: CandidateLifecycleState = state.lifecycleState;
+    let action: CandidateDecisionAction = "IGNORE";
+    const totalScore = score?.total ?? 0;
+    const hardReject = risk?.hardReject ?? score?.hardReject ?? false;
+
+    if (state.paperOrderStatus === "submitted") {
+      lifecycleState = "paper_ordered";
+      action = "PAPER_ORDER_SUBMITTED";
+      lifecycleReasonCodes.push("PAPER_ORDER_SUBMITTED");
+    } else if (hardReject || risk?.riskLevel === "critical") {
+      lifecycleState = "rejected";
+      action = "REJECT";
+      lifecycleReasonCodes.push(
+        risk?.riskLevel === "critical" ? "CRITICAL_RISK" : "RISK_HARD_REJECT"
+      );
+    } else if (
+      metricsSummary.insufficientMetrics ||
+      metricsSummary.sampleCount < this.config.minSampleCount
+    ) {
+      lifecycleState = metricsSummary.sampleCount > 0 ? "warming" : "new";
+      action = metricsSummary.sampleCount > 0 ? "WATCH" : "IGNORE";
+      lifecycleReasonCodes.push("INSUFFICIENT_TRADE_METRICS");
+    } else if (
+      compareRiskLevel(riskSummary.riskLevel, this.config.maxRiskLevelForPaperBuyReady) >
+      0
+    ) {
+      lifecycleState = "watching";
+      action = "WATCH";
+      lifecycleReasonCodes.push("RISK_LEVEL_TOO_HIGH");
+    } else if (state.ageSeconds < this.config.minAgeSeconds) {
+      lifecycleState = "warming";
+      action = "WATCH";
+      lifecycleReasonCodes.push("CANDIDATE_TOO_NEW");
+    } else if (state.ageSeconds > this.config.maxAgeSeconds) {
+      lifecycleState = "ignored";
+      action = "IGNORE";
+      lifecycleReasonCodes.push("CANDIDATE_TOO_OLD");
+    } else if (totalScore >= this.config.minScoreForPaperBuyReady) {
+      lifecycleState = "qualified";
+      action = "PAPER_BUY_READY";
+      lifecycleReasonCodes.push("PAPER_BUY_READY");
+    } else if (totalScore >= 45) {
+      lifecycleState = "watching";
+      action = "WATCH";
+      lifecycleReasonCodes.push("SCORE_WATCH");
+    } else {
+      lifecycleState = "ignored";
+      action = "IGNORE";
+      lifecycleReasonCodes.push("SCORE_TOO_LOW");
+    }
+
+    const decision: CandidateDecision = {
+      mint: state.mint,
+      lifecycleState,
+      action,
+      score: totalScore,
+      riskLevel: riskSummary.riskLevel,
+      hardReject: action === "REJECT" || hardReject,
+      riskReasonCodes,
+      scoreReasonCodes,
+      combinedReasonCodes: unique([
+        ...lifecycleReasonCodes,
+        ...riskReasonCodes,
+        ...scoreReasonCodes
+      ]),
+      metricsSummary,
+      riskSnapshotSummary: riskSummary,
+      createdAt: state.firstSeenAt,
+      updatedAt: state.lastUpdatedAt
+    };
+
+    if (state.symbol) {
+      decision.symbol = state.symbol;
+    }
+
+    if (state.name) {
+      decision.name = state.name;
+    }
+
+    if (state.source) {
+      decision.source = state.source;
+    }
+
+    return decision;
+  }
+}
+
+export function createCandidateLifecycleEngine(
+  options: CandidateLifecycleEngineOptions = {}
+): CandidateLifecycleEngine {
+  return new CandidateLifecycleEngine(options);
+}
+
+function createMetricsSummary(
+  metrics: RollingMetricsSnapshot | undefined,
+  fallbackTimestamp: string
+): CandidateMetricsSummary {
+  if (!metrics) {
+    return {
+      sampleCount: 0,
+      insufficientMetrics: true,
+      volume10sUsd: 0,
+      volumeVelocity: 0,
+      volumeAcceleration: 0,
+      buyerVelocity: 0,
+      buyerAcceleration: 0,
+      priceVelocity: 0,
+      buySellRatio: 1,
+      netBuyPressure: 0,
+      lastUpdatedAt: fallbackTimestamp
+    };
+  }
+
+  return {
+    sampleCount: metrics.sampleCount,
+    insufficientMetrics: metrics.insufficientMetrics,
+    volume10sUsd: metrics.windows["10s"].totalVolumeUsd,
+    volumeVelocity: metrics.volumeVelocityUsdPerSec,
+    volumeAcceleration: metrics.volumeAccelerationUsdPerSec2,
+    buyerVelocity: metrics.buyerVelocityPerSec,
+    buyerAcceleration: metrics.buyerAccelerationPerSec2,
+    priceVelocity: metrics.priceVelocityPctPerSec,
+    buySellRatio: metrics.buySellRatio,
+    netBuyPressure: metrics.netBuyPressure,
+    lastUpdatedAt: metrics.lastUpdatedAt
+  };
+}
+
+function createRiskSummary(
+  risk: RiskSnapshot | undefined
+): CandidateRiskSummary {
+  if (!risk) {
+    return {
+      riskLevel: "unknown",
+      riskScore: 0,
+      hardReject: false,
+      humanSummary: "Risk data is not available yet."
+    };
+  }
+
+  return {
+    riskLevel: risk.riskLevel,
+    riskScore: risk.riskScore,
+    hardReject: risk.hardReject,
+    humanSummary: risk.humanSummary
+  };
+}
+
+function getEventMint(event: FeedEvent): string {
+  return event.type === "token_created" ? event.candidate.mint : event.mint;
+}
+
+function getEventTimestamp(event: FeedEvent): string {
+  return event.timestamp;
+}
+
+function getFirstSeenAt(event: FeedEvent): string {
+  return event.type === "token_created"
+    ? event.candidate.firstSeenAt
+    : event.timestamp;
+}
+
+function getEventAgeSeconds(
+  event: FeedEvent,
+  state?: CandidateState
+): number {
+  if (event.type === "token_created") {
+    return event.candidate.ageSeconds;
+  }
+
+  if (!state) {
+    return 0;
+  }
+
+  const ageMillis = Date.parse(event.timestamp) - Date.parse(state.firstSeenAt);
+  return Number.isFinite(ageMillis) ? Math.max(0, ageMillis / 1000) : state.ageSeconds;
+}
+
+function compareRiskLevel(left: RiskLevel, right: RiskLevel): number {
+  return riskLevelRank(left) - riskLevelRank(right);
+}
+
+function riskLevelRank(level: RiskLevel): number {
+  switch (level) {
+    case "unknown":
+      return 1;
+    case "low":
+      return 2;
+    case "medium":
+      return 3;
+    case "high":
+      return 4;
+    case "critical":
+      return 5;
+  }
+}
+
+function minIsoTimestamp(left: string, right: string): string {
+  return new Date(Math.min(Date.parse(left), Date.parse(right))).toISOString();
+}
+
+function unique(values: string[]): string[] {
+  return Array.from(new Set(values));
+}

@@ -19,14 +19,15 @@ exists here yet.
 ## Architecture
 
 ```text
-data feeds -> scoring engine -> paper executor -> API/WebSocket -> dashboard/overlay
+data feeds -> metrics -> risk -> candidates -> scoring -> API/WebSocket -> dashboard/overlay
 ```
 
 Default implementation uses `MockFeedProvider`. It emits safe fake token events
 for local development. A public PumpPortal feed provider is available behind
 `DATA_FEED=pumpportal` for new-token and migration events only.
 
-All current signal data is fake, mock-generated, and paper-only.
+All current signal and risk data is fake, mock-generated, incomplete, or
+placeholder-only, and remains paper-only.
 
 ## Local Persistence
 
@@ -37,8 +38,12 @@ Paper-mode development data is stored in a local SQLite database:
 ```
 
 The API initializes the database automatically, creates the current schema, and
-stores mock feed events, overlay signals, paper orders, and paper positions.
-This database is local-only and is ignored by git.
+stores mock feed events, risk snapshots, candidate decisions, overlay signals,
+paper orders, and paper positions. This database is local-only and is ignored by
+git.
+
+Current persistence tables include `feed_events`, `signals`, `risk_snapshots`,
+`candidate_decisions`, `paper_orders`, and `paper_positions`.
 
 Clear local paper data with:
 
@@ -62,6 +67,25 @@ acceleration, buyer velocity, buy/sell ratio, net buy pressure, and an
 `insufficientMetrics` flag. The mock feed emits deterministic fake trade events
 to exercise this engine locally. These mock trades are not real market data and
 remain paper-only.
+
+## Risk And Candidate Lifecycle
+
+`@axi/risk` computes local risk snapshots from feed metrics, mock scenario
+placeholders, and incomplete real-feed fields. It produces a risk level,
+structured flags, hard-reject status, and reason codes. Hard-reject examples
+include active mint authority, active freeze authority, high holder
+concentration, dev concentration, low liquidity, high sell slippage, wash
+trading suspected, and honeypot suspected.
+
+`@axi/candidates` tracks candidate state from first sight through warming,
+watching, qualified, rejected, paper ordered, or ignored. It combines rolling
+metrics, risk snapshots, scoring output, and optional paper execution status.
+Every decision includes combined reason codes.
+
+`PAPER_AUTO_ORDER=false` by default. With the default setting, a
+`PAPER_BUY_READY` decision is only a paper-mode signal state and does not submit
+a paper order. Setting `PAPER_AUTO_ORDER=true` can submit paper orders through
+the existing in-memory paper executor only. It never enables live trading.
 
 ## Install
 
@@ -119,6 +143,12 @@ pnpm --filter @axi/api dev
 
 The API defaults to `http://localhost:8787`.
 
+Paper auto-ordering is disabled by default:
+
+```bash
+PAPER_AUTO_ORDER=false pnpm --filter @axi/api dev
+```
+
 Mock feed options can be set with environment variables:
 
 ```bash
@@ -150,6 +180,10 @@ Endpoints:
 - `GET /health`
 - `GET /signals`
 - `GET /signals/recent`
+- `GET /candidates`
+- `GET /candidates/:mint`
+- `GET /risk`
+- `GET /risk/:mint`
 - `GET /metrics`
 - `GET /metrics/:mint`
 - `GET /positions`
@@ -165,6 +199,10 @@ Endpoints:
 `GET /metrics/:mint` returns one metrics snapshot or `404` when that mint is not
 tracked.
 
+`GET /candidates` and `GET /risk` return the current in-memory candidate
+lifecycle and risk snapshots. The persisted history is available through SQLite
+and replay.
+
 ## Replay Local Data
 
 Replay persisted fake paper data from SQLite without starting the API,
@@ -175,12 +213,18 @@ pnpm --filter @axi/api replay
 pnpm --filter @axi/api replay -- --type signals --limit 25 --speed 0
 pnpm --filter @axi/api replay -- --db .data/axi.sqlite --type feed_events
 pnpm --filter @axi/api replay -- --type feed_events --metrics true --limit 100 --speed 0
+pnpm --filter @axi/api replay -- --type feed_events --metrics true --risk true --candidates true --limit 100 --speed 0
+pnpm --filter @axi/api replay -- --type risk_snapshots --limit 25 --speed 0
+pnpm --filter @axi/api replay -- --type candidate_decisions --limit 25 --speed 0
 ```
 
 Replay output is JSON lines on stdout. The default database is
 `.data/axi.sqlite`, which is local and ignored by git. With `--metrics true`,
 feed events are replayed through the rolling metrics engine and each JSON line
-includes the metrics snapshot after that event when available.
+includes the metrics snapshot after that event when available. With
+`--risk true` and `--candidates true`, feed events are replayed through the
+local risk and candidate lifecycle engines and each JSON line includes those
+snapshots when available.
 
 ## Probe Feeds
 
@@ -235,6 +279,8 @@ docker compose --profile infra up -d
 - `@axi/data-feeds`: feed interfaces plus a mock feed provider.
 - `@axi/execution`: in-memory paper execution only.
 - `@axi/metrics`: local rolling-window metrics for paper-mode signal features.
+- `@axi/risk`: pure local risk/scam-filter snapshots and reason codes.
+- `@axi/candidates`: pure local candidate lifecycle decisions.
 - `@axi/storage`: local SQLite persistence for paper-mode development.
 - `@axi/api`: Fastify API and local WebSocket broadcaster.
 - `@axi/dashboard`: Vite React signal dashboard.
@@ -250,7 +296,10 @@ docker compose --profile infra up -d
   migration feed provider.
 - `dev/rolling-metrics-engine` contains local launch scripts and the rolling
   metrics engine.
+- `dev/risk-engine-candidate-lifecycle` contains local risk snapshots and
+  candidate lifecycle decisions.
 
 This project still has no wallet UI, no private-key loading, no live trading,
-no Solana transaction signing, no metered PumpPortal trade streams, no Axiom
-private API usage, and no Axiom scraping.
+no Solana transaction signing, no real risk-data provider, no direct Solana RPC
+provider, no metered PumpPortal trade streams, no Axiom private API usage, and
+no Axiom scraping.
