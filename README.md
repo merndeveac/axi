@@ -487,6 +487,10 @@ pnpm --filter @axi/dashboard dev
 
 The dashboard connects to `ws://localhost:8787/ws/signals`.
 
+The dashboard uses a terminal-style dark UI with PAPER mode kept visible in the
+top status bar. It has no wallet controls, buy/sell buttons, or live-trading
+controls.
+
 ## Chrome Extension Skeleton
 
 Build the extension content script:
@@ -552,6 +556,8 @@ docker compose --profile infra up -d
   normalization and SOL/quote-aware paper metrics.
 - `dev/real-feed-watch-orchestrator` contains read-only feed-to-chain watch
   orchestration planning and API/dashboard visibility.
+- `dev/dashboard-terminal-ui-pass` contains the terminal-style dashboard UI
+  refinement.
 
 Direct Solana RPC verification and watched-address transaction ingestion exist,
 and local market-data normalization and watch orchestration exist, but they are

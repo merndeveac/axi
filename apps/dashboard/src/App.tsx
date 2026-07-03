@@ -8,6 +8,10 @@ import type {
   RollingMetricsSnapshot,
   WatchPlanSummary
 } from "@axi/shared";
+import { ConnectionBadge } from "./components/ConnectionBadge";
+import { DataPanel } from "./components/DataPanel";
+import { MetricValue } from "./components/MetricValue";
+import { ReasonCodes } from "./components/ReasonCodes";
 
 type ConnectionStatus = "connecting" | "open" | "closed";
 type ApiStatus = "checking" | "connected" | "disconnected";
@@ -460,231 +464,135 @@ export function App() {
     signalCount: signals.length,
     storageStats
   });
+  const modeLabel = (healthStatus?.mode ?? "paper").toUpperCase();
+  const feedLabel = (healthStatus?.feedProvider ?? "unknown").toUpperCase();
+  const apiLabel =
+    apiStatus === "connected"
+      ? "ONLINE"
+      : apiStatus === "checking"
+        ? "CHECKING"
+        : "OFFLINE";
+  const apiTone =
+    apiStatus === "connected"
+      ? "online"
+      : apiStatus === "checking"
+        ? "warning"
+        : "offline";
+  const websocketLabel =
+    connectionStatus === "open"
+      ? "ONLINE"
+      : connectionStatus === "connecting"
+        ? "CONNECTING"
+        : "OFFLINE";
+  const websocketTone =
+    connectionStatus === "open"
+      ? "online"
+      : connectionStatus === "connecting"
+        ? "warning"
+        : "offline";
 
   return (
     <main className="app-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">paper mode</p>
-          <h1>AXI Signal Console</h1>
+      <header className="command-bar">
+        <div className="brand-cluster">
+          <span className="prompt">&gt;</span>
+          <div>
+            <p className="eyebrow">operator console</p>
+            <h1>AXI</h1>
+          </div>
+          <span className="terminal-cursor" aria-hidden="true" />
         </div>
-        <div className={`status-pill status-${connectionStatus}`}>
-          {connectionStatus}
+        <div className="command-status" aria-label="Runtime status">
+          <ConnectionBadge label={modeLabel} tone="online" />
+          <ConnectionBadge label={feedLabel} tone="neutral" />
+          <ConnectionBadge label={`API ${apiLabel}`} tone={apiTone} />
+          <ConnectionBadge label={`WS ${websocketLabel}`} tone={websocketTone} />
+          <span className="last-update">LAST MSG {lastUpdated}</span>
         </div>
       </header>
 
-      <section className="metric-strip" aria-label="Signal metrics">
-        <div>
-          <span>Total</span>
-          <strong>{signals.length}</strong>
-        </div>
-        <div>
-          <span>Buy Ready</span>
-          <strong>{buyReadyCount}</strong>
-        </div>
-        <div>
-          <span>Hard Reject</span>
-          <strong>{hardRejectCount}</strong>
-        </div>
-        <div>
-          <span>Updated</span>
-          <strong>{lastUpdated}</strong>
-        </div>
+      <section className="status-grid" aria-label="System status">
+        <MetricValue label="feed" value={feedLabel} detail="source" />
+        <MetricValue
+          label="signals"
+          value={formatCompactNumber(signals.length)}
+          detail={`${formatCompactNumber(storageStats?.signalCount ?? 0)} stored`}
+          tone="good"
+        />
+        <MetricValue
+          label="buy ready"
+          value={formatCompactNumber(buyReadyCount)}
+          detail="paper signal"
+          tone={buyReadyCount > 0 ? "good" : "neutral"}
+        />
+        <MetricValue
+          label="hard reject"
+          value={formatCompactNumber(hardRejectCount)}
+          detail="blocked"
+          tone={hardRejectCount > 0 ? "bad" : "neutral"}
+        />
+        <MetricValue
+          label="metrics"
+          value={healthStatus?.metricsEnabled ? "[ON]" : "[OFF]"}
+          detail={`${incompleteMetricCount} incomplete`}
+          tone={healthStatus?.metricsEnabled ? "good" : "bad"}
+        />
+        <MetricValue
+          label="risk"
+          value={healthStatus?.riskEnabled ? "[ON]" : "[OFF]"}
+          detail={`${formatCompactNumber(storageStats?.riskSnapshotCount ?? 0)} snapshots`}
+          tone={healthStatus?.riskEnabled ? "good" : "bad"}
+        />
+        <MetricValue
+          label="candidates"
+          value={formatCompactNumber(healthStatus?.candidateCount ?? candidates.length)}
+          detail={`${formatCompactNumber(healthStatus?.trackedTokenCount ?? 0)} tracked`}
+        />
+        <MetricValue
+          label="storage"
+          value={formatCompactNumber(storageStats?.feedEventCount ?? 0)}
+          detail="feed events"
+        />
+        <MetricValue
+          label="chain verifier"
+          value={(chainStatus?.status ?? healthStatus?.chainVerifier.status ?? "unknown").toUpperCase()}
+          detail={chainStatus?.rpcHttpUrlConfigured ? "rpc configured" : "rpc unset"}
+          tone={chainStatus?.enabled ? "good" : "neutral"}
+        />
+        <MetricValue
+          label="chain events"
+          value={(chainEventsStatus?.status ?? "unknown").toUpperCase()}
+          detail={`${chainEventsStatus?.watchedAddressCount ?? healthStatus?.chainWatchedAddressCount ?? 0} watched`}
+          tone={chainEventsStatus?.enabled ? "good" : "neutral"}
+        />
+        <MetricValue
+          label="market data"
+          value={marketStatus?.enabled ? "[ON]" : "[OFF]"}
+          detail={`${marketStatus?.minConfidenceForMetrics ?? healthStatus?.marketDataMinConfidence ?? "unknown"} min`}
+          tone={marketStatus?.enabled ? "good" : "neutral"}
+        />
+        <MetricValue
+          label="watch orch"
+          value={(watchStatus?.enabled ?? healthStatus?.watchOrchestratorEnabled) ? "[ON]" : "[OFF]"}
+          detail={`${storageStats?.watchPlanCount ?? watchStatus?.watchPlanCount ?? 0} plans / ${storageStats?.watchActionCount ?? watchStatus?.watchActionCount ?? 0} actions`}
+          tone={(watchStatus?.enabled ?? healthStatus?.watchOrchestratorEnabled) ? "good" : "neutral"}
+        />
+        <MetricValue
+          label="paper"
+          value={healthStatus?.paperOnly ? "[PAPER]" : "[UNKNOWN]"}
+          detail={`auto order ${healthStatus?.paperAutoOrder ? "on" : "off"}`}
+          tone={healthStatus?.paperOnly ? "good" : "warn"}
+        />
+        <MetricValue
+          label="last signal"
+          value={formatTimestamp(storageStats?.lastSignalAt)}
+          detail="sqlite"
+        />
       </section>
 
-      <section className="storage-panel" aria-label="Storage status">
-        <div>
-          <span>API</span>
-          <strong>{apiStatus}</strong>
-        </div>
-        <div>
-          <span>Feed</span>
-          <strong>{healthStatus?.feedProvider ?? "unknown"}</strong>
-        </div>
-        <div>
-          <span>Metrics</span>
-          <strong>{healthStatus?.metricsEnabled ? "on" : "off"}</strong>
-        </div>
-        <div>
-          <span>Risk</span>
-          <strong>{healthStatus?.riskEnabled ? "on" : "off"}</strong>
-        </div>
-        <div>
-          <span>Lifecycle</span>
-          <strong>{healthStatus?.candidateLifecycleEnabled ? "on" : "off"}</strong>
-        </div>
-        <div>
-          <span>Chain</span>
-          <strong>{chainStatus?.status ?? healthStatus?.chainVerifier.status ?? "unknown"}</strong>
-        </div>
-        <div>
-          <span>Chain Events</span>
-          <strong>{chainEventsStatus?.status ?? "unknown"}</strong>
-        </div>
-        <div>
-          <span>Market Data</span>
-          <strong>{marketStatus?.enabled ? "on" : "off"}</strong>
-        </div>
-        <div>
-          <span>Watch Orch</span>
-          <strong>
-            {(watchStatus?.enabled ?? healthStatus?.watchOrchestratorEnabled)
-              ? "on"
-              : "off"}
-          </strong>
-        </div>
-        <div>
-          <span>Verify Trigger</span>
-          <strong>
-            {watchStatus?.verifyOnNewToken || watchStatus?.verifyOnMigration
-              ? "on"
-              : "off"}
-          </strong>
-        </div>
-        <div>
-          <span>Watch Trigger</span>
-          <strong>
-            {watchStatus?.watchOnNewToken || watchStatus?.watchOnMigration
-              ? "on"
-              : "off"}
-          </strong>
-        </div>
-        <div>
-          <span>Watch Plans</span>
-          <strong>
-            {storageStats?.watchPlanCount ??
-              watchStatus?.watchPlanCount ??
-              healthStatus?.watchPlanCount ??
-              0}
-          </strong>
-        </div>
-        <div>
-          <span>Watch Actions</span>
-          <strong>
-            {storageStats?.watchActionCount ??
-              watchStatus?.watchActionCount ??
-              healthStatus?.watchActionCount ??
-              0}
-          </strong>
-        </div>
-        <div>
-          <span>Watch Min</span>
-          <strong>{watchStatus?.minConfidenceToWatch ?? "unknown"}</strong>
-        </div>
-        <div>
-          <span>Market Obs</span>
-          <strong>
-            {storageStats?.marketObservationCount ??
-              marketStatus?.observationCount ??
-              healthStatus?.marketObservationCount ??
-              0}
-          </strong>
-        </div>
-        <div>
-          <span>Market Min</span>
-          <strong>
-            {marketStatus?.minConfidenceForMetrics ??
-              healthStatus?.marketDataMinConfidence ??
-              "unknown"}
-          </strong>
-        </div>
-        <div>
-          <span>SOL/USD</span>
-          <strong>
-            {(marketStatus?.solUsdConfigured ??
-            healthStatus?.solUsdConfigured)
-              ? "configured"
-              : "unset"}
-          </strong>
-        </div>
-        <div>
-          <span>Chain Event RPC</span>
-          <strong>{chainEventsStatus?.configured ? "configured" : "unset"}</strong>
-        </div>
-        <div>
-          <span>Watched</span>
-          <strong>
-            {chainEventsStatus?.watchedAddressCount ??
-              healthStatus?.chainWatchedAddressCount ??
-              0}
-          </strong>
-        </div>
-        <div>
-          <span>Chain Tx</span>
-          <strong>
-            {storageStats?.chainTransactionEventCount ??
-              healthStatus?.chainTransactionEventCount ??
-              0}
-          </strong>
-        </div>
-        <div>
-          <span>Chain Trades</span>
-          <strong>
-            {storageStats?.chainTradeEventCount ??
-              healthStatus?.chainTradeEventCount ??
-              0}
-          </strong>
-        </div>
-        <div>
-          <span>Paper Only</span>
-          <strong>{healthStatus?.paperOnly ? "yes" : "unknown"}</strong>
-        </div>
-        <div>
-          <span>RPC</span>
-          <strong>{chainStatus?.rpcHttpUrlConfigured ? "configured" : "unset"}</strong>
-        </div>
-        <div>
-          <span>Chain Reads</span>
-          <strong>{storageStats?.chainVerificationCount ?? 0}</strong>
-        </div>
-        <div>
-          <span>Chain Cache</span>
-          <strong>{chainStatus?.cacheSize ?? 0}</strong>
-        </div>
-        <div>
-          <span>Tracked</span>
-          <strong>{healthStatus?.trackedTokenCount ?? 0}</strong>
-        </div>
-        <div>
-          <span>Candidates</span>
-          <strong>{healthStatus?.candidateCount ?? candidates.length}</strong>
-        </div>
-        <div>
-          <span>Stored Signals</span>
-          <strong>{storageStats?.signalCount ?? signals.length}</strong>
-        </div>
-        <div>
-          <span>Risk Snapshots</span>
-          <strong>{storageStats?.riskSnapshotCount ?? 0}</strong>
-        </div>
-        <div>
-          <span>Decisions</span>
-          <strong>{storageStats?.candidateDecisionCount ?? 0}</strong>
-        </div>
-        <div>
-          <span>Auto Paper</span>
-          <strong>{healthStatus?.paperAutoOrder ? "on" : "off"}</strong>
-        </div>
-        <div>
-          <span>Paper Orders</span>
-          <strong>{storageStats?.paperOrderCount ?? 0}</strong>
-        </div>
-        <div>
-          <span>Paper Positions</span>
-          <strong>{storageStats?.paperPositionCount ?? 0}</strong>
-        </div>
-        <div>
-          <span>Last Signal</span>
-          <strong>{formatTimestamp(storageStats?.lastSignalAt)}</strong>
-        </div>
-        <div>
-          <span>Incomplete</span>
-          <strong>{incompleteMetricCount}</strong>
-        </div>
-      </section>
-
-      <section className="status-message" aria-live="polite">
-        {statusMessage}
+      <section className="console-line" aria-live="polite">
+        <span className="prompt">&gt;</span>
+        <span>{statusMessage}</span>
       </section>
 
       <section className="table-region watch-region" aria-label="Watch orchestration plans">
@@ -715,9 +623,15 @@ export function App() {
                 <td>{plan.source ?? "unknown"}</td>
                 <td>{plan.shouldVerifyMint ? "yes" : "no"}</td>
                 <td>{plan.shouldWatchEvents ? "yes" : "no"}</td>
-                <td>{formatTargets(plan.watchTargets)}</td>
-                <td>{formatTargets(plan.skippedTargets)}</td>
-                <td>{topReasonCodes(plan.reasonCodes)}</td>
+                <td>
+                  <TargetList targets={plan.watchTargets} />
+                </td>
+                <td>
+                  <TargetList targets={plan.skippedTargets} />
+                </td>
+                <td>
+                  <ReasonCodes codes={plan.reasonCodes} />
+                </td>
                 <td>{formatTimestamp(plan.createdAt)}</td>
               </tr>
             ))}
@@ -760,7 +674,9 @@ export function App() {
                 </td>
                 <td>{action.addressKind}</td>
                 <td>{action.status}</td>
-                <td>{topReasonCodes(action.reasonCodes)}</td>
+                <td>
+                  <ReasonCodes codes={action.reasonCodes} />
+                </td>
                 <td>{formatTimestamp(action.createdAt)}</td>
               </tr>
             ))}
@@ -798,10 +714,12 @@ export function App() {
                   {shortMint(watch.address)}
                 </td>
                 <td className="mono" title={watch.mint ?? ""}>
-                  {watch.mint ? shortMint(watch.mint) : "-"}
+                  {watch.mint ? shortMint(watch.mint) : "--"}
                 </td>
                 <td>{watch.source ?? "manual"}</td>
-                <td>{topReasonCodes(watch.reasonCodes)}</td>
+                <td>
+                  <ReasonCodes codes={watch.reasonCodes} />
+                </td>
                 <td>{formatTimestamp(watch.addedAt)}</td>
               </tr>
             ))}
@@ -844,9 +762,11 @@ export function App() {
                 </td>
                 <td>{event.watchedAddressKind}</td>
                 <td className="mono" title={event.mint ?? ""}>
-                  {event.mint ? shortMint(event.mint) : "-"}
+                  {event.mint ? shortMint(event.mint) : "--"}
                 </td>
-                <td>{topReasonCodes(event.reasonCodes)}</td>
+                <td>
+                  <ReasonCodes codes={event.reasonCodes} />
+                </td>
                 <td>{formatTimestamp(event.receivedAt ?? event.createdAt)}</td>
               </tr>
             ))}
@@ -891,13 +811,15 @@ export function App() {
                 </td>
                 <td>{event.side}</td>
                 <td>{event.confidence}</td>
-                <td>{event.priceUsd == null ? "-" : formatUsd(event.priceUsd)}</td>
-                <td>{event.volumeUsd == null ? "-" : formatUsd(event.volumeUsd)}</td>
+                <td>{event.priceUsd == null ? "--" : formatUsd(event.priceUsd)}</td>
+                <td>{event.volumeUsd == null ? "--" : formatUsd(event.volumeUsd)}</td>
                 <td>{formatNullableNumber(event.tokenAmount)}</td>
                 <td className="mono" title={event.watchedAddress}>
                   {shortMint(event.watchedAddress)}
                 </td>
-                <td>{topReasonCodes(event.reasonCodes)}</td>
+                <td>
+                  <ReasonCodes codes={event.reasonCodes} />
+                </td>
                 <td>{formatTimestamp(event.timestamp ?? event.createdAt)}</td>
               </tr>
             ))}
@@ -953,7 +875,9 @@ export function App() {
                 <td>{formatNullableUsd(observation.volumeUsd)}</td>
                 <td>{observation.confidence}</td>
                 <td>{observation.usableForMetrics ? "yes" : "no"}</td>
-                <td>{topReasonCodes(observation.reasonCodes)}</td>
+                <td>
+                  <ReasonCodes codes={observation.reasonCodes} />
+                </td>
                 <td className="mono" title={observation.signature}>
                   {shortMint(observation.signature)}
                 </td>
@@ -971,10 +895,12 @@ export function App() {
         </table>
       </section>
 
-      <section className="table-region candidate-region" aria-label="Candidate lifecycle">
-        <div className="table-heading">
-          <h2>Candidate Lifecycle</h2>
-        </div>
+      <DataPanel
+        ariaLabel="Candidate lifecycle"
+        className="candidate-region primary-region"
+        meta={`${sortedCandidates.length} rows`}
+        title="CANDIDATES"
+      >
         <table>
           <thead>
             <tr>
@@ -1047,13 +973,19 @@ export function App() {
                   <td>{formatNullableBoolean(candidate.onChainFreezeAuthorityActive)}</td>
                   <td>{formatPercent(candidate.onChainTopHolderPct)}</td>
                   <td>{formatPercent(candidate.onChainTop10HolderPct)}</td>
-                  <td>{topReasonCodes(candidate.chainReasonCodes)}</td>
+                  <td>
+                    <ReasonCodes codes={candidate.chainReasonCodes} />
+                  </td>
                   <td>
                     {candidate.latestWatchPlanSummary?.selectedTargetCount ?? 0}
                   </td>
                   <td>{formatWatchSummary(candidate.latestWatchPlanSummary)}</td>
-                  <td>{topReasonCodes(candidate.watchReasonCodes)}</td>
-                  <td>{topReasonCodes(decision?.combinedReasonCodes)}</td>
+                  <td>
+                    <ReasonCodes codes={candidate.watchReasonCodes} />
+                  </td>
+                  <td>
+                    <ReasonCodes codes={decision?.combinedReasonCodes} />
+                  </td>
                   <td>{formatUsd(candidate.latestMetrics?.windows["10s"].totalVolumeUsd ?? 0)}</td>
                   <td>{formatNullableNumber(candidate.latestMetrics?.windows["10s"].totalVolumeSol)}</td>
                   <td>{candidate.latestMetrics?.usedSolMetricsFallback ? "yes" : "no"}</td>
@@ -1061,7 +993,9 @@ export function App() {
                   <td>{formatNumber(candidate.latestMetrics?.buyerVelocityPerSec)}</td>
                   <td>{formatNumber(candidate.latestMetrics?.buySellRatio)}</td>
                   <td>{formatNumber(candidate.latestMetrics?.netBuyPressure)}</td>
-                  <td>{topReasonCodes(risk?.reasonCodes)}</td>
+                  <td>
+                    <ReasonCodes codes={risk?.reasonCodes} />
+                  </td>
                   <td>{formatTimestamp(candidate.lastUpdatedAt)}</td>
                 </tr>
               );
@@ -1075,12 +1009,14 @@ export function App() {
             ) : null}
           </tbody>
         </table>
-      </section>
+      </DataPanel>
 
-      <section className="table-region" aria-label="Live token signals">
-        <div className="table-heading">
-          <h2>Signals</h2>
-        </div>
+      <DataPanel
+        ariaLabel="Live token signals"
+        className="signal-region primary-region"
+        meta={`${sortedSignals.length} rows`}
+        title="SIGNALS"
+      >
         <table>
           <thead>
             <tr>
@@ -1133,7 +1069,9 @@ export function App() {
                     {signal.riskLevel ?? "unknown"}
                   </span>
                 </td>
-                <td>{signal.reasonCodes.slice(0, 3).join(", ")}</td>
+                <td>
+                  <ReasonCodes codes={signal.reasonCodes} />
+                </td>
                 <td>{signal.feedProvider ?? healthStatus?.feedProvider ?? "unknown"}</td>
                 <td>{signal.insufficientMetrics ? "yes" : "no"}</td>
                 <td>{formatUsd(metricVolume(signal, "1s"))}</td>
@@ -1160,7 +1098,7 @@ export function App() {
             ) : null}
           </tbody>
         </table>
-      </section>
+      </DataPanel>
     </main>
   );
 }
@@ -1210,24 +1148,31 @@ function normalizeClassName(value: string): string {
   return value.toLowerCase();
 }
 
-function topReasonCodes(reasonCodes: string[] | undefined): string {
-  return reasonCodes?.slice(0, 3).join(", ") || "-";
-}
-
-function formatTargets(targets: WatchTargetRow[] | undefined): string {
+function TargetList({ targets }: { targets: WatchTargetRow[] | undefined }) {
   if (!targets || targets.length === 0) {
-    return "-";
+    return <span className="muted">--</span>;
   }
 
-  return targets
-    .slice(0, 3)
-    .map((target) => `${target.kind}:${shortMint(target.address)}`)
-    .join(", ");
+  const visibleTargets = targets.slice(0, 3);
+  const remainingCount = targets.length - visibleTargets.length;
+
+  return (
+    <span className="target-list" title={targets.map((target) => target.address).join(", ")}>
+      {visibleTargets.map((target) => (
+        <span className="target-code" key={`${target.kind}-${target.address}`}>
+          {target.kind}:{shortMint(target.address)}
+        </span>
+      ))}
+      {remainingCount > 0 ? (
+        <span className="target-code target-more">+{remainingCount}</span>
+      ) : null}
+    </span>
+  );
 }
 
 function formatWatchSummary(summary: WatchPlanSummary | undefined): string {
   if (!summary) {
-    return "-";
+    return "--";
   }
 
   if (summary.shouldVerifyMint && summary.shouldWatchEvents) {
@@ -1246,11 +1191,11 @@ function formatWatchSummary(summary: WatchPlanSummary | undefined): string {
 }
 
 function formatNumber(value: number | undefined): string {
-  return value === undefined ? "-" : value.toFixed(2);
+  return value === undefined ? "--" : value.toFixed(2);
 }
 
 function formatNullableNumber(value: number | null | undefined): string {
-  return value === null || value === undefined ? "-" : value.toFixed(4);
+  return value === null || value === undefined ? "--" : value.toFixed(4);
 }
 
 function formatUsd(value: number): string {
@@ -1263,19 +1208,19 @@ function formatUsd(value: number): string {
 
 function formatNullableUsd(value: number | null | undefined): string {
   if (value === null || value === undefined) {
-    return "-";
+    return "--";
   }
 
   return formatUsd(value);
 }
 
 function formatPercent(value: number | null | undefined): string {
-  return value === null || value === undefined ? "-" : `${value.toFixed(2)}%`;
+  return value === null || value === undefined ? "--" : `${value.toFixed(2)}%`;
 }
 
 function formatNullableBoolean(value: boolean | null | undefined): string {
   if (value === null || value === undefined) {
-    return "-";
+    return "--";
   }
 
   return value ? "yes" : "no";
@@ -1283,10 +1228,17 @@ function formatNullableBoolean(value: boolean | null | undefined): string {
 
 function formatTimestamp(timestamp: string | null | undefined): string {
   if (!timestamp) {
-    return "never";
+    return "--";
   }
 
   return new Date(timestamp).toLocaleTimeString();
+}
+
+function formatCompactNumber(value: number): string {
+  return Intl.NumberFormat("en", {
+    maximumFractionDigits: 1,
+    notation: "compact"
+  }).format(value);
 }
 
 function getStatusMessage(options: {
