@@ -44,11 +44,19 @@ describe("@axi/api", () => {
       chainEventsEnabled: boolean;
       chainTradeEventCount: number;
       chainTransactionEventCount: number;
+      dataFeed: string;
       feedProvider: string;
+      mockFeedEnabled: boolean;
+      noFeedMode: boolean;
+      realDataActive: boolean;
+      realDataConfigured: boolean;
       marketDataEnabled: boolean;
       marketDataMinConfidence: string;
       marketObservationCount: number;
       pumpPortalTokenTradeEventCount: number;
+      tokenIdentityCount: number;
+      tokenIdentityResolvedCount: number;
+      tokenIdentityUnresolvedCount: number;
       watchOrchestratorEnabled: boolean;
       watchPlanCount: number;
       watchActionCount: number;
@@ -80,7 +88,15 @@ describe("@axi/api", () => {
     expect(body.watchPlanCount).toBe(0);
     expect(body.watchActionCount).toBe(0);
     expect(body.candidateCount).toBeGreaterThan(0);
+    expect(body.dataFeed).toBe("mock");
     expect(body.feedProvider).toBe("mock");
+    expect(body.mockFeedEnabled).toBe(true);
+    expect(body.realDataConfigured).toBe(false);
+    expect(body.realDataActive).toBe(false);
+    expect(body.noFeedMode).toBe(false);
+    expect(body.tokenIdentityCount).toBeGreaterThan(0);
+    expect(body.tokenIdentityResolvedCount).toBeGreaterThan(0);
+    expect(body.tokenIdentityUnresolvedCount).toBe(0);
     expect(body.metricsEnabled).toBe(true);
     expect(body.status).toBe("ok");
     expect(body.mode).toBe("paper");
@@ -107,6 +123,10 @@ describe("@axi/api", () => {
       pumpPortalTokenTradeEventCount: number;
       actualDataSubscriptionCount: number;
       actualDataSessionCount: number;
+      tokenIdentityCount: number;
+      tokenIdentityResolvedCount: number;
+      tokenIdentityUnresolvedCount: number;
+      tokenMetadataFetchCount: number;
       watchPlanCount: number;
       watchActionCount: number;
       paperOrderCount: number;
@@ -125,12 +145,95 @@ describe("@axi/api", () => {
     expect(body.pumpPortalTokenTradeEventCount).toBe(0);
     expect(body.actualDataSubscriptionCount).toBe(0);
     expect(body.actualDataSessionCount).toBe(0);
+    expect(body.tokenIdentityCount).toBeGreaterThan(0);
+    expect(body.tokenIdentityResolvedCount).toBeGreaterThan(0);
+    expect(body.tokenIdentityUnresolvedCount).toBe(0);
+    expect(body.tokenMetadataFetchCount).toBe(0);
     expect(body.watchPlanCount).toBe(0);
     expect(body.watchActionCount).toBe(0);
     expect(body.riskSnapshotCount).toBeGreaterThan(0);
     expect(body.candidateDecisionCount).toBeGreaterThan(0);
     expect(body.paperOrderCount).toBe(0);
     expect(body.paperPositionCount).toBe(0);
+  });
+
+  it("default DATA_FEED does not start mock runtime data", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: true,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/health"
+    });
+    const body = response.json() as {
+      dataFeed: string;
+      feedProvider: string;
+      mockFeedEnabled: boolean;
+      noFeedMode: boolean;
+      noRealFeedMessage?: string;
+      candidateCount: number;
+      trackedTokenCount: number;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.dataFeed).toBe("none");
+    expect(body.feedProvider).toBe("none");
+    expect(body.mockFeedEnabled).toBe(false);
+    expect(body.noFeedMode).toBe(true);
+    expect(body.noRealFeedMessage).toBe("NO REAL FEED CONFIGURED");
+    expect(body.candidateCount).toBe(0);
+    expect(body.trackedTokenCount).toBe(0);
+  });
+
+  it("DATA_FEED=mock without ALLOW_MOCK_DATA=true is blocked", async () => {
+    server = createApiServer({
+      dataFeed: "mock",
+      logLevel: false,
+      mockFeedEnabled: true,
+      startFeed: true,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/health"
+    });
+    const body = response.json() as {
+      dataFeedReasonCodes: string[];
+      feedProvider: string;
+      mockFeedBlocked: boolean;
+      candidateCount: number;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.feedProvider).toBe("mock-blocked");
+    expect(body.mockFeedBlocked).toBe(true);
+    expect(body.dataFeedReasonCodes).toContain(
+      "MOCK_FEED_BLOCKED_NOT_EXPLICITLY_ALLOWED"
+    );
+    expect(body.candidateCount).toBe(0);
+  });
+
+  it("DATA_FEED=mock with ALLOW_MOCK_DATA=true works in tests", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/health"
+    });
+    const body = response.json() as {
+      feedProvider: string;
+      mockFeedEnabled: boolean;
+      candidateCount: number;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.feedProvider).toBe("mock");
+    expect(body.mockFeedEnabled).toBe(true);
+    expect(body.candidateCount).toBeGreaterThan(0);
   });
 
   it("GET /signals returns enriched signals", async () => {
@@ -142,6 +245,11 @@ describe("@axi/api", () => {
     });
     const body = response.json() as Array<{
       candidateDecisionAction?: string;
+      identity?: {
+        displayName: string;
+        resolved: boolean;
+        title: string;
+      };
       lifecycleState?: string;
       riskLevel?: string;
       riskSnapshot?: unknown;
@@ -151,6 +259,8 @@ describe("@axi/api", () => {
     expect(body).toEqual(expect.any(Array));
     expect(body.length).toBeGreaterThan(0);
     expect(body[0]?.candidateDecisionAction).toEqual(expect.any(String));
+    expect(body[0]?.identity?.title).toEqual(expect.any(String));
+    expect(body[0]?.identity?.resolved).toBe(true);
     expect(body[0]?.lifecycleState).toEqual(expect.any(String));
     expect(body[0]?.riskLevel).toEqual(expect.any(String));
     expect(body[0]?.riskSnapshot).toEqual(expect.any(Object));
@@ -194,6 +304,10 @@ describe("@axi/api", () => {
       url: "/candidates"
     });
     const candidates = response.json() as Array<{
+      identity?: {
+        displayName: string;
+        resolved: boolean;
+      };
       latestDecision?: unknown;
       latestRisk?: unknown;
       lifecycleState: string;
@@ -203,6 +317,8 @@ describe("@axi/api", () => {
     expect(response.statusCode).toBe(200);
     expect(candidates.length).toBeGreaterThan(0);
     expect(candidates[0]?.mint).toEqual(expect.any(String));
+    expect(candidates[0]?.identity?.displayName).toEqual(expect.any(String));
+    expect(candidates[0]?.identity?.resolved).toBe(true);
     expect(candidates[0]?.lifecycleState).toEqual(expect.any(String));
     expect(candidates[0]?.latestDecision).toEqual(expect.any(Object));
     expect(candidates[0]?.latestRisk).toEqual(expect.any(Object));
@@ -410,6 +526,86 @@ describe("@axi/api", () => {
 
     expect(response.statusCode).toBe(200);
     expect(body).toEqual([]);
+  });
+
+  it("GET /tokens/status works", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/tokens/status"
+    });
+    const body = response.json() as {
+      identityCount: number;
+      paperOnly: boolean;
+      resolvedCount: number;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.paperOnly).toBe(true);
+    expect(body.identityCount).toBeGreaterThan(0);
+    expect(body.resolvedCount).toBeGreaterThan(0);
+  });
+
+  it("GET /tokens returns identities", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/tokens"
+    });
+    const body = response.json() as Array<{
+      displayName: string;
+      mint: string;
+      title: string;
+    }>;
+
+    expect(response.statusCode).toBe(200);
+    expect(body.length).toBeGreaterThan(0);
+    expect(body[0]?.title).toEqual(expect.any(String));
+    expect(body[0]?.displayName).toEqual(expect.any(String));
+  });
+
+  it("GET /tokens/:mint returns 404 for unknown mint", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/tokens/UnknownMint111111111111111111111111111"
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  it("GET /tokens/unresolved works", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/tokens/unresolved"
+    });
+    const body = response.json() as unknown[];
+
+    expect(response.statusCode).toBe(200);
+    expect(body).toEqual([]);
+  });
+
+  it("POST /tokens/resolve rejects invalid mint", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/tokens/resolve",
+      payload: {
+        mint: "INVALID_MINT"
+      }
+    });
+    const body = response.json() as {
+      error: string;
+    };
+
+    expect(response.statusCode).toBe(400);
+    expect(body.error).toBe("INVALID_MINT");
   });
 
   it("GET /chain/status reports disabled by default", async () => {
@@ -776,6 +972,10 @@ describe("@axi/api", () => {
     });
     const signals = signalsResponse.json() as Array<{
       action: string;
+      identity?: {
+        dataSource: string;
+        title: string;
+      };
       reasonCodes: string[];
     }>;
     const orders = ordersResponse.json() as unknown[];
@@ -784,7 +984,22 @@ describe("@axi/api", () => {
     expect(signals[0]?.reasonCodes).toContain("INSUFFICIENT_METRICS");
     expect(signals[0]?.reasonCodes).toContain("INSUFFICIENT_RISK_DATA");
     expect(signals[0]?.reasonCodes).toContain("REAL_FEED_NEW_TOKEN_EVENT");
+    expect(signals[0]?.identity?.title).toBe("PORTAL - Portal Token");
+    expect(signals[0]?.identity?.dataSource).toBe("pumpportal");
     expect(orders).toHaveLength(0);
+
+    const tokensResponse = await server.app.inject({
+      method: "GET",
+      url: "/tokens"
+    });
+    const tokens = tokensResponse.json() as Array<{
+      mint: string;
+      title: string;
+    }>;
+
+    expect(tokens.some((token) => token.title === "PORTAL - Portal Token")).toBe(
+      true
+    );
   });
 
   // TODO: Add a WebSocket integration test after the test harness grows a
@@ -793,7 +1008,10 @@ describe("@axi/api", () => {
 
 function createTestServer(): ApiServer {
   return createApiServer({
+    allowMockData: true,
+    dataFeed: "mock",
     logLevel: false,
+    mockFeedEnabled: true,
     mockFeed: {
       intervalMs: 0,
       maxEvents: 12,

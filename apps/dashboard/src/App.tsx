@@ -6,6 +6,7 @@ import type {
   OverlaySignal,
   RiskSnapshot,
   RollingMetricsSnapshot,
+  TokenIdentitySummary,
   WatchPlanSummary
 } from "@axi/shared";
 import { ConnectionBadge } from "./components/ConnectionBadge";
@@ -27,6 +28,10 @@ type StorageStats = {
   pumpPortalTokenTradeEventCount: number;
   actualDataSubscriptionCount: number;
   actualDataSessionCount: number;
+  tokenIdentityCount: number;
+  tokenIdentityResolvedCount: number;
+  tokenIdentityUnresolvedCount: number;
+  tokenMetadataFetchCount: number;
   watchPlanCount: number;
   watchActionCount: number;
   riskSnapshotCount: number;
@@ -47,13 +52,26 @@ type HealthStatus = {
   chainTradeEventCount: number;
   chainTransactionEventCount: number;
   chainWatchedAddressCount: number;
+  dataFeed: string;
+  dataFeedReasonCodes: string[];
   chainVerificationCount: number;
   chainVerifier: ChainVerifierStatus;
   feedProvider: string;
+  mockFeedBlocked: boolean;
+  mockFeedEnabled: boolean;
+  noFeedMode: boolean;
+  noRealFeedMessage?: string;
+  realDataActive: boolean;
+  realDataConfigured: boolean;
   marketDataEnabled: boolean;
   marketDataMinConfidence: string;
   marketObservationCount: number;
   pumpPortalTokenTradeEventCount: number;
+  tokenIdentity: TokenIdentityStatus;
+  tokenIdentityCount: number;
+  tokenIdentityResolvedCount: number;
+  tokenIdentityUnresolvedCount: number;
+  tokenMetadataFetchCount: number;
   watchOrchestratorEnabled: boolean;
   watchPlanCount: number;
   watchActionCount: number;
@@ -87,6 +105,22 @@ type ActualDataStatus = {
   reasonCodes: string[];
   subscribedTokenCount: number;
   totalEventsThisSession: number;
+};
+
+type TokenIdentityStatus = {
+  enabled: true;
+  solanaMetadataEnabled: boolean;
+  solanaMetadataConfigured: boolean;
+  solanaMetadataOnDemand: boolean;
+  solanaMetadataOnNewToken: boolean;
+  offchainFetchEnabled: boolean;
+  identityCount: number;
+  resolvedCount: number;
+  unresolvedCount: number;
+  lastResolvedAt: string | null;
+  lastError: string | null;
+  reasonCodes: string[];
+  paperOnly: true;
 };
 
 type ChainVerifierStatus = {
@@ -156,6 +190,7 @@ type WatchTargetRow = {
 
 type WatchPlanRow = {
   id: number;
+  identity?: TokenIdentitySummary;
   mint: string;
   symbol?: string;
   source?: string;
@@ -250,6 +285,7 @@ type ActualDataSummary = {
 
 type PumpPortalTradeRow = {
   id: number;
+  identity?: TokenIdentitySummary;
   mint: string;
   signature: string | null;
   side: string;
@@ -265,6 +301,7 @@ type PumpPortalTradeRow = {
 
 type CandidateApiRow = {
   mint: string;
+  identity?: TokenIdentitySummary;
   symbol?: string;
   name?: string;
   source?: string;
@@ -286,6 +323,11 @@ type CandidateApiRow = {
   marketReasonCodes?: string[];
   watchReasonCodes?: string[];
   paperOrderStatus: string;
+};
+
+type TokenIdentityRow = TokenIdentitySummary & {
+  id?: number;
+  createdAt?: string;
 };
 
 type ServerMessage =
@@ -316,6 +358,9 @@ export function App() {
   const [actualDataStatus, setActualDataStatus] =
     useState<ActualDataStatus | null>(null);
   const [actualTrades, setActualTrades] = useState<PumpPortalTradeRow[]>([]);
+  const [tokenIdentityStatus, setTokenIdentityStatus] =
+    useState<TokenIdentityStatus | null>(null);
+  const [tokenIdentities, setTokenIdentities] = useState<TokenIdentityRow[]>([]);
   const [watchStatus, setWatchStatus] = useState<WatchStatus | null>(null);
   const [chainTransactions, setChainTransactions] = useState<
     ChainTransactionRow[]
@@ -395,6 +440,8 @@ export function App() {
           marketStatusResponse,
           actualDataStatusResponse,
           actualTradesResponse,
+          tokenIdentityStatusResponse,
+          tokenIdentitiesResponse,
           watchStatusResponse,
           watchedAddressesResponse,
           chainTransactionsResponse,
@@ -411,6 +458,8 @@ export function App() {
           fetch(`${apiBaseUrl}/market/status`),
           fetch(`${apiBaseUrl}/actual-data/status`),
           fetch(`${apiBaseUrl}/actual-data/trades?limit=10`),
+          fetch(`${apiBaseUrl}/tokens/status`),
+          fetch(`${apiBaseUrl}/tokens?limit=25`),
           fetch(`${apiBaseUrl}/watch/status`),
           fetch(`${apiBaseUrl}/chain/events/watches`),
           fetch(`${apiBaseUrl}/chain/events/transactions?limit=10`),
@@ -429,6 +478,8 @@ export function App() {
           !marketStatusResponse.ok ||
           !actualDataStatusResponse.ok ||
           !actualTradesResponse.ok ||
+          !tokenIdentityStatusResponse.ok ||
+          !tokenIdentitiesResponse.ok ||
           !watchStatusResponse.ok ||
           !watchedAddressesResponse.ok ||
           !chainTransactionsResponse.ok ||
@@ -454,6 +505,10 @@ export function App() {
           (await actualDataStatusResponse.json()) as ActualDataStatus;
         const nextActualTrades =
           (await actualTradesResponse.json()) as PumpPortalTradeRow[];
+        const nextTokenIdentityStatus =
+          (await tokenIdentityStatusResponse.json()) as TokenIdentityStatus;
+        const nextTokenIdentities =
+          (await tokenIdentitiesResponse.json()) as TokenIdentityRow[];
         const nextWatchStatus =
           (await watchStatusResponse.json()) as WatchStatus;
         const nextWatchedAddresses =
@@ -477,6 +532,8 @@ export function App() {
           setMarketStatus(nextMarketStatus);
           setActualDataStatus(nextActualDataStatus);
           setActualTrades(nextActualTrades);
+          setTokenIdentityStatus(nextTokenIdentityStatus);
+          setTokenIdentities(nextTokenIdentities);
           setWatchStatus(nextWatchStatus);
           setWatchedAddresses(nextWatchedAddresses);
           setChainTransactions(nextChainTransactions);
@@ -531,13 +588,19 @@ export function App() {
   const statusMessage = getStatusMessage({
     apiStatus,
     feedProvider: healthStatus?.feedProvider,
+    noFeedMode: healthStatus?.noFeedMode,
+    noRealFeedMessage: healthStatus?.noRealFeedMessage,
     incompleteMetricCount,
     candidateCount: candidates.length,
     signalCount: signals.length,
     storageStats
   });
   const modeLabel = (healthStatus?.mode ?? "paper").toUpperCase();
-  const feedLabel = (healthStatus?.feedProvider ?? "unknown").toUpperCase();
+  const feedLabel = (
+    healthStatus?.dataFeed ??
+    healthStatus?.feedProvider ??
+    "unknown"
+  ).toUpperCase();
   const apiLabel =
     apiStatus === "connected"
       ? "ONLINE"
@@ -563,12 +626,15 @@ export function App() {
         ? "warning"
         : "offline";
   const actualData = actualDataStatus ?? healthStatus?.actualData ?? null;
+  const identityStatus = tokenIdentityStatus ?? healthStatus?.tokenIdentity ?? null;
   const actualDataLabel =
     actualData?.enabled && actualData.compatibleProvider
       ? "REAL/PUMPPORTAL"
-      : feedLabel === "MOCK"
+      : healthStatus?.mockFeedEnabled
         ? "MOCK"
-        : "PAPER FEED";
+        : healthStatus?.noFeedMode
+          ? "NO REAL FEED"
+          : "PAPER FEED";
 
   return (
     <main className="app-shell">
@@ -592,6 +658,30 @@ export function App() {
 
       <section className="status-grid" aria-label="System status">
         <MetricValue label="feed" value={feedLabel} detail="source" />
+        <MetricValue
+          label="real data"
+          value={healthStatus?.realDataConfigured ? "[CFG]" : "[NONE]"}
+          detail={healthStatus?.realDataActive ? "active" : "inactive"}
+          tone={healthStatus?.realDataActive ? "good" : "neutral"}
+        />
+        <MetricValue
+          label="mock"
+          value={
+            healthStatus?.mockFeedEnabled
+              ? "[ON]"
+              : healthStatus?.mockFeedBlocked
+                ? "[BLOCKED]"
+                : "[OFF]"
+          }
+          detail={healthStatus?.mockFeedBlocked ? "explicit opt-in required" : "runtime"}
+          tone={
+            healthStatus?.mockFeedEnabled
+              ? "warn"
+              : healthStatus?.mockFeedBlocked
+                ? "bad"
+                : "neutral"
+          }
+        />
         <MetricValue
           label="signals"
           value={formatCompactNumber(signals.length)}
@@ -669,6 +759,18 @@ export function App() {
           tone={actualData?.budgetReached ? "bad" : actualData?.enabled ? "warn" : "neutral"}
         />
         <MetricValue
+          label="identities"
+          value={formatCompactNumber(identityStatus?.identityCount ?? 0)}
+          detail={`${identityStatus?.resolvedCount ?? 0} resolved / ${identityStatus?.unresolvedCount ?? 0} unresolved`}
+          tone={(identityStatus?.resolvedCount ?? 0) > 0 ? "good" : "neutral"}
+        />
+        <MetricValue
+          label="metadata"
+          value={identityStatus?.solanaMetadataEnabled ? "[SOL]" : "[OFF]"}
+          detail={identityStatus?.offchainFetchEnabled ? "offchain on" : "offchain off"}
+          tone={identityStatus?.solanaMetadataEnabled ? "warn" : "neutral"}
+        />
+        <MetricValue
           label="watch orch"
           value={(watchStatus?.enabled ?? healthStatus?.watchOrchestratorEnabled) ? "[ON]" : "[OFF]"}
           detail={`${storageStats?.watchPlanCount ?? watchStatus?.watchPlanCount ?? 0} plans / ${storageStats?.watchActionCount ?? watchStatus?.watchActionCount ?? 0} actions`}
@@ -738,6 +840,57 @@ export function App() {
         </table>
       </section>
 
+      <section className="table-region token-region" aria-label="Token identities">
+        <div className="table-heading">
+          <h2>Token Identities</h2>
+          <span className="table-meta">
+            {identityStatus?.resolvedCount ?? 0} resolved /{" "}
+            {identityStatus?.unresolvedCount ?? 0} unresolved
+          </span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Token</th>
+              <th>Symbol</th>
+              <th>Name</th>
+              <th>Confidence</th>
+              <th>Source</th>
+              <th>Metadata URI</th>
+              <th>Image</th>
+              <th>Status</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tokenIdentities.map((identity) => (
+              <tr key={identity.mint}>
+                <td>
+                  <TokenCell identity={identity} mint={identity.mint} />
+                </td>
+                <td>{identity.symbol ?? "UNKNOWN"}</td>
+                <td>{identity.name ?? "--"}</td>
+                <td>{identity.confidence}</td>
+                <td>{identity.dataSource}</td>
+                <td className="mono" title={identity.metadataUri ?? ""}>
+                  {identity.metadataUri ? compactUri(identity.metadataUri) : "--"}
+                </td>
+                <td>{identity.imageUri ? "yes" : "no"}</td>
+                <td>{identity.resolved ? "resolved" : "unresolved"}</td>
+                <td>{formatTimestamp(identity.updatedAt)}</td>
+              </tr>
+            ))}
+            {tokenIdentities.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="empty-state compact-empty">
+                  No token identities
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </section>
+
       <section className="table-region actual-data-region" aria-label="Actual PumpPortal trades">
         <div className="table-heading">
           <h2>Actual PumpPortal Trades</h2>
@@ -746,7 +899,7 @@ export function App() {
         <table>
           <thead>
             <tr>
-              <th>Mint</th>
+              <th>Token</th>
               <th>Side</th>
               <th>Price SOL</th>
               <th>Volume SOL</th>
@@ -762,8 +915,8 @@ export function App() {
           <tbody>
             {actualTrades.map((trade) => (
               <tr key={trade.id}>
-                <td className="mono" title={trade.mint}>
-                  {shortMint(trade.mint)}
+                <td>
+                  <TokenCell identity={trade.identity} mint={trade.mint} />
                 </td>
                 <td>{trade.side}</td>
                 <td>{formatNullableNumber(trade.priceSol)}</td>
@@ -801,7 +954,7 @@ export function App() {
         <table>
           <thead>
             <tr>
-              <th>Mint</th>
+              <th>Token</th>
               <th>Symbol</th>
               <th>Source</th>
               <th>Verify</th>
@@ -815,8 +968,12 @@ export function App() {
           <tbody>
             {watchPlans.map((plan) => (
               <tr key={plan.id}>
-                <td className="mono" title={plan.mint}>
-                  {shortMint(plan.mint)}
+                <td>
+                  <TokenCell
+                    fallbackSymbol={plan.symbol}
+                    identity={plan.identity}
+                    mint={plan.mint}
+                  />
                 </td>
                 <td>{plan.symbol ?? "UNKNOWN"}</td>
                 <td>{plan.source ?? "unknown"}</td>
@@ -1103,8 +1260,11 @@ export function App() {
         <table>
           <thead>
             <tr>
-              <th>Mint</th>
+              <th>Token</th>
               <th>Symbol</th>
+              <th>Name</th>
+              <th>Identity</th>
+              <th>Source</th>
               <th>State</th>
               <th>Action</th>
               <th>Score</th>
@@ -1143,10 +1303,22 @@ export function App() {
 
               return (
                 <tr key={candidate.mint}>
-                  <td className="mono" title={candidate.mint}>
-                    {shortMint(candidate.mint)}
+                  <td>
+                    <TokenCell
+                      fallbackName={candidate.name}
+                      fallbackSymbol={candidate.symbol}
+                      identity={candidate.identity}
+                      mint={candidate.mint}
+                    />
                   </td>
-                  <td>{candidate.symbol ?? "UNKNOWN"}</td>
+                  <td>{candidate.identity?.symbol ?? candidate.symbol ?? "UNKNOWN"}</td>
+                  <td>{candidate.identity?.name ?? candidate.name ?? "--"}</td>
+                  <td>
+                    {candidate.identity
+                      ? `${candidate.identity.confidence}/${candidate.identity.resolved ? "resolved" : "unresolved"}`
+                      : "unresolved"}
+                  </td>
+                  <td>{candidate.identity?.dataSource ?? candidate.source ?? "unknown"}</td>
                   <td>
                     <span className={`state state-${candidate.lifecycleState}`}>
                       {candidate.lifecycleState}
@@ -1211,7 +1383,7 @@ export function App() {
             })}
             {sortedCandidates.length === 0 ? (
               <tr>
-                <td colSpan={31} className="empty-state">
+                <td colSpan={34} className="empty-state">
                   {statusMessage}
                 </td>
               </tr>
@@ -1229,8 +1401,11 @@ export function App() {
         <table>
           <thead>
             <tr>
-              <th>Mint</th>
+              <th>Token</th>
               <th>Symbol</th>
+              <th>Name</th>
+              <th>Identity</th>
+              <th>Source</th>
               <th>Score</th>
               <th>Action</th>
               <th>State</th>
@@ -1258,10 +1433,22 @@ export function App() {
           <tbody>
             {sortedSignals.map((signal) => (
               <tr key={signal.mint}>
-                <td className="mono" title={signal.mint}>
-                  {shortMint(signal.mint)}
+                <td>
+                  <TokenCell
+                    fallbackName={signal.name}
+                    fallbackSymbol={signal.symbol}
+                    identity={signal.identity}
+                    mint={signal.mint}
+                  />
                 </td>
-                <td>{signal.symbol}</td>
+                <td>{signal.identity?.symbol ?? signal.symbol}</td>
+                <td>{signal.identity?.name ?? signal.name ?? "--"}</td>
+                <td>
+                  {signal.identity
+                    ? `${signal.identity.confidence}/${signal.identity.resolved ? "resolved" : "unresolved"}`
+                    : "unresolved"}
+                </td>
+                <td>{signal.identity?.dataSource ?? signal.feedProvider ?? "unknown"}</td>
                 <td>
                   <span className="score">{signal.score}</span>
                 </td>
@@ -1304,7 +1491,7 @@ export function App() {
             ))}
             {sortedSignals.length === 0 ? (
               <tr>
-                <td colSpan={24} className="empty-state">
+                <td colSpan={27} className="empty-state">
                   {statusMessage}
                 </td>
               </tr>
@@ -1329,6 +1516,34 @@ function upsertSignal(
 
 function shortMint(mint: string): string {
   return `${mint.slice(0, 8)}...${mint.slice(-6)}`;
+}
+
+function TokenCell({
+  fallbackName,
+  fallbackSymbol,
+  identity,
+  mint
+}: {
+  fallbackName?: string | undefined;
+  fallbackSymbol?: string | undefined;
+  identity?: TokenIdentitySummary | undefined;
+  mint: string;
+}) {
+  const title =
+    identity?.title ??
+    (fallbackSymbol && fallbackName
+      ? `${fallbackSymbol} - ${fallbackName}`
+      : fallbackName ?? fallbackSymbol ?? shortMint(mint));
+  const displayName = identity?.displayName ?? title;
+  const unresolved = identity && !identity.resolved;
+
+  return (
+    <span className="token-cell" title={mint}>
+      <span className="token-title">{displayName}</span>
+      <span className="token-mint mono">{shortMint(mint)}</span>
+      {unresolved ? <span className="token-unresolved">unresolved</span> : null}
+    </span>
+  );
 }
 
 function metricVolume(
@@ -1467,11 +1682,17 @@ function formatCompactNumber(value: number): string {
   }).format(value);
 }
 
+function compactUri(uri: string): string {
+  return uri.length > 34 ? `${uri.slice(0, 24)}...${uri.slice(-7)}` : uri;
+}
+
 function getStatusMessage(options: {
   apiStatus: ApiStatus;
   candidateCount: number;
   feedProvider: string | undefined;
   incompleteMetricCount: number;
+  noFeedMode: boolean | undefined;
+  noRealFeedMessage: string | undefined;
   signalCount: number;
   storageStats: StorageStats | null;
 }): string {
@@ -1483,8 +1704,12 @@ function getStatusMessage(options: {
     return "Checking API";
   }
 
+  if (options.noFeedMode) {
+    return options.noRealFeedMessage ?? "NO REAL FEED CONFIGURED";
+  }
+
   if (options.storageStats?.feedEventCount === 0) {
-    return "API connected, no persisted mock events yet";
+    return "API connected, no feed events yet";
   }
 
   if (options.candidateCount === 0) {

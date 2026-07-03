@@ -8,6 +8,11 @@ import {
 } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import type { RiskInput } from "@axi/risk";
+import {
+  createEmptyTokenIdentity,
+  normalizeSolanaMetadataIdentity,
+  type TokenIdentity
+} from "@axi/token-identity";
 
 export type { Commitment as SolanaRpcCommitment } from "@solana/web3.js";
 
@@ -162,11 +167,26 @@ export type ParsedTransactionResult = {
   error?: NormalizedRpcError;
 };
 
+export type SolanaTokenMetadata = {
+  mint: string;
+  name: string | null;
+  symbol: string | null;
+  metadataUri: string | null;
+  updateAuthority: string | null;
+  fetchedAt: string;
+  reasonCodes: string[];
+  raw?: unknown;
+  error?: NormalizedRpcError;
+};
+
 const defaultCommitment: Commitment = "confirmed";
 const defaultRequestTimeoutMs = 10_000;
 const defaultMaxRetries = 2;
 const topHolderHardRejectPct = 20;
 const top10HolderHardRejectPct = 45;
+const tokenMetadataProgramId = new PublicKey(
+  "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
+);
 
 export class SolanaChainClient {
   private readonly commitment: Commitment;
@@ -542,6 +562,118 @@ export class SolanaChainClient {
     };
   }
 
+  async fetchSolanaTokenMetadata(mint: string): Promise<SolanaTokenMetadata> {
+    const fetchedAt = new Date().toISOString();
+    const pda = getTokenMetadataPda(mint);
+
+    if (!pda) {
+      return {
+        mint,
+        name: null,
+        symbol: null,
+        metadataUri: null,
+        updateAuthority: null,
+        fetchedAt,
+        reasonCodes: ["TOKEN_METADATA_INVALID_MINT"],
+        error: invalidAddressError(mint)
+      };
+    }
+
+    const result = await this.callRpc(
+      () =>
+        this.rpcClient.getParsedAccountInfo(
+          new PublicKey(pda),
+          this.commitment
+        ),
+      "getTokenMetadataAccount"
+    );
+
+    if (!result.ok) {
+      return {
+        mint,
+        name: null,
+        symbol: null,
+        metadataUri: null,
+        updateAuthority: null,
+        fetchedAt,
+        reasonCodes: ["TOKEN_METADATA_RPC_FAILED"],
+        error: result.error
+      };
+    }
+
+    if (!result.value.value) {
+      return {
+        mint,
+        name: null,
+        symbol: null,
+        metadataUri: null,
+        updateAuthority: null,
+        fetchedAt,
+        reasonCodes: ["TOKEN_METADATA_ACCOUNT_NOT_FOUND"],
+        error: {
+          code: "TOKEN_METADATA_ACCOUNT_NOT_FOUND",
+          message: `Token metadata account for ${mint} was not found.`,
+          retryable: false
+        }
+      };
+    }
+
+    const parsed = parseSolanaTokenMetadataAccount(result.value.value.data);
+
+    if (!parsed) {
+      return {
+        mint,
+        name: null,
+        symbol: null,
+        metadataUri: null,
+        updateAuthority: null,
+        fetchedAt,
+        reasonCodes: ["TOKEN_METADATA_PARSE_FAILED"],
+        raw: result.value.value.data,
+        error: {
+          code: "TOKEN_METADATA_PARSE_FAILED",
+          message: `Token metadata account for ${mint} could not be parsed.`,
+          retryable: false
+        }
+      };
+    }
+
+    return {
+      mint,
+      name: parsed.name,
+      symbol: parsed.symbol,
+      metadataUri: parsed.metadataUri,
+      updateAuthority: parsed.updateAuthority,
+      fetchedAt,
+      reasonCodes: unique([
+        "TOKEN_METADATA_ACCOUNT_FOUND",
+        ...(parsed.name ? ["TOKEN_METADATA_NAME_FOUND"] : []),
+        ...(parsed.symbol ? ["TOKEN_METADATA_SYMBOL_FOUND"] : []),
+        ...(parsed.metadataUri ? ["TOKEN_METADATA_URI_FOUND"] : [])
+      ]),
+      raw: result.value.value.data
+    };
+  }
+
+  async resolveTokenIdentityFromSolana(mint: string): Promise<TokenIdentity> {
+    const metadata = await this.fetchSolanaTokenMetadata(mint);
+
+    if (metadata.error || (!metadata.name && !metadata.symbol && !metadata.metadataUri)) {
+      const unresolved = createEmptyTokenIdentity(mint);
+      return {
+        ...unresolved,
+        reasonCodes: unique([
+          ...unresolved.reasonCodes,
+          ...metadata.reasonCodes,
+          "TOKEN_IDENTITY_UNRESOLVED"
+        ]),
+        updatedAt: metadata.fetchedAt
+      };
+    }
+
+    return normalizeSolanaMetadataIdentity(metadata);
+  }
+
   private async callRpc<T>(
     operation: () => Promise<T>,
     operationName: string
@@ -673,6 +805,151 @@ export async function verifyTokenOnChain(
   options: SolanaChainClientOptions
 ): Promise<OnChainTokenVerification> {
   return createSolanaChainClient(options).verifyTokenOnChain(mint);
+}
+
+export async function fetchSolanaTokenMetadata(
+  mint: string,
+  options: SolanaChainClientOptions
+): Promise<SolanaTokenMetadata> {
+  return createSolanaChainClient(options).fetchSolanaTokenMetadata(mint);
+}
+
+export async function resolveTokenIdentityFromSolana(
+  mint: string,
+  options: SolanaChainClientOptions
+): Promise<TokenIdentity> {
+  return createSolanaChainClient(options).resolveTokenIdentityFromSolana(mint);
+}
+
+export function getTokenMetadataPda(mint: string): string | null {
+  const mintPublicKey = parsePublicKey(mint);
+
+  if (!mintPublicKey) {
+    return null;
+  }
+
+  const [pda] = PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("metadata"),
+      tokenMetadataProgramId.toBuffer(),
+      mintPublicKey.toBuffer()
+    ],
+    tokenMetadataProgramId
+  );
+
+  return pda.toBase58();
+}
+
+export function parseSolanaTokenMetadataAccount(data: unknown):
+  | {
+      name: string | null;
+      symbol: string | null;
+      metadataUri: string | null;
+      updateAuthority: string | null;
+    }
+  | null {
+  const buffer = accountDataToBuffer(data);
+
+  if (!buffer || buffer.length < 65) {
+    return null;
+  }
+
+  try {
+    let offset = 1;
+    const updateAuthority = new PublicKey(buffer.subarray(offset, offset + 32));
+    offset += 32;
+    offset += 32;
+    const name = readMetadataString(buffer, offset);
+
+    if (!name) {
+      return null;
+    }
+
+    offset = name.nextOffset;
+    const symbol = readMetadataString(buffer, offset);
+
+    if (!symbol) {
+      return null;
+    }
+
+    offset = symbol.nextOffset;
+    const uri = readMetadataString(buffer, offset);
+
+    if (!uri) {
+      return null;
+    }
+
+    return {
+      name: cleanMetadataText(name.value),
+      symbol: cleanMetadataText(symbol.value),
+      metadataUri: cleanMetadataText(uri.value),
+      updateAuthority: updateAuthority.toBase58()
+    };
+  } catch {
+    return null;
+  }
+}
+
+function accountDataToBuffer(data: unknown): Buffer | null {
+  if (Buffer.isBuffer(data)) {
+    return data;
+  }
+
+  if (data instanceof Uint8Array) {
+    return Buffer.from(data);
+  }
+
+  if (Array.isArray(data) && typeof data[0] === "string") {
+    return Buffer.from(data[0], data[1] === "base64" ? "base64" : "utf8");
+  }
+
+  if (isRecord(data)) {
+    const nestedData = data["data"];
+
+    if (Buffer.isBuffer(nestedData)) {
+      return nestedData;
+    }
+
+    if (nestedData instanceof Uint8Array) {
+      return Buffer.from(nestedData);
+    }
+
+    if (Array.isArray(nestedData) && typeof nestedData[0] === "string") {
+      return Buffer.from(
+        nestedData[0],
+        nestedData[1] === "base64" ? "base64" : "utf8"
+      );
+    }
+  }
+
+  return null;
+}
+
+function readMetadataString(
+  buffer: Buffer,
+  offset: number
+): { nextOffset: number; value: string } | null {
+  if (offset + 4 > buffer.length) {
+    return null;
+  }
+
+  const length = buffer.readUInt32LE(offset);
+  const start = offset + 4;
+  const end = start + length;
+
+  if (length > 1024 || end > buffer.length) {
+    return null;
+  }
+
+  return {
+    nextOffset: end,
+    value: buffer.subarray(start, end).toString("utf8")
+  };
+}
+
+function cleanMetadataText(value: string): string | null {
+  const cleaned = value.replace(/\0/g, "").replace(/\s+/g, " ").trim();
+  return cleaned ? cleaned : null;
 }
 
 function parsePublicKey(address: string): PublicKey | null {

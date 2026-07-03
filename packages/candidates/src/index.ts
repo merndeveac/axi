@@ -12,6 +12,8 @@ import type {
   RiskSnapshot,
   RollingMetricsSnapshot,
   ScoreBreakdown,
+  TokenCandidate,
+  TokenIdentitySummary,
   WatchPlanSummary
 } from "@axi/shared";
 
@@ -31,6 +33,21 @@ export type CandidateState = {
   mint: string;
   symbol?: string;
   name?: string;
+  title?: string;
+  displayName?: string;
+  metadataUri?: string | null;
+  imageUri?: string | null;
+  description?: string | null;
+  website?: string | null;
+  twitter?: string | null;
+  telegram?: string | null;
+  discord?: string | null;
+  creator?: string | null;
+  identity?: TokenIdentitySummary;
+  identityConfidence?: TokenIdentitySummary["confidence"];
+  identityResolved?: boolean;
+  identityReasonCodes?: string[];
+  identitySource?: TokenIdentitySummary["dataSource"];
   source?: string;
   firstSeenAt: string;
   lastUpdatedAt: string;
@@ -95,6 +112,7 @@ export class CandidateLifecycleEngine {
     if (event.type === "token_created") {
       state.symbol = event.candidate.symbol;
       state.name = event.candidate.name;
+      applyCandidateIdentityFields(state, event.candidate);
       state.source = event.candidate.source;
       state.firstSeenAt = minIsoTimestamp(
         state.firstSeenAt,
@@ -108,6 +126,8 @@ export class CandidateLifecycleEngine {
       if (event.name) {
         state.name = event.name;
       }
+
+      applyOptionalIdentityFields(state, event);
 
       state.source = event.source;
     }
@@ -242,6 +262,44 @@ export class CandidateLifecycleEngine {
     return state;
   }
 
+  updateTokenIdentity(
+    mint: string,
+    identity: TokenIdentitySummary
+  ): CandidateState | undefined {
+    const state = this.candidates.get(mint);
+
+    if (!state) {
+      return undefined;
+    }
+
+    state.identity = identity;
+    state.identityConfidence = identity.confidence;
+    state.identityResolved = identity.resolved;
+    state.identityReasonCodes = identity.reasonCodes;
+    state.identitySource = identity.dataSource;
+    state.title = identity.title;
+    state.displayName = identity.displayName;
+    state.metadataUri = identity.metadataUri;
+    state.imageUri = identity.imageUri;
+    state.description = identity.description;
+    state.website = identity.website;
+    state.twitter = identity.twitter;
+    state.telegram = identity.telegram;
+    state.discord = identity.discord;
+    state.creator = identity.creator;
+    state.source = identity.dataSource;
+
+    if (identity.symbol) {
+      state.symbol = identity.symbol;
+    }
+
+    if (identity.name) {
+      state.name = identity.name;
+    }
+
+    return state;
+  }
+
   markPaperOrderSubmitted(
     mint: string,
     reasonCodes: string[] = ["PAPER_ORDER_SUBMITTED"]
@@ -344,6 +402,7 @@ export class CandidateLifecycleEngine {
     if (event.type === "token_created") {
       state.symbol = event.candidate.symbol;
       state.name = event.candidate.name;
+      applyCandidateIdentityFields(state, event.candidate);
       state.source = event.candidate.source;
     } else {
       if (event.symbol) {
@@ -354,6 +413,7 @@ export class CandidateLifecycleEngine {
         state.name = event.name;
       }
 
+      applyOptionalIdentityFields(state, event);
       state.source = event.source;
     }
 
@@ -455,6 +515,26 @@ export class CandidateLifecycleEngine {
       decision.name = state.name;
     }
 
+    if (state.title) {
+      decision.title = state.title;
+    }
+
+    if (state.displayName) {
+      decision.displayName = state.displayName;
+    }
+
+    if (state.imageUri !== undefined) {
+      decision.imageUri = state.imageUri;
+    }
+
+    if (state.identity) {
+      decision.identity = state.identity;
+      decision.identityConfidence = state.identity.confidence;
+      decision.identityResolved = state.identity.resolved;
+      decision.identityReasonCodes = state.identity.reasonCodes;
+      decision.identitySource = state.identity.dataSource;
+    }
+
     if (state.source) {
       decision.source = state.source;
     }
@@ -519,6 +599,98 @@ export function createCandidateLifecycleEngine(
   options: CandidateLifecycleEngineOptions = {}
 ): CandidateLifecycleEngine {
   return new CandidateLifecycleEngine(options);
+}
+
+function applyOptionalIdentityFields(
+  state: CandidateState,
+  event: FeedEvent
+): void {
+  if (event.type === "token_created") {
+    return;
+  }
+
+  const metadataEvent = event as FeedEvent & {
+    description?: string;
+    discord?: string;
+    imageUri?: string;
+    metadataUri?: string;
+    telegram?: string;
+    twitter?: string;
+    website?: string;
+  };
+
+  if (metadataEvent.metadataUri) {
+    state.metadataUri = metadataEvent.metadataUri;
+  }
+
+  if (metadataEvent.imageUri) {
+    state.imageUri = metadataEvent.imageUri;
+  }
+
+  if (metadataEvent.description) {
+    state.description = metadataEvent.description;
+  }
+
+  if (metadataEvent.website) {
+    state.website = metadataEvent.website;
+  }
+
+  if (metadataEvent.twitter) {
+    state.twitter = metadataEvent.twitter;
+  }
+
+  if (metadataEvent.telegram) {
+    state.telegram = metadataEvent.telegram;
+  }
+
+  if (metadataEvent.discord) {
+    state.discord = metadataEvent.discord;
+  }
+}
+
+function applyCandidateIdentityFields(
+  state: CandidateState,
+  candidate: TokenCandidate
+): void {
+  if (candidate.title) {
+    state.title = candidate.title;
+  }
+
+  if (candidate.displayName) {
+    state.displayName = candidate.displayName;
+  }
+
+  if (candidate.metadataUri !== undefined) {
+    state.metadataUri = candidate.metadataUri;
+  }
+
+  if (candidate.imageUri !== undefined) {
+    state.imageUri = candidate.imageUri;
+  }
+
+  if (candidate.description !== undefined) {
+    state.description = candidate.description;
+  }
+
+  if (candidate.website !== undefined) {
+    state.website = candidate.website;
+  }
+
+  if (candidate.twitter !== undefined) {
+    state.twitter = candidate.twitter;
+  }
+
+  if (candidate.telegram !== undefined) {
+    state.telegram = candidate.telegram;
+  }
+
+  if (candidate.discord !== undefined) {
+    state.discord = candidate.discord;
+  }
+
+  if (candidate.creator !== undefined) {
+    state.creator = candidate.creator;
+  }
 }
 
 function createMetricsSummary(

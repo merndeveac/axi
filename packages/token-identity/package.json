@@ -1,5 +1,5 @@
 {
-  "name": "@axi/storage",
+  "name": "@axi/token-identity",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -15,14 +15,5 @@
     "typecheck": "tsc -b tsconfig.json && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "clean": "rm -rf dist"
-  },
-  "dependencies": {
-    "@axi/chain-events": "workspace:*",
-    "@axi/data-feeds": "workspace:*",
-    "@axi/market-data": "workspace:*",
-    "@axi/shared": "workspace:*",
-    "@axi/token-identity": "workspace:*",
-    "@axi/watch-orchestrator": "workspace:*",
-    "zod": "^3.25.0"
   }
 }

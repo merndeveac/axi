@@ -20,6 +20,7 @@
     { "path": "../../packages/risk" },
     { "path": "../../packages/solana-chain" },
     { "path": "../../packages/storage" },
+    { "path": "../../packages/token-identity" },
     { "path": "../../packages/watch-orchestrator" }
   ]
 }

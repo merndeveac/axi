@@ -157,7 +157,9 @@ function startDetached(options) {
     detached: true,
     env: {
       ...process.env,
-      DATA_FEED: process.env.DATA_FEED ?? "mock",
+      DATA_FEED: process.env.DATA_FEED ?? "none",
+      ALLOW_MOCK_DATA: process.env.ALLOW_MOCK_DATA ?? "false",
+      MOCK_FEED_ENABLED: process.env.MOCK_FEED_ENABLED ?? "false",
       PAPER_AUTO_ORDER: process.env.PAPER_AUTO_ORDER ?? "false"
     },
     stdio: ["ignore", logFd, logFd]

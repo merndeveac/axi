@@ -15,6 +15,12 @@ import type {
   WatchTarget,
   WatchTargetKind
 } from "@axi/watch-orchestrator";
+import type {
+  TokenIdentity,
+  TokenIdentityConfidence,
+  TokenIdentityDataSource,
+  TokenIdentitySource
+} from "@axi/token-identity";
 import {
   CandidateDecisionSchema,
   ChainVerificationStatusSchema,
@@ -67,6 +73,8 @@ export type ReplaySource =
   | "feed_events"
   | "market_observations"
   | "pumpportal_token_trade_events"
+  | "token_identities"
+  | "token_metadata_fetches"
   | "watch_actions"
   | "watch_plans"
   | "chain_verifications"
@@ -131,6 +139,10 @@ export type StorageStats = {
   pumpPortalTokenTradeEventCount: number;
   actualDataSubscriptionCount: number;
   actualDataSessionCount: number;
+  tokenIdentityCount: number;
+  tokenIdentityResolvedCount: number;
+  tokenIdentityUnresolvedCount: number;
+  tokenMetadataFetchCount: number;
   watchPlanCount: number;
   watchActionCount: number;
   riskSnapshotCount: number;
@@ -277,6 +289,32 @@ export type StoredActualDataSession = Omit<
   createdAt: string;
   startedAt: string | null;
   stoppedAt: string | null;
+};
+
+export type StoredTokenIdentity = TokenIdentity & {
+  id: number;
+  createdAt: string;
+};
+
+export type TokenMetadataFetchInput = {
+  mint: string;
+  uri?: string | null;
+  source: string;
+  status: string;
+  reasonCodes: string[];
+  payload: unknown;
+  fetchedAt?: string;
+  createdAt?: string;
+};
+
+export type StoredTokenMetadataFetch = Omit<
+  TokenMetadataFetchInput,
+  "createdAt" | "fetchedAt"
+> & {
+  id: number;
+  fetchedAt: string;
+  createdAt: string;
+  uri: string | null;
 };
 
 export type WatchPlanInput = CandidateWatchPlan & {
@@ -486,6 +524,45 @@ type ActualDataSessionRow = {
   created_at: string;
 };
 
+type TokenIdentityRow = {
+  id: number;
+  mint: string;
+  name: string | null;
+  symbol: string | null;
+  title: string;
+  display_name: string;
+  metadata_uri: string | null;
+  image_uri: string | null;
+  description: string | null;
+  website: string | null;
+  twitter: string | null;
+  telegram: string | null;
+  discord: string | null;
+  creator: string | null;
+  confidence: TokenIdentityConfidence;
+  completeness_score: number;
+  real_data: number;
+  data_source: TokenIdentityDataSource;
+  reason_codes_json: string;
+  sources_json: string;
+  payload_json: string;
+  first_seen_at: string;
+  updated_at: string;
+  created_at: string;
+};
+
+type TokenMetadataFetchRow = {
+  id: number;
+  mint: string;
+  uri: string | null;
+  source: string;
+  status: string;
+  reason_codes_json: string;
+  payload_json: string;
+  fetched_at: string;
+  created_at: string;
+};
+
 type WatchPlanRow = {
   id: number;
   mint: string;
@@ -686,6 +763,82 @@ const actualDataSessionInputSchema = z.object({
   stoppedAt: z.string().datetime().nullable().optional(),
   reasonCodes: z.array(z.string().min(1)),
   payload: z.unknown(),
+  createdAt: z.string().datetime().optional()
+});
+
+const tokenIdentitySourceSchema = z.object({
+  source: z.enum([
+    "pumpportal",
+    "solana_metadata",
+    "offchain_metadata",
+    "dexscreener",
+    "jupiter_price",
+    "manual",
+    "mock",
+    "unknown"
+  ]),
+  realData: z.boolean(),
+  name: z.string().nullable().optional(),
+  symbol: z.string().nullable().optional(),
+  metadataUri: z.string().nullable().optional(),
+  imageUri: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
+  website: z.string().nullable().optional(),
+  twitter: z.string().nullable().optional(),
+  telegram: z.string().nullable().optional(),
+  discord: z.string().nullable().optional(),
+  creator: z.string().nullable().optional(),
+  confidence: z.enum(["none", "low", "medium", "high"]),
+  reasonCodes: z.array(z.string().min(1)),
+  fetchedAt: z.string().datetime(),
+  raw: z.unknown().optional()
+});
+
+const tokenIdentityInputSchema = z.object({
+  mint: z.string().min(1),
+  name: z.string().nullable(),
+  symbol: z.string().nullable(),
+  title: z.string().min(1),
+  displayName: z.string().min(1),
+  normalizedName: z.string().nullable(),
+  normalizedSymbol: z.string().nullable(),
+  metadataUri: z.string().nullable(),
+  imageUri: z.string().nullable(),
+  description: z.string().nullable(),
+  website: z.string().nullable(),
+  twitter: z.string().nullable(),
+  telegram: z.string().nullable(),
+  discord: z.string().nullable(),
+  creator: z.string().nullable(),
+  sourcePriority: z.array(z.string().min(1)),
+  sources: z.array(tokenIdentitySourceSchema),
+  confidence: z.enum(["none", "low", "medium", "high"]),
+  completenessScore: z.number().min(0).max(100),
+  realData: z.boolean(),
+  dataSource: z.enum([
+    "pumpportal",
+    "solana_metadata",
+    "offchain_metadata",
+    "dexscreener",
+    "jupiter_price",
+    "manual",
+    "mock",
+    "unknown"
+  ]),
+  reasonCodes: z.array(z.string().min(1)),
+  firstSeenAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  raw: z.unknown().optional()
+});
+
+const tokenMetadataFetchInputSchema = z.object({
+  mint: z.string().min(1),
+  uri: z.string().nullable().optional(),
+  source: z.string().min(1),
+  status: z.string().min(1),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown(),
+  fetchedAt: z.string().datetime().optional(),
   createdAt: z.string().datetime().optional()
 });
 
@@ -1804,6 +1957,275 @@ export function listActualDataSessionsForReplay(
   return rows.map(mapActualDataSessionRow);
 }
 
+export function saveTokenIdentity(
+  identity: TokenIdentity
+): StoredTokenIdentity {
+  const parsed = tokenIdentityInputSchema.parse(identity) as TokenIdentity;
+  const createdAt = new Date().toISOString();
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into token_identities (
+        mint,
+        name,
+        symbol,
+        title,
+        display_name,
+        metadata_uri,
+        image_uri,
+        description,
+        website,
+        twitter,
+        telegram,
+        discord,
+        creator,
+        confidence,
+        completeness_score,
+        real_data,
+        data_source,
+        reason_codes_json,
+        sources_json,
+        payload_json,
+        first_seen_at,
+        updated_at,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(...tokenIdentityValues(parsed, createdAt));
+
+  return {
+    ...parsed,
+    id: toRowId(result.lastInsertRowid),
+    createdAt
+  };
+}
+
+export function upsertTokenIdentity(
+  identity: TokenIdentity
+): StoredTokenIdentity {
+  const parsed = tokenIdentityInputSchema.parse(identity) as TokenIdentity;
+  const createdAt = new Date().toISOString();
+  const db = getDb();
+
+  db.prepare(
+    `insert into token_identities (
+      mint,
+      name,
+      symbol,
+      title,
+      display_name,
+      metadata_uri,
+      image_uri,
+      description,
+      website,
+      twitter,
+      telegram,
+      discord,
+      creator,
+      confidence,
+      completeness_score,
+      real_data,
+      data_source,
+      reason_codes_json,
+      sources_json,
+      payload_json,
+      first_seen_at,
+      updated_at,
+      created_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    on conflict(mint) do update set
+      name = excluded.name,
+      symbol = excluded.symbol,
+      title = excluded.title,
+      display_name = excluded.display_name,
+      metadata_uri = excluded.metadata_uri,
+      image_uri = excluded.image_uri,
+      description = excluded.description,
+      website = excluded.website,
+      twitter = excluded.twitter,
+      telegram = excluded.telegram,
+      discord = excluded.discord,
+      creator = excluded.creator,
+      confidence = excluded.confidence,
+      completeness_score = excluded.completeness_score,
+      real_data = excluded.real_data,
+      data_source = excluded.data_source,
+      reason_codes_json = excluded.reason_codes_json,
+      sources_json = excluded.sources_json,
+      payload_json = excluded.payload_json,
+      first_seen_at = excluded.first_seen_at,
+      updated_at = excluded.updated_at`
+  ).run(...tokenIdentityValues(parsed, createdAt));
+
+  const stored = getTokenIdentity(parsed.mint);
+
+  if (!stored) {
+    throw new Error(`Failed to upsert token identity for ${parsed.mint}`);
+  }
+
+  return stored;
+}
+
+export function listTokenIdentities(limit = 50): StoredTokenIdentity[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from token_identities
+       order by datetime(updated_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as TokenIdentityRow[];
+
+  return rows.map(mapTokenIdentityRow);
+}
+
+export function listTokenIdentitiesForReplay(
+  limit = 50
+): StoredTokenIdentity[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from token_identities
+       order by datetime(updated_at) asc, id asc
+       limit ?`
+    )
+    .all(parsedLimit) as TokenIdentityRow[];
+
+  return rows.map(mapTokenIdentityRow);
+}
+
+export function getTokenIdentity(mint: string): StoredTokenIdentity | null {
+  const row = getDb()
+    .prepare(
+      `select *
+       from token_identities
+       where mint = ?
+       order by datetime(updated_at) desc, id desc
+       limit 1`
+    )
+    .get(mint) as TokenIdentityRow | undefined;
+
+  return row ? mapTokenIdentityRow(row) : null;
+}
+
+export function listUnresolvedTokenIdentities(
+  limit = 50
+): StoredTokenIdentity[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from token_identities
+       where (name is null or name = '') and (symbol is null or symbol = '')
+       order by datetime(updated_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as TokenIdentityRow[];
+
+  return rows.map(mapTokenIdentityRow);
+}
+
+export function saveTokenMetadataFetch(
+  fetchResult: TokenMetadataFetchInput
+): StoredTokenMetadataFetch {
+  const parsed = tokenMetadataFetchInputSchema.parse(fetchResult);
+  const fetchedAt = parsed.fetchedAt ?? new Date().toISOString();
+  const createdAt = parsed.createdAt ?? fetchedAt;
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into token_metadata_fetches (
+        mint,
+        uri,
+        source,
+        status,
+        reason_codes_json,
+        payload_json,
+        fetched_at,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.mint,
+      parsed.uri ?? null,
+      parsed.source,
+      parsed.status,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(parsed.payload),
+      fetchedAt,
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    mint: parsed.mint,
+    uri: parsed.uri ?? null,
+    source: parsed.source,
+    status: parsed.status,
+    reasonCodes: parsed.reasonCodes,
+    payload: parsed.payload,
+    fetchedAt,
+    createdAt
+  };
+}
+
+export function listTokenMetadataFetches(
+  limit = 50
+): StoredTokenMetadataFetch[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from token_metadata_fetches
+       order by datetime(fetched_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as TokenMetadataFetchRow[];
+
+  return rows.map(mapTokenMetadataFetchRow);
+}
+
+export function listTokenMetadataFetchesForReplay(
+  limit = 50
+): StoredTokenMetadataFetch[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from token_metadata_fetches
+       order by datetime(fetched_at) asc, id asc
+       limit ?`
+    )
+    .all(parsedLimit) as TokenMetadataFetchRow[];
+
+  return rows.map(mapTokenMetadataFetchRow);
+}
+
+export function listTokenMetadataFetchesByMint(
+  mint: string,
+  limit = 50
+): StoredTokenMetadataFetch[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from token_metadata_fetches
+       where mint = ?
+       order by datetime(fetched_at) desc, id desc
+       limit ?`
+    )
+    .all(mint, parsedLimit) as TokenMetadataFetchRow[];
+
+  return rows.map(mapTokenMetadataFetchRow);
+}
+
 export function saveWatchPlan(plan: WatchPlanInput): StoredWatchPlan {
   const parsed = watchPlanInputSchema.parse(plan) as WatchPlanInput;
   const payload = parsed.payload ?? parsed;
@@ -2027,6 +2449,8 @@ function getReplayPayload(
     | StoredPumpPortalTokenTradeEvent
     | StoredRiskSnapshot
     | StoredSignal
+    | StoredTokenIdentity
+    | StoredTokenMetadataFetch
     | StoredWatchAction
     | StoredWatchPlan
 ): unknown {
@@ -2055,6 +2479,8 @@ function getReplayRecords(
   | StoredPumpPortalTokenTradeEvent
   | StoredRiskSnapshot
   | StoredSignal
+  | StoredTokenIdentity
+  | StoredTokenMetadataFetch
   | StoredWatchAction
   | StoredWatchPlan
 > {
@@ -2081,6 +2507,10 @@ function getReplayRecords(
       return listMarketObservationsForReplay(limit);
     case "pumpportal_token_trade_events":
       return listPumpPortalTokenTradeEventsForReplay(limit);
+    case "token_identities":
+      return listTokenIdentitiesForReplay(limit);
+    case "token_metadata_fetches":
+      return listTokenMetadataFetchesForReplay(limit);
     case "watch_actions":
       return listWatchActionsForReplay(limit);
     case "watch_plans":
@@ -2236,6 +2666,10 @@ export function getStorageStats(): StorageStats {
     ),
     actualDataSubscriptionCount: countRows(db, "actual_data_subscriptions"),
     actualDataSessionCount: countRows(db, "actual_data_sessions"),
+    tokenIdentityCount: countRows(db, "token_identities"),
+    tokenIdentityResolvedCount: countResolvedTokenIdentities(db),
+    tokenIdentityUnresolvedCount: countUnresolvedTokenIdentities(db),
+    tokenMetadataFetchCount: countRows(db, "token_metadata_fetches"),
     watchPlanCount: countRows(db, "watch_plans"),
     watchActionCount: countRows(db, "watch_actions"),
     riskSnapshotCount: countRows(db, "risk_snapshots"),
@@ -2624,6 +3058,69 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(7, "actual_data_pumpportal_trades", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 8)) {
+    db.exec(`
+      create table if not exists token_identities (
+        id integer primary key autoincrement,
+        mint text not null unique,
+        name text,
+        symbol text,
+        title text not null,
+        display_name text not null,
+        metadata_uri text,
+        image_uri text,
+        description text,
+        website text,
+        twitter text,
+        telegram text,
+        discord text,
+        creator text,
+        confidence text not null,
+        completeness_score real not null,
+        real_data integer not null,
+        data_source text not null,
+        reason_codes_json text not null,
+        sources_json text not null,
+        payload_json text not null,
+        first_seen_at text not null,
+        updated_at text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_token_identities_updated_at
+        on token_identities(updated_at);
+
+      create index if not exists idx_token_identities_mint
+        on token_identities(mint);
+
+      create index if not exists idx_token_identities_confidence
+        on token_identities(confidence);
+
+      create table if not exists token_metadata_fetches (
+        id integer primary key autoincrement,
+        mint text not null,
+        uri text,
+        source text not null,
+        status text not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        fetched_at text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_token_metadata_fetches_fetched_at
+        on token_metadata_fetches(fetched_at);
+
+      create index if not exists idx_token_metadata_fetches_mint
+        on token_metadata_fetches(mint);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(8, "token_identity_normalization", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -2638,6 +3135,30 @@ function countRows(db: DatabaseSync, tableName: string): number {
   const row = db.prepare(`select count(*) as count from ${tableName}`).get() as
     | CountRow
     | undefined;
+
+  return row?.count ?? 0;
+}
+
+function countResolvedTokenIdentities(db: DatabaseSync): number {
+  const row = db
+    .prepare(
+      `select count(*) as count
+       from token_identities
+       where (name is not null and name != '') or (symbol is not null and symbol != '')`
+    )
+    .get() as CountRow | undefined;
+
+  return row?.count ?? 0;
+}
+
+function countUnresolvedTokenIdentities(db: DatabaseSync): number {
+  const row = db
+    .prepare(
+      `select count(*) as count
+       from token_identities
+       where (name is null or name = '') and (symbol is null or symbol = '')`
+    )
+    .get() as CountRow | undefined;
 
   return row?.count ?? 0;
 }
@@ -2708,6 +3229,61 @@ function getFeedEventTimestamp(event: FeedEvent): string {
 
 function stringifyJson(value: unknown): string {
   return JSON.stringify(value);
+}
+
+function tokenIdentityValues(
+  identity: TokenIdentity,
+  createdAt: string
+): [
+  string,
+  string | null,
+  string | null,
+  string,
+  string,
+  string | null,
+  string | null,
+  string | null,
+  string | null,
+  string | null,
+  string | null,
+  string | null,
+  string | null,
+  TokenIdentityConfidence,
+  number,
+  number,
+  TokenIdentityDataSource,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string
+] {
+  return [
+    identity.mint,
+    identity.name,
+    identity.symbol,
+    identity.title,
+    identity.displayName,
+    identity.metadataUri,
+    identity.imageUri,
+    identity.description,
+    identity.website,
+    identity.twitter,
+    identity.telegram,
+    identity.discord,
+    identity.creator,
+    identity.confidence,
+    identity.completenessScore,
+    identity.realData ? 1 : 0,
+    identity.dataSource,
+    stringifyJson(identity.reasonCodes),
+    stringifyJson(identity.sources),
+    stringifyJson(identity),
+    identity.firstSeenAt,
+    identity.updatedAt,
+    createdAt
+  ];
 }
 
 function mapFeedEventRow(row: FeedEventRow): StoredFeedEvent {
@@ -2879,6 +3455,55 @@ function mapActualDataSessionRow(
     stoppedAt: row.stopped_at,
     reasonCodes: JSON.parse(row.reason_codes_json) as string[],
     payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at
+  };
+}
+
+function mapTokenIdentityRow(row: TokenIdentityRow): StoredTokenIdentity {
+  const payload = tokenIdentityInputSchema.parse(
+    JSON.parse(row.payload_json)
+  ) as TokenIdentity;
+
+  return {
+    ...payload,
+    id: row.id,
+    mint: row.mint,
+    name: row.name,
+    symbol: row.symbol,
+    title: row.title,
+    displayName: row.display_name,
+    metadataUri: row.metadata_uri,
+    imageUri: row.image_uri,
+    description: row.description,
+    website: row.website,
+    twitter: row.twitter,
+    telegram: row.telegram,
+    discord: row.discord,
+    creator: row.creator,
+    confidence: row.confidence,
+    completenessScore: row.completeness_score,
+    realData: Boolean(row.real_data),
+    dataSource: row.data_source,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    sources: JSON.parse(row.sources_json) as TokenIdentitySource[],
+    firstSeenAt: row.first_seen_at,
+    updatedAt: row.updated_at,
+    createdAt: row.created_at
+  };
+}
+
+function mapTokenMetadataFetchRow(
+  row: TokenMetadataFetchRow
+): StoredTokenMetadataFetch {
+  return {
+    id: row.id,
+    mint: row.mint,
+    uri: row.uri,
+    source: row.source,
+    status: row.status,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
+    fetchedAt: row.fetched_at,
     createdAt: row.created_at
   };
 }

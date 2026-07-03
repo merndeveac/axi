@@ -9,10 +9,12 @@ import type {
 } from "@axi/chain-events";
 import type { MarketObservation } from "@axi/market-data";
 import type { CandidateDecision, OverlaySignal, RiskSnapshot } from "@axi/shared";
+import { normalizePumpPortalIdentity } from "@axi/token-identity";
 import {
   closeStorage,
   createReplayStream,
   getPumpPortalTokenTradeEvent,
+  getTokenIdentity,
   getChainTradeEvent,
   getChainTransactionEvent,
   getLatestChainVerification,
@@ -47,6 +49,12 @@ import {
   listRiskSnapshotsForReplay,
   listRiskSnapshots,
   listSignalsForReplay,
+  listTokenIdentities,
+  listTokenIdentitiesForReplay,
+  listTokenMetadataFetches,
+  listTokenMetadataFetchesByMint,
+  listTokenMetadataFetchesForReplay,
+  listUnresolvedTokenIdentities,
   listWatchActions,
   listWatchActionsByMint,
   listWatchActionsForReplay,
@@ -64,8 +72,11 @@ import {
   savePumpPortalTokenTradeEvent,
   saveRiskSnapshot,
   saveSignal,
+  saveTokenIdentity,
+  saveTokenMetadataFetch,
   saveWatchAction,
   saveWatchPlan,
+  upsertTokenIdentity,
   upsertPaperPosition
 } from "../src/index";
 
@@ -375,6 +386,68 @@ describe("@axi/storage", () => {
     expect(listed[0]?.budgetEventLimit).toBe(5000);
   });
 
+  it("token identity can be saved, listed, and fetched by mint", () => {
+    initStorage({ databasePath });
+    const saved = saveTokenIdentity(createTokenIdentity());
+    const listed = listTokenIdentities(10);
+    const fetched = getTokenIdentity(mint);
+
+    expect(saved.id).toBeGreaterThan(0);
+    expect(listed).toHaveLength(1);
+    expect(fetched?.mint).toBe(mint);
+    expect(fetched?.title).toBe("MOCK - Mock Token");
+    expect(fetched?.reasonCodes).toContain("IDENTITY_FROM_PUMPPORTAL");
+  });
+
+  it("token identity can be upserted", () => {
+    initStorage({ databasePath });
+    upsertTokenIdentity(createTokenIdentity());
+    upsertTokenIdentity({
+      ...createTokenIdentity(),
+      name: "Updated Token",
+      title: "MOCK - Updated Token",
+      displayName: "MOCK Updated Token",
+      updatedAt: "2026-01-01T00:00:09.000Z"
+    });
+
+    const fetched = getTokenIdentity(mint);
+
+    expect(listTokenIdentities(10)).toHaveLength(1);
+    expect(fetched?.name).toBe("Updated Token");
+    expect(fetched?.updatedAt).toBe("2026-01-01T00:00:09.000Z");
+  });
+
+  it("unresolved token identities can be listed", () => {
+    initStorage({ databasePath });
+    saveTokenIdentity({
+      ...createTokenIdentity(),
+      name: null,
+      symbol: null,
+      title: "MockMi...1111",
+      displayName: "MockMi...1111",
+      confidence: "none",
+      completenessScore: 0,
+      reasonCodes: ["IDENTITY_UNRESOLVED"]
+    });
+
+    const unresolved = listUnresolvedTokenIdentities(10);
+
+    expect(unresolved).toHaveLength(1);
+    expect(unresolved[0]?.mint).toBe(mint);
+  });
+
+  it("token metadata fetch can be saved and listed", () => {
+    initStorage({ databasePath });
+    const saved = saveTokenMetadataFetch(createTokenMetadataFetch());
+    const listed = listTokenMetadataFetches(10);
+    const byMint = listTokenMetadataFetchesByMint(mint, 10);
+
+    expect(saved.id).toBeGreaterThan(0);
+    expect(listed).toHaveLength(1);
+    expect(byMint[0]?.uri).toBe("https://example.test/meta.json");
+    expect(byMint[0]?.reasonCodes).toContain("IDENTITY_FROM_OFFCHAIN_METADATA");
+  });
+
   it("watch plan can be saved and listed", () => {
     initStorage({ databasePath });
     const saved = saveWatchPlan(createWatchPlanFixture());
@@ -430,6 +503,8 @@ describe("@axi/storage", () => {
     savePumpPortalTokenTradeEvent(createPumpPortalTradeEvent());
     saveActualDataSubscription(createActualDataSubscription());
     saveActualDataSession(createActualDataSession());
+    saveTokenIdentity(createTokenIdentity());
+    saveTokenMetadataFetch(createTokenMetadataFetch());
     saveWatchPlan(createWatchPlanFixture());
     saveWatchAction(createWatchActionFixture());
     saveFeedEvent(createFeedEvent());
@@ -468,6 +543,10 @@ describe("@axi/storage", () => {
     expect(stats.pumpPortalTokenTradeEventCount).toBe(1);
     expect(stats.actualDataSubscriptionCount).toBe(1);
     expect(stats.actualDataSessionCount).toBe(1);
+    expect(stats.tokenIdentityCount).toBe(1);
+    expect(stats.tokenIdentityResolvedCount).toBe(1);
+    expect(stats.tokenIdentityUnresolvedCount).toBe(0);
+    expect(stats.tokenMetadataFetchCount).toBe(1);
     expect(stats.watchPlanCount).toBe(1);
     expect(stats.watchActionCount).toBe(1);
     expect(stats.riskSnapshotCount).toBe(1);
@@ -500,6 +579,8 @@ describe("@axi/storage", () => {
       createActualDataSubscription()
     );
     const actualDataSession = saveActualDataSession(createActualDataSession());
+    const tokenIdentity = saveTokenIdentity(createTokenIdentity());
+    const tokenMetadataFetch = saveTokenMetadataFetch(createTokenMetadataFetch());
     const watchPlan = saveWatchPlan(createWatchPlanFixture());
     const watchAction = saveWatchAction(createWatchActionFixture());
     const riskSnapshots = listRiskSnapshotsForReplay(10);
@@ -509,6 +590,8 @@ describe("@axi/storage", () => {
     const chainTradeEvents = listChainTradeEventsForReplay(10);
     const marketObservations = listMarketObservationsForReplay(10);
     const pumpPortalTrades = listPumpPortalTokenTradeEventsForReplay(10);
+    const tokenIdentities = listTokenIdentitiesForReplay(10);
+    const tokenMetadataFetches = listTokenMetadataFetchesForReplay(10);
     const watchPlans = listWatchPlansForReplay(10);
     const watchActions = listWatchActionsForReplay(10);
     const replayItems = [];
@@ -521,6 +604,8 @@ describe("@axi/storage", () => {
     const pumpPortalTradeReplayItems = [];
     const actualDataSubscriptionReplayItems = [];
     const actualDataSessionReplayItems = [];
+    const tokenIdentityReplayItems = [];
+    const tokenMetadataFetchReplayItems = [];
     const watchPlanReplayItems = [];
     const watchActionReplayItems = [];
 
@@ -607,6 +692,22 @@ describe("@axi/storage", () => {
     for await (const item of createReplayStream({
       limit: 10,
       speed: 0,
+      type: "token_identities"
+    })) {
+      tokenIdentityReplayItems.push(item);
+    }
+
+    for await (const item of createReplayStream({
+      limit: 10,
+      speed: 0,
+      type: "token_metadata_fetches"
+    })) {
+      tokenMetadataFetchReplayItems.push(item);
+    }
+
+    for await (const item of createReplayStream({
+      limit: 10,
+      speed: 0,
       type: "watch_plans"
     })) {
       watchPlanReplayItems.push(item);
@@ -632,8 +733,12 @@ describe("@axi/storage", () => {
     expect(chainTradeEvents[0]?.id).toBe(chainTradeEvent.id);
     expect(marketObservations[0]?.id).toBe(marketObservation.id);
     expect(pumpPortalTrades[0]?.id).toBe(pumpPortalTrade.id);
+    expect(tokenIdentities[0]?.id).toBe(tokenIdentity.id);
+    expect(tokenMetadataFetches[0]?.id).toBe(tokenMetadataFetch.id);
     expect(actualDataSubscription.id).toBeGreaterThan(0);
     expect(actualDataSession.id).toBeGreaterThan(0);
+    expect(tokenIdentity.id).toBeGreaterThan(0);
+    expect(tokenMetadataFetch.id).toBeGreaterThan(0);
     expect(watchPlans[0]?.id).toBe(watchPlan.id);
     expect(watchActions[0]?.id).toBe(watchAction.id);
     expect(replayItems).toHaveLength(2);
@@ -654,6 +759,10 @@ describe("@axi/storage", () => {
     );
     expect(actualDataSessionReplayItems[0]?.source).toBe(
       "actual_data_sessions"
+    );
+    expect(tokenIdentityReplayItems[0]?.source).toBe("token_identities");
+    expect(tokenMetadataFetchReplayItems[0]?.source).toBe(
+      "token_metadata_fetches"
     );
     expect(watchPlanReplayItems[0]?.source).toBe("watch_plans");
     expect(watchActionReplayItems[0]?.source).toBe("watch_actions");
@@ -893,6 +1002,36 @@ function createActualDataSession() {
       status: "running"
     },
     createdAt: "2026-01-01T00:00:06.000Z"
+  };
+}
+
+function createTokenIdentity() {
+  return {
+    ...normalizePumpPortalIdentity({
+      image: "https://example.test/mock.png",
+      metadataUri: "https://example.test/meta.json",
+      mint,
+      name: "Mock Token",
+      symbol: "MOCK"
+    }),
+    firstSeenAt: "2026-01-01T00:00:06.700Z",
+    updatedAt: "2026-01-01T00:00:06.700Z"
+  };
+}
+
+function createTokenMetadataFetch() {
+  return {
+    mint,
+    uri: "https://example.test/meta.json",
+    source: "offchain_metadata",
+    status: "success",
+    reasonCodes: ["IDENTITY_FROM_OFFCHAIN_METADATA"],
+    payload: {
+      name: "Mock Token",
+      symbol: "MOCK"
+    },
+    fetchedAt: "2026-01-01T00:00:06.800Z",
+    createdAt: "2026-01-01T00:00:06.800Z"
   };
 }
 

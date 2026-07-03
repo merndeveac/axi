@@ -1,6 +1,8 @@
 import { PublicKey } from "@solana/web3.js";
 import { describe, expect, it, vi } from "vitest";
 import {
+  getTokenMetadataPda,
+  parseSolanaTokenMetadataAccount,
   SolanaChainClient,
   isValidSolanaAddress,
   type SolanaRpcClient
@@ -131,6 +133,49 @@ describe("@axi/solana-chain", () => {
     expect(result.error?.code).toBe("RPC_ERROR");
     expect(result.error?.retryable).toBe(true);
   });
+
+  it("derives token metadata PDA without RPC", () => {
+    const pda = getTokenMetadataPda(mint);
+
+    expect(pda).toEqual(expect.any(String));
+    expect(getTokenMetadataPda("INVALID_MINT")).toBeNull();
+  });
+
+  it("parses Metaplex token metadata account data", () => {
+    const parsed = parseSolanaTokenMetadataAccount(
+      createMetadataAccountData({
+        metadataUri: "https://example.test/meta.json",
+        name: "Metadata Token",
+        symbol: "META"
+      })
+    );
+
+    expect(parsed?.name).toBe("Metadata Token");
+    expect(parsed?.symbol).toBe("META");
+    expect(parsed?.metadataUri).toBe("https://example.test/meta.json");
+  });
+
+  it("fetches and normalizes token metadata identity", async () => {
+    const client = new SolanaChainClient({
+      rpcClient: createRpcClient({
+        metadataAccountData: createMetadataAccountData({
+          metadataUri: "https://example.test/meta.json",
+          name: "Metadata Token",
+          symbol: "META"
+        })
+      }),
+      rpcHttpUrl: "http://localhost:8899"
+    });
+
+    const metadata = await client.fetchSolanaTokenMetadata(mint);
+    const identity = await client.resolveTokenIdentityFromSolana(mint);
+
+    expect(metadata.reasonCodes).toContain("TOKEN_METADATA_ACCOUNT_FOUND");
+    expect(metadata.name).toBe("Metadata Token");
+    expect(identity.name).toBe("Metadata Token");
+    expect(identity.symbol).toBe("META");
+    expect(identity.reasonCodes).toContain("IDENTITY_FROM_SOLANA_METADATA");
+  });
 });
 
 function createRpcClient(options: {
@@ -140,6 +185,7 @@ function createRpcClient(options: {
     decimals: number;
     uiAmount: number | null;
   }>;
+  metadataAccountData?: Buffer;
   mintAuthority?: string | null;
   supplyAmount?: string;
   tokenSupplyError?: Error;
@@ -148,23 +194,37 @@ function createRpcClient(options: {
   const supplyAmount = options.supplyAmount ?? "1000000000";
 
   return {
-    getParsedAccountInfo: vi.fn(async () => ({
-      value: {
-        data: {
-          program: "spl-token",
-          parsed: {
-            type: "mint",
-            info: {
-              decimals,
-              freezeAuthority: options.freezeAuthority ?? null,
-              mintAuthority: options.mintAuthority ?? null,
-              supply: supplyAmount
-            }
+    getParsedAccountInfo: vi.fn(async (publicKey: PublicKey) => {
+      if (
+        options.metadataAccountData &&
+        publicKey.toBase58() === getTokenMetadataPda(mint)
+      ) {
+        return {
+          value: {
+            data: options.metadataAccountData,
+            owner: new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s")
           }
-        },
-        owner: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+        };
       }
-    })),
+
+      return {
+        value: {
+          data: {
+            program: "spl-token",
+            parsed: {
+              type: "mint",
+              info: {
+                decimals,
+                freezeAuthority: options.freezeAuthority ?? null,
+                mintAuthority: options.mintAuthority ?? null,
+                supply: supplyAmount
+              }
+            }
+          },
+          owner: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+        }
+      };
+    }),
     getParsedTransaction: vi.fn(async () => null),
     getSignaturesForAddress: vi.fn(async () => []),
     getTokenLargestAccounts: vi.fn(async () => ({
@@ -189,4 +249,27 @@ function createRpcClient(options: {
       };
     })
   };
+}
+
+function createMetadataAccountData(input: {
+  metadataUri: string;
+  name: string;
+  symbol: string;
+}): Buffer {
+  return Buffer.concat([
+    Buffer.from([4]),
+    new PublicKey("11111111111111111111111111111111").toBuffer(),
+    new PublicKey(mint).toBuffer(),
+    encodeMetadataString(input.name),
+    encodeMetadataString(input.symbol),
+    encodeMetadataString(input.metadataUri),
+    Buffer.from([0, 0])
+  ]);
+}
+
+function encodeMetadataString(value: string): Buffer {
+  const bytes = Buffer.from(value, "utf8");
+  const length = Buffer.alloc(4);
+  length.writeUInt32LE(bytes.length, 0);
+  return Buffer.concat([length, bytes]);
 }

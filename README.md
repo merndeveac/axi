@@ -23,14 +23,20 @@ exists here yet.
 data feeds -> watch orchestration -> metrics -> risk -> candidates -> scoring -> API/WebSocket -> dashboard/overlay
 ```
 
-Default implementation uses `MockFeedProvider`. It emits safe fake token events
-for local development. A public PumpPortal feed provider is available behind
+Default runtime starts in `DATA_FEED=none` mode and does not generate fake
+tokens. If no real source is configured, the API and dashboard stay up and show
+`NO REAL FEED CONFIGURED`.
+
+`MockFeedProvider` remains available for tests and explicit local demos only.
+It requires `DATA_FEED=mock`, `ALLOW_MOCK_DATA=true`, and
+`MOCK_FEED_ENABLED=true`. A public PumpPortal feed provider is available behind
 `DATA_FEED=pumpportal` for new-token and migration events, plus opt-in metered
 `subscribeTokenTrade` ingestion for selected mints only.
 
-Signal and risk data can be fake, mock-generated, incomplete, normalized from
-read-only Solana observations, or normalized from explicitly enabled PumpPortal
-token trades. It remains paper-only.
+Signal, identity, and risk data can be missing, unresolved, incomplete,
+normalized from PumpPortal payloads, normalized from read-only Solana
+observations, enriched from optional off-chain metadata, or mock-generated only
+when mock mode is explicitly enabled. It remains paper-only.
 
 ## Local Persistence
 
@@ -41,7 +47,7 @@ Paper-mode development data is stored in a local SQLite database:
 ```
 
 The API initializes the database automatically, creates the current schema, and
-stores mock feed events, risk snapshots, candidate decisions, read-only chain
+stores feed events, risk snapshots, candidate decisions, read-only chain
 verifications, read-only watched-address chain events, market observations,
 watch plans/actions, overlay signals, paper orders, and paper positions. This
 database is local-only and is ignored by git.
@@ -50,7 +56,8 @@ Current persistence tables include `feed_events`, `signals`, `risk_snapshots`,
 `candidate_decisions`, `chain_verifications`, `chain_transaction_events`,
 `chain_trade_events`, `market_observations`, `watch_plans`, `watch_actions`,
 `pumpportal_token_trade_events`, `actual_data_subscriptions`,
-`actual_data_sessions`, `paper_orders`, and `paper_positions`.
+`actual_data_sessions`, `token_identities`, `token_metadata_fetches`,
+`paper_orders`, and `paper_positions`.
 
 Clear local paper data with:
 
@@ -237,6 +244,36 @@ inspects preserved raw PumpPortal payloads for likely mint, pool, and
 bonding-curve addresses. Wallet and program targets are skipped by default.
 Plans explain selected and skipped targets with reason codes.
 
+## Token Identity Normalization
+
+`@axi/token-identity` normalizes token names, symbols, titles, image URLs,
+metadata URIs, descriptions, socials, creators, source confidence, and
+unresolved reason codes. The API stores one current identity row per mint and a
+history of metadata fetch attempts in SQLite.
+
+Identity can come from PumpPortal payloads, read-only Solana metadata accounts,
+optional off-chain metadata JSON, or explicit mock data. Runtime mock identities
+are disabled unless mock mode is explicitly enabled. Solana metadata reads and
+off-chain metadata fetches are disabled by default except for on-demand local
+resolution when configured.
+
+Default token identity settings:
+
+```bash
+TOKEN_IDENTITY_SOLANA_METADATA_ENABLED=false
+TOKEN_IDENTITY_SOLANA_METADATA_ON_NEW_TOKEN=false
+TOKEN_IDENTITY_SOLANA_METADATA_ON_DEMAND=true
+TOKEN_IDENTITY_OFFCHAIN_FETCH_ENABLED=false
+TOKEN_IDENTITY_OFFCHAIN_TIMEOUT_MS=5000
+TOKEN_IDENTITY_OFFCHAIN_CACHE_TTL_MS=3600000
+TOKEN_IDENTITY_IPFS_GATEWAY=https://ipfs.io/ipfs/
+TOKEN_IDENTITY_MAX_METADATA_BYTES=262144
+```
+
+Token identity is surfaced through signals, candidates, metrics, actual-data
+views, watch plans, and the dashboard. Unresolved identities remain visible as
+mint-first rows instead of being replaced with fake names.
+
 ## Install
 
 ```bash
@@ -293,21 +330,31 @@ pnpm --filter @axi/api dev
 
 The API defaults to `http://localhost:8787`.
 
+By default, `DATA_FEED=none` is used and no fake/mock runtime tokens are
+generated. The API and dashboard stay running and report `NO REAL FEED
+CONFIGURED` until a real feed is configured or mock mode is explicitly enabled.
+
 Paper auto-ordering is disabled by default:
 
 ```bash
 PAPER_AUTO_ORDER=false pnpm --filter @axi/api dev
 ```
 
-Mock feed options can be set with environment variables:
+Mock runtime data requires an explicit three-part opt-in:
 
 ```bash
-MOCK_FEED_SEED=42 MOCK_FEED_SCENARIO=momentum pnpm --filter @axi/api dev
+DATA_FEED=mock \
+ALLOW_MOCK_DATA=true \
+MOCK_FEED_ENABLED=true \
+MOCK_FEED_SEED=42 \
+MOCK_FEED_SCENARIO=momentum \
+pnpm --filter @axi/api dev
 ```
 
 Supported mock scenarios are `normal`, `momentum`, `rug`, and `flat`. The same
 seed and scenario produce the same mock event sequence, which is useful for
-repeatable paper-mode tests.
+repeatable paper-mode tests. Mock runtime data is not enabled by seed or
+scenario variables alone.
 
 Public PumpPortal paper-feed mode can be started explicitly:
 
@@ -380,6 +427,11 @@ Endpoints:
 - `GET /risk/:mint`
 - `GET /metrics`
 - `GET /metrics/:mint`
+- `GET /tokens/status`
+- `GET /tokens`
+- `GET /tokens/unresolved`
+- `GET /tokens/:mint`
+- `POST /tokens/resolve`
 - `GET /positions`
 - `GET /storage/stats`
 - `GET /actual-data/status`
@@ -425,6 +477,13 @@ tracked.
 lifecycle and risk snapshots. The persisted history is available through SQLite
 and replay.
 
+`GET /tokens/status` reports token identity settings, cache counts, unresolved
+counts, metadata fetch counts, and `paperOnly: true`. `GET /tokens` returns
+stored normalized identities, `GET /tokens/unresolved` returns identities that
+still need real metadata, and `POST /tokens/resolve` accepts `{ "mint": "..." }`
+for one read-only on-demand identity resolution when the relevant sources are
+enabled.
+
 `GET /actual-data/status` reports the actual-data safety gates, provider
 compatibility, metered acknowledgement, API-key configured boolean, subscription
 counts, event budgets, and `paperOnly: true`. `POST /actual-data/subscribe`
@@ -453,7 +512,7 @@ does not trade, sign, or send transactions.
 
 ## Replay Local Data
 
-Replay persisted fake paper data from SQLite without starting the API,
+Replay persisted local paper data from SQLite without starting the API,
 dashboard, live trading, or external services:
 
 ```bash
@@ -472,11 +531,14 @@ pnpm --filter @axi/api replay -- --type pumpportal_token_trade_events --limit 25
 pnpm --filter @axi/api replay -- --type pumpportal_token_trade_events --metrics true --risk true --candidates true --limit 100 --speed 0
 pnpm --filter @axi/api replay -- --type actual_data_subscriptions --limit 25 --speed 0
 pnpm --filter @axi/api replay -- --type actual_data_sessions --limit 25 --speed 0
+pnpm --filter @axi/api replay -- --type token_identities --limit 25 --speed 0
+pnpm --filter @axi/api replay -- --type token_metadata_fetches --limit 25 --speed 0
 pnpm --filter @axi/api replay -- --type chain_trade_events --metrics true --risk true --candidates true --limit 100 --speed 0
 pnpm --filter @axi/api replay -- --type chain_trade_events --market true --metrics true --risk true --candidates true --limit 100 --speed 0
 pnpm --filter @axi/api replay -- --type chain_transaction_events --market true --limit 100 --speed 0
 pnpm --filter @axi/api replay -- --type watch_plans --limit 25 --speed 0
 pnpm --filter @axi/api replay -- --type watch_actions --limit 25 --speed 0
+pnpm --filter @axi/api replay -- --type feed_events --identity true --limit 100 --speed 0
 pnpm --filter @axi/api replay -- --type feed_events --watch true --limit 100 --speed 0
 pnpm --filter @axi/api replay -- --type feed_events --chain false
 ```
@@ -488,6 +550,18 @@ includes the metrics snapshot after that event when available. With
 `--risk true` and `--candidates true`, feed events are replayed through the
 local risk and candidate lifecycle engines and each JSON line includes those
 snapshots when available.
+
+Normalize token identity locally from CLI inputs without starting the API or
+persistence:
+
+```bash
+pnpm --filter @axi/api tokens:resolve -- --mint <MINT>
+pnpm --filter @axi/api tokens:normalize -- --file ./fixtures/pumpportal-token.json
+```
+
+`tokens:resolve` validates malformed mints before creating any RPC client.
+`tokens:normalize` reads a local PumpPortal-style JSON file only. Neither command
+loads wallets, signs, sends transactions, buys, or sells.
 
 Run one read-only chain verification from the CLI without persistence:
 
@@ -597,6 +671,8 @@ docker compose --profile infra up -d
 - `@axi/scoring`: pure scoring functions and unit tests.
 - `@axi/data-feeds`: feed interfaces plus mock and PumpPortal feed providers,
   including gated token-trade subscription helpers.
+- `@axi/token-identity`: local token identity normalization and source
+  confidence helpers.
 - `@axi/execution`: in-memory paper execution only.
 - `@axi/metrics`: local rolling-window metrics for paper-mode signal features.
 - `@axi/risk`: pure local risk/scam-filter snapshots and reason codes.
@@ -636,6 +712,8 @@ docker compose --profile infra up -d
   refinement.
 - `dev/actual-data-pumpportal-trades` contains opt-in PumpPortal token-trade
   ingestion for selected mints.
+- `dev/real-token-identity-normalization` contains no-mock default runtime data
+  gates and token identity normalization.
 
 Direct Solana RPC verification and watched-address transaction ingestion exist,
 and local market-data normalization and watch orchestration exist, but they are

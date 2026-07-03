@@ -83,6 +83,16 @@ export const TokenCandidateSchema = z.object({
   mint: z.string().min(32),
   symbol: z.string().min(1).max(24),
   name: z.string().min(1).max(96),
+  title: z.string().min(1).optional(),
+  displayName: z.string().min(1).optional(),
+  metadataUri: z.string().nullable().optional(),
+  imageUri: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
+  website: z.string().nullable().optional(),
+  twitter: z.string().nullable().optional(),
+  telegram: z.string().nullable().optional(),
+  discord: z.string().nullable().optional(),
+  creator: z.string().nullable().optional(),
   source: z.string().min(1),
   ageSeconds: z.number().nonnegative(),
   firstSeenAt: z.string().datetime()
@@ -161,6 +171,56 @@ export const ActualDataSummarySchema = z.object({
   paperOnly: z.literal(true)
 });
 export type ActualDataSummary = z.infer<typeof ActualDataSummarySchema>;
+
+export const TokenIdentityDataSourceSchema = z.enum([
+  "pumpportal",
+  "solana_metadata",
+  "offchain_metadata",
+  "dexscreener",
+  "jupiter_price",
+  "manual",
+  "mock",
+  "unknown"
+]);
+export type TokenIdentityDataSource = z.infer<
+  typeof TokenIdentityDataSourceSchema
+>;
+
+export const TokenIdentityConfidenceSchema = z.enum([
+  "none",
+  "low",
+  "medium",
+  "high"
+]);
+export type TokenIdentityConfidence = z.infer<
+  typeof TokenIdentityConfidenceSchema
+>;
+
+export const TokenIdentitySummarySchema = z.object({
+  mint: z.string().min(1),
+  name: z.string().nullable(),
+  symbol: z.string().nullable(),
+  title: z.string().min(1),
+  displayName: z.string().min(1),
+  metadataUri: z.string().nullable(),
+  imageUri: z.string().nullable(),
+  description: z.string().nullable(),
+  website: z.string().nullable(),
+  twitter: z.string().nullable(),
+  telegram: z.string().nullable(),
+  discord: z.string().nullable(),
+  creator: z.string().nullable(),
+  confidence: TokenIdentityConfidenceSchema,
+  completenessScore: z.number().min(0).max(100),
+  realData: z.boolean(),
+  dataSource: TokenIdentityDataSourceSchema,
+  resolved: z.boolean(),
+  reasonCodes: z.array(z.string().min(1)),
+  sourcePriority: z.array(z.string().min(1)),
+  firstSeenAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+});
+export type TokenIdentitySummary = z.infer<typeof TokenIdentitySummarySchema>;
 
 export const RollingMetricsSchema = z.object({
   priceUsd: z.number().nonnegative(),
@@ -412,6 +472,14 @@ export const CandidateDecisionSchema = z.object({
   mint: z.string().min(32),
   symbol: z.string().min(1).optional(),
   name: z.string().min(1).optional(),
+  title: z.string().min(1).optional(),
+  displayName: z.string().min(1).optional(),
+  imageUri: z.string().nullable().optional(),
+  identity: TokenIdentitySummarySchema.optional(),
+  identityConfidence: TokenIdentityConfidenceSchema.optional(),
+  identityResolved: z.boolean().optional(),
+  identityReasonCodes: z.array(z.string().min(1)).optional(),
+  identitySource: TokenIdentityDataSourceSchema.optional(),
   source: z.string().min(1).optional(),
   lifecycleState: CandidateLifecycleStateSchema,
   action: CandidateDecisionActionSchema,
@@ -445,6 +513,15 @@ export type CandidateDecision = z.infer<typeof CandidateDecisionSchema>;
 export const OverlaySignalSchema = z.object({
   mint: z.string().min(32),
   symbol: z.string().min(1),
+  name: z.string().min(1).optional(),
+  title: z.string().min(1).optional(),
+  displayName: z.string().min(1).optional(),
+  imageUri: z.string().nullable().optional(),
+  identity: TokenIdentitySummarySchema.optional(),
+  identityConfidence: TokenIdentityConfidenceSchema.optional(),
+  identityResolved: z.boolean().optional(),
+  identityReasonCodes: z.array(z.string().min(1)).optional(),
+  identitySource: TokenIdentityDataSourceSchema.optional(),
   score: z.number().min(0).max(100),
   action: SignalActionSchema,
   hardReject: z.boolean(),

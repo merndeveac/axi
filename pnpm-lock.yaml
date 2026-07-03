@@ -86,6 +86,9 @@ importers:
       '@axi/storage':
         specifier: workspace:*
         version: link:../../packages/storage
+      '@axi/token-identity':
+        specifier: workspace:*
+        version: link:../../packages/token-identity
       '@axi/watch-orchestrator':
         specifier: workspace:*
         version: link:../../packages/watch-orchestrator
@@ -185,6 +188,9 @@ importers:
       '@axi/risk':
         specifier: workspace:*
         version: link:../risk
+      '@axi/token-identity':
+        specifier: workspace:*
+        version: link:../token-identity
       '@solana/spl-token':
         specifier: ^0.4.9
         version: 0.4.14(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)
@@ -206,12 +212,17 @@ importers:
       '@axi/shared':
         specifier: workspace:*
         version: link:../shared
+      '@axi/token-identity':
+        specifier: workspace:*
+        version: link:../token-identity
       '@axi/watch-orchestrator':
         specifier: workspace:*
         version: link:../watch-orchestrator
       zod:
         specifier: ^3.25.0
         version: 3.25.76
+
+  packages/token-identity: {}
 
   packages/watch-orchestrator:
     dependencies:

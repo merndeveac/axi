@@ -29,6 +29,10 @@ import type {
   RollingMetricsSnapshot,
   TokenCandidate
 } from "@axi/shared";
+import {
+  normalizePumpPortalIdentity,
+  type TokenIdentity
+} from "@axi/token-identity";
 
 type ReplayArgs = {
   db?: string;
@@ -37,6 +41,7 @@ type ReplayArgs = {
   limit: number;
   market: boolean;
   metrics: boolean;
+  identity: boolean;
   risk: boolean;
   speed: number;
   type: ReplaySource;
@@ -103,6 +108,11 @@ try {
       args.watch && replayFeedEvent && item.source === "feed_events"
         ? createReplayWatchPlan(replayFeedEvent)
         : undefined;
+    const identity = args.identity
+      ? getReplayIdentity(item.source, item.payload, replayFeedEvent)
+      : item.source === "token_identities"
+        ? item.payload
+        : undefined;
 
     console.log(
       JSON.stringify({
@@ -120,6 +130,7 @@ try {
           args.market || item.source === "market_observations"
             ? marketObservation
             : undefined,
+        identity,
         metrics: args.metrics ? metrics : undefined,
         payload: item.payload,
         riskSnapshot: args.risk ? replayEvaluation.riskSnapshot : undefined,
@@ -144,6 +155,7 @@ function parseArgs(argv: string[]): ReplayArgs {
     limit: 50,
     market: false,
     metrics: false,
+    identity: false,
     risk: false,
     speed: 0,
     type: "feed_events",
@@ -183,6 +195,12 @@ function parseArgs(argv: string[]): ReplayArgs {
       continue;
     }
 
+    if (arg === "--identity") {
+      parsed.identity = parseBoolean(readValue(argv, index, arg), arg);
+      index += 1;
+      continue;
+    }
+
     if (arg === "--risk") {
       parsed.risk = parseBoolean(readValue(argv, index, arg), arg);
       index += 1;
@@ -212,7 +230,7 @@ function parseArgs(argv: string[]): ReplayArgs {
 
       if (!isReplaySource(type)) {
         throw new Error(
-          "--type must be actual_data_sessions, actual_data_subscriptions, candidate_decisions, chain_transaction_events, chain_trade_events, chain_verifications, feed_events, market_observations, pumpportal_token_trade_events, risk_snapshots, signals, watch_actions, or watch_plans"
+          "--type must be actual_data_sessions, actual_data_subscriptions, candidate_decisions, chain_transaction_events, chain_trade_events, chain_verifications, feed_events, market_observations, pumpportal_token_trade_events, risk_snapshots, signals, token_identities, token_metadata_fetches, watch_actions, or watch_plans"
         );
       }
 
@@ -272,11 +290,33 @@ function isReplaySource(value: string): value is ReplaySource {
     value === "feed_events" ||
     value === "market_observations" ||
     value === "pumpportal_token_trade_events" ||
+    value === "token_identities" ||
+    value === "token_metadata_fetches" ||
     value === "watch_actions" ||
     value === "watch_plans" ||
     value === "risk_snapshots" ||
     value === "signals"
   );
+}
+
+function getReplayIdentity(
+  source: ReplaySource,
+  payload: unknown,
+  feedEvent: FeedEvent | undefined
+): TokenIdentity | unknown {
+  if (source === "token_identities") {
+    return payload;
+  }
+
+  if (feedEvent) {
+    return normalizePumpPortalIdentity(feedEvent);
+  }
+
+  if (source === "feed_events" && isFeedEvent(payload)) {
+    return normalizePumpPortalIdentity(payload);
+  }
+
+  return undefined;
 }
 
 function createReplayWatchPlan(event: FeedEvent): CandidateWatchPlan {

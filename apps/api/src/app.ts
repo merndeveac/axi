@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   MockFeedProvider,
   PumpPortalFeedProvider,
+  isValidSolanaMint,
   type FeedEvent,
   type MockFeedProviderOptions,
   type PumpPortalFeedProviderOptions,
@@ -33,6 +34,7 @@ import {
   type RollingMetricsSnapshot,
   type ScoreBreakdown,
   type SignalState,
+  type TokenIdentitySummary,
   type TokenCandidate
 } from "@axi/shared";
 import {
@@ -53,6 +55,8 @@ import {
   listActualDataSubscriptions,
   listPumpPortalTokenTradeEvents,
   listPumpPortalTokenTradeEventsByMint,
+  listTokenIdentities,
+  listUnresolvedTokenIdentities,
   type StorageHandle,
   upsertPaperPosition
 } from "@axi/storage";
@@ -84,6 +88,13 @@ import {
   type ActualDataService,
   type ActualDataServiceConfig
 } from "./actual-data-service";
+import {
+  createTokenIdentityConfig,
+  createTokenIdentityService,
+  toTokenIdentitySummary,
+  type TokenIdentityService,
+  type TokenIdentityServiceConfig
+} from "./token-identity-service";
 
 const logLevelSchema = z.enum([
   "fatal",
@@ -98,7 +109,16 @@ const logLevelSchema = z.enum([
 export const apiConfigSchema = z.object({
   NODE_ENV: z.string().default("development"),
   BOT_MODE: BotModeSchema.default("paper"),
-  DATA_FEED: z.enum(["mock", "pumpportal"]).default("mock"),
+  DATA_FEED: z.enum(["none", "mock", "pumpportal"]).default("none"),
+  ALLOW_MOCK_DATA: z.preprocess(parseBooleanEnv, z.boolean()).default(false),
+  MOCK_FEED_ENABLED: z.preprocess(parseBooleanEnv, z.boolean()).default(false),
+  MOCK_FEED_REQUIRE_EXPLICIT_ENABLE: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  REAL_DATA_REQUIRED: z.preprocess(parseBooleanEnv, z.boolean()).default(false),
+  FAIL_IF_NO_REAL_DATA: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
   PAPER_AUTO_ORDER: z.preprocess(parseBooleanEnv, z.boolean()).default(false),
   CHAIN_VERIFIER_ENABLED: z
     .preprocess(parseBooleanEnv, z.boolean())
@@ -269,6 +289,38 @@ export const apiConfigSchema = z.object({
   PUMPPORTAL_TOKEN_TRADES_REQUIRE_API_KEY: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(true),
+  TOKEN_IDENTITY_SOLANA_METADATA_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  TOKEN_IDENTITY_SOLANA_METADATA_ON_NEW_TOKEN: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  TOKEN_IDENTITY_SOLANA_METADATA_ON_DEMAND: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  TOKEN_IDENTITY_OFFCHAIN_FETCH_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  TOKEN_IDENTITY_OFFCHAIN_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(5000),
+  TOKEN_IDENTITY_OFFCHAIN_CACHE_TTL_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(3600000),
+  TOKEN_IDENTITY_IPFS_GATEWAY: z
+    .preprocess(
+      (value) => (value === "" ? undefined : value),
+      z.string().url().default("https://ipfs.io/ipfs/")
+    ),
+  TOKEN_IDENTITY_MAX_METADATA_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(262144),
   LOG_LEVEL: logLevelSchema.default("info")
 });
 
@@ -279,19 +331,25 @@ export type ApiServerOptions = {
   chainEvents?: ChainEventsServiceOptions;
   closeStorageOnClose?: boolean;
   chainVerifier?: ChainVerifierOptions;
-  dataFeed?: "mock" | "pumpportal";
+  allowMockData?: boolean;
+  failIfNoRealData?: boolean;
+  dataFeed?: "none" | "mock" | "pumpportal";
   feedProvider?: TokenFeedProvider;
   host?: string;
   logLevel?: ApiLogLevel | false;
   mockFeed?: MockFeedProviderOptions | undefined;
   mode?: BotMode;
   paperAutoOrder?: boolean;
+  mockFeedEnabled?: boolean;
+  mockFeedRequireExplicitEnable?: boolean;
   port?: number;
   pumpPortal?: PumpPortalFeedProviderOptions | undefined;
   actualData?: ActualDataServiceConfig;
+  realDataRequired?: boolean;
   signalIntervalMs?: number;
   startFeed?: boolean;
   storageDatabasePath?: string;
+  tokenIdentity?: TokenIdentityServiceConfig;
   watchOrchestrator?: WatchOrchestratorOptions;
 };
 
@@ -311,6 +369,7 @@ export type ApiServer = {
   chainVerifier: ChainVerifierService;
   watchOrchestration: WatchOrchestrationService;
   actualData: ActualDataService;
+  tokenIdentity: TokenIdentityService;
 };
 
 const limitQuerySchema = z.object({
@@ -345,6 +404,9 @@ const actualDataSubscribeBodySchema = z.object({
   mint: z.string().min(1),
   reason: z.string().min(1).default("manual")
 });
+const tokenResolveBodySchema = z.object({
+  mint: z.string().min(1)
+});
 
 export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   return apiConfigSchema.parse(env);
@@ -369,11 +431,25 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const feed =
     options.feedProvider ??
     createFeedProvider({
-      dataFeed: options.dataFeed ?? "mock",
+      allowMockData: options.allowMockData ?? false,
+      dataFeed: options.dataFeed ?? "none",
+      mockFeedEnabled: options.mockFeedEnabled ?? false,
+      mockFeedRequireExplicitEnable:
+        options.mockFeedRequireExplicitEnable ?? true,
       mockFeed: options.mockFeed,
       pumpPortal: options.pumpPortal,
       signalIntervalMs: options.signalIntervalMs ?? 2000
     });
+
+  if (
+    (options.failIfNoRealData ?? false) &&
+    feed.name !== "pumpportal"
+  ) {
+    throw new Error(
+      "No real data feed is configured. Set DATA_FEED=pumpportal or disable FAIL_IF_NO_REAL_DATA."
+    );
+  }
+
   const executor = new PaperTradeExecutor(mode);
   const metricsEngine = createRollingMetricsEngine();
   const riskEngine = createRiskEngine();
@@ -394,6 +470,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const storage = options.storageDatabasePath
     ? initStorage({ databasePath: options.storageDatabasePath })
     : initStorage();
+  const tokenIdentity = createTokenIdentityService({
+    config: options.tokenIdentity ?? createTokenIdentityConfig(),
+    logger: {
+      warn: (message, context) => {
+        app.log.warn(context ?? {}, message);
+      }
+    }
+  });
   const watchOrchestration = createWatchOrchestrationService({
     ...(options.watchOrchestrator ?? {}),
     chainEvents,
@@ -448,12 +532,30 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       actualData: actualData.getStatus(),
       actualDataSessionCount: stats.actualDataSessionCount,
       actualDataSubscriptionCount: stats.actualDataSubscriptionCount,
+      dataFeed: options.dataFeed ?? "none",
+      dataFeedReasonCodes:
+        feed instanceof NoFeedProvider ? feed.reasonCodes : [],
       feedProvider: feed.name,
+      mockFeedEnabled: feed.name === "mock",
+      mockFeedBlocked: feed.name === "mock-blocked",
+      realDataConfigured: (options.dataFeed ?? "none") === "pumpportal",
+      realDataActive: feed.name === "pumpportal",
+      realDataRequired: options.realDataRequired ?? false,
+      noFeedMode: feed.name === "none" || feed.name === "mock-blocked",
+      noRealFeedMessage:
+        feed.name === "none" || feed.name === "mock-blocked"
+          ? "NO REAL FEED CONFIGURED"
+          : undefined,
       marketData: marketStatus,
       marketDataEnabled: marketStatus.enabled,
       marketDataMinConfidence: marketStatus.minConfidenceForMetrics,
       marketObservationCount: stats.marketObservationCount,
       pumpPortalTokenTradeEventCount: stats.pumpPortalTokenTradeEventCount,
+      tokenIdentity: tokenIdentity.getStatus(),
+      tokenIdentityCount: stats.tokenIdentityCount,
+      tokenIdentityResolvedCount: stats.tokenIdentityResolvedCount,
+      tokenIdentityUnresolvedCount: stats.tokenIdentityUnresolvedCount,
+      tokenMetadataFetchCount: stats.tokenMetadataFetchCount,
       watchOrchestrator: watchStatus,
       watchOrchestratorEnabled: watchStatus.enabled,
       watchPlanCount: stats.watchPlanCount,
@@ -474,7 +576,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   app.get("/signals", async () => Array.from(signals.values()));
 
-  app.get("/metrics", async () => metricsEngine.getAllMetrics());
+  app.get("/metrics", async () =>
+    metricsEngine.getAllMetrics().map(enrichMetricsWithIdentity)
+  );
 
   app.get("/metrics/:mint", async (request, reply) => {
     const params = mintParamSchema.parse(request.params);
@@ -487,11 +591,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       });
     }
 
-    return metrics;
+    return enrichMetricsWithIdentity(metrics);
   });
 
   app.get("/candidates", async () =>
-    candidateEngine.getAllCandidates().map(enrichCandidateWithActualData)
+    candidateEngine.getAllCandidates().map(enrichCandidate)
   );
 
   app.get("/candidates/:mint", async (request, reply) => {
@@ -505,7 +609,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       });
     }
 
-    return enrichCandidateWithActualData(candidate);
+    return enrichCandidate(candidate);
   });
 
   app.get("/risk", async () => Array.from(riskSnapshots.values()));
@@ -527,6 +631,55 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   app.get("/positions", async () => executor.getPositions());
 
   app.get("/storage/stats", async () => getStorageStats());
+
+  app.get("/tokens/status", async () => tokenIdentity.getStatus());
+
+  app.get("/tokens", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return listTokenIdentities(query.limit);
+  });
+
+  app.get("/tokens/unresolved", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return listUnresolvedTokenIdentities(query.limit);
+  });
+
+  app.get("/tokens/:mint", async (request, reply) => {
+    const params = mintParamSchema.parse(request.params);
+    const identity = tokenIdentity.getIdentity(params.mint);
+
+    if (!identity) {
+      return reply.code(404).send({
+        error: "not_found",
+        message: `No token identity tracked for mint ${params.mint}`
+      });
+    }
+
+    return identity;
+  });
+
+  app.post("/tokens/resolve", async (request, reply) => {
+    const body = tokenResolveBodySchema.parse(request.body);
+
+    if (!isValidSolanaMint(body.mint)) {
+      return reply.code(400).send({
+        error: "INVALID_MINT",
+        message: `Invalid Solana mint: ${body.mint}`,
+        paperOnly: true
+      });
+    }
+
+    try {
+      return await tokenIdentity.resolveIdentity(body.mint, "manual_http");
+    } catch (error) {
+      return reply.code(400).send({
+        error: "TOKEN_IDENTITY_RESOLVE_FAILED",
+        message: error instanceof Error ? error.message : String(error),
+        tokenIdentity: tokenIdentity.getStatus(),
+        paperOnly: true
+      });
+    }
+  });
 
   app.get("/actual-data/status", async () => actualData.getStatus());
 
@@ -570,13 +723,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   app.get("/actual-data/trades", async (request) => {
     const query = limitQuerySchema.parse(request.query);
-    return listPumpPortalTokenTradeEvents(query.limit);
+    return listPumpPortalTokenTradeEvents(query.limit).map(enrichRowWithIdentity);
   });
 
   app.get("/actual-data/trades/:mint", async (request) => {
     const params = mintParamSchema.parse(request.params);
     const query = limitQuerySchema.parse(request.query);
-    return listPumpPortalTokenTradeEventsByMint(params.mint, query.limit);
+    return listPumpPortalTokenTradeEventsByMint(params.mint, query.limit).map(
+      enrichRowWithIdentity
+    );
   });
 
   app.get("/chain/status", async () => chainVerifier.getStatus());
@@ -720,7 +875,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   app.get("/watch/plans", async (request) => {
     const query = limitQuerySchema.parse(request.query);
-    return watchOrchestration.getWatchPlans(query.limit);
+    return watchOrchestration.getWatchPlans(query.limit).map(enrichRowWithIdentity);
   });
 
   app.get("/watch/plans/:mint", async (request, reply) => {
@@ -734,7 +889,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       });
     }
 
-    return plan;
+    return enrichRowWithIdentity(plan);
   });
 
   app.get("/watch/actions", async (request) => {
@@ -833,10 +988,17 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       event.type === "trade" && event.source === "pumpportal"
         ? actualData.handlePumpPortalTradeEvent(event)
         : undefined;
+    const identity = tokenIdentity.ingestFeedEvent(event);
+    const identitySummary = toTokenIdentitySummary(identity);
 
     saveFeedEvent(event);
     const rollingMetrics = metricsEngine.ingestFeedEvent(event);
-    const candidate = candidateEngine.ingestFeedEvent(event);
+    const ingestedCandidate = candidateEngine.ingestFeedEvent(event);
+    const candidate =
+      candidateEngine.updateTokenIdentity(
+        ingestedCandidate.mint,
+        identitySummary
+      ) ?? ingestedCandidate;
     const watchPlan = watchOrchestration.handleFeedEvent(event, {
       mint: candidate.mint,
       ...(candidate.symbol ? { symbol: candidate.symbol } : {}),
@@ -1108,6 +1270,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     rollingMetrics: RollingMetricsSnapshot | undefined;
     score: ScoreBreakdown;
   }): OverlaySignal {
+    const identity =
+      options.candidate.identity ??
+      getTokenIdentitySummary(options.candidate.mint);
     const state: SignalState = {
       candidate: createTokenCandidateFromState(options.candidate),
       metrics: options.metrics,
@@ -1122,7 +1287,28 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
     const signal: OverlaySignal = {
       mint: options.candidate.mint,
-      symbol: options.candidate.symbol ?? "UNKNOWN",
+      symbol: identity?.symbol ?? options.candidate.symbol ?? "UNKNOWN",
+      ...(identity?.name ? { name: identity.name } : options.candidate.name ? { name: options.candidate.name } : {}),
+      ...(identity?.title ? { title: identity.title } : options.candidate.title ? { title: options.candidate.title } : {}),
+      ...(identity?.displayName
+        ? { displayName: identity.displayName }
+        : options.candidate.displayName
+          ? { displayName: options.candidate.displayName }
+          : {}),
+      ...(identity?.imageUri !== undefined
+        ? { imageUri: identity.imageUri }
+        : options.candidate.imageUri !== undefined
+          ? { imageUri: options.candidate.imageUri }
+          : {}),
+      ...(identity
+        ? {
+            identity,
+            identityConfidence: identity.confidence,
+            identityResolved: identity.resolved,
+            identityReasonCodes: identity.reasonCodes,
+            identitySource: identity.dataSource
+          }
+        : {}),
       score: options.decision.score,
       action: signalActionFromDecision(options.decision),
       hardReject: options.decision.hardReject,
@@ -1303,17 +1489,53 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     }
   }
 
-  function enrichCandidateWithActualData(candidate: CandidateState):
+  function enrichCandidate(candidate: CandidateState):
     | CandidateState
-    | (CandidateState & { actualData: ActualDataCandidateSummary }) {
+    | (CandidateState & {
+        actualData?: ActualDataCandidateSummary;
+        identity?: TokenIdentitySummary;
+      }) {
     const actualDataSummary = actualData.getCandidateSummary(candidate.mint);
+    const identity = candidate.identity ?? getTokenIdentitySummary(candidate.mint);
 
-    return actualDataSummary
+    return {
+      ...candidate,
+      ...(actualDataSummary ? { actualData: actualDataSummary } : {}),
+      ...(identity ? { identity } : {})
+    };
+  }
+
+  function enrichMetricsWithIdentity<T extends { mint: string }>(
+    metrics: T
+  ): T & { identity?: TokenIdentitySummary } {
+    const identity = getTokenIdentitySummary(metrics.mint);
+
+    return identity
       ? {
-          ...candidate,
-          actualData: actualDataSummary
+          ...metrics,
+          identity
         }
-      : candidate;
+      : metrics;
+  }
+
+  function enrichRowWithIdentity<T extends { mint: string }>(
+    row: T
+  ): T & { identity?: TokenIdentitySummary } {
+    const identity = getTokenIdentitySummary(row.mint);
+
+    return identity
+      ? {
+          ...row,
+          identity
+        }
+      : row;
+  }
+
+  function getTokenIdentitySummary(
+    mint: string
+  ): TokenIdentitySummary | undefined {
+    const identity = tokenIdentity.getIdentity(mint);
+    return identity ? toTokenIdentitySummary(identity) : undefined;
   }
 
   function sendJson(socket: WebSocket, payload: unknown): void {
@@ -1341,7 +1563,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     watchOrchestration,
     startFeed,
     stopFeed,
-    storage
+    storage,
+    tokenIdentity
   };
 }
 
@@ -1428,7 +1651,19 @@ function createTokenCandidateFromState(state: CandidateState): TokenCandidate {
     name: state.name ?? state.symbol ?? "Unknown Token",
     source: state.source ?? "unknown",
     ageSeconds: state.ageSeconds,
-    firstSeenAt: state.firstSeenAt
+    firstSeenAt: state.firstSeenAt,
+    ...(state.title ? { title: state.title } : {}),
+    ...(state.displayName ? { displayName: state.displayName } : {}),
+    ...(state.metadataUri !== undefined ? { metadataUri: state.metadataUri } : {}),
+    ...(state.imageUri !== undefined ? { imageUri: state.imageUri } : {}),
+    ...(state.description !== undefined
+      ? { description: state.description }
+      : {}),
+    ...(state.website !== undefined ? { website: state.website } : {}),
+    ...(state.twitter !== undefined ? { twitter: state.twitter } : {}),
+    ...(state.telegram !== undefined ? { telegram: state.telegram } : {}),
+    ...(state.discord !== undefined ? { discord: state.discord } : {}),
+    ...(state.creator !== undefined ? { creator: state.creator } : {})
   };
 }
 
@@ -1777,7 +2012,10 @@ function mergeRollingIntoLegacyMetrics(
 }
 
 function createFeedProvider(options: {
-  dataFeed: "mock" | "pumpportal";
+  allowMockData: boolean;
+  dataFeed: "none" | "mock" | "pumpportal";
+  mockFeedEnabled: boolean;
+  mockFeedRequireExplicitEnable: boolean;
   mockFeed?: MockFeedProviderOptions | undefined;
   pumpPortal?: PumpPortalFeedProviderOptions | undefined;
   signalIntervalMs: number;
@@ -1786,10 +2024,43 @@ function createFeedProvider(options: {
     return new PumpPortalFeedProvider(options.pumpPortal);
   }
 
+  if (options.dataFeed === "none") {
+    return new NoFeedProvider("none", ["NO_REAL_FEED_CONFIGURED"]);
+  }
+
+  if (
+    options.mockFeedRequireExplicitEnable &&
+    (!options.allowMockData || !options.mockFeedEnabled)
+  ) {
+    return new NoFeedProvider("mock-blocked", [
+      "MOCK_FEED_BLOCKED_NOT_EXPLICITLY_ALLOWED",
+      "NO_REAL_FEED_CONFIGURED"
+    ]);
+  }
+
   return new MockFeedProvider({
     intervalMs: options.signalIntervalMs,
     ...options.mockFeed
   });
+}
+
+class NoFeedProvider implements TokenFeedProvider {
+  readonly reasonCodes: string[];
+
+  constructor(
+    readonly name: "none" | "mock-blocked",
+    reasonCodes: string[]
+  ) {
+    this.reasonCodes = reasonCodes;
+  }
+
+  start(): void {
+    // Intentionally empty: no-feed mode keeps the API alive without fake data.
+  }
+
+  stop(): void {
+    // Intentionally empty.
+  }
 }
 
 function parseBooleanEnv(value: unknown): boolean | undefined {

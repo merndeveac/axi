@@ -29,6 +29,13 @@ export type TokenTradeEvent = NormalizedFeedMetadata & {
   mint: string;
   symbol?: string;
   name?: string;
+  metadataUri?: string;
+  imageUri?: string;
+  description?: string;
+  website?: string;
+  twitter?: string;
+  telegram?: string;
+  discord?: string;
   side: "buy" | "sell" | "unknown";
   priceUsd: number | null;
   volumeUsd: number | null;
@@ -853,6 +860,23 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     const rawSourceEventType = inferPumpPortalEventType(payload);
     const symbol = readString(payload, ["symbol", "ticker"]) ?? "UNKNOWN";
     const name = readString(payload, ["name", "tokenName"]) ?? symbol;
+    const metadataUri = readString(payload, [
+      "metadataUri",
+      "metadata_uri",
+      "uri",
+      "metadata"
+    ]);
+    const imageUri = readString(payload, [
+      "imageUri",
+      "image_uri",
+      "image",
+      "logo"
+    ]);
+    const description = readString(payload, ["description", "desc"]);
+    const website = readString(payload, ["website", "external_url", "url"]);
+    const twitter = readString(payload, ["twitter", "x"]);
+    const telegram = readString(payload, ["telegram"]);
+    const discord = readString(payload, ["discord"]);
     const creator = readString(payload, [
       "creator",
       "traderPublicKey",
@@ -882,6 +906,14 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
         mint,
         symbol,
         name,
+        ...(metadataUri ? { metadataUri } : {}),
+        ...(imageUri ? { imageUri } : {}),
+        ...(description ? { description } : {}),
+        ...(website ? { website } : {}),
+        ...(twitter ? { twitter } : {}),
+        ...(telegram ? { telegram } : {}),
+        ...(discord ? { discord } : {}),
+        ...(creator ? { creator } : {}),
         source: "pumpportal",
         ageSeconds: 0,
         firstSeenAt: timestamp
@@ -1066,6 +1098,24 @@ export function normalizePumpPortalTokenTradePayload(
   ]);
   const trader = readString(payload, ["traderPublicKey", "trader", "user"]);
   const symbol = readString(payload, ["symbol", "ticker"]);
+  const name = readString(payload, ["name", "tokenName"]);
+  const metadataUri = readString(payload, [
+    "metadataUri",
+    "metadata_uri",
+    "uri",
+    "metadata"
+  ]);
+  const imageUri = readString(payload, [
+    "imageUri",
+    "image_uri",
+    "image",
+    "logo"
+  ]);
+  const description = readString(payload, ["description", "desc"]);
+  const website = readString(payload, ["website", "external_url", "url"]);
+  const twitter = readString(payload, ["twitter", "x"]);
+  const telegram = readString(payload, ["telegram"]);
+  const discord = readString(payload, ["discord"]);
   const metrics = createPumpPortalTradeMetrics({
     priceSol,
     reasonCodes,
@@ -1129,6 +1179,38 @@ export function normalizePumpPortalTokenTradePayload(
 
   if (symbol) {
     event.symbol = symbol;
+  }
+
+  if (name) {
+    event.name = name;
+  }
+
+  if (metadataUri) {
+    event.metadataUri = metadataUri;
+  }
+
+  if (imageUri) {
+    event.imageUri = imageUri;
+  }
+
+  if (description) {
+    event.description = description;
+  }
+
+  if (website) {
+    event.website = website;
+  }
+
+  if (twitter) {
+    event.twitter = twitter;
+  }
+
+  if (telegram) {
+    event.telegram = telegram;
+  }
+
+  if (discord) {
+    event.discord = discord;
   }
 
   if (bondingCurve) {

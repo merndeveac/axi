@@ -304,27 +304,31 @@ h1 {
 }
 
 .candidate-region {
-  order: 4;
-}
-
-.signal-region {
   order: 5;
 }
 
-.watch-region {
+.signal-region {
   order: 6;
 }
 
-.chain-events-region {
+.watch-region {
   order: 7;
 }
 
-.market-region {
+.chain-events-region {
   order: 8;
+}
+
+.market-region {
+  order: 9;
 }
 
 .actual-data-region {
   order: 3;
+}
+
+.token-region {
+  order: 4;
 }
 
 .table-heading {
@@ -465,6 +469,30 @@ tr:last-child td {
 .reason-more,
 .target-more {
   color: var(--green);
+}
+
+.token-cell {
+  display: inline-grid;
+  gap: 2px;
+  min-width: 140px;
+}
+
+.token-title {
+  color: var(--text);
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.token-mint,
+.token-unresolved {
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.2;
+}
+
+.token-unresolved {
+  color: var(--amber);
+  text-transform: uppercase;
 }
 
 .empty-state {

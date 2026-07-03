@@ -5,6 +5,7 @@ import type {
   PumpPortalFeedProviderOptions
 } from "@axi/data-feeds";
 import { createActualDataConfig, parseManualMints } from "./actual-data-service";
+import { createTokenIdentityConfig } from "./token-identity-service";
 
 const config = loadApiConfig();
 const mockFeed: MockFeedProviderOptions = {
@@ -84,10 +85,27 @@ const options: ApiServerOptions = {
     unsubscribeAfterMs:
       config.PUMPPORTAL_TOKEN_TRADES_UNSUBSCRIBE_AFTER_MS
   }),
+  allowMockData: config.ALLOW_MOCK_DATA,
+  failIfNoRealData: config.FAIL_IF_NO_REAL_DATA,
+  mockFeedEnabled: config.MOCK_FEED_ENABLED,
+  mockFeedRequireExplicitEnable: config.MOCK_FEED_REQUIRE_EXPLICIT_ENABLE,
   pumpPortal,
   port: config.API_PORT,
+  realDataRequired: config.REAL_DATA_REQUIRED,
   signalIntervalMs: config.SIGNAL_INTERVAL_MS
 };
+
+options.tokenIdentity = createTokenIdentityConfig({
+  solanaMetadataEnabled: config.TOKEN_IDENTITY_SOLANA_METADATA_ENABLED,
+  solanaMetadataOnDemand: config.TOKEN_IDENTITY_SOLANA_METADATA_ON_DEMAND,
+  solanaMetadataOnNewToken:
+    config.TOKEN_IDENTITY_SOLANA_METADATA_ON_NEW_TOKEN,
+  offchainFetchEnabled: config.TOKEN_IDENTITY_OFFCHAIN_FETCH_ENABLED,
+  offchainTimeoutMs: config.TOKEN_IDENTITY_OFFCHAIN_TIMEOUT_MS,
+  offchainCacheTtlMs: config.TOKEN_IDENTITY_OFFCHAIN_CACHE_TTL_MS,
+  ipfsGateway: config.TOKEN_IDENTITY_IPFS_GATEWAY,
+  maxMetadataBytes: config.TOKEN_IDENTITY_MAX_METADATA_BYTES
+});
 
 options.watchOrchestrator = {
   enabled: config.WATCH_ORCHESTRATOR_ENABLED,
@@ -124,6 +142,10 @@ if (config.SOLANA_RPC_HTTP !== undefined && options.chainVerifier) {
 
 if (config.SOLANA_RPC_HTTP !== undefined && options.chainEvents) {
   options.chainEvents.rpcHttpUrl = config.SOLANA_RPC_HTTP;
+}
+
+if (config.SOLANA_RPC_HTTP !== undefined && options.tokenIdentity) {
+  options.tokenIdentity.rpcHttpUrl = config.SOLANA_RPC_HTTP;
 }
 
 if (config.SOLANA_RPC_WS !== undefined && options.chainEvents) {
@@ -164,6 +186,7 @@ server.app.log.info(
     watchOrchestrator: server.watchOrchestration.getStatus(),
     chainVerifier: server.chainVerifier.getStatus(),
     actualData: server.actualData.getStatus(),
+    tokenIdentity: server.tokenIdentity.getStatus(),
     signalIntervalMs: config.SIGNAL_INTERVAL_MS,
     storagePath: server.storage.databasePath
   },
