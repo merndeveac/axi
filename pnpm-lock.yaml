@@ -65,6 +65,9 @@ importers:
       '@axi/execution':
         specifier: workspace:*
         version: link:../../packages/execution
+      '@axi/market-data':
+        specifier: workspace:*
+        version: link:../../packages/market-data
       '@axi/metrics':
         specifier: workspace:*
         version: link:../../packages/metrics
@@ -141,6 +144,12 @@ importers:
         specifier: workspace:*
         version: link:../shared
 
+  packages/market-data:
+    dependencies:
+      '@axi/chain-events':
+        specifier: workspace:*
+        version: link:../chain-events
+
   packages/metrics:
     dependencies:
       '@axi/data-feeds':
@@ -188,6 +197,9 @@ importers:
       '@axi/data-feeds':
         specifier: workspace:*
         version: link:../data-feeds
+      '@axi/market-data':
+        specifier: workspace:*
+        version: link:../market-data
       '@axi/shared':
         specifier: workspace:*
         version: link:../shared

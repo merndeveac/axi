@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@axi/chain-events": ["../chain-events/dist/index.d.ts"]
+    },
+    "types": ["vitest/globals"]
+  },
+  "include": ["src", "test"]
+}

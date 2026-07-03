@@ -173,6 +173,61 @@ describe("RollingMetricsEngine", () => {
     expect(metrics?.windows["5s"].buyVolumeUsd).toBe(150);
   });
 
+  it("ingests SOL-denominated trade events", () => {
+    const engine = createRollingMetricsEngine();
+    const timestamp = new Date(Date.UTC(2026, 0, 1, 0, 0, 0)).toISOString();
+
+    engine.ingestTradeObservation({
+      mint,
+      priceSol: 0.2,
+      quoteAsset: "SOL",
+      side: "buy",
+      timestamp,
+      trader: "sol-buyer",
+      volumeSol: 2
+    });
+    const metrics = engine.getMetrics(mint);
+
+    expect(metrics?.sampleCount).toBe(1);
+    expect(metrics?.latestPriceUsd).toBe(0);
+    expect(metrics?.latestPriceSol).toBe(0.2);
+    expect(metrics?.windows["5s"].buyVolumeSol).toBe(2);
+    expect(metrics?.windows["5s"].totalVolumeUsd).toBe(0);
+    expect(metrics?.hasUsdMetrics).toBe(false);
+    expect(metrics?.hasSolMetrics).toBe(true);
+    expect(metrics?.usedSolMetricsFallback).toBe(true);
+  });
+
+  it("computes SOL rolling volume and velocity", () => {
+    const engine = createRollingMetricsEngine();
+
+    engine.ingestTradeObservation(createSolObservation({ seconds: 0, volumeSol: 1 }));
+    engine.ingestTradeObservation(createSolObservation({ seconds: 1, volumeSol: 2 }));
+    engine.ingestTradeObservation(createSolObservation({ seconds: 2, volumeSol: 3 }));
+    const metrics = engine.getMetrics(mint);
+
+    expect(metrics?.windows["5s"].totalVolumeSol).toBe(6);
+    expect(metrics?.volumeVelocitySolPerSec).toBe(1.2);
+    expect(metrics?.volumeAccelerationSolPerSec2).toBeGreaterThanOrEqual(0);
+  });
+
+  it("computes SOL price velocity and keeps USD safe when unknown", () => {
+    const engine = createRollingMetricsEngine();
+
+    engine.ingestTradeObservation(
+      createSolObservation({ priceSol: 0.1, seconds: 0, volumeSol: 1 })
+    );
+    engine.ingestTradeObservation(
+      createSolObservation({ priceSol: 0.12, seconds: 2, volumeSol: 1 })
+    );
+    const metrics = engine.getMetrics(mint);
+
+    expect(metrics?.priceSolChangePct?.["5s"]).toBeCloseTo(20);
+    expect(metrics?.priceSolVelocityPctPerSec).toBeCloseTo(4);
+    expect(metrics?.priceVelocityPctPerSec).toBe(0);
+    expect(metrics?.windows["5s"].totalVolumeUsd).toBe(0);
+  });
+
   it("is deterministic given the same event sequence", () => {
     const first = createRollingMetricsEngine();
     const second = createRollingMetricsEngine();
@@ -190,6 +245,28 @@ describe("RollingMetricsEngine", () => {
     expect(second.getMetrics(mint)).toEqual(first.getMetrics(mint));
   });
 });
+
+function createSolObservation(options: {
+  priceSol?: number;
+  seconds?: number;
+  side?: "buy" | "sell";
+  trader?: string;
+  volumeSol?: number;
+}) {
+  const seconds = options.seconds ?? 0;
+  const timestamp = new Date(Date.UTC(2026, 0, 1, 0, 0, seconds)).toISOString();
+  const side = options.side ?? "buy";
+
+  return {
+    mint,
+    priceSol: options.priceSol ?? 0.2,
+    quoteAsset: "SOL" as const,
+    side,
+    timestamp,
+    trader: options.trader ?? `${side}-sol-${seconds}`,
+    volumeSol: options.volumeSol ?? 1
+  };
+}
 
 function createTrade(options: {
   priceUsd?: number;

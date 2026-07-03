@@ -126,6 +126,22 @@ export const apiConfigSchema = z.object({
   CHAIN_EVENTS_ON_CHAIN_VERIFIED: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(false),
+  MARKET_DATA_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  MARKET_DATA_MIN_CONFIDENCE_FOR_METRICS: z
+    .enum(["low", "medium", "high"])
+    .default("medium"),
+  MARKET_DATA_SOL_USD_PRICE: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.coerce.number().positive().optional()
+  ),
+  MARKET_DATA_ALLOW_SOL_USD_CONVERSION: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  MARKET_DATA_ALLOW_USD_FROM_STABLE_QUOTES: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
   API_HOST: z.string().default("0.0.0.0"),
   API_PORT: z.coerce.number().int().positive().default(8787),
   SIGNAL_INTERVAL_MS: z.coerce.number().int().min(0).default(2000),
@@ -277,6 +293,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   app.get("/health", async () => {
     const stats = getStorageStats();
     const chainEventsStatus = chainEvents.getStatus();
+    const marketStatus = chainEvents.getMarketStatus();
 
     return {
       chainEvents: chainEventsStatus,
@@ -288,6 +305,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       chainVerificationCount: stats.chainVerificationCount,
       chainWatchedAddressCount: chainEventsStatus.watchedAddressCount,
       feedProvider: feed.name,
+      marketData: marketStatus,
+      marketDataEnabled: marketStatus.enabled,
+      marketDataMinConfidence: marketStatus.minConfidenceForMetrics,
+      marketObservationCount: stats.marketObservationCount,
       metricsEnabled: true,
       riskEnabled: true,
       candidateLifecycleEnabled: true,
@@ -296,6 +317,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       candidateCount: candidateEngine.getAllCandidates().length,
       paperAutoOrder,
       paperOnly: true,
+      solUsdConfigured: marketStatus.solUsdConfigured,
       trackedTokenCount: metricsEngine.getAllMetrics().length,
       uptimeSeconds: Math.round(process.uptime())
     };
@@ -465,6 +487,33 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     return event;
   });
 
+  app.get("/market/status", async () => chainEvents.getMarketStatus());
+
+  app.get("/market/observations", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return chainEvents.getRecentMarketObservations(query.limit);
+  });
+
+  app.get("/market/observations/signature/:signature", async (request, reply) => {
+    const params = signatureParamSchema.parse(request.params);
+    const observation = chainEvents.getMarketObservation(params.signature);
+
+    if (!observation) {
+      return reply.code(404).send({
+        error: "not_found",
+        message: `No market observation stored for signature ${params.signature}`
+      });
+    }
+
+    return observation;
+  });
+
+  app.get("/market/observations/:mint", async (request) => {
+    const params = mintParamSchema.parse(request.params);
+    const query = limitQuerySchema.parse(request.query);
+    return chainEvents.getMarketObservationsByMint(params.mint, query.limit);
+  });
+
   app.get("/signals/recent", async (request) => {
     const query = limitQuerySchema.parse(request.query);
     return listRecentSignals(query.limit);
@@ -542,6 +591,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     saveFeedEvent(event);
     const rollingMetrics = metricsEngine.ingestFeedEvent(event);
     const candidate = candidateEngine.ingestFeedEvent(event);
+
+    if (event.type === "trade" && event.marketObservation) {
+      candidateEngine.updateMarketObservation(
+        candidate.mint,
+        event.marketObservation
+      );
+    }
+
     chainEvents.maybeWatchCandidate({
       address: candidate.mint,
       kind: "mint",
@@ -808,13 +865,19 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         : {}),
       insufficientMetrics: options.decision.metricsSummary.insufficientMetrics,
       lifecycleState: options.decision.lifecycleState,
+      ...(options.decision.marketObservationSummary
+        ? { marketObservationSummary: options.decision.marketObservationSummary }
+        : {}),
+      ...(options.decision.marketReasonCodes
+        ? { marketReasonCodes: options.decision.marketReasonCodes }
+        : {}),
       riskLevel: options.riskSnapshot.riskLevel,
       riskReasonCodes: options.riskSnapshot.reasonCodes,
       riskScore: options.riskSnapshot.riskScore,
       riskSnapshot: options.riskSnapshot,
       scoreReasonCodes: options.score.reasonCodes,
       volumeVelocity: Math.max(
-        options.rollingMetrics?.volumeVelocityUsdPerSec ??
+        getEffectiveVolumeVelocity(options.rollingMetrics) ??
           options.metrics.volumeVelocity,
         0
       ),
@@ -831,10 +894,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       signal.buySellRatio = options.rollingMetrics.buySellRatio;
       signal.buyerAcceleration = options.rollingMetrics.buyerAccelerationPerSec2;
       signal.netBuyPressure = options.rollingMetrics.netBuyPressure;
-      signal.priceVelocity = options.rollingMetrics.priceVelocityPctPerSec;
+      signal.priceVelocity = getEffectivePriceVelocity(options.rollingMetrics);
       signal.rollingMetrics = options.rollingMetrics;
       signal.volumeAcceleration =
-        options.rollingMetrics.volumeAccelerationUsdPerSec2;
+        getEffectiveVolumeAcceleration(options.rollingMetrics);
     }
 
     return signal;
@@ -1023,12 +1086,12 @@ function createRiskInput(options: {
     netBuyPressure: rolling?.netBuyPressure ?? null,
     uniqueBuyers: rolling?.windows["10s"].uniqueBuyers ?? null,
     uniqueSellers: rolling?.windows["10s"].uniqueSellers ?? null,
-    volumeVelocity: rolling?.volumeVelocityUsdPerSec ?? null,
-    volumeAcceleration: rolling?.volumeAccelerationUsdPerSec2 ?? null,
+    volumeVelocity: getEffectiveVolumeVelocity(rolling) ?? null,
+    volumeAcceleration: getEffectiveVolumeAcceleration(rolling) ?? null,
     buyerVelocity: rolling?.buyerVelocityPerSec ?? null,
     buyerAcceleration: rolling?.buyerAccelerationPerSec2 ?? null,
-    priceVelocity: rolling?.priceVelocityPctPerSec ?? null,
-    priceAcceleration: rolling?.priceAccelerationPctPerSec2 ?? null,
+    priceVelocity: getEffectivePriceVelocity(rolling) ?? null,
+    priceAcceleration: getEffectivePriceAcceleration(rolling) ?? null,
     largestTradeShare: rolling?.largestTradeShare ?? null,
     sampleCount: rolling?.sampleCount ?? null,
     insufficientMetrics:
@@ -1113,11 +1176,13 @@ function fallbackMetricsFromCandidate(candidate: CandidateState): RollingMetrics
 
   return {
     priceUsd: metrics.latestPriceUsd,
+    priceSol: metrics.latestPriceSol ?? null,
     marketCapUsd: 0,
     liquidityUsd: 0,
     volume1mUsd: metrics.windows["60s"].totalVolumeUsd,
     volume5mUsd: metrics.windows["60s"].totalVolumeUsd,
     volume15mUsd: metrics.windows["60s"].totalVolumeUsd,
+    volumeSol: metrics.windows["60s"].totalVolumeSol ?? null,
     buyCount1m: metrics.windows["60s"].buyTradeCount,
     buyCount5m: metrics.windows["60s"].buyTradeCount,
     sellCount1m: metrics.windows["60s"].sellTradeCount,
@@ -1328,6 +1393,54 @@ function mockBundlerPct(scenario: ReturnType<typeof getMockScenario>): number | 
   return scenario === "rug" ? 26 : scenario === "momentum" ? 3 : 7;
 }
 
+function getEffectiveVolumeVelocity(
+  metrics: RollingMetricsSnapshot | undefined
+): number | undefined {
+  if (!metrics) {
+    return undefined;
+  }
+
+  return metrics.usedSolMetricsFallback
+    ? metrics.volumeVelocitySolPerSec ?? 0
+    : metrics.volumeVelocityUsdPerSec;
+}
+
+function getEffectiveVolumeAcceleration(
+  metrics: RollingMetricsSnapshot | undefined
+): number | undefined {
+  if (!metrics) {
+    return undefined;
+  }
+
+  return metrics.usedSolMetricsFallback
+    ? metrics.volumeAccelerationSolPerSec2 ?? 0
+    : metrics.volumeAccelerationUsdPerSec2;
+}
+
+function getEffectivePriceVelocity(
+  metrics: RollingMetricsSnapshot | undefined
+): number | undefined {
+  if (!metrics) {
+    return undefined;
+  }
+
+  return metrics.usedSolMetricsFallback
+    ? metrics.priceSolVelocityPctPerSec ?? 0
+    : metrics.priceVelocityPctPerSec;
+}
+
+function getEffectivePriceAcceleration(
+  metrics: RollingMetricsSnapshot | undefined
+): number | undefined {
+  if (!metrics) {
+    return undefined;
+  }
+
+  return metrics.usedSolMetricsFallback
+    ? metrics.priceSolAccelerationPctPerSec2 ?? 0
+    : metrics.priceAccelerationPctPerSec2;
+}
+
 function mergeRollingIntoLegacyMetrics(
   metrics: RollingMetrics,
   rollingMetrics: RollingMetricsSnapshot | undefined
@@ -1342,9 +1455,11 @@ function mergeRollingIntoLegacyMetrics(
   return {
     ...metrics,
     priceUsd: rollingMetrics.latestPriceUsd || metrics.priceUsd,
+    priceSol: rollingMetrics.latestPriceSol ?? metrics.priceSol ?? null,
     volume1mUsd: window60s.totalVolumeUsd,
     volume5mUsd: Math.max(metrics.volume5mUsd, window60s.totalVolumeUsd),
     volume15mUsd: Math.max(metrics.volume15mUsd, window60s.totalVolumeUsd),
+    volumeSol: window60s.totalVolumeSol ?? metrics.volumeSol ?? null,
     buyCount1m: window60s.buyTradeCount,
     buyCount5m: Math.max(metrics.buyCount5m, window60s.buyTradeCount),
     sellCount1m: window60s.sellTradeCount,
@@ -1355,7 +1470,10 @@ function mergeRollingIntoLegacyMetrics(
     uniqueSellers5m: Math.max(metrics.uniqueSellers5m, window60s.uniqueSellers),
     priceChange1mPct: window60s.priceChangePct,
     priceChange5mPct: window10s.priceChangePct,
-    volumeVelocity: Math.max(metrics.volumeVelocity, rollingMetrics.volumeVelocityUsdPerSec),
+    volumeVelocity: Math.max(
+      metrics.volumeVelocity,
+      rollingMetrics.volumeVelocityUsdPerSec
+    ),
     buyerVelocity: Math.max(metrics.buyerVelocity, rollingMetrics.buyerVelocityPerSec)
   };
 }

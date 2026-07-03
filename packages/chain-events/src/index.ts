@@ -776,7 +776,10 @@ export function normalizeTransactionToChainEvents(
           ? "parsed"
           : "unclassified",
       reasonCodes: uniqueReasonCodes(reasonCodes),
-      raw: input.raw ?? input.transaction,
+      raw: createRawTransactionPayload(input.raw, input.transaction, {
+        solBalanceChanges: solChanges,
+        tokenBalanceChanges: tokenChanges
+      }),
       receivedAt
     }
   ];
@@ -886,10 +889,10 @@ export function classifyPossibleTrade(
     watchedAddress: input.watchedAddress.address,
     confidence,
     reasonCodes: uniqueReasonCodes(reasonCodes),
-    raw: input.raw ?? {
+    raw: createRawTransactionPayload(input.raw, input.transaction, {
       solBalanceChanges: solChanges,
       tokenBalanceChanges: tokenChanges
-    }
+    })
   };
 
   if (input.watchedAddress.symbol) {
@@ -1115,6 +1118,27 @@ function inferTrader(
     )[0];
 
   return largestSolChange?.account ?? null;
+}
+
+function createRawTransactionPayload(
+  raw: unknown,
+  transaction: ParsedTransactionWithMeta | null | undefined,
+  balanceChanges: {
+    solBalanceChanges: SolBalanceChange[];
+    tokenBalanceChanges: TokenBalanceChange[];
+  }
+): unknown {
+  if (raw === undefined) {
+    return {
+      transaction,
+      ...balanceChanges
+    };
+  }
+
+  return {
+    raw,
+    ...balanceChanges
+  };
 }
 
 function blockTimeToIso(blockTime: number | null | undefined): string | undefined {

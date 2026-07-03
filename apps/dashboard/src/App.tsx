@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type {
   CandidateDecision,
   ChainVerificationStatus,
+  MarketObservationSummary,
   OverlaySignal,
   RiskSnapshot,
   RollingMetricsSnapshot
@@ -17,6 +18,7 @@ type StorageStats = {
   chainVerificationCount: number;
   chainTransactionEventCount: number;
   chainTradeEventCount: number;
+  marketObservationCount: number;
   riskSnapshotCount: number;
   candidateDecisionCount: number;
   paperOrderCount: number;
@@ -35,6 +37,9 @@ type HealthStatus = {
   chainVerificationCount: number;
   chainVerifier: ChainVerifierStatus;
   feedProvider: string;
+  marketDataEnabled: boolean;
+  marketDataMinConfidence: string;
+  marketObservationCount: number;
   metricsEnabled: boolean;
   mode: string;
   paperAutoOrder: boolean;
@@ -42,6 +47,7 @@ type HealthStatus = {
   riskEnabled: boolean;
   status: string;
   trackedTokenCount: number;
+  solUsdConfigured: boolean;
 };
 
 type ChainVerifierStatus = {
@@ -71,6 +77,16 @@ type ChainEventsStatus = {
   status: "disabled" | "config_error" | "ready" | "running";
   subscriptions: number;
   watchedAddressCount: number;
+};
+
+type MarketStatus = {
+  allowSolUsdConversion: boolean;
+  allowUsdFromStableQuotes: boolean;
+  enabled: boolean;
+  minConfidenceForMetrics: string;
+  observationCount: number;
+  paperOnly: true;
+  solUsdConfigured: boolean;
 };
 
 type WatchedAddressRow = {
@@ -111,6 +127,26 @@ type ChainTradeRow = {
   createdAt: string;
 };
 
+type MarketObservationRow = {
+  id: number;
+  signature: string;
+  mint: string;
+  side: string;
+  quoteAsset: string;
+  quoteMint: string | null;
+  baseTokenAmount: number | null;
+  quoteAmount: number | null;
+  priceQuote: number | null;
+  priceSol: number | null;
+  priceUsd: number | null;
+  volumeSol: number | null;
+  volumeUsd: number | null;
+  confidence: string;
+  usableForMetrics: boolean;
+  reasonCodes: string[];
+  createdAt: string;
+};
+
 type CandidateApiRow = {
   mint: string;
   symbol?: string;
@@ -127,7 +163,9 @@ type CandidateApiRow = {
   latestDecision?: CandidateDecision;
   latestMetrics?: RollingMetricsSnapshot;
   latestRisk?: RiskSnapshot;
+  latestMarketObservationSummary?: MarketObservationSummary;
   lastUpdatedAt: string;
+  marketReasonCodes?: string[];
   paperOrderStatus: string;
 };
 
@@ -155,10 +193,14 @@ export function App() {
   const [chainStatus, setChainStatus] = useState<ChainVerifierStatus | null>(null);
   const [chainEventsStatus, setChainEventsStatus] =
     useState<ChainEventsStatus | null>(null);
+  const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
   const [chainTransactions, setChainTransactions] = useState<
     ChainTransactionRow[]
   >([]);
   const [chainTrades, setChainTrades] = useState<ChainTradeRow[]>([]);
+  const [marketObservations, setMarketObservations] = useState<
+    MarketObservationRow[]
+  >([]);
   const [watchedAddresses, setWatchedAddresses] = useState<WatchedAddressRow[]>(
     []
   );
@@ -225,18 +267,22 @@ export function App() {
           candidatesResponse,
           chainResponse,
           chainEventsResponse,
+          marketStatusResponse,
           watchedAddressesResponse,
           chainTransactionsResponse,
-          chainTradesResponse
+          chainTradesResponse,
+          marketObservationsResponse
         ] = await Promise.all([
           fetch(`${apiBaseUrl}/health`),
           fetch(`${apiBaseUrl}/storage/stats`),
           fetch(`${apiBaseUrl}/candidates`),
           fetch(`${apiBaseUrl}/chain/status`),
           fetch(`${apiBaseUrl}/chain/events/status`),
+          fetch(`${apiBaseUrl}/market/status`),
           fetch(`${apiBaseUrl}/chain/events/watches`),
           fetch(`${apiBaseUrl}/chain/events/transactions?limit=10`),
-          fetch(`${apiBaseUrl}/chain/events/trades?limit=10`)
+          fetch(`${apiBaseUrl}/chain/events/trades?limit=10`),
+          fetch(`${apiBaseUrl}/market/observations?limit=10`)
         ]);
 
         if (
@@ -245,9 +291,11 @@ export function App() {
           !candidatesResponse.ok ||
           !chainResponse.ok ||
           !chainEventsResponse.ok ||
+          !marketStatusResponse.ok ||
           !watchedAddressesResponse.ok ||
           !chainTransactionsResponse.ok ||
-          !chainTradesResponse.ok
+          !chainTradesResponse.ok ||
+          !marketObservationsResponse.ok
         ) {
           throw new Error("API status check failed");
         }
@@ -260,21 +308,27 @@ export function App() {
           (await chainResponse.json()) as ChainVerifierStatus;
         const nextChainEventsStatus =
           (await chainEventsResponse.json()) as ChainEventsStatus;
+        const nextMarketStatus =
+          (await marketStatusResponse.json()) as MarketStatus;
         const nextWatchedAddresses =
           (await watchedAddressesResponse.json()) as WatchedAddressRow[];
         const nextChainTransactions =
           (await chainTransactionsResponse.json()) as ChainTransactionRow[];
         const nextChainTrades =
           (await chainTradesResponse.json()) as ChainTradeRow[];
+        const nextMarketObservations =
+          (await marketObservationsResponse.json()) as MarketObservationRow[];
 
         if (!cancelled) {
           setApiStatus("connected");
           setCandidates(nextCandidates);
           setChainStatus(nextChainStatus);
           setChainEventsStatus(nextChainEventsStatus);
+          setMarketStatus(nextMarketStatus);
           setWatchedAddresses(nextWatchedAddresses);
           setChainTransactions(nextChainTransactions);
           setChainTrades(nextChainTrades);
+          setMarketObservations(nextMarketObservations);
           setHealthStatus(health);
           setStorageStats(stats);
         }
@@ -387,6 +441,36 @@ export function App() {
         <div>
           <span>Chain Events</span>
           <strong>{chainEventsStatus?.status ?? "unknown"}</strong>
+        </div>
+        <div>
+          <span>Market Data</span>
+          <strong>{marketStatus?.enabled ? "on" : "off"}</strong>
+        </div>
+        <div>
+          <span>Market Obs</span>
+          <strong>
+            {storageStats?.marketObservationCount ??
+              marketStatus?.observationCount ??
+              healthStatus?.marketObservationCount ??
+              0}
+          </strong>
+        </div>
+        <div>
+          <span>Market Min</span>
+          <strong>
+            {marketStatus?.minConfidenceForMetrics ??
+              healthStatus?.marketDataMinConfidence ??
+              "unknown"}
+          </strong>
+        </div>
+        <div>
+          <span>SOL/USD</span>
+          <strong>
+            {(marketStatus?.solUsdConfigured ??
+            healthStatus?.solUsdConfigured)
+              ? "configured"
+              : "unset"}
+          </strong>
         </div>
         <div>
           <span>Chain Event RPC</span>
@@ -615,6 +699,65 @@ export function App() {
         </table>
       </section>
 
+      <section className="table-region market-region" aria-label="Market observations">
+        <div className="table-heading">
+          <h2>Market Observations</h2>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Mint</th>
+              <th>Side</th>
+              <th>Quote</th>
+              <th>Base Amt</th>
+              <th>Quote Amt</th>
+              <th>Price Quote</th>
+              <th>Price SOL</th>
+              <th>Price USD</th>
+              <th>Vol SOL</th>
+              <th>Vol USD</th>
+              <th>Confidence</th>
+              <th>Usable</th>
+              <th>Reasons</th>
+              <th>Signature</th>
+              <th>Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            {marketObservations.map((observation) => (
+              <tr key={`${observation.id}-${observation.signature}`}>
+                <td className="mono" title={observation.mint}>
+                  {shortMint(observation.mint)}
+                </td>
+                <td>{observation.side}</td>
+                <td>{observation.quoteAsset}</td>
+                <td>{formatNullableNumber(observation.baseTokenAmount)}</td>
+                <td>{formatNullableNumber(observation.quoteAmount)}</td>
+                <td>{formatNullableNumber(observation.priceQuote)}</td>
+                <td>{formatNullableNumber(observation.priceSol)}</td>
+                <td>{formatNullableUsd(observation.priceUsd)}</td>
+                <td>{formatNullableNumber(observation.volumeSol)}</td>
+                <td>{formatNullableUsd(observation.volumeUsd)}</td>
+                <td>{observation.confidence}</td>
+                <td>{observation.usableForMetrics ? "yes" : "no"}</td>
+                <td>{topReasonCodes(observation.reasonCodes)}</td>
+                <td className="mono" title={observation.signature}>
+                  {shortMint(observation.signature)}
+                </td>
+                <td>{formatTimestamp(observation.createdAt)}</td>
+              </tr>
+            ))}
+            {marketObservations.length === 0 ? (
+              <tr>
+                <td colSpan={15} className="empty-state compact-empty">
+                  No persisted market observations
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </section>
+
       <section className="table-region candidate-region" aria-label="Candidate lifecycle">
         <div className="table-heading">
           <h2>Candidate Lifecycle</h2>
@@ -636,7 +779,9 @@ export function App() {
               <th>Top 10</th>
               <th>Chain Reasons</th>
               <th>Reasons</th>
-              <th>10s Vol</th>
+              <th>10s USD</th>
+              <th>10s SOL</th>
+              <th>SOL Fallback</th>
               <th>Vol Vel</th>
               <th>Buyer Vel</th>
               <th>Buy/Sell</th>
@@ -689,7 +834,9 @@ export function App() {
                   <td>{topReasonCodes(candidate.chainReasonCodes)}</td>
                   <td>{topReasonCodes(decision?.combinedReasonCodes)}</td>
                   <td>{formatUsd(candidate.latestMetrics?.windows["10s"].totalVolumeUsd ?? 0)}</td>
-                  <td>{formatNumber(candidate.latestMetrics?.volumeVelocityUsdPerSec)}</td>
+                  <td>{formatNullableNumber(candidate.latestMetrics?.windows["10s"].totalVolumeSol)}</td>
+                  <td>{candidate.latestMetrics?.usedSolMetricsFallback ? "yes" : "no"}</td>
+                  <td>{formatNumber(effectiveVolumeVelocity(candidate.latestMetrics))}</td>
                   <td>{formatNumber(candidate.latestMetrics?.buyerVelocityPerSec)}</td>
                   <td>{formatNumber(candidate.latestMetrics?.buySellRatio)}</td>
                   <td>{formatNumber(candidate.latestMetrics?.netBuyPressure)}</td>
@@ -700,7 +847,7 @@ export function App() {
             })}
             {sortedCandidates.length === 0 ? (
               <tr>
-                <td colSpan={21} className="empty-state">
+                <td colSpan={23} className="empty-state">
                   {statusMessage}
                 </td>
               </tr>
@@ -728,6 +875,8 @@ export function App() {
               <th>1s Vol</th>
               <th>5s Vol</th>
               <th>10s Vol</th>
+              <th>10s SOL</th>
+              <th>SOL Fallback</th>
               <th>Vol Vel</th>
               <th>Vol Acc</th>
               <th>Buyer Vel</th>
@@ -769,6 +918,8 @@ export function App() {
                 <td>{formatUsd(metricVolume(signal, "1s"))}</td>
                 <td>{formatUsd(metricVolume(signal, "5s"))}</td>
                 <td>{formatUsd(metricVolume(signal, "10s"))}</td>
+                <td>{formatNullableNumber(metricVolumeSol(signal, "10s"))}</td>
+                <td>{signal.rollingMetrics?.usedSolMetricsFallback ? "yes" : "no"}</td>
                 <td>{formatNumber(signal.volumeVelocity)}</td>
                 <td>{formatNumber(signal.volumeAcceleration)}</td>
                 <td>{formatNumber(signal.buyerVelocity)}</td>
@@ -781,7 +932,7 @@ export function App() {
             ))}
             {sortedSignals.length === 0 ? (
               <tr>
-                <td colSpan={20} className="empty-state">
+                <td colSpan={22} className="empty-state">
                   {statusMessage}
                 </td>
               </tr>
@@ -815,6 +966,25 @@ function metricVolume(
   return signal.rollingMetrics?.windows[window].totalVolumeUsd ?? 0;
 }
 
+function metricVolumeSol(
+  signal: OverlaySignal,
+  window: "1s" | "5s" | "10s"
+): number | undefined {
+  return signal.rollingMetrics?.windows[window].totalVolumeSol;
+}
+
+function effectiveVolumeVelocity(
+  metrics: RollingMetricsSnapshot | undefined
+): number | undefined {
+  if (!metrics) {
+    return undefined;
+  }
+
+  return metrics.usedSolMetricsFallback
+    ? metrics.volumeVelocitySolPerSec
+    : metrics.volumeVelocityUsdPerSec;
+}
+
 function normalizeClassName(value: string): string {
   return value.toLowerCase();
 }
@@ -837,6 +1007,14 @@ function formatUsd(value: number): string {
   }
 
   return `$${value.toFixed(0)}`;
+}
+
+function formatNullableUsd(value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "-";
+  }
+
+  return formatUsd(value);
 }
 
 function formatPercent(value: number | null | undefined): string {

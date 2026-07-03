@@ -39,12 +39,14 @@ Paper-mode development data is stored in a local SQLite database:
 
 The API initializes the database automatically, creates the current schema, and
 stores mock feed events, risk snapshots, candidate decisions, read-only chain
-verifications, read-only watched-address chain events, overlay signals, paper
-orders, and paper positions. This database is local-only and is ignored by git.
+verifications, read-only watched-address chain events, market observations,
+overlay signals, paper orders, and paper positions. This database is local-only
+and is ignored by git.
 
 Current persistence tables include `feed_events`, `signals`, `risk_snapshots`,
 `candidate_decisions`, `chain_verifications`, `chain_transaction_events`,
-`chain_trade_events`, `paper_orders`, and `paper_positions`.
+`chain_trade_events`, `market_observations`, `paper_orders`, and
+`paper_positions`.
 
 Clear local paper data with:
 
@@ -62,12 +64,14 @@ windows:
 1s, 3s, 5s, 10s, 30s, 60s
 ```
 
-Current metrics include rolling buy/sell/total/net volume, trade counts, unique
-buyers/sellers/traders, price change, price velocity, volume velocity,
-acceleration, buyer velocity, buy/sell ratio, net buy pressure, and an
-`insufficientMetrics` flag. The mock feed emits deterministic fake trade events
-to exercise this engine locally. These mock trades are not real market data and
-remain paper-only.
+Current metrics include rolling buy/sell/total/net USD volume, SOL volume when
+available, trade counts, unique buyers/sellers/traders, price change, price
+velocity, volume velocity, acceleration, buyer velocity, buy/sell ratio, net buy
+pressure, and an `insufficientMetrics` flag. USD metrics remain preferred.
+SOL-denominated metrics are used as a paper-mode fallback only when USD is
+unknown. The mock feed emits deterministic fake trade events to exercise this
+engine locally. These mock trades are not real market data and remain
+paper-only.
 
 ## Risk And Candidate Lifecycle
 
@@ -159,6 +163,37 @@ account, or program addresses may be better watch targets. This is not a
 full-market indexer, does not do DEX-specific decoding yet, does not provide
 real USD pricing yet, does not use Geyser/gRPC/shreds, does not use metered
 PumpPortal trade streams, and does not use Axiom private APIs or scraping.
+
+## Read-Only Market Data Normalizer
+
+`@axi/market-data` is a pure local normalization layer. It makes no network
+calls, loads no wallets, signs nothing, sends no transactions, and does not
+trade. It derives conservative market observations from already-fetched Solana
+transaction token/SOL/quote balance deltas.
+
+The normalizer can compute quote volume, SOL volume, price in the quote asset,
+price in SOL when the quote is SOL or WSOL, and USD price/volume only when the
+quote is a stable token or when an explicit `MARKET_DATA_SOL_USD_PRICE` is
+configured and conversion is enabled. It does not fetch prices and does not
+invent USD values.
+
+Market observations are conservative. Low-confidence or incomplete observations
+are persisted as observation-only and are not fed into metrics, risk,
+candidates, scoring, or signals. This is not DEX-specific decoding yet.
+
+Default market-data settings:
+
+```bash
+MARKET_DATA_ENABLED=true
+MARKET_DATA_MIN_CONFIDENCE_FOR_METRICS=medium
+MARKET_DATA_SOL_USD_PRICE=
+MARKET_DATA_ALLOW_SOL_USD_CONVERSION=false
+MARKET_DATA_ALLOW_USD_FROM_STABLE_QUOTES=true
+```
+
+`MARKET_DATA_ENABLED=true` is safe by default because it only normalizes chain
+events that already exist. If `CHAIN_EVENTS_ENABLED=false`, it does not start
+RPC or WebSocket activity.
 
 ## Install
 
@@ -273,6 +308,10 @@ Endpoints:
 - `GET /chain/events/transactions`
 - `GET /chain/events/trades`
 - `GET /chain/events/transactions/:signature`
+- `GET /market/status`
+- `GET /market/observations`
+- `GET /market/observations/:mint`
+- `GET /market/observations/signature/:signature`
 - `GET /paper/orders`
 - `GET /paper/positions`
 - `ws://localhost:8787/ws/signals`
@@ -298,6 +337,11 @@ is disabled, misconfigured, ready, or running. `POST /chain/events/watch` adds a
 read-only watched address only when `CHAIN_EVENTS_ENABLED=true` and both
 `SOLANA_RPC_HTTP` and `SOLANA_RPC_WS` are configured.
 
+`GET /market/status` reports the local market normalizer settings and persisted
+observation count. `GET /market/observations` returns recent persisted
+observations, `GET /market/observations/:mint` filters by mint, and `GET
+/market/observations/signature/:signature` returns one observation or `404`.
+
 ## Replay Local Data
 
 Replay persisted fake paper data from SQLite without starting the API,
@@ -314,7 +358,10 @@ pnpm --filter @axi/api replay -- --type candidate_decisions --limit 25 --speed 0
 pnpm --filter @axi/api replay -- --type chain_verifications --limit 25 --speed 0
 pnpm --filter @axi/api replay -- --type chain_transaction_events --limit 25 --speed 0
 pnpm --filter @axi/api replay -- --type chain_trade_events --limit 25 --speed 0
+pnpm --filter @axi/api replay -- --type market_observations --limit 25 --speed 0
 pnpm --filter @axi/api replay -- --type chain_trade_events --metrics true --risk true --candidates true --limit 100 --speed 0
+pnpm --filter @axi/api replay -- --type chain_trade_events --market true --metrics true --risk true --candidates true --limit 100 --speed 0
+pnpm --filter @axi/api replay -- --type chain_transaction_events --market true --limit 100 --speed 0
 pnpm --filter @axi/api replay -- --type feed_events --chain false
 ```
 
@@ -345,6 +392,17 @@ SOLANA_RPC_HTTP=https://... SOLANA_RPC_WS=wss://... pnpm --filter @axi/api chain
 
 Both commands print JSON lines and validate malformed addresses before creating
 RPC clients. They never load wallets, sign, send transactions, buy, or sell.
+
+Decode a saved or mocked transaction JSON file locally without RPC,
+persistence, or trading:
+
+```bash
+pnpm --filter @axi/api market:decode -- --file ./fixtures/example-transaction.json
+pnpm --filter @axi/api market:decode -- --file ./fixtures/example-transaction.json --watched-address <ADDRESS> --watched-kind wallet
+```
+
+The decoder reads local JSON only. It can use `--sol-usd-price` for explicit
+SOL/USD conversion, but it never fetches prices.
 
 ## Probe Feeds
 
@@ -403,6 +461,8 @@ docker compose --profile infra up -d
 - `@axi/candidates`: pure local candidate lifecycle decisions.
 - `@axi/solana-chain`: optional read-only Solana RPC verification helpers.
 - `@axi/chain-events`: optional read-only watched-address transaction ingestion.
+- `@axi/market-data`: pure local market observation normalization from chain
+  balance deltas.
 - `@axi/storage`: local SQLite persistence for paper-mode development.
 - `@axi/api`: Fastify API and local WebSocket broadcaster.
 - `@axi/dashboard`: Vite React signal dashboard.
@@ -424,9 +484,12 @@ docker compose --profile infra up -d
   verifier.
 - `dev/solana-transaction-ingestor` contains optional read-only watched-address
   transaction ingestion.
+- `dev/chain-market-data-normalizer` contains pure local market observation
+  normalization and SOL/quote-aware paper metrics.
 
-This project still has no wallet UI, no private-key loading, no live trading,
-no Solana transaction signing, no transaction sending, no real risk-data
-provider, no DEX-specific decoding, no full-market indexing, no Geyser/gRPC
-streaming, no metered PumpPortal trade streams, no Axiom private API usage, and
-no Axiom scraping.
+Direct Solana RPC verification and watched-address transaction ingestion exist,
+but they are read-only and disabled by default. This project still has no wallet
+UI, no private-key loading, no live trading, no Solana transaction signing, no
+transaction sending, no real risk-data provider, no DEX-specific decoding, no
+full-market indexing, no Geyser/gRPC streaming, no metered PumpPortal trade
+streams, no Axiom private API usage, and no Axiom scraping.

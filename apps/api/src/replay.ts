@@ -9,7 +9,17 @@ import {
   type ReplaySource
 } from "@axi/storage";
 import type { FeedEvent, TokenTradeEvent } from "@axi/data-feeds";
-import type { NormalizedChainTradeEvent } from "@axi/chain-events";
+import type {
+  ChainTransactionEvent,
+  NormalizedChainTradeEvent
+} from "@axi/chain-events";
+import {
+  createMarketObservationSummary,
+  marketObservationToMetricsTradeEvent,
+  normalizeChainTradeEventToMarketObservation,
+  normalizeChainTransactionToMarketObservations,
+  type MarketObservation
+} from "@axi/market-data";
 import type {
   CandidateDecision,
   RiskFlags,
@@ -24,6 +34,7 @@ type ReplayArgs = {
   candidates: boolean;
   chain: boolean;
   limit: number;
+  market: boolean;
   metrics: boolean;
   risk: boolean;
   speed: number;
@@ -48,7 +59,14 @@ try {
     speed: args.speed,
     type: args.type
   })) {
-    const replayFeedEvent = getReplayFeedEvent(item.source, item.payload);
+    const marketObservation = getReplayMarketObservation({
+      enabled: args.market || item.source === "market_observations",
+      payload: item.payload,
+      source: item.source
+    });
+    const replayFeedEvent =
+      marketObservationToFeedEvent(marketObservation) ??
+      getReplayFeedEvent(item.source, item.payload);
     const metrics =
       metricsEngine && replayFeedEvent
         ? metricsEngine.ingestFeedEvent(replayFeedEvent)
@@ -87,8 +105,14 @@ try {
           ? replayEvaluation.candidateDecision
           : undefined,
         chainObservationOnly:
-          item.source === "chain_trade_events" && !replayFeedEvent
+          (item.source === "chain_trade_events" ||
+            item.source === "chain_transaction_events") &&
+          !replayFeedEvent
             ? true
+            : undefined,
+        marketObservation:
+          args.market || item.source === "market_observations"
+            ? marketObservation
             : undefined,
         metrics: args.metrics ? metrics : undefined,
         payload: item.payload,
@@ -111,6 +135,7 @@ function parseArgs(argv: string[]): ReplayArgs {
     candidates: false,
     chain: false,
     limit: 50,
+    market: false,
     metrics: false,
     risk: false,
     speed: 0,
@@ -144,6 +169,12 @@ function parseArgs(argv: string[]): ReplayArgs {
       continue;
     }
 
+    if (arg === "--market") {
+      parsed.market = parseBoolean(readValue(argv, index, arg), arg);
+      index += 1;
+      continue;
+    }
+
     if (arg === "--risk") {
       parsed.risk = parseBoolean(readValue(argv, index, arg), arg);
       index += 1;
@@ -167,7 +198,7 @@ function parseArgs(argv: string[]): ReplayArgs {
 
       if (!isReplaySource(type)) {
         throw new Error(
-          "--type must be candidate_decisions, chain_transaction_events, chain_trade_events, chain_verifications, feed_events, risk_snapshots, or signals"
+          "--type must be candidate_decisions, chain_transaction_events, chain_trade_events, chain_verifications, feed_events, market_observations, risk_snapshots, or signals"
         );
       }
 
@@ -223,6 +254,7 @@ function isReplaySource(value: string): value is ReplaySource {
     value === "chain_trade_events" ||
     value === "chain_verifications" ||
     value === "feed_events" ||
+    value === "market_observations" ||
     value === "risk_snapshots" ||
     value === "signals"
   );
@@ -250,6 +282,67 @@ function isChainTradeEvent(value: unknown): value is NormalizedChainTradeEvent {
   );
 }
 
+function isChainTransactionEvent(value: unknown): value is ChainTransactionEvent {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === "chain_transaction" &&
+    "source" in value &&
+    value.source === "solana_rpc" &&
+    "signature" in value &&
+    typeof value.signature === "string"
+  );
+}
+
+function isMarketObservation(value: unknown): value is MarketObservation {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === "market_observation" &&
+    "source" in value &&
+    value.source === "solana_rpc" &&
+    "mint" in value &&
+    typeof value.mint === "string"
+  );
+}
+
+function getReplayMarketObservation(options: {
+  enabled: boolean;
+  payload: unknown;
+  source: ReplaySource;
+}): MarketObservation | undefined {
+  if (!options.enabled) {
+    return undefined;
+  }
+
+  if (
+    options.source === "market_observations" &&
+    isMarketObservation(options.payload)
+  ) {
+    return options.payload;
+  }
+
+  if (
+    options.source === "chain_trade_events" &&
+    isChainTradeEvent(options.payload)
+  ) {
+    return normalizeChainTradeEventToMarketObservation(options.payload);
+  }
+
+  if (
+    options.source === "chain_transaction_events" &&
+    isChainTransactionEvent(options.payload)
+  ) {
+    return normalizeChainTransactionToMarketObservations({
+      chainTransactionEvent: options.payload
+    })[0];
+  }
+
+  return undefined;
+}
+
 function getReplayFeedEvent(
   source: ReplaySource,
   payload: unknown
@@ -263,6 +356,22 @@ function getReplayFeedEvent(
   }
 
   return undefined;
+}
+
+function marketObservationToFeedEvent(
+  observation: MarketObservation | undefined
+): TokenTradeEvent | undefined {
+  if (!observation) {
+    return undefined;
+  }
+
+  const metricsEvent = marketObservationToMetricsTradeEvent(observation);
+
+  if (!metricsEvent) {
+    return undefined;
+  }
+
+  return createFeedEventFromMarketObservation(observation, metricsEvent.side);
 }
 
 function chainTradeToFeedEvent(
@@ -340,6 +449,95 @@ function chainTradeToFeedEvent(
     receivedAt: event.timestamp,
     riskFlags,
     timestamp: event.timestamp
+  };
+}
+
+function createFeedEventFromMarketObservation(
+  observation: MarketObservation,
+  side: "buy" | "sell"
+): TokenTradeEvent {
+  const riskFlags = createSafeRiskFlags();
+  const metrics: RollingMetrics = {
+    priceUsd: observation.priceUsd ?? 0,
+    ...(observation.priceSol !== null ? { priceSol: observation.priceSol } : {}),
+    ...(observation.priceQuote !== null
+      ? { priceQuote: observation.priceQuote }
+      : {}),
+    marketCapUsd: 0,
+    liquidityUsd: 0,
+    volume1mUsd: observation.volumeUsd ?? 0,
+    volume5mUsd: observation.volumeUsd ?? 0,
+    volume15mUsd: observation.volumeUsd ?? 0,
+    ...(observation.volumeSol !== null
+      ? { volumeSol: observation.volumeSol }
+      : {}),
+    ...(observation.volumeQuote !== null
+      ? { volumeQuote: observation.volumeQuote }
+      : {}),
+    quoteAsset: observation.quoteAsset,
+    quoteMint: observation.quoteMint,
+    usableForMetrics: observation.usableForMetrics,
+    confidence: observation.confidence,
+    reasonCodes: observation.reasonCodes,
+    buyCount1m: side === "buy" ? 1 : 0,
+    buyCount5m: side === "buy" ? 1 : 0,
+    sellCount1m: side === "sell" ? 1 : 0,
+    sellCount5m: side === "sell" ? 1 : 0,
+    uniqueBuyers1m: side === "buy" ? 1 : 0,
+    uniqueBuyers5m: side === "buy" ? 1 : 0,
+    uniqueSellers1m: side === "sell" ? 1 : 0,
+    uniqueSellers5m: side === "sell" ? 1 : 0,
+    holderCount: 0,
+    topHolderPercent: 0,
+    top10HolderPercent: 0,
+    priceChange1mPct: 0,
+    priceChange5mPct: 0,
+    volumeVelocity: 0,
+    buyerVelocity: 0
+  };
+
+  return {
+    type: "trade",
+    mint: observation.mint,
+    source: "solana_rpc",
+    ...(observation.symbol ? { symbol: observation.symbol } : {}),
+    token: {
+      chain: "solana",
+      mint: observation.mint
+    },
+    side,
+    priceUsd: observation.priceUsd,
+    volumeUsd: observation.volumeUsd,
+    ...(observation.priceSol !== null ? { priceSol: observation.priceSol } : {}),
+    ...(observation.volumeSol !== null ? { volumeSol: observation.volumeSol } : {}),
+    ...(observation.priceQuote !== null
+      ? { priceQuote: observation.priceQuote }
+      : {}),
+    ...(observation.volumeQuote !== null
+      ? { volumeQuote: observation.volumeQuote }
+      : {}),
+    quoteAsset: observation.quoteAsset,
+    quoteMint: observation.quoteMint,
+    ...(observation.baseTokenAmount !== null
+      ? { tokenAmount: observation.baseTokenAmount }
+      : {}),
+    ...(observation.watchedAddress ? { trader: observation.watchedAddress } : {}),
+    signature: observation.signature,
+    metrics,
+    marketObservation: createMarketObservationSummary(observation),
+    metricsComplete: true,
+    raw: observation,
+    rawSourceEventType: "market_observation",
+    reasonCodes: [
+      "CHAIN_TRADE_EVENT",
+      "MARKET_OBSERVATION",
+      ...observation.reasonCodes
+    ],
+    receivedAt: observation.timestamp,
+    riskFlags,
+    timestamp: observation.timestamp,
+    usableForMetrics: observation.usableForMetrics,
+    confidence: observation.confidence
   };
 }
 
@@ -459,12 +657,12 @@ function createRiskInput(options: {
     netBuyPressure: rolling?.netBuyPressure ?? null,
     uniqueBuyers: rolling?.windows["10s"].uniqueBuyers ?? null,
     uniqueSellers: rolling?.windows["10s"].uniqueSellers ?? null,
-    volumeVelocity: rolling?.volumeVelocityUsdPerSec ?? null,
-    volumeAcceleration: rolling?.volumeAccelerationUsdPerSec2 ?? null,
+    volumeVelocity: getEffectiveVolumeVelocity(rolling) ?? null,
+    volumeAcceleration: getEffectiveVolumeAcceleration(rolling) ?? null,
     buyerVelocity: rolling?.buyerVelocityPerSec ?? null,
     buyerAcceleration: rolling?.buyerAccelerationPerSec2 ?? null,
-    priceVelocity: rolling?.priceVelocityPctPerSec ?? null,
-    priceAcceleration: rolling?.priceAccelerationPctPerSec2 ?? null,
+    priceVelocity: getEffectivePriceVelocity(rolling) ?? null,
+    priceAcceleration: getEffectivePriceAcceleration(rolling) ?? null,
     largestTradeShare: rolling?.largestTradeShare ?? null,
     sampleCount: rolling?.sampleCount ?? null,
     insufficientMetrics:
@@ -542,9 +740,11 @@ function mergeRollingIntoLegacyMetrics(
   return {
     ...metrics,
     priceUsd: rollingMetrics.latestPriceUsd || metrics.priceUsd,
+    priceSol: rollingMetrics.latestPriceSol ?? metrics.priceSol ?? null,
     volume1mUsd: window60s.totalVolumeUsd,
     volume5mUsd: Math.max(metrics.volume5mUsd, window60s.totalVolumeUsd),
     volume15mUsd: Math.max(metrics.volume15mUsd, window60s.totalVolumeUsd),
+    volumeSol: window60s.totalVolumeSol ?? metrics.volumeSol ?? null,
     buyCount1m: window60s.buyTradeCount,
     buyCount5m: Math.max(metrics.buyCount5m, window60s.buyTradeCount),
     sellCount1m: window60s.sellTradeCount,
@@ -564,6 +764,54 @@ function mergeRollingIntoLegacyMetrics(
       rollingMetrics.buyerVelocityPerSec
     )
   };
+}
+
+function getEffectiveVolumeVelocity(
+  metrics: RollingMetricsSnapshot | undefined
+): number | undefined {
+  if (!metrics) {
+    return undefined;
+  }
+
+  return metrics.usedSolMetricsFallback
+    ? metrics.volumeVelocitySolPerSec ?? 0
+    : metrics.volumeVelocityUsdPerSec;
+}
+
+function getEffectiveVolumeAcceleration(
+  metrics: RollingMetricsSnapshot | undefined
+): number | undefined {
+  if (!metrics) {
+    return undefined;
+  }
+
+  return metrics.usedSolMetricsFallback
+    ? metrics.volumeAccelerationSolPerSec2 ?? 0
+    : metrics.volumeAccelerationUsdPerSec2;
+}
+
+function getEffectivePriceVelocity(
+  metrics: RollingMetricsSnapshot | undefined
+): number | undefined {
+  if (!metrics) {
+    return undefined;
+  }
+
+  return metrics.usedSolMetricsFallback
+    ? metrics.priceSolVelocityPctPerSec ?? 0
+    : metrics.priceVelocityPctPerSec;
+}
+
+function getEffectivePriceAcceleration(
+  metrics: RollingMetricsSnapshot | undefined
+): number | undefined {
+  if (!metrics) {
+    return undefined;
+  }
+
+  return metrics.usedSolMetricsFallback
+    ? metrics.priceSolAccelerationPctPerSec2 ?? 0
+    : metrics.priceAccelerationPctPerSec2;
 }
 
 function getMockScenario(

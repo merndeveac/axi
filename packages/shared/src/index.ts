@@ -89,13 +89,51 @@ export const TokenCandidateSchema = z.object({
 });
 export type TokenCandidate = z.infer<typeof TokenCandidateSchema>;
 
+export const QuoteAssetSchema = z.enum([
+  "SOL",
+  "WSOL",
+  "USDC",
+  "USDT",
+  "UNKNOWN"
+]);
+export type QuoteAsset = z.infer<typeof QuoteAssetSchema>;
+
+export const ObservationConfidenceSchema = z.enum(["low", "medium", "high"]);
+export type ObservationConfidence = z.infer<typeof ObservationConfidenceSchema>;
+
+export const MarketObservationSummarySchema = z.object({
+  signature: z.string().min(1),
+  side: z.enum(["buy", "sell", "unknown"]),
+  quoteAsset: QuoteAssetSchema,
+  confidence: ObservationConfidenceSchema,
+  usableForMetrics: z.boolean(),
+  reasonCodes: z.array(z.string().min(1)),
+  priceSol: z.number().nonnegative().nullable(),
+  priceUsd: z.number().nonnegative().nullable(),
+  volumeSol: z.number().nonnegative().nullable(),
+  volumeUsd: z.number().nonnegative().nullable(),
+  createdAt: z.string().datetime()
+});
+export type MarketObservationSummary = z.infer<
+  typeof MarketObservationSummarySchema
+>;
+
 export const RollingMetricsSchema = z.object({
   priceUsd: z.number().nonnegative(),
+  priceSol: z.number().nonnegative().nullable().optional(),
+  priceQuote: z.number().nonnegative().nullable().optional(),
   marketCapUsd: z.number().nonnegative(),
   liquidityUsd: z.number().nonnegative(),
   volume1mUsd: z.number().nonnegative(),
   volume5mUsd: z.number().nonnegative(),
   volume15mUsd: z.number().nonnegative(),
+  volumeSol: z.number().nonnegative().nullable().optional(),
+  volumeQuote: z.number().nonnegative().nullable().optional(),
+  quoteAsset: QuoteAssetSchema.optional(),
+  quoteMint: z.string().min(1).nullable().optional(),
+  usableForMetrics: z.boolean().optional(),
+  confidence: ObservationConfidenceSchema.optional(),
+  reasonCodes: z.array(z.string().min(1)).optional(),
   buyCount1m: z.number().int().nonnegative(),
   buyCount5m: z.number().int().nonnegative(),
   sellCount1m: z.number().int().nonnegative(),
@@ -122,6 +160,10 @@ export const RollingWindowMetricsSchema = z.object({
   sellVolumeUsd: z.number().nonnegative(),
   totalVolumeUsd: z.number().nonnegative(),
   netVolumeUsd: z.number(),
+  buyVolumeSol: z.number().nonnegative().optional(),
+  sellVolumeSol: z.number().nonnegative().optional(),
+  totalVolumeSol: z.number().nonnegative().optional(),
+  netVolumeSol: z.number().optional(),
   buyTradeCount: z.number().int().nonnegative(),
   sellTradeCount: z.number().int().nonnegative(),
   totalTradeCount: z.number().int().nonnegative(),
@@ -129,8 +171,11 @@ export const RollingWindowMetricsSchema = z.object({
   uniqueSellers: z.number().int().nonnegative(),
   uniqueTraders: z.number().int().nonnegative(),
   priceChangePct: z.number(),
+  priceSolChangePct: z.number().optional(),
   highPriceUsd: z.number().nonnegative(),
-  lowPriceUsd: z.number().nonnegative()
+  lowPriceUsd: z.number().nonnegative(),
+  highPriceSol: z.number().nonnegative().optional(),
+  lowPriceSol: z.number().nonnegative().optional()
 });
 export type RollingWindowMetrics = z.infer<typeof RollingWindowMetricsSchema>;
 
@@ -170,20 +215,32 @@ export const RollingMetricsSnapshotSchema = z.object({
   windows: RollingWindowMetricsRecordSchema,
   volumeVelocityUsdPerSec: z.number(),
   volumeAccelerationUsdPerSec2: z.number(),
+  volumeVelocitySolPerSec: z.number().optional(),
+  volumeAccelerationSolPerSec2: z.number().optional(),
   tradesPerSecond: z.number().nonnegative(),
   largestTradeUsd: z.number().nonnegative(),
+  largestTradeSol: z.number().nonnegative().optional(),
   largestTradeShare: z.number().nonnegative(),
   buyerVelocityPerSec: z.number(),
   buyerAccelerationPerSec2: z.number(),
   latestPriceUsd: z.number().nonnegative(),
+  latestPriceSol: z.number().nonnegative().optional(),
   priceChangePct: numericMetricWindowRecordSchema,
+  priceSolChangePct: numericMetricWindowRecordSchema.optional(),
   priceVelocityPctPerSec: z.number(),
   priceAccelerationPctPerSec2: z.number(),
+  priceSolVelocityPctPerSec: z.number().optional(),
+  priceSolAccelerationPctPerSec2: z.number().optional(),
   highPriceUsd: nonnegativeNumericMetricWindowRecordSchema,
   lowPriceUsd: nonnegativeNumericMetricWindowRecordSchema,
+  highPriceSol: nonnegativeNumericMetricWindowRecordSchema.optional(),
+  lowPriceSol: nonnegativeNumericMetricWindowRecordSchema.optional(),
   buySellRatio: z.number().nonnegative(),
   netBuyPressure: z.number().min(-1).max(1),
   organicBuyerScore: z.number().min(0).max(100),
+  hasUsdMetrics: z.boolean().optional(),
+  hasSolMetrics: z.boolean().optional(),
+  usedSolMetricsFallback: z.boolean().optional(),
   insufficientMetrics: z.boolean(),
   sampleCount: z.number().int().nonnegative(),
   firstSeenAt: z.string().datetime(),
@@ -279,11 +336,16 @@ export const CandidateMetricsSummarySchema = z.object({
   sampleCount: z.number().int().nonnegative(),
   insufficientMetrics: z.boolean(),
   volume10sUsd: z.number().nonnegative(),
+  volume10sSol: z.number().nonnegative().optional(),
   volumeVelocity: z.number(),
   volumeAcceleration: z.number(),
+  volumeVelocitySol: z.number().optional(),
+  volumeAccelerationSol: z.number().optional(),
   buyerVelocity: z.number(),
   buyerAcceleration: z.number(),
   priceVelocity: z.number(),
+  priceSolVelocity: z.number().optional(),
+  usedSolMetricsFallback: z.boolean().optional(),
   buySellRatio: z.number().nonnegative(),
   netBuyPressure: z.number().min(-1).max(1),
   lastUpdatedAt: z.string().datetime()
@@ -324,6 +386,8 @@ export const CandidateDecisionSchema = z.object({
   onChainSupplyUi: z.number().nonnegative().nullable().optional(),
   onChainTopHolderPct: z.number().min(0).max(100).nullable().optional(),
   onChainTop10HolderPct: z.number().min(0).max(100).nullable().optional(),
+  marketObservationSummary: MarketObservationSummarySchema.optional(),
+  marketReasonCodes: z.array(z.string().min(1)).optional(),
   metricsSummary: CandidateMetricsSummarySchema,
   riskSnapshotSummary: CandidateRiskSummarySchema,
   createdAt: z.string().datetime(),
@@ -347,6 +411,8 @@ export const OverlaySignalSchema = z.object({
   feedProvider: z.string().min(1).optional(),
   insufficientMetrics: z.boolean().optional(),
   lifecycleState: CandidateLifecycleStateSchema.optional(),
+  marketObservationSummary: MarketObservationSummarySchema.optional(),
+  marketReasonCodes: z.array(z.string().min(1)).optional(),
   netBuyPressure: z.number().min(-1).max(1).optional(),
   priceVelocity: z.number().optional(),
   riskLevel: RiskLevelSchema.optional(),

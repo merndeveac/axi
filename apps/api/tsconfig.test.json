@@ -12,6 +12,7 @@
       "@axi/scoring": ["../../packages/scoring/dist/index.d.ts"],
       "@axi/data-feeds": ["../../packages/data-feeds/dist/index.d.ts"],
       "@axi/execution": ["../../packages/execution/dist/index.d.ts"],
+      "@axi/market-data": ["../../packages/market-data/dist/index.d.ts"],
       "@axi/metrics": ["../../packages/metrics/dist/index.d.ts"],
       "@axi/risk": ["../../packages/risk/dist/index.d.ts"],
       "@axi/solana-chain": ["../../packages/solana-chain/dist/index.d.ts"],

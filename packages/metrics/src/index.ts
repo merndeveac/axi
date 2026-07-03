@@ -1,6 +1,8 @@
 import type { FeedEvent, TokenTradeEvent } from "@axi/data-feeds";
 import type {
   MetricWindow,
+  ObservationConfidence,
+  QuoteAsset,
   RollingMetricsSnapshot,
   RollingWindowMetrics
 } from "@axi/shared";
@@ -19,9 +21,18 @@ export type TradeObservationInput = {
   symbol?: string;
   side: "buy" | "sell" | "unknown";
   priceUsd?: number | null;
+  priceSol?: number | null;
+  priceQuote?: number | null;
   timestamp: string;
   trader?: string | null;
   volumeUsd?: number | null;
+  volumeSol?: number | null;
+  volumeQuote?: number | null;
+  quoteAsset?: QuoteAsset;
+  quoteMint?: string | null;
+  usableForMetrics?: boolean;
+  confidence?: ObservationConfidence;
+  reasonCodes?: string[];
 };
 
 type TradeSample = {
@@ -29,10 +40,19 @@ type TradeSample = {
   symbol?: string;
   side: "buy" | "sell";
   priceUsd: number;
+  priceSol: number;
+  priceQuote: number;
   timestamp: string;
   timestampMs: number;
   trader?: string;
   volumeUsd: number;
+  volumeSol: number;
+  volumeQuote: number;
+  quoteAsset?: QuoteAsset;
+  quoteMint?: string | null;
+  usableForMetrics?: boolean;
+  confidence?: ObservationConfidence;
+  reasonCodes?: string[];
 };
 
 type TokenState = {
@@ -85,22 +105,34 @@ export class RollingMetricsEngine {
     }
 
     const state = this.ensureState(stateInput);
-    const sample: TradeSample = {
+    const sample = createTradeSample({
       mint,
+      ...(event.confidence ? { confidence: event.confidence } : {}),
+      ...(event.priceQuote !== undefined ? { priceQuote: event.priceQuote } : {}),
+      ...(event.priceSol !== undefined ? { priceSol: event.priceSol } : {}),
+      priceUsd: event.priceUsd,
+      ...(event.quoteAsset ? { quoteAsset: event.quoteAsset } : {}),
+      ...(event.quoteMint !== undefined ? { quoteMint: event.quoteMint } : {}),
+      ...(event.reasonCodes ? { reasonCodes: event.reasonCodes } : {}),
       side: event.side,
-      priceUsd: safeNonnegative(event.priceUsd),
+      ...(event.symbol ? { symbol: event.symbol } : {}),
       timestamp: new Date(timestampMs).toISOString(),
       timestampMs,
-      volumeUsd: safeNonnegative(event.volumeUsd)
-    };
+      ...(event.trader ? { trader: event.trader } : {}),
+      ...(event.usableForMetrics !== undefined
+        ? { usableForMetrics: event.usableForMetrics }
+        : {}),
+      ...(event.volumeQuote !== undefined ? { volumeQuote: event.volumeQuote } : {}),
+      ...(event.volumeSol !== undefined ? { volumeSol: event.volumeSol } : {}),
+      volumeUsd: event.volumeUsd
+    });
 
     if (event.symbol) {
-      sample.symbol = event.symbol;
       state.symbol = event.symbol;
     }
 
-    if (event.trader) {
-      sample.trader = event.trader;
+    if (!sample) {
+      return this.buildSnapshot(state, timestampMs);
     }
 
     state.trades.push(sample);
@@ -128,18 +160,7 @@ export class RollingMetricsEngine {
     }
 
     const state = this.ensureState(stateInput);
-    const priceUsd = event.priceUsd;
-    const volumeUsd = event.volumeUsd;
-
-    if (
-      event.side === "unknown" ||
-      priceUsd === null ||
-      priceUsd === undefined ||
-      volumeUsd === null ||
-      volumeUsd === undefined ||
-      !Number.isFinite(priceUsd) ||
-      !Number.isFinite(volumeUsd)
-    ) {
+    if (event.side === "unknown") {
       return this.getMetrics(state.mint);
     }
 
@@ -153,17 +174,37 @@ export class RollingMetricsEngine {
         mint: event.mint
       },
       side: event.side,
-      priceUsd,
-      volumeUsd,
-      tokenAmount: priceUsd > 0 ? volumeUsd / priceUsd : 0,
+      priceUsd: event.priceUsd ?? null,
+      volumeUsd: event.volumeUsd ?? null,
+      ...(event.priceSol !== undefined ? { priceSol: event.priceSol } : {}),
+      ...(event.volumeSol !== undefined ? { volumeSol: event.volumeSol } : {}),
+      ...(event.priceQuote !== undefined ? { priceQuote: event.priceQuote } : {}),
+      ...(event.volumeQuote !== undefined ? { volumeQuote: event.volumeQuote } : {}),
+      ...(event.quoteAsset ? { quoteAsset: event.quoteAsset } : {}),
+      ...(event.quoteMint !== undefined ? { quoteMint: event.quoteMint } : {}),
+      tokenAmount:
+        safeNonnegative(event.priceQuote) > 0
+          ? safeNonnegative(event.volumeQuote) / safeNonnegative(event.priceQuote)
+          : 0,
       ...(event.trader ? { trader: event.trader } : {}),
       metrics: {
-        priceUsd,
+        priceUsd: safeNonnegative(event.priceUsd),
+        ...(event.priceSol !== undefined ? { priceSol: event.priceSol } : {}),
+        ...(event.priceQuote !== undefined ? { priceQuote: event.priceQuote } : {}),
         marketCapUsd: 0,
         liquidityUsd: 0,
-        volume1mUsd: volumeUsd,
-        volume5mUsd: volumeUsd,
-        volume15mUsd: volumeUsd,
+        volume1mUsd: safeNonnegative(event.volumeUsd),
+        volume5mUsd: safeNonnegative(event.volumeUsd),
+        volume15mUsd: safeNonnegative(event.volumeUsd),
+        ...(event.volumeSol !== undefined ? { volumeSol: event.volumeSol } : {}),
+        ...(event.volumeQuote !== undefined ? { volumeQuote: event.volumeQuote } : {}),
+        ...(event.quoteAsset ? { quoteAsset: event.quoteAsset } : {}),
+        ...(event.quoteMint !== undefined ? { quoteMint: event.quoteMint } : {}),
+        ...(event.usableForMetrics !== undefined
+          ? { usableForMetrics: event.usableForMetrics }
+          : {}),
+        ...(event.confidence ? { confidence: event.confidence } : {}),
+        ...(event.reasonCodes ? { reasonCodes: event.reasonCodes } : {}),
         buyCount1m: event.side === "buy" ? 1 : 0,
         buyCount5m: event.side === "buy" ? 1 : 0,
         sellCount1m: event.side === "sell" ? 1 : 0,
@@ -181,6 +222,11 @@ export class RollingMetricsEngine {
         buyerVelocity: 0
       },
       metricsComplete: true,
+      ...(event.usableForMetrics !== undefined
+        ? { usableForMetrics: event.usableForMetrics }
+        : {}),
+      ...(event.confidence ? { confidence: event.confidence } : {}),
+      ...(event.reasonCodes ? { reasonCodes: event.reasonCodes } : {}),
       receivedAt: event.timestamp,
       riskFlags: {
         mintAuthorityActive: false,
@@ -270,30 +316,61 @@ export class RollingMetricsEngine {
     const priceChangePct = createWindowRecord(
       (_seconds, label) => windows[label].priceChangePct
     );
+    const priceSolChangePct = createWindowRecord(
+      (_seconds, label) => windows[label].priceSolChangePct ?? 0
+    );
     const highPriceUsd = createWindowRecord(
       (_seconds, label) => windows[label].highPriceUsd
     );
     const lowPriceUsd = createWindowRecord(
       (_seconds, label) => windows[label].lowPriceUsd
     );
+    const highPriceSol = createWindowRecord(
+      (_seconds, label) => windows[label].highPriceSol ?? 0
+    );
+    const lowPriceSol = createWindowRecord(
+      (_seconds, label) => windows[label].lowPriceSol ?? 0
+    );
     const window5s = windows["5s"];
     const currentVolumeVelocity = window5s.totalVolumeUsd / 5;
     const previousVolumeVelocity =
-      computeSegmentVolume(state.trades, referenceTimestampMs, 10, 5) / 5;
+      computeSegmentVolume(state.trades, referenceTimestampMs, 10, 5, "usd") / 5;
+    const currentVolumeVelocitySol = (window5s.totalVolumeSol ?? 0) / 5;
+    const previousVolumeVelocitySol =
+      computeSegmentVolume(state.trades, referenceTimestampMs, 10, 5, "sol") / 5;
     const currentBuyerVelocity = window5s.uniqueBuyers / 5;
     const previousBuyerVelocity =
       computeSegmentUniqueBuyers(state.trades, referenceTimestampMs, 10, 5) / 5;
     const currentPriceVelocity = window5s.priceChangePct / 5;
     const previousPriceVelocity =
-      computeSegmentPriceChange(state.trades, referenceTimestampMs, 10, 5) / 5;
+      computeSegmentPriceChange(state.trades, referenceTimestampMs, 10, 5, "usd") / 5;
+    const currentPriceVelocitySol = (window5s.priceSolChangePct ?? 0) / 5;
+    const previousPriceVelocitySol =
+      computeSegmentPriceChange(state.trades, referenceTimestampMs, 10, 5, "sol") / 5;
     const sampleCount = state.trades.length;
     const largestTradeUsd = state.trades.reduce(
       (largest, trade) => Math.max(largest, trade.volumeUsd),
       0
     );
+    const largestTradeSol = state.trades.reduce(
+      (largest, trade) => Math.max(largest, trade.volumeSol),
+      0
+    );
     const totalVolume60s = windows["60s"].totalVolumeUsd;
+    const totalVolume60sSol = windows["60s"].totalVolumeSol ?? 0;
     const latestTrade = state.trades.at(-1);
     const lastUpdatedAt = latestTrade?.timestamp ?? state.firstSeenAt;
+    const hasUsdMetrics = state.trades.some(
+      (trade) => trade.priceUsd > 0 && trade.volumeUsd > 0
+    );
+    const hasSolMetrics = state.trades.some(
+      (trade) => trade.priceSol > 0 && trade.volumeSol > 0
+    );
+    const usedSolMetricsFallback = !hasUsdMetrics && hasSolMetrics;
+    const effectiveLargestTrade = hasUsdMetrics ? largestTradeUsd : largestTradeSol;
+    const effectiveTotalVolume60s = hasUsdMetrics
+      ? totalVolume60s
+      : totalVolume60sSol;
 
     const snapshot: RollingMetricsSnapshot = {
       mint: state.mint,
@@ -302,30 +379,54 @@ export class RollingMetricsEngine {
       volumeAccelerationUsdPerSec2: roundMetric(
         (currentVolumeVelocity - previousVolumeVelocity) / 5
       ),
+      volumeVelocitySolPerSec: roundMetric(currentVolumeVelocitySol),
+      volumeAccelerationSolPerSec2: roundMetric(
+        (currentVolumeVelocitySol - previousVolumeVelocitySol) / 5
+      ),
       tradesPerSecond: roundMetric(window5s.totalTradeCount / 5),
       largestTradeUsd: roundMetric(largestTradeUsd),
-      largestTradeShare: roundMetric(safeRatio(largestTradeUsd, totalVolume60s)),
+      largestTradeSol: roundMetric(largestTradeSol),
+      largestTradeShare: roundMetric(
+        safeRatio(effectiveLargestTrade, effectiveTotalVolume60s)
+      ),
       buyerVelocityPerSec: roundMetric(currentBuyerVelocity),
       buyerAccelerationPerSec2: roundMetric(
         (currentBuyerVelocity - previousBuyerVelocity) / 5
       ),
       latestPriceUsd: latestTrade?.priceUsd ?? 0,
+      latestPriceSol: latestTrade?.priceSol ?? 0,
       priceChangePct,
+      priceSolChangePct,
       priceVelocityPctPerSec: roundMetric(currentPriceVelocity),
       priceAccelerationPctPerSec2: roundMetric(
         (currentPriceVelocity - previousPriceVelocity) / 5
       ),
+      priceSolVelocityPctPerSec: roundMetric(currentPriceVelocitySol),
+      priceSolAccelerationPctPerSec2: roundMetric(
+        (currentPriceVelocitySol - previousPriceVelocitySol) / 5
+      ),
       highPriceUsd,
       lowPriceUsd,
+      highPriceSol,
+      lowPriceSol,
       buySellRatio: roundMetric(
-        boundedRatio(window5s.buyVolumeUsd, window5s.sellVolumeUsd)
+        boundedRatio(
+          hasUsdMetrics ? window5s.buyVolumeUsd : window5s.buyVolumeSol ?? 0,
+          hasUsdMetrics ? window5s.sellVolumeUsd : window5s.sellVolumeSol ?? 0
+        )
       ),
       netBuyPressure: roundMetric(
-        window5s.totalVolumeUsd > 0
-          ? window5s.netVolumeUsd / window5s.totalVolumeUsd
+        (hasUsdMetrics ? window5s.totalVolumeUsd : window5s.totalVolumeSol ?? 0) > 0
+          ? (hasUsdMetrics ? window5s.netVolumeUsd : window5s.netVolumeSol ?? 0) /
+              (hasUsdMetrics ? window5s.totalVolumeUsd : window5s.totalVolumeSol ?? 0)
           : 0
       ),
-      organicBuyerScore: roundMetric(computeOrganicBuyerScore(window5s, largestTradeUsd)),
+      organicBuyerScore: roundMetric(
+        computeOrganicBuyerScore(window5s, effectiveLargestTrade, hasUsdMetrics)
+      ),
+      hasUsdMetrics,
+      hasSolMetrics,
+      usedSolMetricsFallback,
       insufficientMetrics: sampleCount < this.minSamplesForComplete,
       sampleCount,
       firstSeenAt: state.firstSeenAt,
@@ -362,20 +463,32 @@ export function createEmptyMetrics(
     windows,
     volumeVelocityUsdPerSec: 0,
     volumeAccelerationUsdPerSec2: 0,
+    volumeVelocitySolPerSec: 0,
+    volumeAccelerationSolPerSec2: 0,
     tradesPerSecond: 0,
     largestTradeUsd: 0,
+    largestTradeSol: 0,
     largestTradeShare: 0,
     buyerVelocityPerSec: 0,
     buyerAccelerationPerSec2: 0,
     latestPriceUsd: 0,
+    latestPriceSol: 0,
     priceChangePct: createWindowRecord(() => 0),
+    priceSolChangePct: createWindowRecord(() => 0),
     priceVelocityPctPerSec: 0,
     priceAccelerationPctPerSec2: 0,
+    priceSolVelocityPctPerSec: 0,
+    priceSolAccelerationPctPerSec2: 0,
     highPriceUsd: createWindowRecord(() => 0),
     lowPriceUsd: createWindowRecord(() => 0),
+    highPriceSol: createWindowRecord(() => 0),
+    lowPriceSol: createWindowRecord(() => 0),
     buySellRatio: 1,
     netBuyPressure: 0,
     organicBuyerScore: 0,
+    hasUsdMetrics: false,
+    hasSolMetrics: false,
+    usedSolMetricsFallback: false,
     insufficientMetrics: true,
     sampleCount: 0,
     firstSeenAt,
@@ -400,45 +513,71 @@ function computeWindowMetrics(
   const traderSet = new Set<string>();
   let buyVolumeUsd = 0;
   let sellVolumeUsd = 0;
+  let buyVolumeSol = 0;
+  let sellVolumeSol = 0;
   let buyTradeCount = 0;
   let sellTradeCount = 0;
   let highPriceUsd = 0;
   let lowPriceUsd = 0;
+  let highPriceSol = 0;
+  let lowPriceSol = 0;
 
   for (const trade of windowTrades) {
-    const traderId = trade.trader ?? `${trade.side}:${trade.timestamp}:${trade.volumeUsd}`;
+    const effectiveVolume =
+      trade.volumeUsd > 0 ? trade.volumeUsd : trade.volumeSol;
+    const traderId =
+      trade.trader ?? `${trade.side}:${trade.timestamp}:${effectiveVolume}`;
     traderSet.add(traderId);
 
     if (trade.side === "buy") {
       buyVolumeUsd += trade.volumeUsd;
+      buyVolumeSol += trade.volumeSol;
       buyTradeCount += 1;
       buyerSet.add(traderId);
     } else {
       sellVolumeUsd += trade.volumeUsd;
+      sellVolumeSol += trade.volumeSol;
       sellTradeCount += 1;
       sellerSet.add(traderId);
     }
 
-    highPriceUsd = Math.max(highPriceUsd, trade.priceUsd);
-    lowPriceUsd = lowPriceUsd === 0 ? trade.priceUsd : Math.min(lowPriceUsd, trade.priceUsd);
+    if (trade.priceUsd > 0) {
+      highPriceUsd = Math.max(highPriceUsd, trade.priceUsd);
+      lowPriceUsd =
+        lowPriceUsd === 0 ? trade.priceUsd : Math.min(lowPriceUsd, trade.priceUsd);
+    }
+
+    if (trade.priceSol > 0) {
+      highPriceSol = Math.max(highPriceSol, trade.priceSol);
+      lowPriceSol =
+        lowPriceSol === 0 ? trade.priceSol : Math.min(lowPriceSol, trade.priceSol);
+    }
   }
 
   const totalVolumeUsd = buyVolumeUsd + sellVolumeUsd;
+  const totalVolumeSol = buyVolumeSol + sellVolumeSol;
 
   return {
     buyVolumeUsd: roundMetric(buyVolumeUsd),
     sellVolumeUsd: roundMetric(sellVolumeUsd),
     totalVolumeUsd: roundMetric(totalVolumeUsd),
     netVolumeUsd: roundMetric(buyVolumeUsd - sellVolumeUsd),
+    buyVolumeSol: roundMetric(buyVolumeSol),
+    sellVolumeSol: roundMetric(sellVolumeSol),
+    totalVolumeSol: roundMetric(totalVolumeSol),
+    netVolumeSol: roundMetric(buyVolumeSol - sellVolumeSol),
     buyTradeCount,
     sellTradeCount,
     totalTradeCount: buyTradeCount + sellTradeCount,
     uniqueBuyers: buyerSet.size,
     uniqueSellers: sellerSet.size,
     uniqueTraders: traderSet.size,
-    priceChangePct: roundMetric(computePriceChangePct(windowTrades)),
+    priceChangePct: roundMetric(computePriceChangePct(windowTrades, "usd")),
+    priceSolChangePct: roundMetric(computePriceChangePct(windowTrades, "sol")),
     highPriceUsd: roundMetric(highPriceUsd),
-    lowPriceUsd: roundMetric(lowPriceUsd)
+    lowPriceUsd: roundMetric(lowPriceUsd),
+    highPriceSol: roundMetric(highPriceSol),
+    lowPriceSol: roundMetric(lowPriceSol)
   };
 }
 
@@ -446,11 +585,16 @@ function computeSegmentVolume(
   trades: TradeSample[],
   referenceTimestampMs: number,
   olderSeconds: number,
-  newerSeconds: number
+  newerSeconds: number,
+  currency: "usd" | "sol"
 ): number {
   return trades
     .filter((trade) => isInSegment(trade, referenceTimestampMs, olderSeconds, newerSeconds))
-    .reduce((total, trade) => total + trade.volumeUsd, 0);
+    .reduce(
+      (total, trade) =>
+        total + (currency === "usd" ? trade.volumeUsd : trade.volumeSol),
+      0
+    );
 }
 
 function computeSegmentUniqueBuyers(
@@ -477,37 +621,56 @@ function computeSegmentPriceChange(
   trades: TradeSample[],
   referenceTimestampMs: number,
   olderSeconds: number,
-  newerSeconds: number
+  newerSeconds: number,
+  currency: "usd" | "sol"
 ): number {
   return computePriceChangePct(
     trades.filter((trade) =>
       isInSegment(trade, referenceTimestampMs, olderSeconds, newerSeconds)
-    )
+    ),
+    currency
   );
 }
 
-function computePriceChangePct(trades: TradeSample[]): number {
-  const first = trades[0];
-  const last = trades.at(-1);
+function computePriceChangePct(
+  trades: TradeSample[],
+  currency: "usd" | "sol"
+): number {
+  const pricedTrades = trades.filter((trade) =>
+    currency === "usd" ? trade.priceUsd > 0 : trade.priceSol > 0
+  );
+  const first = pricedTrades[0];
+  const last = pricedTrades.at(-1);
 
-  if (!first || !last || first.priceUsd <= 0) {
+  if (!first || !last) {
     return 0;
   }
 
-  return ((last.priceUsd - first.priceUsd) / first.priceUsd) * 100;
+  const firstPrice = currency === "usd" ? first.priceUsd : first.priceSol;
+  const lastPrice = currency === "usd" ? last.priceUsd : last.priceSol;
+
+  if (firstPrice <= 0) {
+    return 0;
+  }
+
+  return ((lastPrice - firstPrice) / firstPrice) * 100;
 }
 
 function computeOrganicBuyerScore(
   windowMetrics: RollingWindowMetrics,
-  largestTradeUsd: number
+  largestTrade: number,
+  useUsd: boolean
 ): number {
   if (windowMetrics.totalTradeCount === 0) {
     return 0;
   }
 
+  const totalVolume = useUsd
+    ? windowMetrics.totalVolumeUsd
+    : windowMetrics.totalVolumeSol ?? 0;
   const traderDiversity =
     windowMetrics.uniqueTraders / Math.max(windowMetrics.totalTradeCount, 1);
-  const largestTradePenalty = 1 - safeRatio(largestTradeUsd, windowMetrics.totalVolumeUsd);
+  const largestTradePenalty = 1 - safeRatio(largestTrade, totalVolume);
   const buyerMix =
     windowMetrics.uniqueBuyers /
     Math.max(windowMetrics.uniqueBuyers + windowMetrics.uniqueSellers, 1);
@@ -561,6 +724,10 @@ function createEmptyWindowMetrics(): RollingWindowMetrics {
     sellVolumeUsd: 0,
     totalVolumeUsd: 0,
     netVolumeUsd: 0,
+    buyVolumeSol: 0,
+    sellVolumeSol: 0,
+    totalVolumeSol: 0,
+    netVolumeSol: 0,
     buyTradeCount: 0,
     sellTradeCount: 0,
     totalTradeCount: 0,
@@ -568,9 +735,102 @@ function createEmptyWindowMetrics(): RollingWindowMetrics {
     uniqueSellers: 0,
     uniqueTraders: 0,
     priceChangePct: 0,
+    priceSolChangePct: 0,
     highPriceUsd: 0,
-    lowPriceUsd: 0
+    lowPriceUsd: 0,
+    highPriceSol: 0,
+    lowPriceSol: 0
   };
+}
+
+function createTradeSample(input: {
+  confidence?: ObservationConfidence;
+  mint: string;
+  priceQuote?: number | null;
+  priceSol?: number | null;
+  priceUsd?: number | null;
+  quoteAsset?: QuoteAsset;
+  quoteMint?: string | null;
+  reasonCodes?: string[];
+  side: "buy" | "sell";
+  symbol?: string;
+  timestamp: string;
+  timestampMs: number;
+  trader?: string;
+  usableForMetrics?: boolean;
+  volumeQuote?: number | null;
+  volumeSol?: number | null;
+  volumeUsd?: number | null;
+}): TradeSample | null {
+  const priceUsd = safeNonnegative(input.priceUsd);
+  const volumeUsd = safeNonnegative(input.volumeUsd);
+  const priceSol = safeNonnegative(
+    input.priceSol ??
+      (input.quoteAsset === "SOL" || input.quoteAsset === "WSOL"
+        ? input.priceQuote
+        : null)
+  );
+  const volumeSol = safeNonnegative(
+    input.volumeSol ??
+      (input.quoteAsset === "SOL" || input.quoteAsset === "WSOL"
+        ? input.volumeQuote
+        : null)
+  );
+  const priceQuote = safeNonnegative(input.priceQuote);
+  const volumeQuote = safeNonnegative(input.volumeQuote);
+  const hasUsdPair = priceUsd > 0 && volumeUsd > 0;
+  const hasSolPair = priceSol > 0 && volumeSol > 0;
+  const hasQuotePair = priceQuote > 0 && volumeQuote > 0;
+
+  if (
+    input.usableForMetrics === false ||
+    (!hasUsdPair && !hasSolPair && !hasQuotePair)
+  ) {
+    return null;
+  }
+
+  const sample: TradeSample = {
+    mint: input.mint,
+    side: input.side,
+    priceUsd: hasUsdPair ? priceUsd : 0,
+    priceSol: hasSolPair ? priceSol : 0,
+    priceQuote: hasQuotePair ? priceQuote : 0,
+    timestamp: input.timestamp,
+    timestampMs: input.timestampMs,
+    volumeUsd: hasUsdPair ? volumeUsd : 0,
+    volumeSol: hasSolPair ? volumeSol : 0,
+    volumeQuote: hasQuotePair ? volumeQuote : 0
+  };
+
+  if (input.symbol) {
+    sample.symbol = input.symbol;
+  }
+
+  if (input.trader) {
+    sample.trader = input.trader;
+  }
+
+  if (input.quoteAsset) {
+    sample.quoteAsset = input.quoteAsset;
+  }
+
+  if (input.quoteMint !== undefined) {
+    sample.quoteMint = input.quoteMint;
+  }
+
+  if (input.usableForMetrics !== undefined) {
+    sample.usableForMetrics = input.usableForMetrics;
+  }
+
+  if (input.confidence) {
+    sample.confidence = input.confidence;
+  }
+
+  if (input.reasonCodes) {
+    sample.reasonCodes = input.reasonCodes;
+  }
+
+  return sample;
 }
 
 function getTradeMint(event: TokenTradeEvent): string {
@@ -607,8 +867,10 @@ function safeRatio(numerator: number, denominator: number): number {
   return denominator > 0 ? clamp(numerator / denominator, 0, 1) : 0;
 }
 
-function safeNonnegative(value: number): number {
-  return Number.isFinite(value) ? Math.max(0, value) : 0;
+function safeNonnegative(value: number | null | undefined): number {
+  return value !== null && value !== undefined && Number.isFinite(value)
+    ? Math.max(0, value)
+    : 0;
 }
 
 function roundMetric(value: number): number {

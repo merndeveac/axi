@@ -9,6 +9,7 @@ export default [
       "**/build/**",
       "**/coverage/**",
       "**/node_modules/**",
+      "**/*.d.ts",
       "**/*.config.js",
       "**/*.config.ts"
     ]

@@ -237,6 +237,37 @@ describe("scoring", () => {
     expect(score.action).not.toBe("BUY_READY");
     expect(score.reasonCodes).toContain("INSUFFICIENT_TRADE_METRICS");
   });
+
+  it("can use SOL rolling metrics fallback without crashing", () => {
+    const score = scoreCandidate(
+      baseCandidate,
+      { ...baseMetrics, priceUsd: 0, volume1mUsd: 0, volumeVelocity: 0 },
+      baseRiskFlags,
+      {
+        minSampleCount: 1,
+        riskSnapshot: createRiskSnapshot(),
+        rollingMetrics: createRollingMetrics({
+          hasUsdMetrics: false,
+          hasSolMetrics: true,
+          usedSolMetricsFallback: true,
+          latestPriceUsd: 0,
+          latestPriceSol: 0.2,
+          volumeVelocityUsdPerSec: 0,
+          volumeVelocitySolPerSec: 120,
+          volumeAccelerationUsdPerSec2: 0,
+          volumeAccelerationSolPerSec2: 18,
+          priceVelocityPctPerSec: 0,
+          priceSolVelocityPctPerSec: 1.2,
+          priceAccelerationPctPerSec2: 0,
+          priceSolAccelerationPctPerSec2: 0.2,
+          sampleCount: 8
+        })
+      }
+    );
+
+    expect(score.reasonCodes).toContain("SCORE_USED_SOL_METRICS_FALLBACK");
+    expect(score.reasonCodes).toContain("POSITIVE_VOLUME_ACCELERATION");
+  });
 });
 
 function createRollingMetrics(

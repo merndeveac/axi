@@ -61,10 +61,10 @@ describe("MockFeedProvider", () => {
     expect(momentumTrades.filter((event) => event.side === "buy").length).toBeGreaterThan(
       momentumTrades.filter((event) => event.side === "sell").length
     );
-    expect(momentumTrades.at(-1)?.volumeUsd).toBeGreaterThan(
+    expect(momentumTrades.at(-1)?.volumeUsd ?? 0).toBeGreaterThan(
       momentumTrades[0]?.volumeUsd ?? 0
     );
-    expect(momentumTrades.at(-1)?.priceUsd).toBeGreaterThan(
+    expect(momentumTrades.at(-1)?.priceUsd ?? 0).toBeGreaterThan(
       momentumTrades[0]?.priceUsd ?? 0
     );
   });
@@ -74,7 +74,7 @@ describe("MockFeedProvider", () => {
       collectEvents({ scenario: "flat", seed: 42, maxEvents: 12 })
     );
 
-    expect(Math.max(...flatTrades.map((event) => event.volumeUsd))).toBeLessThan(40);
+    expect(Math.max(...flatTrades.map((event) => event.volumeUsd ?? 0))).toBeLessThan(40);
     expect(flatTrades.at(-1)?.priceUsd).toBeCloseTo(flatTrades[0]?.priceUsd ?? 0);
   });
 
@@ -84,10 +84,10 @@ describe("MockFeedProvider", () => {
     );
     const sellVolume = rugTrades
       .filter((event) => event.side === "sell")
-      .reduce((total, event) => total + event.volumeUsd, 0);
+      .reduce((total, event) => total + (event.volumeUsd ?? 0), 0);
     const buyVolume = rugTrades
       .filter((event) => event.side === "buy")
-      .reduce((total, event) => total + event.volumeUsd, 0);
+      .reduce((total, event) => total + (event.volumeUsd ?? 0), 0);
 
     expect(sellVolume).toBeGreaterThan(buyVolume);
     expect(rugTrades.some((event) => event.riskFlags.honeypotSuspected)).toBe(true);

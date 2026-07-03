@@ -7,6 +7,7 @@ import type {
   CandidateLifecycleState,
   CandidateMetricsSummary,
   CandidateRiskSummary,
+  MarketObservationSummary,
   RiskLevel,
   RiskSnapshot,
   RollingMetricsSnapshot,
@@ -43,6 +44,8 @@ export type CandidateState = {
   chainVerification?: ChainVerificationSummary;
   chainVerifiedAt?: string;
   chainReasonCodes?: string[];
+  latestMarketObservationSummary?: MarketObservationSummary;
+  marketReasonCodes?: string[];
   onChainMintAuthorityActive?: boolean | null;
   onChainFreezeAuthorityActive?: boolean | null;
   onChainSupplyUi?: number | null;
@@ -202,6 +205,23 @@ export class CandidateLifecycleEngine {
     return state;
   }
 
+  updateMarketObservation(
+    mint: string,
+    summary: MarketObservationSummary
+  ): CandidateState | undefined {
+    const state = this.candidates.get(mint);
+
+    if (!state) {
+      return undefined;
+    }
+
+    state.latestMarketObservationSummary = summary;
+    state.marketReasonCodes = summary.reasonCodes;
+    state.lastUpdatedAt = summary.createdAt;
+
+    return state;
+  }
+
   markPaperOrderSubmitted(
     mint: string,
     reasonCodes: string[] = ["PAPER_ORDER_SUBMITTED"]
@@ -330,6 +350,7 @@ export class CandidateLifecycleEngine {
     const riskReasonCodes = risk?.reasonCodes ?? ["UNKNOWN_RISK"];
     const scoreReasonCodes = score?.reasonCodes ?? ["NO_SCORE_YET"];
     const chainReasonCodes = state.chainReasonCodes ?? [];
+    const marketReasonCodes = state.marketReasonCodes ?? [];
     const lifecycleReasonCodes: string[] = [];
     let lifecycleState: CandidateLifecycleState = state.lifecycleState;
     let action: CandidateDecisionAction = "IGNORE";
@@ -395,7 +416,8 @@ export class CandidateLifecycleEngine {
         ...lifecycleReasonCodes,
         ...riskReasonCodes,
         ...scoreReasonCodes,
-        ...chainReasonCodes
+        ...chainReasonCodes,
+        ...marketReasonCodes
       ]),
       metricsSummary,
       riskSnapshotSummary: riskSummary,
@@ -451,6 +473,14 @@ export class CandidateLifecycleEngine {
       decision.onChainTop10HolderPct = state.onChainTop10HolderPct;
     }
 
+    if (state.latestMarketObservationSummary) {
+      decision.marketObservationSummary = state.latestMarketObservationSummary;
+    }
+
+    if (state.marketReasonCodes) {
+      decision.marketReasonCodes = state.marketReasonCodes;
+    }
+
     return decision;
   }
 }
@@ -470,11 +500,16 @@ function createMetricsSummary(
       sampleCount: 0,
       insufficientMetrics: true,
       volume10sUsd: 0,
+      volume10sSol: 0,
       volumeVelocity: 0,
       volumeAcceleration: 0,
+      volumeVelocitySol: 0,
+      volumeAccelerationSol: 0,
       buyerVelocity: 0,
       buyerAcceleration: 0,
       priceVelocity: 0,
+      priceSolVelocity: 0,
+      usedSolMetricsFallback: false,
       buySellRatio: 1,
       netBuyPressure: 0,
       lastUpdatedAt: fallbackTimestamp
@@ -485,11 +520,16 @@ function createMetricsSummary(
     sampleCount: metrics.sampleCount,
     insufficientMetrics: metrics.insufficientMetrics,
     volume10sUsd: metrics.windows["10s"].totalVolumeUsd,
+    volume10sSol: metrics.windows["10s"].totalVolumeSol ?? 0,
     volumeVelocity: metrics.volumeVelocityUsdPerSec,
     volumeAcceleration: metrics.volumeAccelerationUsdPerSec2,
+    volumeVelocitySol: metrics.volumeVelocitySolPerSec ?? 0,
+    volumeAccelerationSol: metrics.volumeAccelerationSolPerSec2 ?? 0,
     buyerVelocity: metrics.buyerVelocityPerSec,
     buyerAcceleration: metrics.buyerAccelerationPerSec2,
     priceVelocity: metrics.priceVelocityPctPerSec,
+    priceSolVelocity: metrics.priceSolVelocityPctPerSec ?? 0,
+    usedSolMetricsFallback: metrics.usedSolMetricsFallback ?? false,
     buySellRatio: metrics.buySellRatio,
     netBuyPressure: metrics.netBuyPressure,
     lastUpdatedAt: metrics.lastUpdatedAt

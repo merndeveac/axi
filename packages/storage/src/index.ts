@@ -9,6 +9,7 @@ import type {
   ChainTransactionEvent,
   NormalizedChainTradeEvent
 } from "@axi/chain-events";
+import type { MarketObservation } from "@axi/market-data";
 import {
   CandidateDecisionSchema,
   ChainVerificationStatusSchema,
@@ -57,6 +58,7 @@ export type ReplaySource =
   | "chain_transaction_events"
   | "chain_trade_events"
   | "feed_events"
+  | "market_observations"
   | "chain_verifications"
   | "risk_snapshots"
   | "signals";
@@ -115,6 +117,7 @@ export type StorageStats = {
   chainVerificationCount: number;
   chainTransactionEventCount: number;
   chainTradeEventCount: number;
+  marketObservationCount: number;
   riskSnapshotCount: number;
   candidateDecisionCount: number;
   paperOrderCount: number;
@@ -180,6 +183,13 @@ export type StoredChainTransactionEvent = ChainTransactionEventInput & {
 export type ChainTradeEventInput = NormalizedChainTradeEvent;
 
 export type StoredChainTradeEvent = ChainTradeEventInput & {
+  id: number;
+  createdAt: string;
+};
+
+export type MarketObservationInput = MarketObservation;
+
+export type StoredMarketObservation = MarketObservationInput & {
   id: number;
   createdAt: string;
 };
@@ -298,6 +308,28 @@ type ChainTradeEventRow = {
   created_at: string;
 };
 
+type MarketObservationRow = {
+  id: number;
+  signature: string;
+  mint: string;
+  side: MarketObservation["side"];
+  quote_asset: MarketObservation["quoteAsset"];
+  quote_mint: string | null;
+  base_token_amount: number | null;
+  quote_amount: number | null;
+  price_quote: number | null;
+  price_sol: number | null;
+  price_usd: number | null;
+  volume_quote: number | null;
+  volume_sol: number | null;
+  volume_usd: number | null;
+  confidence: MarketObservation["confidence"];
+  usable_for_metrics: number;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
 type CountRow = {
   count: number;
 };
@@ -392,6 +424,45 @@ const chainTradeEventInputSchema = z.object({
   confidence: z.enum(["low", "medium", "high"]),
   reasonCodes: z.array(z.string().min(1)),
   raw: z.unknown().optional()
+});
+
+const marketObservationInputSchema = z.object({
+  type: z.literal("market_observation"),
+  source: z.literal("solana_rpc"),
+  mint: z.string().min(1),
+  symbol: z.string().min(1).optional(),
+  signature: z.string().min(1),
+  slot: z.number().int().nonnegative().optional(),
+  timestamp: z.string().datetime(),
+  watchedAddress: z.string().min(1).optional(),
+  watchedAddressKind: z
+    .enum([
+      "mint",
+      "pool",
+      "bonding_curve",
+      "program",
+      "token_account",
+      "wallet",
+      "unknown"
+    ])
+    .optional(),
+  perspective: z.enum(["wallet", "pool", "bonding_curve", "unknown"]),
+  side: z.enum(["buy", "sell", "unknown"]),
+  baseTokenAmount: z.number().nonnegative().nullable(),
+  quoteAsset: z.enum(["SOL", "WSOL", "USDC", "USDT", "UNKNOWN"]),
+  quoteMint: z.string().min(1).nullable(),
+  quoteAmount: z.number().nonnegative().nullable(),
+  priceQuote: z.number().nonnegative().nullable(),
+  priceSol: z.number().nonnegative().nullable(),
+  priceUsd: z.number().nonnegative().nullable(),
+  volumeQuote: z.number().nonnegative().nullable(),
+  volumeSol: z.number().nonnegative().nullable(),
+  volumeUsd: z.number().nonnegative().nullable(),
+  confidence: z.enum(["low", "medium", "high"]),
+  usableForMetrics: z.boolean(),
+  reasonCodes: z.array(z.string().min(1)),
+  raw: z.unknown().optional(),
+  createdAt: z.string().datetime()
 });
 
 const limitSchema = z.number().int().positive().max(1000);
@@ -1007,6 +1078,148 @@ export function getChainTradeEvent(
   return row ? mapChainTradeEventRow(row) : null;
 }
 
+export function saveMarketObservation(
+  observation: MarketObservationInput
+): StoredMarketObservation {
+  const parsed = marketObservationInputSchema.parse(
+    observation
+  ) as MarketObservation;
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into market_observations (
+        signature,
+        mint,
+        side,
+        quote_asset,
+        quote_mint,
+        base_token_amount,
+        quote_amount,
+        price_quote,
+        price_sol,
+        price_usd,
+        volume_quote,
+        volume_sol,
+        volume_usd,
+        confidence,
+        usable_for_metrics,
+        reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.signature,
+      parsed.mint,
+      parsed.side,
+      parsed.quoteAsset,
+      parsed.quoteMint,
+      parsed.baseTokenAmount,
+      parsed.quoteAmount,
+      parsed.priceQuote,
+      parsed.priceSol,
+      parsed.priceUsd,
+      parsed.volumeQuote,
+      parsed.volumeSol,
+      parsed.volumeUsd,
+      parsed.confidence,
+      parsed.usableForMetrics ? 1 : 0,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(parsed),
+      parsed.createdAt
+    );
+
+  return {
+    ...parsed,
+    id: toRowId(result.lastInsertRowid),
+    createdAt: parsed.createdAt
+  };
+}
+
+export function listMarketObservations(
+  limit = 50
+): StoredMarketObservation[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from market_observations
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as MarketObservationRow[];
+
+  return rows.map(mapMarketObservationRow);
+}
+
+export function listMarketObservationsForReplay(
+  limit = 50
+): StoredMarketObservation[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from market_observations
+       order by datetime(created_at) asc, id asc
+       limit ?`
+    )
+    .all(parsedLimit) as MarketObservationRow[];
+
+  return rows.map(mapMarketObservationRow);
+}
+
+export function listMarketObservationsByMint(
+  mint: string,
+  limit = 50
+): StoredMarketObservation[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from market_observations
+       where mint = ?
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(mint, parsedLimit) as MarketObservationRow[];
+
+  return rows.map(mapMarketObservationRow);
+}
+
+export function getMarketObservation(
+  signature: string
+): StoredMarketObservation | null {
+  const row = getDb()
+    .prepare(
+      `select *
+       from market_observations
+       where signature = ?
+       order by datetime(created_at) desc, id desc
+       limit 1`
+    )
+    .get(signature) as MarketObservationRow | undefined;
+
+  return row ? mapMarketObservationRow(row) : null;
+}
+
+export function getLatestMarketObservation(
+  mint: string
+): StoredMarketObservation | null {
+  const row = getDb()
+    .prepare(
+      `select *
+       from market_observations
+       where mint = ?
+       order by datetime(created_at) desc, id desc
+       limit 1`
+    )
+    .get(mint) as MarketObservationRow | undefined;
+
+  return row ? mapMarketObservationRow(row) : null;
+}
+
 export async function* createReplayStream(options: {
   limit?: number;
   speed?: number;
@@ -1051,6 +1264,7 @@ function getReplayPayload(
     | StoredChainTradeEvent
     | StoredChainVerification
     | StoredFeedEvent
+    | StoredMarketObservation
     | StoredRiskSnapshot
     | StoredSignal
 ): unknown {
@@ -1073,6 +1287,7 @@ function getReplayRecords(
   | StoredChainTradeEvent
   | StoredChainVerification
   | StoredFeedEvent
+  | StoredMarketObservation
   | StoredRiskSnapshot
   | StoredSignal
 > {
@@ -1091,6 +1306,8 @@ function getReplayRecords(
       return listSignalsForReplay(limit);
     case "feed_events":
       return listFeedEvents(limit);
+    case "market_observations":
+      return listMarketObservationsForReplay(limit);
   }
 }
 
@@ -1235,6 +1452,7 @@ export function getStorageStats(): StorageStats {
     chainVerificationCount: countRows(db, "chain_verifications"),
     chainTransactionEventCount: countRows(db, "chain_transaction_events"),
     chainTradeEventCount: countRows(db, "chain_trade_events"),
+    marketObservationCount: countRows(db, "market_observations"),
     riskSnapshotCount: countRows(db, "risk_snapshots"),
     candidateDecisionCount: countRows(db, "candidate_decisions"),
     paperOrderCount: countRows(db, "paper_orders"),
@@ -1459,6 +1677,46 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(4, "chain_transaction_events", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 5)) {
+    db.exec(`
+      create table if not exists market_observations (
+        id integer primary key autoincrement,
+        signature text not null,
+        mint text not null,
+        side text not null,
+        quote_asset text not null,
+        quote_mint text,
+        base_token_amount real,
+        quote_amount real,
+        price_quote real,
+        price_sol real,
+        price_usd real,
+        volume_quote real,
+        volume_sol real,
+        volume_usd real,
+        confidence text not null,
+        usable_for_metrics integer not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_market_observations_created_at
+        on market_observations(created_at);
+
+      create index if not exists idx_market_observations_signature
+        on market_observations(signature);
+
+      create index if not exists idx_market_observations_mint
+        on market_observations(mint);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(5, "market_observations", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -1639,6 +1897,20 @@ function mapChainTradeEventRow(
   const payload = chainTradeEventInputSchema.parse(
     JSON.parse(row.payload_json)
   ) as NormalizedChainTradeEvent;
+
+  return {
+    ...payload,
+    id: row.id,
+    createdAt: row.created_at
+  };
+}
+
+function mapMarketObservationRow(
+  row: MarketObservationRow
+): StoredMarketObservation {
+  const payload = marketObservationInputSchema.parse(
+    JSON.parse(row.payload_json)
+  ) as MarketObservation;
 
   return {
     ...payload,

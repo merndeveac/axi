@@ -37,6 +37,9 @@ describe("@axi/api", () => {
       chainTradeEventCount: number;
       chainTransactionEventCount: number;
       feedProvider: string;
+      marketDataEnabled: boolean;
+      marketDataMinConfidence: string;
+      marketObservationCount: number;
       metricsEnabled: boolean;
       mode: string;
       paperAutoOrder: boolean;
@@ -52,6 +55,9 @@ describe("@axi/api", () => {
     expect(body.chainEventsConfigured).toBe(false);
     expect(body.chainTransactionEventCount).toBe(0);
     expect(body.chainTradeEventCount).toBe(0);
+    expect(body.marketDataEnabled).toBe(true);
+    expect(body.marketDataMinConfidence).toBe("medium");
+    expect(body.marketObservationCount).toBe(0);
     expect(body.candidateCount).toBeGreaterThan(0);
     expect(body.feedProvider).toBe("mock");
     expect(body.metricsEnabled).toBe(true);
@@ -76,6 +82,7 @@ describe("@axi/api", () => {
       chainVerificationCount: number;
       chainTransactionEventCount: number;
       chainTradeEventCount: number;
+      marketObservationCount: number;
       paperOrderCount: number;
       paperPositionCount: number;
       riskSnapshotCount: number;
@@ -88,6 +95,7 @@ describe("@axi/api", () => {
     expect(body.chainVerificationCount).toBe(0);
     expect(body.chainTransactionEventCount).toBe(0);
     expect(body.chainTradeEventCount).toBe(0);
+    expect(body.marketObservationCount).toBe(0);
     expect(body.riskSnapshotCount).toBeGreaterThan(0);
     expect(body.candidateDecisionCount).toBeGreaterThan(0);
     expect(body.paperOrderCount).toBe(0);
@@ -368,6 +376,66 @@ describe("@axi/api", () => {
 
     expect(response.statusCode).toBe(200);
     expect(body).toEqual([]);
+  });
+
+  it("GET /market/status reports safe defaults", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/market/status"
+    });
+    const body = response.json() as {
+      enabled: boolean;
+      minConfidenceForMetrics: string;
+      observationCount: number;
+      paperOnly: boolean;
+      solUsdConfigured: boolean;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.enabled).toBe(true);
+    expect(body.minConfidenceForMetrics).toBe("medium");
+    expect(body.observationCount).toBe(0);
+    expect(body.paperOnly).toBe(true);
+    expect(body.solUsdConfigured).toBe(false);
+  });
+
+  it("GET /market/observations returns an array", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/market/observations"
+    });
+    const body = response.json() as unknown[];
+
+    expect(response.statusCode).toBe(200);
+    expect(body).toEqual([]);
+  });
+
+  it("GET /market/observations/:mint returns an array", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/market/observations/UnknownMint111111111111111111111111111"
+    });
+    const body = response.json() as unknown[];
+
+    expect(response.statusCode).toBe(200);
+    expect(body).toEqual([]);
+  });
+
+  it("GET /market/observations/signature/:signature returns 404 for unknown signature", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/market/observations/signature/unknown-signature"
+    });
+
+    expect(response.statusCode).toBe(404);
   });
 
   it("GET /chain/events/transactions/:signature returns 404 for unknown signature", async () => {

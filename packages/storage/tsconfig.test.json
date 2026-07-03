@@ -8,7 +8,8 @@
     "paths": {
       "@axi/shared": ["../shared/dist/index.d.ts"],
       "@axi/chain-events": ["../chain-events/dist/index.d.ts"],
-      "@axi/data-feeds": ["../data-feeds/dist/index.d.ts"]
+      "@axi/data-feeds": ["../data-feeds/dist/index.d.ts"],
+      "@axi/market-data": ["../market-data/dist/index.d.ts"]
     }
   },
   "include": ["src", "test"]

@@ -7,6 +7,7 @@ import type {
   ChainTransactionEvent,
   NormalizedChainTradeEvent
 } from "@axi/chain-events";
+import type { MarketObservation } from "@axi/market-data";
 import type { CandidateDecision, OverlaySignal, RiskSnapshot } from "@axi/shared";
 import {
   closeStorage,
@@ -15,6 +16,8 @@ import {
   getChainTransactionEvent,
   getLatestChainVerification,
   getLatestCandidateDecision,
+  getLatestMarketObservation,
+  getMarketObservation,
   getLatestRiskSnapshot,
   getStorageStats,
   initStorage,
@@ -27,6 +30,9 @@ import {
   listChainTransactionEventsForReplay,
   listCandidateDecisions,
   listFeedEvents,
+  listMarketObservations,
+  listMarketObservationsByMint,
+  listMarketObservationsForReplay,
   listPaperOrders,
   listPaperPositions,
   listRecentSignals,
@@ -38,6 +44,7 @@ import {
   saveChainTradeEvent,
   saveChainTransactionEvent,
   saveFeedEvent,
+  saveMarketObservation,
   savePaperOrder,
   saveRiskSnapshot,
   saveSignal,
@@ -70,6 +77,7 @@ describe("@axi/storage", () => {
     expect(stats.chainVerificationCount).toBe(0);
     expect(stats.chainTransactionEventCount).toBe(0);
     expect(stats.chainTradeEventCount).toBe(0);
+    expect(stats.marketObservationCount).toBe(0);
     expect(stats.riskSnapshotCount).toBe(0);
     expect(stats.candidateDecisionCount).toBe(0);
   });
@@ -207,11 +215,84 @@ describe("@axi/storage", () => {
     expect(fetched?.confidence).toBe("medium");
   });
 
+  it("market observation can be saved and listed", () => {
+    initStorage({ databasePath });
+    const saved = saveMarketObservation(createMarketObservation());
+    const listed = listMarketObservations(10);
+
+    expect(saved.id).toBeGreaterThan(0);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.mint).toBe(mint);
+    expect(listed[0]?.quoteAsset).toBe("SOL");
+  });
+
+  it("market observations can be listed by mint", () => {
+    initStorage({ databasePath });
+    saveMarketObservation(createMarketObservation());
+    saveMarketObservation({
+      ...createMarketObservation(),
+      signature: "OtherSignature111111111111111111111111111111111111111111111111111",
+      mint: "OtherMint111111111111111111111111111111111"
+    });
+
+    const listed = listMarketObservationsByMint(mint, 10);
+
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.mint).toBe(mint);
+  });
+
+  it("latest market observation can be fetched by mint", () => {
+    initStorage({ databasePath });
+    saveMarketObservation(createMarketObservation("2026-01-01T00:00:01.000Z"));
+    saveMarketObservation({
+      ...createMarketObservation("2026-01-01T00:00:02.000Z"),
+      signature:
+        "LatestSignature111111111111111111111111111111111111111111111111"
+    });
+
+    const latest = getLatestMarketObservation(mint);
+
+    expect(latest?.signature).toBe(
+      "LatestSignature111111111111111111111111111111111111111111111111"
+    );
+  });
+
+  it("market observation can be fetched by signature", () => {
+    initStorage({ databasePath });
+    const saved = saveMarketObservation(createMarketObservation());
+    const fetched = getMarketObservation(saved.signature);
+
+    expect(fetched?.signature).toBe(saved.signature);
+    expect(fetched?.usableForMetrics).toBe(true);
+  });
+
+  it("market observation preserves null price and volume fields", () => {
+    initStorage({ databasePath });
+    saveMarketObservation({
+      ...createMarketObservation(),
+      priceQuote: null,
+      priceSol: null,
+      priceUsd: null,
+      volumeQuote: null,
+      volumeSol: null,
+      volumeUsd: null,
+      usableForMetrics: false,
+      reasonCodes: ["MARKET_OBSERVATION_UNUSABLE"]
+    });
+
+    const listed = listMarketObservations(10);
+
+    expect(listed[0]?.priceUsd).toBeNull();
+    expect(listed[0]?.volumeSol).toBeNull();
+    expect(listed[0]?.usableForMetrics).toBe(false);
+  });
+
   it("storage stats return counts", () => {
     initStorage({ databasePath });
     saveChainVerification(createChainVerification());
     saveChainTransactionEvent(createChainTransactionEvent());
     saveChainTradeEvent(createChainTradeEvent());
+    saveMarketObservation(createMarketObservation());
     saveFeedEvent(createFeedEvent());
     saveRiskSnapshot(createRiskSnapshot());
     saveCandidateDecision(createCandidateDecision());
@@ -244,6 +325,7 @@ describe("@axi/storage", () => {
     expect(stats.chainVerificationCount).toBe(1);
     expect(stats.chainTransactionEventCount).toBe(1);
     expect(stats.chainTradeEventCount).toBe(1);
+    expect(stats.marketObservationCount).toBe(1);
     expect(stats.riskSnapshotCount).toBe(1);
     expect(stats.candidateDecisionCount).toBe(1);
     expect(stats.paperOrderCount).toBe(1);
@@ -266,17 +348,20 @@ describe("@axi/storage", () => {
       createChainTransactionEvent()
     );
     const chainTradeEvent = saveChainTradeEvent(createChainTradeEvent());
+    const marketObservation = saveMarketObservation(createMarketObservation());
     const riskSnapshots = listRiskSnapshotsForReplay(10);
     const candidateDecisions = listCandidateDecisionsForReplay(10);
     const chainVerifications = listChainVerificationsForReplay(10);
     const chainTransactionEvents = listChainTransactionEventsForReplay(10);
     const chainTradeEvents = listChainTradeEventsForReplay(10);
+    const marketObservations = listMarketObservationsForReplay(10);
     const replayItems = [];
     const riskReplayItems = [];
     const candidateReplayItems = [];
     const chainReplayItems = [];
     const chainTransactionReplayItems = [];
     const chainTradeReplayItems = [];
+    const marketReplayItems = [];
 
     for await (const item of createReplayStream({
       limit: 10,
@@ -326,6 +411,14 @@ describe("@axi/storage", () => {
       chainTradeReplayItems.push(item);
     }
 
+    for await (const item of createReplayStream({
+      limit: 10,
+      speed: 0,
+      type: "market_observations"
+    })) {
+      marketReplayItems.push(item);
+    }
+
     expect(feedEvents.map((event) => event.createdAt)).toEqual([
       "2026-01-01T00:00:01.000Z",
       "2026-01-01T00:00:02.000Z"
@@ -336,6 +429,7 @@ describe("@axi/storage", () => {
     expect(chainVerifications[0]?.id).toBe(chainVerification.id);
     expect(chainTransactionEvents[0]?.id).toBe(chainTransactionEvent.id);
     expect(chainTradeEvents[0]?.id).toBe(chainTradeEvent.id);
+    expect(marketObservations[0]?.id).toBe(marketObservation.id);
     expect(replayItems).toHaveLength(2);
     expect(replayItems[0]?.source).toBe("feed_events");
     expect(riskReplayItems[0]?.source).toBe("risk_snapshots");
@@ -345,6 +439,7 @@ describe("@axi/storage", () => {
       "chain_transaction_events"
     );
     expect(chainTradeReplayItems[0]?.source).toBe("chain_trade_events");
+    expect(marketReplayItems[0]?.source).toBe("market_observations");
   });
 });
 
@@ -478,6 +573,46 @@ function createChainTradeEvent(): NormalizedChainTradeEvent {
     raw: {
       source: "test"
     }
+  };
+}
+
+function createMarketObservation(
+  createdAt = "2026-01-01T00:00:06.000Z"
+): MarketObservation {
+  return {
+    type: "market_observation",
+    source: "solana_rpc",
+    mint,
+    symbol: "MOCK",
+    signature:
+      "5NfL6eiYVQhnL5rtZJkR2Jqg7YbNLsC6Gc8a5YVwWnSb1E4qMvERqE1mUu3PF4aZ75xMwHj7pFaGgQ8z7R5dHnNU",
+    slot: 123,
+    timestamp: createdAt,
+    watchedAddress: "11111111111111111111111111111111",
+    watchedAddressKind: "wallet",
+    perspective: "wallet",
+    side: "buy",
+    baseTokenAmount: 42,
+    quoteAsset: "SOL",
+    quoteMint: null,
+    quoteAmount: 1.5,
+    priceQuote: 0.035714285714,
+    priceSol: 0.035714285714,
+    priceUsd: null,
+    volumeQuote: 1.5,
+    volumeSol: 1.5,
+    volumeUsd: null,
+    confidence: "medium",
+    usableForMetrics: true,
+    reasonCodes: [
+      "MARKET_OBSERVATION_CREATED",
+      "QUOTE_ASSET_SOL",
+      "MARKET_OBSERVATION_USABLE"
+    ],
+    raw: {
+      source: "test"
+    },
+    createdAt
   };
 }
 

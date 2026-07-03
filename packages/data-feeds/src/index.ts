@@ -1,5 +1,8 @@
 import WebSocket from "ws";
 import type {
+  MarketObservationSummary,
+  ObservationConfidence,
+  QuoteAsset,
   RiskFlags,
   RollingMetrics,
   TokenCandidate,
@@ -27,11 +30,20 @@ export type TokenTradeEvent = NormalizedFeedMetadata & {
   symbol?: string;
   name?: string;
   side: "buy" | "sell";
-  priceUsd: number;
-  volumeUsd: number;
+  priceUsd: number | null;
+  volumeUsd: number | null;
+  priceSol?: number | null;
+  volumeSol?: number | null;
+  priceQuote?: number | null;
+  volumeQuote?: number | null;
+  quoteAsset?: QuoteAsset;
+  quoteMint?: string | null;
+  usableForMetrics?: boolean;
+  confidence?: ObservationConfidence;
   tokenAmount?: number;
   trader?: string;
   metrics: RollingMetrics;
+  marketObservation?: MarketObservationSummary;
   riskFlags: RiskFlags;
   timestamp: string;
 };

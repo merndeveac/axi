@@ -22,6 +22,15 @@ const options: ApiServerOptions = {
     fetchTransactionOnLog: config.CHAIN_EVENTS_FETCH_TRANSACTION_ON_LOG,
     maxConcurrentFetches: config.CHAIN_EVENTS_MAX_CONCURRENT_FETCHES,
     maxWatchedAddresses: config.CHAIN_EVENTS_MAX_WATCHED_ADDRESSES,
+    marketData: {
+      allowSolUsdConversion: config.MARKET_DATA_ALLOW_SOL_USD_CONVERSION,
+      allowUsdFromStableQuotes:
+        config.MARKET_DATA_ALLOW_USD_FROM_STABLE_QUOTES,
+      enabled: config.MARKET_DATA_ENABLED,
+      minConfidenceForMetrics:
+        config.MARKET_DATA_MIN_CONFIDENCE_FOR_METRICS,
+      solUsdPrice: config.MARKET_DATA_SOL_USD_PRICE ?? null
+    },
     onChainVerified: config.CHAIN_EVENTS_ON_CHAIN_VERIFIED,
     onNewCandidate: config.CHAIN_EVENTS_ON_NEW_CANDIDATE,
     requestTimeoutMs: config.CHAIN_EVENTS_REQUEST_TIMEOUT_MS,
@@ -102,6 +111,7 @@ server.app.log.info(
     paperAutoOrder: config.PAPER_AUTO_ORDER,
     port: config.API_PORT,
     chainEvents: server.chainEvents.getStatus(),
+    marketData: server.chainEvents.getMarketStatus(),
     chainVerifier: server.chainVerifier.getStatus(),
     signalIntervalMs: config.SIGNAL_INTERVAL_MS,
     storagePath: server.storage.databasePath

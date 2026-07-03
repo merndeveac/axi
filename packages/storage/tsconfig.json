@@ -11,6 +11,7 @@
   "references": [
     { "path": "../shared" },
     { "path": "../chain-events" },
-    { "path": "../data-feeds" }
+    { "path": "../data-feeds" },
+    { "path": "../market-data" }
   ]
 }

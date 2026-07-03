@@ -145,6 +145,10 @@ h1 {
   min-width: 980px;
 }
 
+.market-region table {
+  min-width: 1500px;
+}
+
 table {
   width: 100%;
   min-width: 1900px;

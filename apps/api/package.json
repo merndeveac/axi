@@ -13,6 +13,7 @@
     "chain:verify": "tsx --conditions=development src/chain-verify.ts",
     "chain:events:backfill": "tsx --conditions=development src/chain-events-backfill.ts",
     "chain:events:watch": "tsx --conditions=development src/chain-events-watch.ts",
+    "market:decode": "tsx --conditions=development src/market-decode.ts",
     "feed:probe": "tsx --conditions=development src/feed-probe.ts",
     "clean": "rm -rf dist"
   },
@@ -21,6 +22,7 @@
     "@axi/chain-events": "workspace:*",
     "@axi/data-feeds": "workspace:*",
     "@axi/execution": "workspace:*",
+    "@axi/market-data": "workspace:*",
     "@axi/metrics": "workspace:*",
     "@axi/risk": "workspace:*",
     "@axi/scoring": "workspace:*",

@@ -194,11 +194,25 @@ export function scoreCandidate(
   }
 
   if (rollingMetrics) {
-    if (rollingMetrics.volumeVelocityUsdPerSec >= 75) {
+    if (rollingMetrics.usedSolMetricsFallback) {
+      reasonCodes.push("SCORE_USED_SOL_METRICS_FALLBACK");
+    }
+
+    const volumeVelocity = rollingMetrics.usedSolMetricsFallback
+      ? rollingMetrics.volumeVelocitySolPerSec ?? 0
+      : rollingMetrics.volumeVelocityUsdPerSec;
+    const volumeAcceleration = rollingMetrics.usedSolMetricsFallback
+      ? rollingMetrics.volumeAccelerationSolPerSec2 ?? 0
+      : rollingMetrics.volumeAccelerationUsdPerSec2;
+    const priceVelocity = rollingMetrics.usedSolMetricsFallback
+      ? rollingMetrics.priceSolVelocityPctPerSec ?? 0
+      : rollingMetrics.priceVelocityPctPerSec;
+
+    if (volumeVelocity >= 75) {
       reasonCodes.push("POSITIVE_VOLUME_VELOCITY");
     }
 
-    if (rollingMetrics.volumeAccelerationUsdPerSec2 > 10) {
+    if (volumeAcceleration > 10) {
       reasonCodes.push("POSITIVE_VOLUME_ACCELERATION");
     }
 
@@ -210,7 +224,7 @@ export function scoreCandidate(
       reasonCodes.push("POSITIVE_BUYER_ACCELERATION");
     }
 
-    if (rollingMetrics.priceVelocityPctPerSec > 0.1) {
+    if (priceVelocity > 0.1) {
       reasonCodes.push("POSITIVE_PRICE_VELOCITY");
     }
 
@@ -310,9 +324,18 @@ function computeCombinedRiskPenalty(
 }
 
 function computeRollingMomentumScore(metrics: RollingMetricsSnapshot): number {
-  const volumeVelocityScore = clamp(metrics.volumeVelocityUsdPerSec / 8, 0, 18);
+  const volumeVelocity = metrics.usedSolMetricsFallback
+    ? metrics.volumeVelocitySolPerSec ?? 0
+    : metrics.volumeVelocityUsdPerSec;
+  const volumeAcceleration = metrics.usedSolMetricsFallback
+    ? metrics.volumeAccelerationSolPerSec2 ?? 0
+    : metrics.volumeAccelerationUsdPerSec2;
+  const priceVelocity = metrics.usedSolMetricsFallback
+    ? metrics.priceSolVelocityPctPerSec ?? 0
+    : metrics.priceVelocityPctPerSec;
+  const volumeVelocityScore = clamp(volumeVelocity / 8, 0, 18);
   const volumeAccelerationScore = clamp(
-    metrics.volumeAccelerationUsdPerSec2 / 3,
+    volumeAcceleration / 3,
     0,
     14
   );
@@ -322,7 +345,7 @@ function computeRollingMomentumScore(metrics: RollingMetricsSnapshot): number {
     0,
     12
   );
-  const priceVelocityScore = clamp(metrics.priceVelocityPctPerSec * 8, 0, 14);
+  const priceVelocityScore = clamp(priceVelocity * 8, 0, 14);
   const ratioScore = clamp((metrics.buySellRatio - 1) * 7, 0, 12);
   const pressureScore = clamp(metrics.netBuyPressure * 12, 0, 12);
   const tradeActivityScore = clamp(metrics.tradesPerSecond * 10, 0, 12);

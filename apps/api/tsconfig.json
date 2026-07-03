@@ -15,6 +15,7 @@
     { "path": "../../packages/scoring" },
     { "path": "../../packages/data-feeds" },
     { "path": "../../packages/execution" },
+    { "path": "../../packages/market-data" },
     { "path": "../../packages/metrics" },
     { "path": "../../packages/risk" },
     { "path": "../../packages/solana-chain" },
