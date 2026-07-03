@@ -174,8 +174,15 @@ function startDetached(options) {
 }
 
 async function assertPortIsFree(options) {
-  if (!(await canFetch(options.url))) {
-    return;
+  const timeoutMs = options.timeoutMs ?? 5_000;
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (!(await canFetch(options.url))) {
+      return;
+    }
+
+    await delay(250);
   }
 
   throw new Error(
