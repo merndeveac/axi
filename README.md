@@ -581,6 +581,53 @@ PUMPPORTAL_TOKEN_TRADES_UNSUBSCRIBE_AFTER_MS=120000 \
 pnpm local:restart
 ```
 
+Live-card trade tracking is a stricter, card-focused wrapper around the same
+read-only PumpPortal token-trade stream. It is disabled by default and requires
+both the existing PumpPortal metered acknowledgement and its own explicit
+acknowledgement:
+
+```bash
+DATA_FEED_MODE=live \
+DATA_FEED=pumpportal \
+PUMPPORTAL_API_KEY=... \
+PUMPPORTAL_TOKEN_TRADES_ENABLED=true \
+PUMPPORTAL_TOKEN_TRADES_ACK_METERED=true \
+LIVE_TRADE_TRACKING_ENABLED=true \
+LIVE_TRADE_TRACKING_ACK_METERED=true \
+LIVE_TRADE_TRACKING_MAX_MINTS=1 \
+LIVE_TRADE_TRACKING_MAX_EVENTS_PER_SESSION=200 \
+LIVE_TRADE_TRACKING_MAX_EVENTS_PER_MINT=200 \
+LIVE_TRADE_TRACKING_AUTO_MODE=none \
+LIVE_TRADE_TRACKING_UNSUBSCRIBE_AFTER_MS=120000 \
+pnpm local:restart
+```
+
+Track one selected mint after the server is running:
+
+```bash
+curl -X POST http://localhost:8787/live/trade-tracking/track \
+  -H 'content-type: application/json' \
+  -d '{"mint":"<MINT>","reason":"manual"}'
+```
+
+Optional live-card enrichment and chain verification are also disabled by
+default. They only add read-only display data when explicitly enabled:
+
+```bash
+LIVE_CARD_ENRICHMENT_ENABLED=true \
+DEXSCREENER_ENABLED=true \
+JUPITER_PRICE_ENABLED=false \
+curl -X POST http://localhost:8787/enrichment/tokens \
+  -H 'content-type: application/json' \
+  -d '{"mint":"<MINT>"}'
+
+LIVE_CARD_CHAIN_VERIFY_ENABLED=true \
+SOLANA_RPC_HTTP=<RPC_HTTP_URL> \
+curl -X POST http://localhost:8787/chain/verify \
+  -H 'content-type: application/json' \
+  -d '{"mint":"<MINT>"}'
+```
+
 Probe token trades without starting the API server or persisting data:
 
 ```bash
@@ -625,6 +672,14 @@ Endpoints:
 - `DELETE /actual-data/subscribe/:mint`
 - `GET /actual-data/trades`
 - `GET /actual-data/trades/:mint`
+- `GET /live/trade-tracking/status`
+- `POST /live/trade-tracking/track`
+- `DELETE /live/trade-tracking/track/:mint`
+- `GET /live/trade-tracking/trades`
+- `GET /live/trade-tracking/trades/:mint`
+- `GET /enrichment/status`
+- `GET /enrichment/tokens/:mint`
+- `POST /enrichment/tokens`
 - `GET /chain/status`
 - `GET /chain/verifications`
 - `GET /chain/verifications/:mint`
@@ -664,7 +719,9 @@ historical mock/replay rows from SQLite.
 per current-session live token. It joins only safe in-memory/paper-mode state:
 live tokens, identity summaries, rolling metrics, candidate decisions, risk
 snapshots, actual-data summaries, market observations, and chain verification
-summaries. Unknown data stays `null`; the dashboard renders it as `--`.
+summaries. Cards include a data-completeness model, trade-tracking state, latest
+trade time, trade count, and optional enrichment fields. Unknown data stays
+`null`; the dashboard renders it as `--`.
 
 `GET /strategy/status` exposes read-only paper strategy thresholds, scoring
 weights, formula notes, and safety gates. It is for visibility and tuning only;
@@ -690,6 +747,18 @@ compatibility, metered acknowledgement, API-key configured boolean, subscription
 counts, event budgets, and `paperOnly: true`. `POST /actual-data/subscribe`
 accepts `{ "mint": "...", "reason": "manual" }` and subscribes read-only to
 PumpPortal token trades only when all gates pass.
+
+`GET /live/trade-tracking/status` reports the card-focused trade-tracking gates,
+selected mint caps, session budgets, and tracked mints. `POST
+/live/trade-tracking/track` accepts `{ "mint": "...", "reason": "manual" }` and
+subscribes only through the existing read-only PumpPortal token-trade path when
+both acknowledgement gates and all caps pass. There are no account trade
+subscriptions and no trading endpoints.
+
+`GET /enrichment/status` reports optional live-card enrichment settings. `POST
+/enrichment/tokens` accepts `{ "mint": "..." }` and fetches read-only display
+metadata from enabled public providers only when enrichment is explicitly
+enabled.
 
 `GET /chain/status` reports whether the read-only verifier is disabled,
 misconfigured, or ready. `POST /chain/verify` accepts `{ "mint": "..." }` and

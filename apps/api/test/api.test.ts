@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { TokenCreatedEvent } from "@axi/data-feeds";
+import type { TokenCreatedEvent, TokenTradeEvent } from "@axi/data-feeds";
 import type { LiveTokenCardViewModel, StrategyStatus } from "@axi/shared";
 import type { ApiServer } from "../src/app";
 import { createApiServer } from "../src/app";
@@ -544,6 +544,113 @@ describe("@axi/api", () => {
     expect(body).toEqual([]);
   });
 
+  it("GET /live/trade-tracking/status is disabled by default", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/live/trade-tracking/status"
+    });
+    const body = response.json() as {
+      acknowledgedMetered: boolean;
+      enabled: boolean;
+      maxSubscribedTokens: number;
+      paperOnly: boolean;
+      reasonCodes: string[];
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.enabled).toBe(false);
+    expect(body.acknowledgedMetered).toBe(false);
+    expect(body.maxSubscribedTokens).toBe(3);
+    expect(body.paperOnly).toBe(true);
+    expect(body.reasonCodes).toContain("LIVE_TRADE_TRACKING_DISABLED");
+  });
+
+  it("POST /live/trade-tracking/track rejects when live ack is missing", async () => {
+    server = createActualDataTestServer({
+      acknowledgedMetered: true,
+      enabled: true,
+      liveTradeTrackingAcknowledged: false,
+      liveTradeTrackingEnabled: true
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/live/trade-tracking/track",
+      payload: {
+        mint: "So11111111111111111111111111111111111111112",
+        reason: "test"
+      }
+    });
+    const body = response.json() as {
+      error: string;
+    };
+
+    expect(response.statusCode).toBe(409);
+    expect(body.error).toBe("LIVE_TRADE_TRACKING_METERED_NOT_ACKNOWLEDGED");
+  });
+
+  it("POST /live/trade-tracking/track subscribes through the guarded PumpPortal stream", async () => {
+    server = createActualDataTestServer({
+      acknowledgedMetered: true,
+      enabled: true,
+      liveTradeTrackingAcknowledged: true,
+      liveTradeTrackingEnabled: true
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/live/trade-tracking/track",
+      payload: {
+        mint: "So11111111111111111111111111111111111111112",
+        reason: "test"
+      }
+    });
+    const body = response.json() as {
+      paperOnly: boolean;
+      status: {
+        subscribedTokenCount: number;
+        trackedMints: string[];
+      };
+      subscription: {
+        mint: string;
+        reasonCodes: string[];
+        status: string;
+      };
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.paperOnly).toBe(true);
+    expect(body.subscription.status).toBe("subscribed");
+    expect(body.subscription.reasonCodes).toContain(
+      "PUMPPORTAL_TRADE_STREAM_METERED"
+    );
+    expect(body.status.subscribedTokenCount).toBe(1);
+    expect(body.status.trackedMints).toContain(
+      "So11111111111111111111111111111111111111112"
+    );
+  });
+
+  it("GET /enrichment/status is disabled by default", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/enrichment/status"
+    });
+    const body = response.json() as {
+      enabled: boolean;
+      paperOnly: boolean;
+      reasonCodes: string[];
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.enabled).toBe(false);
+    expect(body.paperOnly).toBe(true);
+    expect(body.reasonCodes).toContain("LIVE_CARD_ENRICHMENT_DISABLED");
+  });
+
   it("GET /feed/status reports live defaults", async () => {
     server = createApiServer({
       logLevel: false,
@@ -647,6 +754,15 @@ describe("@axi/api", () => {
     expect(cards[0]?.calculationReasonCodes).toContain(
       "HOLDER_TIME_SERIES_UNAVAILABLE"
     );
+    expect(cards[0]?.dataCompleteness.dataQualityLabel).toBe("discovery_only");
+    expect(cards[0]?.dataCompleteness.missingCriticalFields).toContain("price");
+    expect(cards[0]?.tradeTrackingState).toBe("not_tracked");
+    expect(cards[0]?.tradeTrackingReasonCodes).toContain(
+      "LIVE_TRADE_TRACKING_DISABLED"
+    );
+    expect(cards[0]?.tradeEventCount).toBe(0);
+    expect(cards[0]?.latestTradeAt).toBeNull();
+    expect(cards[0]?.enrichmentStatus).toBe("disabled");
     expect(cards[0]?.action).toBe("IGNORE");
     expect(cards[0]?.strategy.signalStrength).toBe("none");
   });
@@ -684,6 +800,34 @@ describe("@axi/api", () => {
     expect(cards[0]?.buyTradeCount10s).toBe(1);
     expect(cards[0]?.sampleCount).toBe(1);
     expect(cards[0]?.strategy.calculationInputs.volumeVelocity).toBe(0.3);
+  });
+
+  it("GET /ui/live-token-cards includes actual PumpPortal token trade summaries", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+    const event = createPumpPortalEvent();
+    server.emitFeedEvent(event);
+    server.emitFeedEvent(createPumpPortalTradeEvent(event.candidate.mint));
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/ui/live-token-cards"
+    });
+    const cards = response.json() as LiveTokenCardViewModel[];
+
+    expect(response.statusCode).toBe(200);
+    expect(cards[0]?.tradeEventCount).toBe(1);
+    expect(cards[0]?.actualTradeEventCount).toBe(1);
+    expect(cards[0]?.latestTradeAt).toBe("2026-01-01T00:00:02.000Z");
+    expect(cards[0]?.priceSol).toBe(0.00042);
+    expect(cards[0]?.volume10sSol).toBe(1.5);
+    expect(cards[0]?.dataCompleteness.dataQualityLabel).toBe("trade_tracked");
+    expect(cards[0]?.dataCompleteness.reasonCodes).toContain(
+      "DATA_QUALITY_TRADE_TRACKED"
+    );
   });
 
   it("GET /strategy/status returns read-only paper strategy details", async () => {
@@ -1261,18 +1405,34 @@ function createTestServer(): ApiServer {
 function createActualDataTestServer(options: {
   acknowledgedMetered: boolean;
   enabled: boolean;
+  liveTradeTrackingAcknowledged?: boolean;
+  liveTradeTrackingEnabled?: boolean;
 }): ApiServer {
   return createApiServer({
     actualData: createActualDataConfig({
       acknowledgedMetered: options.acknowledgedMetered,
       apiKeyConfigured: true,
       enabled: options.enabled,
+      maxEventsPerMint: 200,
+      maxEventsPerSession: 500,
+      maxSubscribedTokens: 3,
       requireApiKey: true
     }),
     dataFeed: "pumpportal",
+    liveTradeTracking: {
+      acknowledgedMetered: options.liveTradeTrackingAcknowledged ?? false,
+      enabled: options.liveTradeTrackingEnabled ?? false,
+      maxEventsPerMint: 200,
+      maxEventsPerSession: 500,
+      maxSubscribedTokens: 3,
+      unsubscribeAfterMs: 0
+    },
     logLevel: false,
     pumpPortal: {
       apiKey: "test-api-key",
+      maxTokenTradeEventsPerMint: 200,
+      maxTokenTradeEventsPerSession: 500,
+      maxTokenTradeSubscriptions: 3,
       subscribeMigration: false,
       subscribeNewToken: false,
       wsUrl: "wss://example.test/pumpportal"
@@ -1337,5 +1497,72 @@ function createPumpPortalEvent(): TokenCreatedEvent {
     },
     source: "pumpportal",
     timestamp: "2026-01-01T00:00:00.000Z"
+  };
+}
+
+function createPumpPortalTradeEvent(mint: string): TokenTradeEvent {
+  return {
+    type: "trade",
+    mint,
+    source: "pumpportal",
+    token: {
+      chain: "solana",
+      mint
+    },
+    symbol: "PORTAL",
+    name: "Portal Token",
+    side: "buy",
+    priceUsd: 0,
+    volumeUsd: 0,
+    priceSol: 0.00042,
+    volumeSol: 1.5,
+    quoteAsset: "SOL",
+    tokenAmount: 3571.428571,
+    trader: "Buyer1111111111111111111111111111111111111",
+    usableForMetrics: true,
+    confidence: "medium",
+    metrics: {
+      priceUsd: 0,
+      priceSol: 0.00042,
+      marketCapUsd: 0,
+      liquidityUsd: 0,
+      volume1mUsd: 0,
+      volume5mUsd: 0,
+      volume15mUsd: 0,
+      volumeSol: 1.5,
+      usableForMetrics: true,
+      buyCount1m: 1,
+      buyCount5m: 1,
+      sellCount1m: 0,
+      sellCount5m: 0,
+      uniqueBuyers1m: 1,
+      uniqueBuyers5m: 1,
+      uniqueSellers1m: 0,
+      uniqueSellers5m: 0,
+      holderCount: 0,
+      topHolderPercent: 0,
+      top10HolderPercent: 0,
+      priceChange1mPct: 0,
+      priceChange5mPct: 0,
+      volumeVelocity: 0,
+      buyerVelocity: 0
+    },
+    metricsComplete: true,
+    rawSourceEventType: "token_trade",
+    realData: true,
+    reasonCodes: ["PUMPPORTAL_TOKEN_TRADE", "PUMPPORTAL_TRADE_STREAM_METERED"],
+    receivedAt: "2026-01-01T00:00:02.000Z",
+    riskFlags: {
+      mintAuthorityActive: false,
+      freezeAuthorityActive: false,
+      topHolderConcentrationHigh: false,
+      mutableMetadata: false,
+      suspiciousName: false,
+      lowLiquidity: true,
+      washTradingSuspected: false,
+      honeypotSuspected: false
+    },
+    signature: "TradeSig111111111111111111111111111111111",
+    timestamp: "2026-01-01T00:00:02.000Z"
   };
 }

@@ -267,6 +267,39 @@ describe("RollingMetricsEngine", () => {
     expect(metrics?.windows["5s"].totalVolumeUsd).toBe(0);
   });
 
+  it("keeps SOL derivative fields finite over a live token-trade sequence", () => {
+    const engine = createRollingMetricsEngine();
+
+    engine.ingestTradeObservation(
+      createSolObservation({ priceSol: 0.1, seconds: 0, volumeSol: 1 })
+    );
+    engine.ingestTradeObservation(
+      createSolObservation({
+        priceSol: 0.11,
+        seconds: 1,
+        trader: "second",
+        volumeSol: 1.4
+      })
+    );
+    engine.ingestTradeObservation(
+      createSolObservation({
+        priceSol: 0.13,
+        seconds: 2,
+        trader: "third",
+        volumeSol: 2
+      })
+    );
+    const metrics = engine.getMetrics(mint);
+
+    expect(metrics?.sampleCount).toBe(3);
+    expect(Number.isFinite(metrics?.volumeVelocitySolPerSec)).toBe(true);
+    expect(Number.isFinite(metrics?.volumeAccelerationSolPerSec2)).toBe(true);
+    expect(Number.isFinite(metrics?.priceSolVelocityPctPerSec)).toBe(true);
+    expect(Number.isFinite(metrics?.priceSolAccelerationPctPerSec2)).toBe(true);
+    expect(metrics?.windows["5s"].totalVolumeSol).toBe(4.4);
+    expect(metrics?.usedSolMetricsFallback).toBe(true);
+  });
+
   it("is deterministic given the same event sequence", () => {
     const first = createRollingMetricsEngine();
     const second = createRollingMetricsEngine();

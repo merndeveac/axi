@@ -116,6 +116,33 @@ type ActualDataStatus = {
   totalEventsThisSession: number;
 };
 
+type LiveTradeTrackingStatus = {
+  acknowledgedMetered: boolean;
+  autoMode: string;
+  budgetReached: boolean;
+  enabled: boolean;
+  maxEventsPerMint: number;
+  maxEventsPerSession: number;
+  maxSubscribedTokens: number;
+  paperOnly: true;
+  reasonCodes: string[];
+  subscribedTokenCount: number;
+  totalEventsThisSession: number;
+  trackedMints: string[];
+};
+
+type LiveCardEnrichmentStatus = {
+  cachedMintCount: number;
+  dexScreenerEnabled: boolean;
+  enabled: boolean;
+  jupiterPriceEnabled: boolean;
+  maxMintsPerMinute: number;
+  onNewToken: boolean;
+  paperOnly: true;
+  reasonCodes: string[];
+  requestsThisMinute: number;
+};
+
 type TokenIdentityStatus = {
   enabled: true;
   solanaMetadataEnabled: boolean;
@@ -283,6 +310,10 @@ export function App() {
   );
   const [actualDataStatus, setActualDataStatus] =
     useState<ActualDataStatus | null>(null);
+  const [liveTradeTrackingStatus, setLiveTradeTrackingStatus] =
+    useState<LiveTradeTrackingStatus | null>(null);
+  const [liveCardEnrichmentStatus, setLiveCardEnrichmentStatus] =
+    useState<LiveCardEnrichmentStatus | null>(null);
   const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
   const [chainStatus, setChainStatus] = useState<ChainStatus | null>(null);
   const [tokenIdentityStatus, setTokenIdentityStatus] =
@@ -386,7 +417,9 @@ export function App() {
           nextMetrics,
           nextRiskRows,
           nextActualDataStatus,
+          nextLiveTradeTrackingStatus,
           nextActualTrades,
+          nextLiveCardEnrichmentStatus,
           nextMarketStatus,
           nextMarketObservations,
           nextChainStatus,
@@ -405,7 +438,9 @@ export function App() {
           fetchJson<MetricsRow[]>("/metrics"),
           fetchJson<RiskSnapshot[]>("/risk"),
           fetchJson<ActualDataStatus>("/actual-data/status"),
+          fetchJson<LiveTradeTrackingStatus>("/live/trade-tracking/status"),
           fetchJson<PumpPortalTradeRow[]>("/actual-data/trades?limit=10"),
+          fetchJson<LiveCardEnrichmentStatus>("/enrichment/status"),
           fetchJson<MarketStatus>("/market/status"),
           fetchJson<MarketObservationRow[]>("/market/observations?limit=10"),
           fetchJson<ChainStatus>("/chain/status"),
@@ -427,7 +462,9 @@ export function App() {
           setMetrics(nextMetrics);
           setRiskRows(nextRiskRows);
           setActualDataStatus(nextActualDataStatus);
+          setLiveTradeTrackingStatus(nextLiveTradeTrackingStatus);
           setActualTrades(nextActualTrades);
+          setLiveCardEnrichmentStatus(nextLiveCardEnrichmentStatus);
           setMarketStatus(nextMarketStatus);
           setMarketObservations(nextMarketObservations);
           setChainStatus(nextChainStatus);
@@ -466,6 +503,12 @@ export function App() {
   const buyReadyCount = cards.filter((card) => card.buyReady).length;
   const rejectedCount = cards.filter(
     (card) => card.hardReject || card.signalStrength === "reject"
+  ).length;
+  const strategyReadyCount = cards.filter(
+    (card) => card.dataCompleteness.dataQualityLabel === "strategy_ready"
+  ).length;
+  const trackedCardCount = cards.filter(
+    (card) => card.tradeTrackingState === "tracking"
   ).length;
   const unavailableFieldCount = cards.reduce(
     (total, card) => total + card.unavailableFields.length,
@@ -546,10 +589,10 @@ export function App() {
           tone={rejectedCount > 0 ? "bad" : "neutral"}
         />
         <MetricValue
-          label="unavailable"
-          value={formatCompactNumber(unavailableFieldCount)}
-          detail="shown as --"
-          tone={unavailableFieldCount > 0 ? "warn" : "good"}
+          label="complete"
+          value={formatCompactNumber(strategyReadyCount)}
+          detail="strategy ready"
+          tone={strategyReadyCount > 0 ? "good" : "neutral"}
         />
         <MetricValue
           label="feed events"
@@ -558,12 +601,18 @@ export function App() {
           tone={feedStatus?.connected ? "good" : "neutral"}
         />
         <MetricValue
-          label="token trades"
-          value={formatCompactNumber(feedStatus?.tokenTradeEventCount ?? 0)}
+          label="tracked trades"
+          value={formatCompactNumber(trackedCardCount)}
           detail="metered opt-in"
           tone={
-            (feedStatus?.tokenTradeEventCount ?? 0) > 0 ? "good" : "neutral"
+            trackedCardCount > 0 ? "good" : "neutral"
           }
+        />
+        <MetricValue
+          label="unavailable"
+          value={formatCompactNumber(unavailableFieldCount)}
+          detail="shown as --"
+          tone={unavailableFieldCount > 0 ? "warn" : "good"}
         />
         <MetricValue
           label="mock"
@@ -629,7 +678,9 @@ export function App() {
           actualTrades={actualTrades}
           chainStatus={chainStatus}
           feedStatus={feedStatus}
+          liveCardEnrichmentStatus={liveCardEnrichmentStatus}
           liveStatus={liveStatus}
+          liveTradeTrackingStatus={liveTradeTrackingStatus}
           marketObservations={marketObservations}
           marketStatus={marketStatus}
           tokenIdentities={tokenIdentities}
@@ -788,6 +839,17 @@ function TokenCard({
           <span className="terminal-badge terminal-badge-neutral">
             {card.source.toUpperCase()}
           </span>
+          <span className="terminal-badge terminal-badge-neutral">
+            {formatDataQuality(card.dataCompleteness.dataQualityLabel)}{" "}
+            {card.dataCompleteness.completenessPct}%
+          </span>
+          <span
+            className={`terminal-badge ${getTradeTrackingBadgeClass(
+              card.tradeTrackingState
+            )}`}
+          >
+            {formatTradeTrackingState(card.tradeTrackingState)}
+          </span>
           <span className={`action action-${normalizeClassName(card.action)}`}>
             {card.action}
           </span>
@@ -913,6 +975,8 @@ function TokenCard({
       <footer className="token-card-footer">
         <span>age {formatAge(card.ageSeconds)}</span>
         <span>updated {formatTimeAgo(card.lastUpdatedAt)}</span>
+        <span>trades {formatCompactNumber(card.tradeEventCount)}</span>
+        <span>latest trade {formatTimeAgo(card.latestTradeAt)}</span>
         <span>{card.eventTypes.at(-1) ?? "--"}</span>
         <span>{formatMintShort(card.latestSignature)}</span>
         <span>
@@ -1004,11 +1068,34 @@ function TokenAudit({ card }: { card: LiveTokenCardViewModel }) {
           <dd>{card.actualTradeEventCount}</dd>
           <dt>market observations</dt>
           <dd>{card.marketObservationCount}</dd>
+          <dt>data quality</dt>
+          <dd>
+            {formatDataQuality(card.dataCompleteness.dataQualityLabel)} /{" "}
+            {card.dataCompleteness.completenessPct}%
+          </dd>
+          <dt>trade tracking</dt>
+          <dd>
+            {formatTradeTrackingState(card.tradeTrackingState)} /{" "}
+            {formatCompactNumber(card.tradeEventCount)} trades
+          </dd>
+          <dt>latest trade</dt>
+          <dd>{formatTimeAgo(card.latestTradeAt)}</dd>
+          <dt>enrichment</dt>
+          <dd>
+            {card.enrichmentStatus}
+            {card.enrichmentSource ? ` / ${card.enrichmentSource}` : ""}
+          </dd>
+          <dt>dex pair</dt>
+          <dd>{card.dexId ?? "--"} / {formatMintShort(card.pairAddress)}</dd>
         </dl>
       </div>
       <div>
         <h4>Reason Codes</h4>
         <ReasonCodes codes={card.combinedReasonCodes} limit={16} />
+        <h4>Completeness</h4>
+        <ReasonCodes codes={card.dataCompleteness.reasonCodes} limit={16} />
+        <h4>Trade Tracking</h4>
+        <ReasonCodes codes={card.tradeTrackingReasonCodes} limit={16} />
         <h4>Unavailable Fields</h4>
         <ReasonCodes codes={card.unavailableFields} limit={16} />
         <h4>Warnings</h4>
@@ -1214,7 +1301,9 @@ function DataTab({
   actualTrades,
   chainStatus,
   feedStatus,
+  liveCardEnrichmentStatus,
   liveStatus,
+  liveTradeTrackingStatus,
   marketObservations,
   marketStatus,
   tokenIdentities,
@@ -1224,7 +1313,9 @@ function DataTab({
   actualTrades: PumpPortalTradeRow[];
   chainStatus: ChainStatus | null;
   feedStatus: FeedStatus | null;
+  liveCardEnrichmentStatus: LiveCardEnrichmentStatus | null;
   liveStatus: LiveStatus | null;
+  liveTradeTrackingStatus: LiveTradeTrackingStatus | null;
   marketObservations: MarketObservationRow[];
   marketStatus: MarketStatus | null;
   tokenIdentities: TokenIdentityRow[];
@@ -1259,6 +1350,20 @@ function DataTab({
           tone={actualDataStatus?.enabled ? "warn" : "neutral"}
         />
         <MetricValue
+          label="trade tracking"
+          value={liveTradeTrackingStatus?.enabled ? "ON" : "OFF"}
+          detail={`${liveTradeTrackingStatus?.subscribedTokenCount ?? 0}/${
+            liveTradeTrackingStatus?.maxSubscribedTokens ?? 0
+          } mints`}
+          tone={liveTradeTrackingStatus?.enabled ? "warn" : "neutral"}
+        />
+        <MetricValue
+          label="enrichment"
+          value={liveCardEnrichmentStatus?.enabled ? "ON" : "OFF"}
+          detail={`${liveCardEnrichmentStatus?.cachedMintCount ?? 0} cached`}
+          tone={liveCardEnrichmentStatus?.enabled ? "warn" : "neutral"}
+        />
+        <MetricValue
           label="market"
           value={marketStatus?.enabled ? "ON" : "OFF"}
           detail={`${marketStatus?.minConfidenceForMetrics ?? "--"} min`}
@@ -1278,6 +1383,14 @@ function DataTab({
       <ReasonBlock
         title="Actual Data Reasons"
         codes={actualDataStatus?.reasonCodes}
+      />
+      <ReasonBlock
+        title="Trade Tracking Reasons"
+        codes={liveTradeTrackingStatus?.reasonCodes}
+      />
+      <ReasonBlock
+        title="Enrichment Reasons"
+        codes={liveCardEnrichmentStatus?.reasonCodes}
       />
       <TableShell
         empty="No token identities"
@@ -1701,6 +1814,30 @@ function getInitialTab(): TabId {
 
 function normalizeClassName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "_");
+}
+
+function formatDataQuality(value: string): string {
+  return value.replaceAll("_", " ").toUpperCase();
+}
+
+function formatTradeTrackingState(value: string): string {
+  return value.replaceAll("_", " ").toUpperCase();
+}
+
+function getTradeTrackingBadgeClass(value: string): string {
+  if (value === "tracking") {
+    return "terminal-badge-online";
+  }
+
+  if (value === "budget_reached" || value === "error") {
+    return "terminal-badge-offline";
+  }
+
+  if (value === "tracking_requested") {
+    return "terminal-badge-warning";
+  }
+
+  return "terminal-badge-neutral";
 }
 
 function formatBool(value: boolean | null | undefined): string {

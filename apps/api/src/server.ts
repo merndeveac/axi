@@ -11,16 +11,37 @@ import {
 import { createTokenIdentityConfig } from "./token-identity-service";
 
 const config = loadApiConfig();
+const liveTradeTrackingEnabled = config.LIVE_TRADE_TRACKING_ENABLED;
+const effectiveTokenTradeMaxSubscribedTokens = liveTradeTrackingEnabled
+  ? Math.min(
+      config.PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS,
+      config.LIVE_TRADE_TRACKING_MAX_MINTS
+    )
+  : config.PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS;
+const effectiveTokenTradeMaxEventsPerSession = liveTradeTrackingEnabled
+  ? Math.min(
+      config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION,
+      config.LIVE_TRADE_TRACKING_MAX_EVENTS_PER_SESSION
+    )
+  : config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION;
+const effectiveTokenTradeMaxEventsPerMint = liveTradeTrackingEnabled
+  ? Math.min(
+      config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_MINT,
+      config.LIVE_TRADE_TRACKING_MAX_EVENTS_PER_MINT
+    )
+  : config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_MINT;
+const effectiveActualDataEnabled =
+  config.PUMPPORTAL_TOKEN_TRADES_ENABLED || liveTradeTrackingEnabled;
+const effectiveActualDataAcknowledged =
+  config.PUMPPORTAL_TOKEN_TRADES_ACK_METERED &&
+  (!liveTradeTrackingEnabled || config.LIVE_TRADE_TRACKING_ACK_METERED);
 const mockFeed: MockFeedProviderOptions = {
   scenario: config.MOCK_FEED_SCENARIO
 };
 const pumpPortal: PumpPortalFeedProviderOptions = {
-  maxTokenTradeEventsPerMint:
-    config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_MINT,
-  maxTokenTradeEventsPerSession:
-    config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION,
-  maxTokenTradeSubscriptions:
-    config.PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS,
+  maxTokenTradeEventsPerMint: effectiveTokenTradeMaxEventsPerMint,
+  maxTokenTradeEventsPerSession: effectiveTokenTradeMaxEventsPerSession,
+  maxTokenTradeSubscriptions: effectiveTokenTradeMaxSubscribedTokens,
   subscribeMigration: config.PUMPPORTAL_SUBSCRIBE_MIGRATION,
   subscribeNewToken: config.PUMPPORTAL_SUBSCRIBE_NEW_TOKEN
 };
@@ -50,11 +71,14 @@ const options: ApiServerOptions = {
   chainVerifier: {
     cacheTtlMs: config.CHAIN_VERIFIER_CACHE_TTL_MS,
     commitment: config.SOLANA_RPC_COMMITMENT,
-    enabled: config.CHAIN_VERIFIER_ENABLED,
+    enabled:
+      config.CHAIN_VERIFIER_ENABLED || config.LIVE_CARD_CHAIN_VERIFY_ENABLED,
     maxConcurrent: config.CHAIN_VERIFIER_MAX_CONCURRENT,
     onMigration: config.CHAIN_VERIFIER_ON_MIGRATION,
     onMock: config.CHAIN_VERIFIER_ON_MOCK,
-    onNewToken: config.CHAIN_VERIFIER_ON_NEW_TOKEN,
+    onNewToken:
+      config.CHAIN_VERIFIER_ON_NEW_TOKEN ||
+      config.LIVE_CARD_CHAIN_VERIFY_ON_NEW_TOKEN,
     requestTimeoutMs: config.CHAIN_VERIFIER_REQUEST_TIMEOUT_MS
   },
   dataFeed: config.DATA_FEED,
@@ -65,7 +89,7 @@ const options: ApiServerOptions = {
   mode: config.BOT_MODE,
   paperAutoOrder: config.PAPER_AUTO_ORDER,
   actualData: createActualDataConfig({
-    acknowledgedMetered: config.PUMPPORTAL_TOKEN_TRADES_ACK_METERED,
+    acknowledgedMetered: effectiveActualDataAcknowledged,
     apiKeyConfigured: config.PUMPPORTAL_API_KEY !== undefined,
     autoSubscribe: config.PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE,
     autoSubscribeOnMigration:
@@ -74,16 +98,43 @@ const options: ApiServerOptions = {
       config.PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE_ON_NEW_TOKEN,
     autoSubscribeOnQualified:
       config.PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE_ON_QUALIFIED,
-    enabled: config.PUMPPORTAL_TOKEN_TRADES_ENABLED,
+    enabled: effectiveActualDataEnabled,
     manualMints: parseManualMints(config.PUMPPORTAL_TOKEN_TRADES_MANUAL_MINTS),
-    maxEventsPerMint: config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_MINT,
-    maxEventsPerSession: config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION,
-    maxSubscribedTokens: config.PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS,
+    maxEventsPerMint: effectiveTokenTradeMaxEventsPerMint,
+    maxEventsPerSession: effectiveTokenTradeMaxEventsPerSession,
+    maxSubscribedTokens: effectiveTokenTradeMaxSubscribedTokens,
     minScoreToAutoSubscribe:
       config.PUMPPORTAL_TOKEN_TRADES_MIN_SCORE_TO_AUTO_SUBSCRIBE,
     requireApiKey: config.PUMPPORTAL_TOKEN_TRADES_REQUIRE_API_KEY,
-    unsubscribeAfterMs: config.PUMPPORTAL_TOKEN_TRADES_UNSUBSCRIBE_AFTER_MS
+    unsubscribeAfterMs: liveTradeTrackingEnabled
+      ? Math.min(
+          config.PUMPPORTAL_TOKEN_TRADES_UNSUBSCRIBE_AFTER_MS,
+          config.LIVE_TRADE_TRACKING_UNSUBSCRIBE_AFTER_MS
+        )
+      : config.PUMPPORTAL_TOKEN_TRADES_UNSUBSCRIBE_AFTER_MS
   }),
+  liveTradeTracking: {
+    acknowledgedMetered: config.LIVE_TRADE_TRACKING_ACK_METERED,
+    autoMaxAgeSeconds: config.LIVE_TRADE_TRACKING_AUTO_MAX_AGE_SECONDS,
+    autoMinAgeSeconds: config.LIVE_TRADE_TRACKING_AUTO_MIN_AGE_SECONDS,
+    autoMinIdentityConfidence:
+      config.LIVE_TRADE_TRACKING_AUTO_MIN_IDENTITY_CONFIDENCE,
+    autoMode: config.LIVE_TRADE_TRACKING_AUTO_MODE,
+    autoRequireRealData: config.LIVE_TRADE_TRACKING_AUTO_REQUIRE_REAL_DATA,
+    enabled: liveTradeTrackingEnabled,
+    maxEventsPerMint: config.LIVE_TRADE_TRACKING_MAX_EVENTS_PER_MINT,
+    maxEventsPerSession: config.LIVE_TRADE_TRACKING_MAX_EVENTS_PER_SESSION,
+    maxSubscribedTokens: config.LIVE_TRADE_TRACKING_MAX_MINTS,
+    unsubscribeAfterMs: config.LIVE_TRADE_TRACKING_UNSUBSCRIBE_AFTER_MS
+  },
+  liveCardEnrichment: {
+    cacheTtlMs: config.LIVE_CARD_ENRICHMENT_CACHE_TTL_MS,
+    dexScreenerEnabled: config.DEXSCREENER_ENABLED,
+    enabled: config.LIVE_CARD_ENRICHMENT_ENABLED,
+    jupiterPriceEnabled: config.JUPITER_PRICE_ENABLED,
+    maxMintsPerMinute: config.LIVE_CARD_ENRICHMENT_MAX_MINTS_PER_MINUTE,
+    onNewToken: config.LIVE_CARD_ENRICHMENT_ON_NEW_TOKEN
+  },
   allowMockData: config.ALLOW_MOCK_DATA,
   failIfNoRealData: config.FAIL_IF_NO_REAL_DATA,
   mockFeedEnabled: config.MOCK_FEED_ENABLED,
@@ -183,6 +234,8 @@ server.app.log.info(
     watchOrchestrator: server.watchOrchestration.getStatus(),
     chainVerifier: server.chainVerifier.getStatus(),
     actualData: server.actualData.getStatus(),
+    liveTradeTracking: config.LIVE_TRADE_TRACKING_ENABLED,
+    liveCardEnrichment: config.LIVE_CARD_ENRICHMENT_ENABLED,
     tokenIdentity: server.tokenIdentity.getStatus(),
     signalIntervalMs: config.SIGNAL_INTERVAL_MS,
     storagePath: server.storage.databasePath

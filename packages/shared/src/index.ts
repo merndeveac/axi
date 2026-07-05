@@ -624,6 +624,32 @@ export type StrategyStatus = {
   reasonCodes: string[];
 };
 
+export type LiveCardDataQualityLabel =
+  | "discovery_only"
+  | "partial_market"
+  | "trade_tracked"
+  | "enriched"
+  | "strategy_ready";
+
+export type LiveCardDataCompleteness = {
+  requiredFieldCount: number;
+  availableFieldCount: number;
+  unavailableFieldCount: number;
+  completenessPct: number;
+  missingCriticalFields: string[];
+  missingOptionalFields: string[];
+  dataQualityLabel: LiveCardDataQualityLabel;
+  reasonCodes: string[];
+};
+
+export type LiveTradeTrackingState =
+  | "not_tracked"
+  | "tracking_requested"
+  | "tracking"
+  | "budget_reached"
+  | "unsubscribed"
+  | "error";
+
 export type LiveTokenCardViewModel = {
   mint: string;
   shortMint: string;
@@ -732,6 +758,16 @@ export type LiveTokenCardViewModel = {
   chainVerificationStatus: ChainVerificationStatus | "not_checked";
   feedProvider: string;
   dataSourceWarnings: string[];
+  dataCompleteness: LiveCardDataCompleteness;
+  tradeTrackingState: LiveTradeTrackingState;
+  tradeTrackingReasonCodes: string[];
+  latestTradeAt: string | null;
+  latestTradeAgeSeconds: number | null;
+  tradeEventCount: number;
+  enrichmentStatus: "disabled" | "not_checked" | "partial" | "available";
+  enrichmentSource: string | null;
+  pairAddress: string | null;
+  dexId: string | null;
   missingFields: string[];
   unavailableFields: string[];
   lastUpdatedAt: string;

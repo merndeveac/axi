@@ -27,7 +27,9 @@ import {
   type BotMode,
   type ChainVerificationSummary,
   type CandidateDecision,
+  type LiveCardDataCompleteness,
   type LiveTokenCardViewModel,
+  type LiveTradeTrackingState,
   type ObservationConfidence,
   type OverlaySignal,
   type QuoteAsset,
@@ -123,6 +125,60 @@ const logLevelSchema = z.enum([
   "silent"
 ]);
 
+const liveTradeTrackingAutoModeSchema = z.enum([
+  "none",
+  "newest",
+  "watch",
+  "qualified"
+]);
+
+type LiveTradeTrackingAutoMode = z.infer<
+  typeof liveTradeTrackingAutoModeSchema
+>;
+
+export type LiveTradeTrackingConfig = {
+  acknowledgedMetered: boolean;
+  autoMaxAgeSeconds: number;
+  autoMinAgeSeconds: number;
+  autoMinIdentityConfidence: ObservationConfidence;
+  autoMode: LiveTradeTrackingAutoMode;
+  autoRequireRealData: boolean;
+  enabled: boolean;
+  maxEventsPerMint: number;
+  maxEventsPerSession: number;
+  maxSubscribedTokens: number;
+  unsubscribeAfterMs: number;
+};
+
+export type LiveCardEnrichmentConfig = {
+  cacheTtlMs: number;
+  dexScreenerEnabled: boolean;
+  enabled: boolean;
+  jupiterPriceEnabled: boolean;
+  maxMintsPerMinute: number;
+  onNewToken: boolean;
+};
+
+type LiveCardEnrichmentStatusValue =
+  | "disabled"
+  | "not_checked"
+  | "partial"
+  | "available";
+
+type LiveCardEnrichmentRecord = {
+  dexId: string | null;
+  fdvUsd: number | null;
+  liquidityUsd: number | null;
+  marketCapUsd: number | null;
+  mint: string;
+  pairAddress: string | null;
+  priceUsd: number | null;
+  reasonCodes: string[];
+  source: string | null;
+  status: LiveCardEnrichmentStatusValue;
+  updatedAt: string;
+};
+
 export const apiConfigSchema = z.object({
   NODE_ENV: z.string().default("development"),
   BOT_MODE: BotModeSchema.default("paper"),
@@ -168,6 +224,17 @@ export const apiConfigSchema = z.object({
   CHAIN_VERIFIER_ON_MOCK: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(false),
+  LIVE_CARD_CHAIN_VERIFY_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  LIVE_CARD_CHAIN_VERIFY_ON_NEW_TOKEN: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  LIVE_CARD_CHAIN_VERIFY_MAX_MINTS_PER_MINUTE: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(30),
   CHAIN_EVENTS_ENABLED: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(false),
@@ -343,6 +410,73 @@ export const apiConfigSchema = z.object({
   PUMPPORTAL_TOKEN_TRADES_REQUIRE_API_KEY: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(true),
+  LIVE_TRADE_TRACKING_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  LIVE_TRADE_TRACKING_ACK_METERED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  LIVE_TRADE_TRACKING_MAX_MINTS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(3),
+  LIVE_TRADE_TRACKING_MAX_EVENTS_PER_SESSION: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(500),
+  LIVE_TRADE_TRACKING_MAX_EVENTS_PER_MINT: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(200),
+  LIVE_TRADE_TRACKING_AUTO_MODE: liveTradeTrackingAutoModeSchema.default(
+    "none"
+  ),
+  LIVE_TRADE_TRACKING_AUTO_MIN_AGE_SECONDS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(0),
+  LIVE_TRADE_TRACKING_AUTO_MAX_AGE_SECONDS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(120),
+  LIVE_TRADE_TRACKING_AUTO_MIN_IDENTITY_CONFIDENCE: z
+    .enum(["low", "medium", "high"])
+    .default("low"),
+  LIVE_TRADE_TRACKING_AUTO_REQUIRE_REAL_DATA: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  LIVE_TRADE_TRACKING_UNSUBSCRIBE_AFTER_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(180000),
+  LIVE_CARD_ENRICHMENT_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  LIVE_CARD_ENRICHMENT_ON_NEW_TOKEN: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  LIVE_CARD_ENRICHMENT_CACHE_TTL_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(30000),
+  LIVE_CARD_ENRICHMENT_MAX_MINTS_PER_MINUTE: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(60),
+  DEXSCREENER_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  JUPITER_PRICE_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
   TOKEN_IDENTITY_SOLANA_METADATA_ENABLED: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(false),
@@ -380,6 +514,37 @@ export const apiConfigSchema = z.object({
 export type ApiConfig = z.infer<typeof apiConfigSchema>;
 export type ApiLogLevel = z.infer<typeof logLevelSchema>;
 
+export function createLiveTradeTrackingConfig(
+  input: Partial<LiveTradeTrackingConfig> = {}
+): LiveTradeTrackingConfig {
+  return {
+    acknowledgedMetered: input.acknowledgedMetered ?? false,
+    autoMaxAgeSeconds: input.autoMaxAgeSeconds ?? 120,
+    autoMinAgeSeconds: input.autoMinAgeSeconds ?? 0,
+    autoMinIdentityConfidence: input.autoMinIdentityConfidence ?? "low",
+    autoMode: input.autoMode ?? "none",
+    autoRequireRealData: input.autoRequireRealData ?? true,
+    enabled: input.enabled ?? false,
+    maxEventsPerMint: input.maxEventsPerMint ?? 200,
+    maxEventsPerSession: input.maxEventsPerSession ?? 500,
+    maxSubscribedTokens: input.maxSubscribedTokens ?? 3,
+    unsubscribeAfterMs: input.unsubscribeAfterMs ?? 180_000
+  };
+}
+
+export function createLiveCardEnrichmentConfig(
+  input: Partial<LiveCardEnrichmentConfig> = {}
+): LiveCardEnrichmentConfig {
+  return {
+    cacheTtlMs: input.cacheTtlMs ?? 30_000,
+    dexScreenerEnabled: input.dexScreenerEnabled ?? false,
+    enabled: input.enabled ?? false,
+    jupiterPriceEnabled: input.jupiterPriceEnabled ?? false,
+    maxMintsPerMinute: input.maxMintsPerMinute ?? 60,
+    onNewToken: input.onNewToken ?? false
+  };
+}
+
 export type ApiServerOptions = {
   chainEvents?: ChainEventsServiceOptions;
   closeStorageOnClose?: boolean;
@@ -399,6 +564,8 @@ export type ApiServerOptions = {
   port?: number;
   pumpPortal?: PumpPortalFeedProviderOptions | undefined;
   actualData?: ActualDataServiceConfig;
+  liveTradeTracking?: Partial<LiveTradeTrackingConfig>;
+  liveCardEnrichment?: Partial<LiveCardEnrichmentConfig>;
   realDataRequired?: boolean;
   signalIntervalMs?: number;
   startFeed?: boolean;
@@ -467,6 +634,10 @@ const actualDataSubscribeBodySchema = z.object({
   mint: z.string().min(1),
   reason: z.string().min(1).default("manual")
 });
+const liveTradeTrackingBodySchema = z.object({
+  mint: z.string().min(1),
+  reason: z.string().min(1).default("manual_live_card")
+});
 const tokenResolveBodySchema = z.object({
   mint: z.string().min(1)
 });
@@ -529,6 +700,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       ? { pumpPortalProvider: feed }
       : {})
   });
+  const liveTradeTracking = createLiveTradeTrackingConfig(
+    options.liveTradeTracking
+  );
+  const liveCardEnrichment = createLiveCardEnrichmentConfig(
+    options.liveCardEnrichment
+  );
+  const liveCardEnrichments = new Map<string, LiveCardEnrichmentRecord>();
+  const liveCardEnrichmentAttempts: number[] = [];
   const paperAutoOrder = options.paperAutoOrder ?? false;
   const dataFeedMode = options.dataFeedMode ?? "live";
   const storage = options.storageDatabasePath
@@ -602,6 +781,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       actualData: actualData.getStatus(),
       actualDataSessionCount: stats.actualDataSessionCount,
       actualDataSubscriptionCount: stats.actualDataSubscriptionCount,
+      liveTradeTracking: getLiveTradeTrackingStatus(),
+      liveCardEnrichment: getLiveCardEnrichmentStatus(),
       dataFeedMode,
       dataFeed: options.dataFeed ?? "pumpportal",
       dataFeedReasonCodes:
@@ -858,6 +1039,95 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     return listPumpPortalTokenTradeEventsByMint(params.mint, query.limit).map(
       enrichRowWithIdentity
     );
+  });
+
+  app.get("/live/trade-tracking/status", async () =>
+    getLiveTradeTrackingStatus()
+  );
+
+  app.post("/live/trade-tracking/track", async (request, reply) => {
+    const body = liveTradeTrackingBodySchema.parse(request.body);
+
+    try {
+      return trackLiveMint(body.mint, body.reason);
+    } catch (error) {
+      if (error instanceof ActualDataServiceError) {
+        return reply.code(error.statusCode).send({
+          error: error.code,
+          message: error.message,
+          liveTradeTracking: getLiveTradeTrackingStatus(),
+          paperOnly: true
+        });
+      }
+
+      throw error;
+    }
+  });
+
+  app.delete("/live/trade-tracking/track/:mint", async (request) => {
+    const params = mintParamSchema.parse(request.params);
+    const subscription = actualData.unsubscribeMint(
+      params.mint,
+      "manual_live_card_delete"
+    );
+
+    return {
+      paperOnly: true,
+      status: getLiveTradeTrackingStatus(),
+      subscription
+    };
+  });
+
+  app.get("/live/trade-tracking/trades", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return listPumpPortalTokenTradeEvents(query.limit).map(
+      enrichRowWithIdentity
+    );
+  });
+
+  app.get("/live/trade-tracking/trades/:mint", async (request) => {
+    const params = mintParamSchema.parse(request.params);
+    const query = limitQuerySchema.parse(request.query);
+    return listPumpPortalTokenTradeEventsByMint(params.mint, query.limit).map(
+      enrichRowWithIdentity
+    );
+  });
+
+  app.get("/enrichment/status", async () => getLiveCardEnrichmentStatus());
+
+  app.get("/enrichment/tokens/:mint", async (request, reply) => {
+    const params = mintParamSchema.parse(request.params);
+    const enrichment = liveCardEnrichments.get(params.mint);
+
+    if (!enrichment) {
+      return reply.code(404).send({
+        error: "not_found",
+        message: `No live-card enrichment cached for mint ${params.mint}`,
+        status: getLiveCardEnrichmentStatus(),
+        paperOnly: true
+      });
+    }
+
+    return enrichment;
+  });
+
+  app.post("/enrichment/tokens", async (request, reply) => {
+    const body = tokenResolveBodySchema.parse(request.body);
+
+    try {
+      return await enrichLiveCardToken(body.mint, "manual_http");
+    } catch (error) {
+      if (error instanceof ActualDataServiceError) {
+        return reply.code(error.statusCode).send({
+          error: error.code,
+          message: error.message,
+          status: getLiveCardEnrichmentStatus(),
+          paperOnly: true
+        });
+      }
+
+      throw error;
+    }
   });
 
   app.get("/chain/status", async () => chainVerifier.getStatus());
@@ -1162,6 +1432,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const nowMs = Date.now();
     const feedStatus = getFeedStatus();
     const liveEvents = liveTokens.getLiveFeedEvents(1000);
+    const liveTradeTrackingStatus = getLiveTradeTrackingStatus();
 
     return liveTokens.getLiveTokens().map((token) => {
       const candidate = candidateEngine.getCandidate(token.mint);
@@ -1174,6 +1445,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       const decision = candidate?.latestDecision;
       const score = candidate?.latestScore;
       const actualDataSummary = actualData.getCandidateSummary(token.mint);
+      const tradeTracking = getLiveTradeTrackingForMint(token.mint);
+      const enrichment = liveCardEnrichments.get(token.mint);
       const marketObservations = chainEvents.getMarketObservationsByMint(
         token.mint,
         1000
@@ -1198,12 +1471,61 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         riskSnapshot
       });
       const missingFields = getMissingCardFields({ identity, token });
+      const latestPriceSol =
+        positiveOrNull(metrics?.latestPriceSol) ??
+        positiveOrNull(actualDataSummary?.latestPriceSol);
+      const latestPriceUsd =
+        positiveOrNull(metrics?.latestPriceUsd) ??
+        positiveOrNull(enrichment?.priceUsd);
+      const marketCapUsd =
+        riskSnapshot?.flags.marketCapUsd ??
+        positiveOrNull(enrichment?.marketCapUsd);
+      const fdvUsd =
+        riskSnapshot?.flags.fdvUsd ?? positiveOrNull(enrichment?.fdvUsd);
+      const liquidityUsd =
+        riskSnapshot?.flags.liquidityUsd ??
+        positiveOrNull(enrichment?.liquidityUsd);
+      const holderCount = riskSnapshot?.flags.holderCount ?? null;
+      const topHolderPct =
+        riskSnapshot?.flags.topHolderPct ??
+        candidate?.onChainTopHolderPct ??
+        null;
+      const top10HolderPct =
+        riskSnapshot?.flags.top10HolderPct ??
+        candidate?.onChainTop10HolderPct ??
+        null;
+      const mintAuthorityActive =
+        riskSnapshot?.flags.mintAuthorityActive ??
+        candidate?.onChainMintAuthorityActive ??
+        null;
+      const freezeAuthorityActive =
+        riskSnapshot?.flags.freezeAuthorityActive ??
+        candidate?.onChainFreezeAuthorityActive ??
+        null;
+      const chainVerificationStatus =
+        candidate?.chainVerificationStatus ??
+        (getLatestChainVerification(token.mint)
+          ? "verified"
+          : ("not_checked" as const));
+      const enrichmentStatus: LiveCardEnrichmentStatusValue =
+        liveCardEnrichment.enabled
+          ? (enrichment?.status ?? "not_checked")
+          : "disabled";
       const dataSourceWarnings = uniqueReasonCodes([
         ...(metricsAvailable ? [] : ["DATA_UNAVAILABLE"]),
         "HOLDER_TIME_SERIES_UNAVAILABLE",
-        ...(actualData.getStatus().enabled
+        ...(liveTradeTrackingStatus.enabled
           ? []
-          : ["ACTUAL_TRADE_DATA_DISABLED"]),
+          : ["LIVE_TRADE_TRACKING_DISABLED"]),
+        ...(liveTradeTrackingStatus.acknowledgedMetered
+          ? []
+          : ["LIVE_TRADE_TRACKING_METERED_NOT_ACKNOWLEDGED"]),
+        ...(actualDataSummary?.eventCount
+          ? []
+          : ["ACTUAL_TRADE_DATA_UNAVAILABLE"]),
+        ...(enrichmentStatus === "disabled"
+          ? ["LIVE_CARD_ENRICHMENT_DISABLED"]
+          : []),
         ...(feedStatus.realData ? [] : ["REAL_FEED_UNAVAILABLE"]),
         ...unavailableFields.map(
           (field) => `${field.toUpperCase()}_UNAVAILABLE`
@@ -1243,6 +1565,34 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         riskSnapshot?.updatedAt,
         nowMs
       );
+      const dataCompleteness = buildLiveCardDataCompleteness({
+        chainVerificationStatus,
+        enrichmentStatus,
+        hardReject,
+        holderCount,
+        identity,
+        insufficientMetrics,
+        freezeAuthorityActive,
+        latestPriceSol,
+        latestPriceUsd,
+        liquidityUsd,
+        marketCapUsd,
+        missingFields,
+        mintAuthorityActive,
+        riskSnapshot,
+        sampleCount: metrics?.sampleCount ?? 0,
+        top10HolderPct,
+        topHolderPct,
+        tradeEventCount: tradeTracking.tradeEventCount,
+        tradeTrackingState: tradeTracking.state,
+        unavailableFields,
+        volume10sSol: metricsAvailable
+          ? numberOrNull(window10s?.totalVolumeSol)
+          : null,
+        volume10sUsd: metricsAvailable
+          ? numberOrNull(window10s?.totalVolumeUsd)
+          : null
+      });
       const card: LiveTokenCardViewModel = {
         mint: token.mint,
         shortMint: shortMint(token.mint),
@@ -1274,19 +1624,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         liveSessionOnly: true,
         stale: dataFreshnessMs !== null && dataFreshnessMs > 30_000,
         dataFreshnessMs,
-        priceSol: metricsAvailable
-          ? positiveOrNull(metrics?.latestPriceSol)
-          : null,
-        priceUsd: metricsAvailable
-          ? positiveOrNull(metrics?.latestPriceUsd)
-          : null,
+        priceSol: latestPriceSol,
+        priceUsd: latestPriceUsd,
         priceQuote: null,
         quoteAsset:
           (candidate?.latestMarketObservationSummary?.quoteAsset as
             QuoteAsset | undefined) ?? null,
-        marketCapUsd: riskSnapshot?.flags.marketCapUsd ?? null,
-        fdvUsd: riskSnapshot?.flags.fdvUsd ?? null,
-        liquidityUsd: riskSnapshot?.flags.liquidityUsd ?? null,
+        marketCapUsd,
+        fdvUsd,
+        liquidityUsd,
         volume1sUsd: metricsAvailable
           ? numberOrNull(window1s?.totalVolumeUsd)
           : null,
@@ -1374,16 +1720,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         totalTradeCount10s: metricsAvailable
           ? numberOrNull(window10s?.totalTradeCount)
           : null,
-        holders: riskSnapshot?.flags.holderCount ?? null,
-        holderCount: riskSnapshot?.flags.holderCount ?? null,
-        topHolderPct:
-          riskSnapshot?.flags.topHolderPct ??
-          candidate?.onChainTopHolderPct ??
-          null,
-        top10HolderPct:
-          riskSnapshot?.flags.top10HolderPct ??
-          candidate?.onChainTop10HolderPct ??
-          null,
+        holders: holderCount,
+        holderCount,
+        topHolderPct,
+        top10HolderPct,
         devHolderPct: riskSnapshot?.flags.devHolderPct ?? null,
         holderDataSource,
         holderDataFreshnessMs,
@@ -1429,14 +1769,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         hardReject,
         riskReasonCodes: riskSnapshot?.reasonCodes ?? [],
         topRiskWarnings,
-        mintAuthorityActive:
-          riskSnapshot?.flags.mintAuthorityActive ??
-          candidate?.onChainMintAuthorityActive ??
-          null,
-        freezeAuthorityActive:
-          riskSnapshot?.flags.freezeAuthorityActive ??
-          candidate?.onChainFreezeAuthorityActive ??
-          null,
+        mintAuthorityActive,
+        freezeAuthorityActive,
         liquidityRisk: getLiquidityRisk(riskSnapshot),
         concentrationRisk: getConcentrationRisk(riskSnapshot),
         washTradingSuspected: riskSnapshot?.flags.washTradingSuspected ?? null,
@@ -1472,13 +1806,19 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         rawEventCount: tokenEvents.length,
         actualTradeEventCount: actualDataSummary?.eventCount ?? 0,
         marketObservationCount: marketObservations.length,
-        chainVerificationStatus:
-          candidate?.chainVerificationStatus ??
-          (getLatestChainVerification(token.mint)
-            ? "verified"
-            : ("not_checked" as const)),
+        chainVerificationStatus,
         feedProvider: feed.name,
         dataSourceWarnings,
+        dataCompleteness,
+        tradeTrackingState: tradeTracking.state,
+        tradeTrackingReasonCodes: tradeTracking.reasonCodes,
+        latestTradeAt: tradeTracking.latestTradeAt,
+        latestTradeAgeSeconds: tradeTracking.latestTradeAgeSeconds,
+        tradeEventCount: tradeTracking.tradeEventCount,
+        enrichmentStatus,
+        enrichmentSource: enrichment?.source ?? null,
+        pairAddress: enrichment?.pairAddress ?? null,
+        dexId: enrichment?.dexId ?? null,
         missingFields,
         unavailableFields,
         lastUpdatedAt:
@@ -1530,6 +1870,447 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         "NO_TRADING_CONTROLS"
       ]
     };
+  }
+
+  function getLiveTradeTrackingStatus() {
+    const actualStatus = actualData.getStatus();
+    const subscriptions = actualData.getSubscriptions();
+    const trackedSubscriptions = subscriptions.filter(
+      (subscription) => subscription.status === "subscribed"
+    );
+
+    return {
+      acknowledgedMetered: liveTradeTracking.acknowledgedMetered,
+      actualData: actualStatus,
+      autoMaxAgeSeconds: liveTradeTracking.autoMaxAgeSeconds,
+      autoMinAgeSeconds: liveTradeTracking.autoMinAgeSeconds,
+      autoMinIdentityConfidence:
+        liveTradeTracking.autoMinIdentityConfidence,
+      autoMode: liveTradeTracking.autoMode,
+      autoRequireRealData: liveTradeTracking.autoRequireRealData,
+      budgetReached: actualStatus.budgetReached,
+      enabled: liveTradeTracking.enabled,
+      maxEventsPerMint: liveTradeTracking.maxEventsPerMint,
+      maxEventsPerSession: liveTradeTracking.maxEventsPerSession,
+      maxSubscribedTokens: liveTradeTracking.maxSubscribedTokens,
+      paperOnly: true,
+      reasonCodes: uniqueReasonCodes([
+        ...getLiveTradeTrackingBlockers(),
+        "PUMPPORTAL_TRADE_STREAM_METERED",
+        "OBSERVATION_ONLY",
+        "PAPER_ONLY"
+      ]),
+      subscribedTokenCount: trackedSubscriptions.length,
+      subscriptions,
+      totalEventsThisSession: actualStatus.totalEventsThisSession,
+      trackedMints: trackedSubscriptions.map(
+        (subscription) => subscription.mint
+      ),
+      unsubscribeAfterMs: liveTradeTracking.unsubscribeAfterMs
+    };
+  }
+
+  function getLiveTradeTrackingBlockers(mint?: string): string[] {
+    const actualStatus = actualData.getStatus();
+    const reasonCodes: string[] = [];
+
+    if (!liveTradeTracking.enabled) {
+      reasonCodes.push("LIVE_TRADE_TRACKING_DISABLED");
+    }
+
+    if (!liveTradeTracking.acknowledgedMetered) {
+      reasonCodes.push("LIVE_TRADE_TRACKING_METERED_NOT_ACKNOWLEDGED");
+    }
+
+    if (!actualStatus.enabled) {
+      reasonCodes.push("ACTUAL_DATA_DISABLED");
+    }
+
+    if (!actualStatus.compatibleProvider) {
+      reasonCodes.push("ACTUAL_DATA_INCOMPATIBLE_PROVIDER");
+    }
+
+    if (!actualStatus.acknowledgedMetered) {
+      reasonCodes.push("PUMPPORTAL_TOKEN_TRADES_METERED_NOT_ACKNOWLEDGED");
+    }
+
+    if (actualStatus.reasonCodes.includes("PUMPPORTAL_API_KEY_MISSING")) {
+      reasonCodes.push("PUMPPORTAL_API_KEY_MISSING");
+    }
+
+    if (actualStatus.budgetReached) {
+      reasonCodes.push("PUMPPORTAL_TRADE_BUDGET_REACHED");
+    }
+
+    const existing = mint
+      ? actualData
+          .getSubscriptions()
+          .find((subscription) => subscription.mint === mint)
+      : undefined;
+
+    if (
+      existing?.status !== "subscribed" &&
+      actualStatus.subscribedTokenCount >= liveTradeTracking.maxSubscribedTokens
+    ) {
+      reasonCodes.push("LIVE_TRADE_TRACKING_MAX_MINTS_REACHED");
+    }
+
+    return uniqueReasonCodes(reasonCodes);
+  }
+
+  function getLiveTradeTrackingForMint(mint: string): {
+    latestTradeAgeSeconds: number | null;
+    latestTradeAt: string | null;
+    reasonCodes: string[];
+    state: LiveTradeTrackingState;
+    tradeEventCount: number;
+  } {
+    const actualStatus = actualData.getStatus();
+    const summary = actualData.getCandidateSummary(mint);
+    const subscription = actualData
+      .getSubscriptions()
+      .find((item) => item.mint === mint);
+    const latestTradeAt = summary?.latestRealTradeAt ?? null;
+    const latestTradeMs = latestTradeAt ? Date.parse(latestTradeAt) : NaN;
+    const blockers = getLiveTradeTrackingBlockers(mint);
+    const state: LiveTradeTrackingState =
+      actualStatus.budgetReached || blockers.includes("PUMPPORTAL_TRADE_BUDGET_REACHED")
+        ? "budget_reached"
+        : subscription?.status === "subscribed"
+          ? "tracking"
+          : subscription?.status === "unsubscribed"
+            ? "unsubscribed"
+            : liveTradeTracking.enabled &&
+                liveTradeTracking.acknowledgedMetered &&
+                blockers.some((code) =>
+                  [
+                    "ACTUAL_DATA_INCOMPATIBLE_PROVIDER",
+                    "PUMPPORTAL_API_KEY_MISSING"
+                  ].includes(code)
+                )
+              ? "error"
+              : "not_tracked";
+
+    return {
+      latestTradeAgeSeconds: Number.isFinite(latestTradeMs)
+        ? Math.max(0, Math.round((Date.now() - latestTradeMs) / 1000))
+        : null,
+      latestTradeAt,
+      reasonCodes: uniqueReasonCodes([
+        ...(summary?.reasonCodes ?? []),
+        ...(subscription?.reasonCodes ?? []),
+        ...blockers,
+        "PUMPPORTAL_TRADE_STREAM_METERED",
+        "OBSERVATION_ONLY",
+        "PAPER_ONLY"
+      ]),
+      state,
+      tradeEventCount: summary?.eventCount ?? subscription?.eventCount ?? 0
+    };
+  }
+
+  function trackLiveMint(mint: string, reason: string) {
+    const normalizedMint = mint.trim();
+
+    if (!isValidSolanaMint(normalizedMint)) {
+      throw new ActualDataServiceError(
+        "INVALID_MINT",
+        `Invalid Solana mint for live trade tracking: ${normalizedMint}`,
+        400
+      );
+    }
+
+    const blockers = getLiveTradeTrackingBlockers(normalizedMint);
+
+    if (blockers.length > 0) {
+      throw new ActualDataServiceError(
+        blockers[0] ?? "LIVE_TRADE_TRACKING_BLOCKED",
+        "Live trade tracking is blocked by current metered safety gates."
+      );
+    }
+
+    const subscription = actualData.subscribeMint(
+      normalizedMint,
+      `live_card_${reason}`
+    );
+
+    return {
+      paperOnly: true,
+      status: getLiveTradeTrackingStatus(),
+      subscription
+    };
+  }
+
+  function maybeAutoTrackLiveToken(options: {
+    decision: CandidateDecision | undefined;
+    identity: TokenIdentitySummary;
+    liveToken: LiveToken | undefined;
+  }): void {
+    if (
+      !options.liveToken ||
+      !liveTradeTracking.enabled ||
+      !liveTradeTracking.acknowledgedMetered ||
+      liveTradeTracking.autoMode === "none"
+    ) {
+      return;
+    }
+
+    if (liveTradeTracking.autoRequireRealData && !options.liveToken.realData) {
+      return;
+    }
+
+    const ageSeconds = getAgeSeconds(options.liveToken.firstSeenAt, Date.now());
+
+    if (
+      ageSeconds < liveTradeTracking.autoMinAgeSeconds ||
+      ageSeconds > liveTradeTracking.autoMaxAgeSeconds
+    ) {
+      return;
+    }
+
+    if (
+      !meetsMinimumConfidence(
+        options.identity.confidence,
+        liveTradeTracking.autoMinIdentityConfidence
+      )
+    ) {
+      return;
+    }
+
+    const shouldTrack =
+      liveTradeTracking.autoMode === "newest" ||
+      (liveTradeTracking.autoMode === "watch" &&
+        (options.decision?.action.includes("WATCH") ||
+          options.decision?.lifecycleState === "watching")) ||
+      (liveTradeTracking.autoMode === "qualified" &&
+        options.decision?.action === "PAPER_BUY_READY" &&
+        !options.decision.hardReject);
+
+    if (!shouldTrack) {
+      return;
+    }
+
+    try {
+      trackLiveMint(options.liveToken.mint, "auto");
+    } catch (error) {
+      app.log.debug(
+        {
+          error,
+          mint: options.liveToken.mint
+        },
+        "Live trade tracking auto-subscribe skipped"
+      );
+    }
+  }
+
+  function getLiveCardEnrichmentStatus() {
+    const nowMs = Date.now();
+    pruneLiveCardEnrichmentAttempts(nowMs);
+
+    return {
+      cacheTtlMs: liveCardEnrichment.cacheTtlMs,
+      cachedMintCount: liveCardEnrichments.size,
+      dexScreenerEnabled: liveCardEnrichment.dexScreenerEnabled,
+      enabled: liveCardEnrichment.enabled,
+      jupiterPriceEnabled: liveCardEnrichment.jupiterPriceEnabled,
+      maxMintsPerMinute: liveCardEnrichment.maxMintsPerMinute,
+      onNewToken: liveCardEnrichment.onNewToken,
+      paperOnly: true,
+      reasonCodes: uniqueReasonCodes([
+        ...(liveCardEnrichment.enabled
+          ? []
+          : ["LIVE_CARD_ENRICHMENT_DISABLED"]),
+        ...(liveCardEnrichment.dexScreenerEnabled
+          ? []
+          : ["DEXSCREENER_DISABLED"]),
+        ...(liveCardEnrichment.jupiterPriceEnabled
+          ? []
+          : ["JUPITER_PRICE_DISABLED"]),
+        "OBSERVATION_ONLY",
+        "PAPER_ONLY"
+      ]),
+      requestsThisMinute: liveCardEnrichmentAttempts.length
+    };
+  }
+
+  async function enrichLiveCardToken(
+    mint: string,
+    reason: string
+  ): Promise<LiveCardEnrichmentRecord> {
+    const normalizedMint = mint.trim();
+
+    if (!isValidSolanaMint(normalizedMint)) {
+      throw new ActualDataServiceError(
+        "INVALID_MINT",
+        `Invalid Solana mint for live-card enrichment: ${normalizedMint}`,
+        400
+      );
+    }
+
+    if (!liveCardEnrichment.enabled) {
+      throw new ActualDataServiceError(
+        "LIVE_CARD_ENRICHMENT_DISABLED",
+        "Live-card enrichment is disabled."
+      );
+    }
+
+    if (
+      !liveCardEnrichment.dexScreenerEnabled &&
+      !liveCardEnrichment.jupiterPriceEnabled
+    ) {
+      throw new ActualDataServiceError(
+        "LIVE_CARD_ENRICHMENT_SOURCE_DISABLED",
+        "No live-card enrichment provider is enabled."
+      );
+    }
+
+    const nowMs = Date.now();
+    const cached = liveCardEnrichments.get(normalizedMint);
+
+    if (
+      cached &&
+      liveCardEnrichment.cacheTtlMs > 0 &&
+      nowMs - Date.parse(cached.updatedAt) < liveCardEnrichment.cacheTtlMs
+    ) {
+      return cached;
+    }
+
+    pruneLiveCardEnrichmentAttempts(nowMs);
+
+    if (
+      liveCardEnrichmentAttempts.length >=
+      liveCardEnrichment.maxMintsPerMinute
+    ) {
+      throw new ActualDataServiceError(
+        "LIVE_CARD_ENRICHMENT_RATE_LIMITED",
+        "Live-card enrichment minute cap reached."
+      );
+    }
+
+    liveCardEnrichmentAttempts.push(nowMs);
+
+    const dexRecord = liveCardEnrichment.dexScreenerEnabled
+      ? await fetchDexScreenerEnrichment(normalizedMint)
+      : null;
+    const jupiterPriceUsd =
+      liveCardEnrichment.jupiterPriceEnabled &&
+      (dexRecord?.priceUsd === null || dexRecord?.priceUsd === undefined)
+        ? await fetchJupiterPriceUsd(normalizedMint)
+        : null;
+    const record: LiveCardEnrichmentRecord = {
+      dexId: dexRecord?.dexId ?? null,
+      fdvUsd: dexRecord?.fdvUsd ?? null,
+      liquidityUsd: dexRecord?.liquidityUsd ?? null,
+      marketCapUsd: dexRecord?.marketCapUsd ?? null,
+      mint: normalizedMint,
+      pairAddress: dexRecord?.pairAddress ?? null,
+      priceUsd: dexRecord?.priceUsd ?? jupiterPriceUsd,
+      reasonCodes: uniqueReasonCodes([
+        ...(dexRecord ? ["DEXSCREENER_ENRICHED"] : []),
+        ...(jupiterPriceUsd !== null ? ["JUPITER_PRICE_ENRICHED"] : []),
+        ...(dexRecord || jupiterPriceUsd !== null
+          ? []
+          : ["LIVE_CARD_ENRICHMENT_UNAVAILABLE"]),
+        "OBSERVATION_ONLY",
+        "PAPER_ONLY",
+        reason.toUpperCase()
+      ]),
+      source: dexRecord
+        ? "dexscreener"
+        : jupiterPriceUsd !== null
+          ? "jupiter"
+          : null,
+      status:
+        dexRecord && jupiterPriceUsd !== null
+          ? "available"
+          : dexRecord || jupiterPriceUsd !== null
+            ? "partial"
+            : "not_checked",
+      updatedAt: new Date(nowMs).toISOString()
+    };
+
+    liveCardEnrichments.set(normalizedMint, record);
+    return record;
+  }
+
+  async function fetchDexScreenerEnrichment(
+    mint: string
+  ): Promise<LiveCardEnrichmentRecord | null> {
+    try {
+      const response = await fetch(
+        `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(
+          mint
+        )}`
+      );
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const data = (await response.json()) as {
+        pairs?: Array<Record<string, unknown>>;
+      };
+      const pair =
+        data.pairs?.find((item) => readString(item.chainId) === "solana") ??
+        data.pairs?.[0];
+
+      if (!pair) {
+        return null;
+      }
+
+      return {
+        dexId: readString(pair.dexId),
+        fdvUsd: readNumber(pair.fdv),
+        liquidityUsd: readNestedNumber(pair.liquidity, "usd"),
+        marketCapUsd: readNumber(pair.marketCap),
+        mint,
+        pairAddress: readString(pair.pairAddress),
+        priceUsd: readNumber(pair.priceUsd),
+        reasonCodes: ["DEXSCREENER_ENRICHED"],
+        source: "dexscreener",
+        status: "partial",
+        updatedAt: new Date().toISOString()
+      };
+    } catch (error) {
+      app.log.warn({ error, mint }, "DexScreener enrichment failed");
+      return null;
+    }
+  }
+
+  async function fetchJupiterPriceUsd(mint: string): Promise<number | null> {
+    try {
+      const response = await fetch(
+        `https://lite-api.jup.ag/price/v3?ids=${encodeURIComponent(mint)}`
+      );
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const data = (await response.json()) as Record<string, unknown>;
+      const item = data[mint];
+
+      if (!item || typeof item !== "object") {
+        return null;
+      }
+
+      return (
+        readNumber((item as Record<string, unknown>).usdPrice) ??
+        readNumber((item as Record<string, unknown>).price)
+      );
+    } catch (error) {
+      app.log.warn({ error, mint }, "Jupiter price enrichment failed");
+      return null;
+    }
+  }
+
+  function pruneLiveCardEnrichmentAttempts(nowMs: number): void {
+    while (
+      liveCardEnrichmentAttempts.length > 0 &&
+      nowMs - (liveCardEnrichmentAttempts[0] ?? nowMs) > 60_000
+    ) {
+      liveCardEnrichmentAttempts.shift();
+    }
   }
 
   function handleFeedEvent(event: FeedEvent): void {
@@ -1640,7 +2421,27 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         payload: event,
         createdAt: event.timestamp
       });
+
+      if (liveCardEnrichment.enabled && liveCardEnrichment.onNewToken) {
+        void enrichLiveCardToken(liveToken.mint, "on_new_token").catch(
+          (error) => {
+            app.log.debug(
+              {
+                error,
+                mint: liveToken.mint
+              },
+              "Live-card enrichment skipped"
+            );
+          }
+        );
+      }
     }
+
+    maybeAutoTrackLiveToken({
+      decision,
+      identity: identitySummary,
+      liveToken
+    });
 
     if (!decision) {
       app.log.trace({ mint: candidate.mint }, "Candidate decision unavailable");
@@ -2785,6 +3586,142 @@ function getMissingCardFields(options: {
   return fields;
 }
 
+function buildLiveCardDataCompleteness(options: {
+  chainVerificationStatus: LiveTokenCardViewModel["chainVerificationStatus"];
+  enrichmentStatus: LiveCardEnrichmentStatusValue;
+  freezeAuthorityActive: boolean | null;
+  hardReject: boolean;
+  holderCount: number | null;
+  identity: TokenIdentitySummary | undefined;
+  insufficientMetrics: boolean;
+  latestPriceSol: number | null;
+  latestPriceUsd: number | null;
+  liquidityUsd: number | null;
+  marketCapUsd: number | null;
+  missingFields: string[];
+  mintAuthorityActive: boolean | null;
+  riskSnapshot: RiskSnapshot | undefined;
+  sampleCount: number;
+  top10HolderPct: number | null;
+  topHolderPct: number | null;
+  tradeEventCount: number;
+  tradeTrackingState: LiveTradeTrackingState;
+  unavailableFields: string[];
+  volume10sSol: number | null;
+  volume10sUsd: number | null;
+}): LiveCardDataCompleteness {
+  const criticalFields = [
+    {
+      available:
+        options.identity !== undefined &&
+        (options.identity.resolved === true ||
+          options.identity.confidence !== "none"),
+      name: "identity"
+    },
+    {
+      available:
+        options.latestPriceSol !== null || options.latestPriceUsd !== null,
+      name: "price"
+    },
+    {
+      available:
+        options.volume10sSol !== null || options.volume10sUsd !== null,
+      name: "volume10s"
+    },
+    { available: options.sampleCount > 0, name: "tradeMetrics" },
+    { available: options.holderCount !== null, name: "holderCount" },
+    { available: options.topHolderPct !== null, name: "topHolderPct" },
+    { available: options.top10HolderPct !== null, name: "top10HolderPct" },
+    {
+      available: options.mintAuthorityActive !== null,
+      name: "mintAuthorityActive"
+    },
+    {
+      available: options.freezeAuthorityActive !== null,
+      name: "freezeAuthorityActive"
+    }
+  ];
+  const optionalFields = [
+    {
+      available: !options.missingFields.includes("metadataUri"),
+      name: "metadataUri"
+    },
+    {
+      available: !options.missingFields.includes("imageUri"),
+      name: "imageUri"
+    },
+    { available: options.marketCapUsd !== null, name: "marketCapUsd" },
+    { available: options.liquidityUsd !== null, name: "liquidityUsd" },
+    {
+      available: options.chainVerificationStatus !== "not_checked",
+      name: "chainVerification"
+    },
+    {
+      available:
+        options.tradeTrackingState === "tracking" ||
+        options.tradeEventCount > 0,
+      name: "tradeTracking"
+    },
+    {
+      available:
+        options.enrichmentStatus === "available" ||
+        options.enrichmentStatus === "partial",
+      name: "enrichment"
+    }
+  ];
+  const allFields = [...criticalFields, ...optionalFields];
+  const availableFieldCount = allFields.filter(
+    (field) => field.available
+  ).length;
+  const unavailableFieldCount = allFields.length - availableFieldCount;
+  const missingCriticalFields = criticalFields
+    .filter((field) => !field.available)
+    .map((field) => field.name);
+  const missingOptionalFields = optionalFields
+    .filter((field) => !field.available)
+    .map((field) => field.name);
+  const dataQualityLabel =
+    !options.insufficientMetrics &&
+    options.sampleCount >= 8 &&
+    options.riskSnapshot !== undefined
+      ? "strategy_ready"
+      : options.enrichmentStatus === "available" ||
+          options.enrichmentStatus === "partial"
+        ? "enriched"
+        : options.tradeEventCount > 0 ||
+            options.tradeTrackingState === "tracking" ||
+            options.sampleCount > 0
+          ? "trade_tracked"
+          : options.latestPriceSol !== null ||
+              options.latestPriceUsd !== null ||
+              options.liquidityUsd !== null
+            ? "partial_market"
+            : "discovery_only";
+
+  return {
+    availableFieldCount,
+    completenessPct: Math.round((availableFieldCount / allFields.length) * 100),
+    dataQualityLabel,
+    missingCriticalFields,
+    missingOptionalFields,
+    reasonCodes: uniqueReasonCodes([
+      `DATA_QUALITY_${dataQualityLabel.toUpperCase()}`,
+      ...(missingCriticalFields.length > 0
+        ? ["CRITICAL_CARD_FIELDS_UNAVAILABLE"]
+        : []),
+      ...(missingOptionalFields.length > 0
+        ? ["OPTIONAL_CARD_FIELDS_UNAVAILABLE"]
+        : []),
+      ...(options.unavailableFields.length > 0
+        ? ["CARD_FIELDS_UNAVAILABLE"]
+        : []),
+      ...(options.hardReject ? ["RISK_HARD_REJECT"] : [])
+    ]),
+    requiredFieldCount: allFields.length,
+    unavailableFieldCount
+  };
+}
+
 function buildStrategyExplanation(options: {
   action: string;
   calculationReasonCodes: string[];
@@ -3141,6 +4078,46 @@ function positiveOrNull(value: number | null | undefined): number | null {
 
 function numberOrNull(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function meetsMinimumConfidence(
+  confidence: TokenIdentitySummary["confidence"],
+  minimum: ObservationConfidence
+): boolean {
+  const ranks: Record<TokenIdentitySummary["confidence"], number> = {
+    high: 3,
+    medium: 2,
+    low: 1,
+    none: 0
+  };
+
+  return ranks[confidence] >= ranks[minimum];
+}
+
+function readNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function readNestedNumber(value: unknown, key: string): number | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  return readNumber((value as Record<string, unknown>)[key]);
 }
 
 function getReasonLabel(reasonCode: string): string {
