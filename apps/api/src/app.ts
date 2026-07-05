@@ -27,13 +27,20 @@ import {
   type BotMode,
   type ChainVerificationSummary,
   type CandidateDecision,
+  type LiveTokenCardViewModel,
+  type ObservationConfidence,
   type OverlaySignal,
+  type QuoteAsset,
   type RiskFlags,
   type RiskSnapshot,
   type RollingMetrics,
   type RollingMetricsSnapshot,
   type ScoreBreakdown,
   type SignalState,
+  type SignalStrength,
+  type StrategySignalDriver,
+  type StrategySignalExplanation,
+  type StrategyStatus,
   type TokenIdentitySummary,
   type TokenCandidate
 } from "@axi/shared";
@@ -102,6 +109,7 @@ import {
 import {
   createLiveTokenService,
   type LiveFeedMode,
+  type LiveToken,
   type LiveTokenService
 } from "./live-token-service";
 
@@ -688,6 +696,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     return liveTokens.getLiveFeedEvents(query.limit);
   });
 
+  app.get("/ui/live-token-cards", async () => buildLiveTokenCards());
+
+  app.get("/strategy/status", async () => getStrategyStatus());
+
   app.get("/metrics", async () =>
     metricsEngine.getAllMetrics().map(enrichMetricsWithIdentity)
   );
@@ -1143,6 +1155,380 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       lastError: pumpPortalStatus?.lastError ?? null,
       reasonCodes,
       paperOnly: true as const
+    };
+  }
+
+  function buildLiveTokenCards(): LiveTokenCardViewModel[] {
+    const nowMs = Date.now();
+    const feedStatus = getFeedStatus();
+    const liveEvents = liveTokens.getLiveFeedEvents(1000);
+
+    return liveTokens.getLiveTokens().map((token) => {
+      const candidate = candidateEngine.getCandidate(token.mint);
+      const identity =
+        candidate?.identity ?? getTokenIdentitySummary(token.mint);
+      const metrics =
+        metricsEngine.getMetrics(token.mint) ?? candidate?.latestMetrics;
+      const riskSnapshot =
+        riskSnapshots.get(token.mint) ?? candidate?.latestRisk;
+      const decision = candidate?.latestDecision;
+      const score = candidate?.latestScore;
+      const actualDataSummary = actualData.getCandidateSummary(token.mint);
+      const marketObservations = chainEvents.getMarketObservationsByMint(
+        token.mint,
+        1000
+      );
+      const tokenEvents = liveEvents.filter(
+        (event) => event.mint === token.mint
+      );
+      const metricsAvailable = Boolean(metrics && metrics.sampleCount > 0);
+      const window1s = metrics?.windows["1s"];
+      const window3s = metrics?.windows["3s"];
+      const window5s = metrics?.windows["5s"];
+      const window10s = metrics?.windows["10s"];
+      const window30s = metrics?.windows["30s"];
+      const window60s = metrics?.windows["60s"];
+      const latestEventMs = Date.parse(token.latestEventAt);
+      const dataFreshnessMs = Number.isFinite(latestEventMs)
+        ? Math.max(0, nowMs - latestEventMs)
+        : null;
+      const unavailableFields = getUnavailableCardFields({
+        metrics,
+        metricsAvailable,
+        riskSnapshot
+      });
+      const missingFields = getMissingCardFields({ identity, token });
+      const dataSourceWarnings = uniqueReasonCodes([
+        ...(metricsAvailable ? [] : ["DATA_UNAVAILABLE"]),
+        "HOLDER_TIME_SERIES_UNAVAILABLE",
+        ...(actualData.getStatus().enabled
+          ? []
+          : ["ACTUAL_TRADE_DATA_DISABLED"]),
+        ...(feedStatus.realData ? [] : ["REAL_FEED_UNAVAILABLE"]),
+        ...unavailableFields.map(
+          (field) => `${field.toUpperCase()}_UNAVAILABLE`
+        )
+      ]);
+      const calculationReasonCodes = uniqueReasonCodes([
+        ...((metrics?.insufficientMetrics ?? true)
+          ? ["INSUFFICIENT_TRADE_METRICS"]
+          : []),
+        ...(metrics?.usedSolMetricsFallback
+          ? ["SCORE_USED_SOL_METRICS_FALLBACK"]
+          : []),
+        "HOLDER_TIME_SERIES_UNAVAILABLE",
+        ...dataSourceWarnings
+      ]);
+      const action = decision?.action ?? token.action ?? "IGNORE";
+      const lifecycleState =
+        decision?.lifecycleState ?? candidate?.lifecycleState ?? "new";
+      const cardScore = decision?.score ?? score?.total ?? token.score ?? 0;
+      const hardReject =
+        decision?.hardReject ?? riskSnapshot?.hardReject ?? false;
+      const insufficientMetrics = metrics?.insufficientMetrics ?? true;
+      const signalStrength = getSignalStrength({
+        action,
+        hardReject,
+        riskLevel: riskSnapshot?.riskLevel,
+        score: cardScore
+      });
+      const topRiskWarnings = getTopRiskWarnings(riskSnapshot);
+      const rejectReason = hardReject
+        ? (topRiskWarnings[0] ?? riskSnapshot?.reasonCodes[0] ?? "HARD_REJECT")
+        : insufficientMetrics
+          ? "INSUFFICIENT_TRADE_METRICS"
+          : null;
+      const holderDataSource = getHolderDataSource(candidate, riskSnapshot);
+      const holderDataFreshnessMs = getFreshnessMs(
+        riskSnapshot?.updatedAt,
+        nowMs
+      );
+      const card: LiveTokenCardViewModel = {
+        mint: token.mint,
+        shortMint: shortMint(token.mint),
+        name: identity?.name ?? token.name ?? null,
+        symbol: identity?.symbol ?? token.symbol ?? null,
+        title:
+          identity?.title ??
+          token.title ??
+          createTokenTitle(token.symbol, token.name, token.mint),
+        displayName:
+          identity?.displayName ??
+          token.displayName ??
+          createTokenTitle(token.symbol, token.name, token.mint),
+        imageUri: identity?.imageUri ?? null,
+        identityConfidence:
+          identity?.confidence ?? token.identityConfidence ?? "none",
+        identitySource: identity?.dataSource ?? "unknown",
+        identityResolved: identity?.resolved ?? false,
+        metadataUri: identity?.metadataUri ?? null,
+        source: token.source,
+        sourceMode: token.sourceMode,
+        realData: token.realData,
+        eventTypes: token.eventTypes,
+        firstSeenAt: token.firstSeenAt,
+        lastSeenAt: token.lastSeenAt,
+        ageSeconds: getAgeSeconds(token.firstSeenAt, nowMs),
+        latestEventAt: token.latestEventAt,
+        latestSignature: token.latestSignature ?? null,
+        liveSessionOnly: true,
+        stale: dataFreshnessMs !== null && dataFreshnessMs > 30_000,
+        dataFreshnessMs,
+        priceSol: metricsAvailable
+          ? positiveOrNull(metrics?.latestPriceSol)
+          : null,
+        priceUsd: metricsAvailable
+          ? positiveOrNull(metrics?.latestPriceUsd)
+          : null,
+        priceQuote: null,
+        quoteAsset:
+          (candidate?.latestMarketObservationSummary?.quoteAsset as
+            QuoteAsset | undefined) ?? null,
+        marketCapUsd: riskSnapshot?.flags.marketCapUsd ?? null,
+        fdvUsd: riskSnapshot?.flags.fdvUsd ?? null,
+        liquidityUsd: riskSnapshot?.flags.liquidityUsd ?? null,
+        volume1sUsd: metricsAvailable
+          ? numberOrNull(window1s?.totalVolumeUsd)
+          : null,
+        volume3sUsd: metricsAvailable
+          ? numberOrNull(window3s?.totalVolumeUsd)
+          : null,
+        volume5sUsd: metricsAvailable
+          ? numberOrNull(window5s?.totalVolumeUsd)
+          : null,
+        volume10sUsd: metricsAvailable
+          ? numberOrNull(window10s?.totalVolumeUsd)
+          : null,
+        volume30sUsd: metricsAvailable
+          ? numberOrNull(window30s?.totalVolumeUsd)
+          : null,
+        volume60sUsd: metricsAvailable
+          ? numberOrNull(window60s?.totalVolumeUsd)
+          : null,
+        volume1sSol: metricsAvailable
+          ? numberOrNull(window1s?.totalVolumeSol)
+          : null,
+        volume3sSol: metricsAvailable
+          ? numberOrNull(window3s?.totalVolumeSol)
+          : null,
+        volume5sSol: metricsAvailable
+          ? numberOrNull(window5s?.totalVolumeSol)
+          : null,
+        volume10sSol: metricsAvailable
+          ? numberOrNull(window10s?.totalVolumeSol)
+          : null,
+        volume30sSol: metricsAvailable
+          ? numberOrNull(window30s?.totalVolumeSol)
+          : null,
+        volume60sSol: metricsAvailable
+          ? numberOrNull(window60s?.totalVolumeSol)
+          : null,
+        buyVolume10s: metricsAvailable
+          ? numberOrNull(
+              metrics?.usedSolMetricsFallback
+                ? window10s?.buyVolumeSol
+                : window10s?.buyVolumeUsd
+            )
+          : null,
+        sellVolume10s: metricsAvailable
+          ? numberOrNull(
+              metrics?.usedSolMetricsFallback
+                ? window10s?.sellVolumeSol
+                : window10s?.sellVolumeUsd
+            )
+          : null,
+        netVolume10s: metricsAvailable
+          ? numberOrNull(
+              metrics?.usedSolMetricsFallback
+                ? window10s?.netVolumeSol
+                : window10s?.netVolumeUsd
+            )
+          : null,
+        buySellRatio: metricsAvailable
+          ? numberOrNull(metrics?.buySellRatio)
+          : null,
+        netBuyPressure: metricsAvailable
+          ? numberOrNull(metrics?.netBuyPressure)
+          : null,
+        uniqueBuyers1s: metricsAvailable
+          ? numberOrNull(window1s?.uniqueBuyers)
+          : null,
+        uniqueBuyers5s: metricsAvailable
+          ? numberOrNull(window5s?.uniqueBuyers)
+          : null,
+        uniqueBuyers10s: metricsAvailable
+          ? numberOrNull(window10s?.uniqueBuyers)
+          : null,
+        uniqueSellers10s: metricsAvailable
+          ? numberOrNull(window10s?.uniqueSellers)
+          : null,
+        uniqueTraders10s: metricsAvailable
+          ? numberOrNull(window10s?.uniqueTraders)
+          : null,
+        buyTradeCount10s: metricsAvailable
+          ? numberOrNull(window10s?.buyTradeCount)
+          : null,
+        sellTradeCount10s: metricsAvailable
+          ? numberOrNull(window10s?.sellTradeCount)
+          : null,
+        totalTradeCount10s: metricsAvailable
+          ? numberOrNull(window10s?.totalTradeCount)
+          : null,
+        holders: riskSnapshot?.flags.holderCount ?? null,
+        holderCount: riskSnapshot?.flags.holderCount ?? null,
+        topHolderPct:
+          riskSnapshot?.flags.topHolderPct ??
+          candidate?.onChainTopHolderPct ??
+          null,
+        top10HolderPct:
+          riskSnapshot?.flags.top10HolderPct ??
+          candidate?.onChainTop10HolderPct ??
+          null,
+        devHolderPct: riskSnapshot?.flags.devHolderPct ?? null,
+        holderDataSource,
+        holderDataFreshnessMs,
+        volumeVelocityUsdPerSec: metricsAvailable
+          ? numberOrNull(metrics?.volumeVelocityUsdPerSec)
+          : null,
+        volumeAccelerationUsdPerSec2: metricsAvailable
+          ? numberOrNull(metrics?.volumeAccelerationUsdPerSec2)
+          : null,
+        volumeVelocitySolPerSec: metricsAvailable
+          ? numberOrNull(metrics?.volumeVelocitySolPerSec)
+          : null,
+        volumeAccelerationSolPerSec2: metricsAvailable
+          ? numberOrNull(metrics?.volumeAccelerationSolPerSec2)
+          : null,
+        priceVelocityPctPerSec: metricsAvailable
+          ? numberOrNull(metrics?.priceVelocityPctPerSec)
+          : null,
+        priceAccelerationPctPerSec2: metricsAvailable
+          ? numberOrNull(metrics?.priceAccelerationPctPerSec2)
+          : null,
+        priceSolVelocityPctPerSec: metricsAvailable
+          ? numberOrNull(metrics?.priceSolVelocityPctPerSec)
+          : null,
+        priceSolAccelerationPctPerSec2: metricsAvailable
+          ? numberOrNull(metrics?.priceSolAccelerationPctPerSec2)
+          : null,
+        buyerVelocityPerSec: metricsAvailable
+          ? numberOrNull(metrics?.buyerVelocityPerSec)
+          : null,
+        buyerAccelerationPerSec2: metricsAvailable
+          ? numberOrNull(metrics?.buyerAccelerationPerSec2)
+          : null,
+        holderVelocityPerSec: null,
+        holderAccelerationPerSec2: null,
+        sampleCount: metrics?.sampleCount ?? 0,
+        validMetricSampleCount: metrics?.sampleCount ?? 0,
+        insufficientMetrics,
+        calculationConfidence: getCalculationConfidence(metrics),
+        calculationReasonCodes,
+        riskLevel: riskSnapshot?.riskLevel ?? "unknown",
+        riskScore: riskSnapshot?.riskScore ?? null,
+        hardReject,
+        riskReasonCodes: riskSnapshot?.reasonCodes ?? [],
+        topRiskWarnings,
+        mintAuthorityActive:
+          riskSnapshot?.flags.mintAuthorityActive ??
+          candidate?.onChainMintAuthorityActive ??
+          null,
+        freezeAuthorityActive:
+          riskSnapshot?.flags.freezeAuthorityActive ??
+          candidate?.onChainFreezeAuthorityActive ??
+          null,
+        liquidityRisk: getLiquidityRisk(riskSnapshot),
+        concentrationRisk: getConcentrationRisk(riskSnapshot),
+        washTradingSuspected: riskSnapshot?.flags.washTradingSuspected ?? null,
+        honeypotSuspected: riskSnapshot?.flags.honeypotSuspected ?? null,
+        action,
+        lifecycleState,
+        score: cardScore,
+        scoreLabel: `${cardScore}/100`,
+        signalStrength,
+        combinedReasonCodes: uniqueReasonCodes([
+          ...(decision?.combinedReasonCodes ?? token.reasonCodes),
+          ...calculationReasonCodes
+        ]),
+        buyReady:
+          action === "PAPER_BUY_READY" &&
+          !hardReject &&
+          !insufficientMetrics &&
+          riskSnapshot?.riskLevel !== "critical",
+        rejectReason,
+        strategyName: "paper-momentum-risk-v1",
+        signalUpdatedAt:
+          decision?.updatedAt ?? candidate?.lastUpdatedAt ?? null,
+        strategy: buildStrategyExplanation({
+          action,
+          calculationReasonCodes,
+          hardReject,
+          metrics,
+          riskSnapshot,
+          score,
+          signalStrength,
+          updatedAt: decision?.updatedAt ?? candidate?.lastUpdatedAt ?? null
+        }),
+        rawEventCount: tokenEvents.length,
+        actualTradeEventCount: actualDataSummary?.eventCount ?? 0,
+        marketObservationCount: marketObservations.length,
+        chainVerificationStatus:
+          candidate?.chainVerificationStatus ??
+          (getLatestChainVerification(token.mint)
+            ? "verified"
+            : ("not_checked" as const)),
+        feedProvider: feed.name,
+        dataSourceWarnings,
+        missingFields,
+        unavailableFields,
+        lastUpdatedAt:
+          metrics?.lastUpdatedAt ??
+          decision?.updatedAt ??
+          candidate?.lastUpdatedAt ??
+          token.latestEventAt
+      };
+
+      return card;
+    });
+  }
+
+  function getStrategyStatus(): StrategyStatus {
+    return {
+      strategyName: "paper-momentum-risk-v1",
+      thresholds: {
+        minScoreForPaperBuyReady: 75,
+        minScoreForWatch: 45,
+        minSampleCount: 8,
+        criticalRiskBlocksBuyReady: true,
+        hardRejectBlocksBuyReady: true,
+        insufficientMetricsBlocksBuyReady: true
+      },
+      scoringWeights: {
+        rollingMomentumWeight: 0.65,
+        legacyMomentumWeight: 0.35,
+        momentumMultiplier: 0.55,
+        qualityMultiplier: 0.55,
+        riskPenaltyMultiplier: 1
+      },
+      safetyGates: [
+        "PAPER_ONLY",
+        "HARD_REJECT_BLOCKS_BUY_READY",
+        "CRITICAL_RISK_BLOCKS_BUY_READY",
+        "INSUFFICIENT_METRICS_BLOCKS_BUY_READY",
+        "PAPER_AUTO_ORDER_DEFAULT_FALSE",
+        "NO_TRADING_CONTROLS"
+      ],
+      formula: [
+        "total = clamp(momentum * 0.55 + quality * 0.55 - riskPenalty, 0, 100)",
+        "rolling momentum blends volume, volume acceleration, buyer velocity, buyer acceleration, price velocity, buy/sell ratio, net pressure, and trade activity",
+        "holder derivatives are displayed only when a real holder time series exists"
+      ],
+      paperOnly: true,
+      reasonCodes: [
+        "STRATEGY_STATUS_READ_ONLY",
+        "PAPER_ONLY",
+        "NO_TRADING_CONTROLS"
+      ]
     };
   }
 
@@ -2256,6 +2642,513 @@ function mergeRollingIntoLegacyMetrics(
       rollingMetrics.buyerVelocityPerSec
     )
   };
+}
+
+function getUnavailableCardFields(options: {
+  metrics: RollingMetricsSnapshot | undefined;
+  metricsAvailable: boolean;
+  riskSnapshot: RiskSnapshot | undefined;
+}): string[] {
+  const fields: string[] = [];
+
+  if (!options.metricsAvailable) {
+    fields.push(
+      "priceSol",
+      "priceUsd",
+      "priceQuote",
+      "quoteAsset",
+      "volume1sUsd",
+      "volume3sUsd",
+      "volume5sUsd",
+      "volume10sUsd",
+      "volume30sUsd",
+      "volume60sUsd",
+      "volume1sSol",
+      "volume3sSol",
+      "volume5sSol",
+      "volume10sSol",
+      "volume30sSol",
+      "volume60sSol",
+      "buyVolume10s",
+      "sellVolume10s",
+      "netVolume10s",
+      "buySellRatio",
+      "netBuyPressure",
+      "uniqueBuyers1s",
+      "uniqueBuyers5s",
+      "uniqueBuyers10s",
+      "uniqueSellers10s",
+      "uniqueTraders10s",
+      "buyTradeCount10s",
+      "sellTradeCount10s",
+      "totalTradeCount10s",
+      "volumeVelocityUsdPerSec",
+      "volumeAccelerationUsdPerSec2",
+      "volumeVelocitySolPerSec",
+      "volumeAccelerationSolPerSec2",
+      "priceVelocityPctPerSec",
+      "priceAccelerationPctPerSec2",
+      "priceSolVelocityPctPerSec",
+      "priceSolAccelerationPctPerSec2",
+      "buyerVelocityPerSec",
+      "buyerAccelerationPerSec2"
+    );
+  }
+
+  if (!options.metrics?.hasUsdMetrics) {
+    fields.push(
+      "priceUsd",
+      "volume1sUsd",
+      "volume3sUsd",
+      "volume5sUsd",
+      "volume10sUsd",
+      "volume30sUsd",
+      "volume60sUsd",
+      "volumeVelocityUsdPerSec",
+      "volumeAccelerationUsdPerSec2",
+      "priceVelocityPctPerSec",
+      "priceAccelerationPctPerSec2"
+    );
+  }
+
+  if (!options.metrics?.hasSolMetrics) {
+    fields.push(
+      "priceSol",
+      "volume1sSol",
+      "volume3sSol",
+      "volume5sSol",
+      "volume10sSol",
+      "volume30sSol",
+      "volume60sSol",
+      "volumeVelocitySolPerSec",
+      "volumeAccelerationSolPerSec2",
+      "priceSolVelocityPctPerSec",
+      "priceSolAccelerationPctPerSec2"
+    );
+  }
+
+  if (options.riskSnapshot?.flags.marketCapUsd == null) {
+    fields.push("marketCapUsd");
+  }
+
+  if (options.riskSnapshot?.flags.fdvUsd == null) {
+    fields.push("fdvUsd");
+  }
+
+  if (options.riskSnapshot?.flags.liquidityUsd == null) {
+    fields.push("liquidityUsd");
+  }
+
+  if (options.riskSnapshot?.flags.holderCount == null) {
+    fields.push("holderCount", "holders");
+  }
+
+  if (options.riskSnapshot?.flags.topHolderPct == null) {
+    fields.push("topHolderPct");
+  }
+
+  if (options.riskSnapshot?.flags.top10HolderPct == null) {
+    fields.push("top10HolderPct");
+  }
+
+  fields.push("holderVelocityPerSec", "holderAccelerationPerSec2");
+
+  return uniqueReasonCodes(fields);
+}
+
+function getMissingCardFields(options: {
+  identity: TokenIdentitySummary | undefined;
+  token: LiveToken;
+}): string[] {
+  const fields: string[] = [];
+
+  if (!options.identity?.metadataUri) {
+    fields.push("metadataUri");
+  }
+
+  if (!options.identity?.imageUri) {
+    fields.push("imageUri");
+  }
+
+  if (!options.identity?.name && !options.token.name) {
+    fields.push("name");
+  }
+
+  if (!options.identity?.symbol && !options.token.symbol) {
+    fields.push("symbol");
+  }
+
+  if (!options.token.latestSignature) {
+    fields.push("latestSignature");
+  }
+
+  return fields;
+}
+
+function buildStrategyExplanation(options: {
+  action: string;
+  calculationReasonCodes: string[];
+  hardReject: boolean;
+  metrics: RollingMetricsSnapshot | undefined;
+  riskSnapshot: RiskSnapshot | undefined;
+  score: ScoreBreakdown | undefined;
+  signalStrength: SignalStrength;
+  updatedAt: string | null;
+}): StrategySignalExplanation {
+  const volumeVelocity = getEffectiveVolumeVelocity(options.metrics) ?? null;
+  const volumeAcceleration =
+    getEffectiveVolumeAcceleration(options.metrics) ?? null;
+  const priceVelocity = getEffectivePriceVelocity(options.metrics) ?? null;
+  const priceAcceleration =
+    getEffectivePriceAcceleration(options.metrics) ?? null;
+  const positiveDrivers = createPositiveDrivers({
+    metrics: options.metrics,
+    volumeAcceleration,
+    volumeVelocity,
+    priceVelocity
+  });
+  const negativeDrivers = createNegativeDrivers({
+    calculationReasonCodes: options.calculationReasonCodes,
+    riskSnapshot: options.riskSnapshot
+  });
+  const blockers = createStrategyBlockers({
+    hardReject: options.hardReject,
+    metrics: options.metrics,
+    riskSnapshot: options.riskSnapshot
+  });
+  const concentrationPenalty =
+    options.riskSnapshot?.reasonCodes.some((code) =>
+      [
+        "HOLDER_CONCENTRATION_ELEVATED",
+        "TOP_HOLDER_TOO_HIGH",
+        "TOP10_HOLDER_TOO_HIGH"
+      ].includes(code)
+    ) === true
+      ? 18
+      : 0;
+  const liquidityPenalty =
+    options.riskSnapshot?.reasonCodes.includes("LIQUIDITY_TOO_LOW") === true
+      ? 12
+      : 0;
+  const missingDataPenalty =
+    options.metrics === undefined || options.metrics.insufficientMetrics
+      ? 10
+      : 0;
+
+  return {
+    strategyName: "paper-momentum-risk-v1",
+    score: options.score?.total ?? 0,
+    action: options.action,
+    signalStrength: options.signalStrength,
+    components: {
+      momentumScore: options.score?.momentum ?? 0,
+      qualityScore: options.score?.quality ?? 0,
+      riskPenalty: options.score?.riskPenalty ?? 0,
+      liquidityPenalty,
+      concentrationPenalty,
+      missingDataPenalty
+    },
+    positiveDrivers,
+    negativeDrivers,
+    blockers,
+    calculationInputs: {
+      volumeVelocity,
+      volumeAcceleration,
+      priceVelocity,
+      priceAcceleration,
+      buyerVelocity: options.metrics?.buyerVelocityPerSec ?? null,
+      buyerAcceleration: options.metrics?.buyerAccelerationPerSec2 ?? null,
+      holderVelocity: null,
+      holderAcceleration: null
+    },
+    lastUpdatedAt: options.updatedAt
+  };
+}
+
+function createPositiveDrivers(options: {
+  metrics: RollingMetricsSnapshot | undefined;
+  priceVelocity: number | null;
+  volumeAcceleration: number | null;
+  volumeVelocity: number | null;
+}): StrategySignalDriver[] {
+  const drivers: StrategySignalDriver[] = [];
+
+  if (options.volumeVelocity !== null && options.volumeVelocity > 0) {
+    drivers.push({
+      reasonCode: "VOLUME_VELOCITY",
+      label: "Volume velocity",
+      value: options.volumeVelocity
+    });
+  }
+
+  if (options.volumeAcceleration !== null && options.volumeAcceleration > 0) {
+    drivers.push({
+      reasonCode: "VOLUME_ACCELERATION",
+      label: "Volume acceleration",
+      value: options.volumeAcceleration
+    });
+  }
+
+  if (
+    options.metrics?.buyerVelocityPerSec !== undefined &&
+    options.metrics.buyerVelocityPerSec > 0
+  ) {
+    drivers.push({
+      reasonCode: "BUYER_VELOCITY",
+      label: "Buyer velocity",
+      value: options.metrics.buyerVelocityPerSec
+    });
+  }
+
+  if (
+    options.metrics?.buyerAccelerationPerSec2 !== undefined &&
+    options.metrics.buyerAccelerationPerSec2 > 0
+  ) {
+    drivers.push({
+      reasonCode: "BUYER_ACCELERATION",
+      label: "Buyer acceleration",
+      value: options.metrics.buyerAccelerationPerSec2
+    });
+  }
+
+  if (options.priceVelocity !== null && options.priceVelocity > 0) {
+    drivers.push({
+      reasonCode: "PRICE_VELOCITY",
+      label: "Price velocity",
+      value: options.priceVelocity
+    });
+  }
+
+  return drivers;
+}
+
+function createNegativeDrivers(options: {
+  calculationReasonCodes: string[];
+  riskSnapshot: RiskSnapshot | undefined;
+}): StrategySignalDriver[] {
+  return uniqueReasonCodes([
+    ...(options.riskSnapshot?.reasonCodes ?? []),
+    ...options.calculationReasonCodes.filter(
+      (code) => code.includes("UNAVAILABLE") || code.includes("INSUFFICIENT")
+    )
+  ])
+    .slice(0, 12)
+    .map((reasonCode) => ({
+      reasonCode,
+      label: getReasonLabel(reasonCode),
+      value: null
+    }));
+}
+
+function createStrategyBlockers(options: {
+  hardReject: boolean;
+  metrics: RollingMetricsSnapshot | undefined;
+  riskSnapshot: RiskSnapshot | undefined;
+}): StrategySignalDriver[] {
+  const blockers: StrategySignalDriver[] = [];
+
+  if (options.hardReject) {
+    blockers.push({
+      reasonCode: "HARD_REJECT",
+      label: "Hard reject",
+      value: true
+    });
+  }
+
+  if (options.riskSnapshot?.riskLevel === "critical") {
+    blockers.push({
+      reasonCode: "RISK_LEVEL_CRITICAL",
+      label: "Critical risk",
+      value: options.riskSnapshot.riskLevel
+    });
+  }
+
+  if (!options.metrics || options.metrics.insufficientMetrics) {
+    blockers.push({
+      reasonCode: "INSUFFICIENT_TRADE_METRICS",
+      label: "Insufficient trade metrics",
+      value: options.metrics?.sampleCount ?? 0
+    });
+  }
+
+  return blockers;
+}
+
+function getSignalStrength(options: {
+  action: string;
+  hardReject: boolean;
+  riskLevel: RiskSnapshot["riskLevel"] | undefined;
+  score: number;
+}): SignalStrength {
+  if (
+    options.hardReject ||
+    options.riskLevel === "critical" ||
+    options.action === "REJECT"
+  ) {
+    return "reject";
+  }
+
+  if (options.score >= 75) {
+    return "strong";
+  }
+
+  if (options.score >= 60) {
+    return "moderate";
+  }
+
+  if (options.score >= 35) {
+    return "weak";
+  }
+
+  return "none";
+}
+
+function getCalculationConfidence(
+  metrics: RollingMetricsSnapshot | undefined
+): ObservationConfidence {
+  if (!metrics || metrics.sampleCount === 0) {
+    return "low";
+  }
+
+  if (metrics.sampleCount >= 8) {
+    return "high";
+  }
+
+  if (metrics.sampleCount >= 3) {
+    return "medium";
+  }
+
+  return "low";
+}
+
+function getTopRiskWarnings(riskSnapshot: RiskSnapshot | undefined): string[] {
+  if (!riskSnapshot) {
+    return ["RISK_DATA_UNAVAILABLE"];
+  }
+
+  return riskSnapshot.reasonCodes
+    .filter(
+      (code) =>
+        code.includes("RISK") ||
+        code.includes("AUTHORITY") ||
+        code.includes("LIQUIDITY") ||
+        code.includes("HOLDER") ||
+        code.includes("HONEYPOT") ||
+        code.includes("WASH")
+    )
+    .slice(0, 4);
+}
+
+function getLiquidityRisk(riskSnapshot: RiskSnapshot | undefined): string {
+  if (!riskSnapshot || riskSnapshot.flags.liquidityUsd === null) {
+    return "unknown";
+  }
+
+  return riskSnapshot.reasonCodes.includes("LIQUIDITY_TOO_LOW")
+    ? "high"
+    : "low";
+}
+
+function getConcentrationRisk(riskSnapshot: RiskSnapshot | undefined): string {
+  if (
+    !riskSnapshot ||
+    (riskSnapshot.flags.topHolderPct === null &&
+      riskSnapshot.flags.top10HolderPct === null)
+  ) {
+    return "unknown";
+  }
+
+  return riskSnapshot.reasonCodes.some((code) =>
+    [
+      "HOLDER_CONCENTRATION_ELEVATED",
+      "TOP_HOLDER_TOO_HIGH",
+      "TOP10_HOLDER_TOO_HIGH"
+    ].includes(code)
+  )
+    ? "high"
+    : "low";
+}
+
+function getHolderDataSource(
+  candidate: CandidateState | undefined,
+  riskSnapshot: RiskSnapshot | undefined
+): string | null {
+  if (
+    candidate?.onChainTopHolderPct !== null &&
+    candidate?.onChainTopHolderPct !== undefined
+  ) {
+    return "chain_verification";
+  }
+
+  if (
+    riskSnapshot?.flags.holderCount !== null &&
+    riskSnapshot?.flags.holderCount !== undefined
+  ) {
+    return "risk_snapshot";
+  }
+
+  return null;
+}
+
+function getAgeSeconds(firstSeenAt: string, nowMs: number): number {
+  const firstSeenMs = Date.parse(firstSeenAt);
+
+  if (!Number.isFinite(firstSeenMs)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.round((nowMs - firstSeenMs) / 1000));
+}
+
+function getFreshnessMs(
+  timestamp: string | null | undefined,
+  nowMs: number
+): number | null {
+  if (!timestamp) {
+    return null;
+  }
+
+  const timestampMs = Date.parse(timestamp);
+
+  if (!Number.isFinite(timestampMs)) {
+    return null;
+  }
+
+  return Math.max(0, nowMs - timestampMs);
+}
+
+function createTokenTitle(
+  symbol: string | undefined,
+  name: string | undefined,
+  mint: string
+): string {
+  if (symbol && name) {
+    return `${symbol} - ${name}`;
+  }
+
+  return name ?? symbol ?? shortMint(mint);
+}
+
+function shortMint(mint: string): string {
+  return `${mint.slice(0, 8)}...${mint.slice(-6)}`;
+}
+
+function positiveOrNull(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : null;
+}
+
+function numberOrNull(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function getReasonLabel(reasonCode: string): string {
+  return reasonCode
+    .toLowerCase()
+    .split("_")
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
 }
 
 function createFeedProvider(options: {

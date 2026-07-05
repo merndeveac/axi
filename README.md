@@ -89,6 +89,12 @@ paper-only.
 Opt-in PumpPortal token trades can update SOL-denominated rolling metrics when
 they include usable SOL and token amounts.
 
+Holder count, top-holder, and top-10-holder values can appear when read-only
+chain verification or risk snapshots provide them. Holder velocity and holder
+acceleration are not computed unless a real holder time series exists. In the
+current live-token card model those derivative fields are `null`, render as
+`--`, and include `HOLDER_TIME_SERIES_UNAVAILABLE`.
+
 ## Risk And Candidate Lifecycle
 
 `@axi/risk` computes local risk snapshots from feed metrics, mock scenario
@@ -396,6 +402,45 @@ The free new-token and migration streams can populate current-session live
 tokens and launches, with names and symbols when the payload includes them.
 They do not provide full trade volume or velocity by themselves.
 
+The dashboard is live-token-first. Its default LIVE tab renders current-session
+token intelligence cards from:
+
+```text
+GET /ui/live-token-cards
+```
+
+Each card includes identity, live feed status, market fields, participant flow,
+strategy calculations, risk flags, final signal/action/score, and audit fields.
+Fields that are not available from the current data source remain `null` in the
+API, render as `--` in the UI, and are listed in `missingFields`,
+`unavailableFields`, `dataSourceWarnings`, and calculation reason codes. The
+card endpoint does not include historical mock/replay rows.
+
+Dashboard tabs:
+
+- LIVE: high-density live-token cards, sort/filter/search controls, inline audit
+  expansion.
+- SIGNALS: read-only strategy status plus signal explanation and raw signal
+  rows.
+- METRICS: rolling windows, velocity, acceleration, sample counts, and metric
+  debug values.
+- RISK: risk levels, hard rejects, authority flags, holder concentration, and
+  risk reasons.
+- DATA: feed, live feed, actual data, market data, chain, and token identity
+  health.
+- STORAGE / DEBUG: persisted counts, live feed rows, and verification/debug
+  rows.
+
+The LIVE tab can sort by newest, score, volume velocity, 10-second volume, or
+risk. It can filter all/watch/qualified/rejected cards, filter to real data
+only, and search by symbol, name, or mint. It never shows buy/sell buttons,
+wallet controls, signing controls, or live execution controls.
+
+Displayed calculations include first and second derivatives for volume, price,
+and buyers when usable rolling trade samples exist. Holder derivatives are shown
+only when a real holder time series is available; otherwise they render as `--`
+with `HOLDER_TIME_SERIES_UNAVAILABLE`.
+
 If tokens arrive but names, symbols, or metadata are missing, enable read-only
 Solana metadata resolution:
 
@@ -557,6 +602,8 @@ Endpoints:
 - `GET /live/tokens`
 - `GET /live/tokens/:mint`
 - `GET /live/events`
+- `GET /ui/live-token-cards`
+- `GET /strategy/status`
 - `GET /signals`
 - `GET /signals/recent`
 - `GET /candidates`
@@ -612,6 +659,16 @@ subscriptions, reconnect counters, last event/message timestamps, parse errors,
 and reason codes. `GET /feed/events/live`, `GET /live/events`, and
 `GET /live/tokens` are current-session live views only; they do not include
 historical mock/replay rows from SQLite.
+
+`GET /ui/live-token-cards` composes one normalized live-token card view model
+per current-session live token. It joins only safe in-memory/paper-mode state:
+live tokens, identity summaries, rolling metrics, candidate decisions, risk
+snapshots, actual-data summaries, market observations, and chain verification
+summaries. Unknown data stays `null`; the dashboard renders it as `--`.
+
+`GET /strategy/status` exposes read-only paper strategy thresholds, scoring
+weights, formula notes, and safety gates. It is for visibility and tuning only;
+there are no editing controls and no trading controls.
 
 `GET /metrics` returns current in-memory rolling metrics for tracked mints.
 `GET /metrics/:mint` returns one metrics snapshot or `404` when that mint is not
@@ -781,8 +838,11 @@ pnpm --filter @axi/dashboard dev
 The dashboard connects to `ws://localhost:8787/ws/signals`.
 
 The dashboard uses a terminal-style dark UI with PAPER mode kept visible in the
-top status bar. It has no wallet controls, buy/sell buttons, or live-trading
-controls.
+top status bar. It is organized into LIVE, SIGNALS, METRICS, RISK, DATA, and
+STORAGE / DEBUG tabs. The LIVE tab is the default and renders token
+intelligence cards backed by `/ui/live-token-cards`. Unknown/unavailable values
+render as `--` with reason-code audit visibility. It has no wallet controls,
+buy/sell buttons, or live-trading controls.
 
 ## Chrome Extension Skeleton
 
@@ -861,6 +921,9 @@ docker compose --profile infra up -d
 - `dev/live-token-feed-default` contains live PumpPortal token-feed defaults,
   current-session live token views, feed status, live launch scripts, and the
   dashboard LIVE TOKENS panel.
+- `dev/live-token-intelligence-ui` contains the live-token intelligence card
+  endpoint, read-only strategy status endpoint, tabbed dashboard, card audit
+  view, and formatter tests.
 
 Direct Solana RPC verification and watched-address transaction ingestion exist,
 and local market-data normalization and watch orchestration exist, but they are

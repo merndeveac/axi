@@ -1,21 +1,34 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type {
-  CandidateDecision,
-  ChainVerificationStatus,
-  MarketObservationSummary,
+  LiveTokenCardViewModel,
   OverlaySignal,
   RiskSnapshot,
   RollingMetricsSnapshot,
-  TokenIdentitySummary,
-  WatchPlanSummary
+  StrategyStatus,
+  TokenIdentitySummary
 } from "@axi/shared";
 import { ConnectionBadge } from "./components/ConnectionBadge";
-import { DataPanel } from "./components/DataPanel";
 import { MetricValue } from "./components/MetricValue";
 import { ReasonCodes } from "./components/ReasonCodes";
+import {
+  formatAcceleration,
+  formatAge,
+  formatCompactNumber,
+  formatMintShort,
+  formatPct,
+  formatSol,
+  formatTime,
+  formatTimeAgo,
+  formatUnknown,
+  formatUsd,
+  formatVelocity
+} from "./formatters";
 
 type ConnectionStatus = "connecting" | "open" | "closed";
 type ApiStatus = "checking" | "connected" | "disconnected";
+type TabId = "live" | "signals" | "metrics" | "risk" | "data" | "storage";
+type SortMode = "newest" | "score" | "volumeVelocity" | "volume10s" | "risk";
+type ActionFilter = "all" | "watch" | "qualified" | "rejected";
 
 type StorageStats = {
   databasePath: string;
@@ -40,60 +53,6 @@ type StorageStats = {
   paperOrderCount: number;
   paperPositionCount: number;
   lastSignalAt: string | null;
-};
-
-type HealthStatus = {
-  actualData: ActualDataStatus;
-  actualDataSessionCount: number;
-  actualDataSubscriptionCount: number;
-  candidateCount: number;
-  candidateLifecycleEnabled: boolean;
-  chainEventsConfigured: boolean;
-  chainEventsEnabled: boolean;
-  chainTradeEventCount: number;
-  chainTransactionEventCount: number;
-  chainWatchedAddressCount: number;
-  dataFeedMode: string;
-  dataFeed: string;
-  dataFeedReasonCodes: string[];
-  feed: FeedStatus;
-  chainVerificationCount: number;
-  chainVerifier: ChainVerifierStatus;
-  feedProvider: string;
-  historicalMockRowsHidden: boolean;
-  liveFeedConnected: boolean;
-  liveFeedExpected: boolean;
-  liveFeedLastEventAt: string | null;
-  liveFeedReady: boolean;
-  liveTokenCount: number;
-  mockFeedBlocked: boolean;
-  mockFeedEnabled: boolean;
-  mockRuntimeBlocked: boolean;
-  noFeedMode: boolean;
-  noRealFeedMessage?: string;
-  realDataActive: boolean;
-  realDataConfigured: boolean;
-  marketDataEnabled: boolean;
-  marketDataMinConfidence: string;
-  marketObservationCount: number;
-  liveFeedEventCount: number;
-  pumpPortalTokenTradeEventCount: number;
-  tokenIdentity: TokenIdentityStatus;
-  tokenIdentityCount: number;
-  tokenIdentityResolvedCount: number;
-  tokenIdentityUnresolvedCount: number;
-  tokenMetadataFetchCount: number;
-  watchOrchestratorEnabled: boolean;
-  watchPlanCount: number;
-  watchActionCount: number;
-  metricsEnabled: boolean;
-  mode: string;
-  paperAutoOrder: boolean;
-  paperOnly: boolean;
-  riskEnabled: boolean;
-  status: string;
-  trackedTokenCount: number;
-  solUsdConfigured: boolean;
 };
 
 type FeedStatus = {
@@ -173,33 +132,29 @@ type TokenIdentityStatus = {
   paperOnly: true;
 };
 
-type ChainVerifierStatus = {
-  cacheSize: number;
-  configured: boolean;
-  enabled: boolean;
-  inFlightCount: number;
-  maxConcurrent: number;
-  onMigration: boolean;
-  onMock: boolean;
-  onNewToken: boolean;
-  paperOnly: true;
-  rpcHttpUrlConfigured: boolean;
-  status: "disabled" | "config_error" | "ready";
-};
-
-type ChainEventsStatus = {
-  backfillOnStart: boolean;
-  configured: boolean;
-  enabled: boolean;
-  fetchTransactionOnLog: boolean;
-  lastError: string | null;
-  maxWatchedAddresses: number;
-  paperOnly: true;
-  rpcHttpConfigured: boolean;
-  rpcWsConfigured: boolean;
-  status: "disabled" | "config_error" | "ready" | "running";
-  subscriptions: number;
-  watchedAddressCount: number;
+type HealthStatus = {
+  actualData: ActualDataStatus;
+  dataFeedMode: string;
+  dataFeed: string;
+  feed: FeedStatus;
+  feedProvider: string;
+  historicalMockRowsHidden: boolean;
+  liveFeedConnected: boolean;
+  liveFeedExpected: boolean;
+  liveFeedLastEventAt: string | null;
+  liveFeedReady: boolean;
+  liveTokenCount: number;
+  mockFeedEnabled: boolean;
+  mockRuntimeBlocked: boolean;
+  noFeedMode: boolean;
+  noRealFeedMessage?: string;
+  realDataActive: boolean;
+  tokenIdentity: TokenIdentityStatus;
+  mode: string;
+  paperAutoOrder: boolean;
+  paperOnly: boolean;
+  status: string;
+  uptimeSeconds: number;
 };
 
 type MarketStatus = {
@@ -212,125 +167,34 @@ type MarketStatus = {
   solUsdConfigured: boolean;
 };
 
-type WatchStatus = {
+type ChainStatus = {
+  configured: boolean;
   enabled: boolean;
-  verifyOnNewToken: boolean;
-  verifyOnMigration: boolean;
-  watchOnNewToken: boolean;
-  watchOnMigration: boolean;
-  maxTargetsPerCandidate: number;
-  minConfidenceToWatch: string;
-  chainVerifierEnabled: boolean;
-  chainVerifierConfigured: boolean;
-  chainEventsEnabled: boolean;
-  chainEventsConfigured: boolean;
-  watchedAddressCount: number;
-  watchPlanCount: number;
-  watchActionCount: number;
   paperOnly: true;
+  rpcHttpUrlConfigured: boolean;
+  status: string;
 };
 
-type WatchTargetRow = {
-  address: string;
-  kind: string;
-  confidence: string;
-  reasonCodes: string[];
-  source: string;
-};
-
-type WatchPlanRow = {
-  id: number;
+type MetricsRow = RollingMetricsSnapshot & {
   identity?: TokenIdentitySummary;
+};
+
+type TokenIdentityRow = TokenIdentitySummary & {
+  id?: number;
+  createdAt?: string;
+};
+
+type LiveEventRow = {
+  sessionId: string;
+  provider: string;
+  eventType: string;
   mint: string;
+  name?: string;
   symbol?: string;
-  source?: string;
-  shouldVerifyMint: boolean;
-  shouldWatchEvents: boolean;
-  watchTargets: WatchTargetRow[];
-  skippedTargets: WatchTargetRow[];
+  title?: string;
+  realData: true;
   reasonCodes: string[];
   createdAt: string;
-};
-
-type WatchActionRow = {
-  id: number;
-  mint: string;
-  action: string;
-  address: string;
-  addressKind: string;
-  status: string;
-  reasonCodes: string[];
-  createdAt: string;
-};
-
-type WatchedAddressRow = {
-  address: string;
-  addedAt: string;
-  kind: string;
-  label?: string;
-  mint?: string;
-  reasonCodes: string[];
-  source?: string;
-  symbol?: string;
-};
-
-type ChainTransactionRow = {
-  id: number;
-  signature: string;
-  watchedAddress: string;
-  watchedAddressKind: string;
-  mint?: string;
-  status: string;
-  reasonCodes: string[];
-  receivedAt: string;
-  createdAt: string;
-};
-
-type ChainTradeRow = {
-  id: number;
-  signature: string;
-  mint: string;
-  side: string;
-  confidence: string;
-  priceUsd?: number | null;
-  volumeUsd?: number | null;
-  tokenAmount?: number | null;
-  watchedAddress: string;
-  reasonCodes: string[];
-  timestamp: string;
-  createdAt: string;
-};
-
-type MarketObservationRow = {
-  id: number;
-  signature: string;
-  mint: string;
-  side: string;
-  quoteAsset: string;
-  quoteMint: string | null;
-  baseTokenAmount: number | null;
-  quoteAmount: number | null;
-  priceQuote: number | null;
-  priceSol: number | null;
-  priceUsd: number | null;
-  volumeSol: number | null;
-  volumeUsd: number | null;
-  confidence: string;
-  usableForMetrics: boolean;
-  reasonCodes: string[];
-  createdAt: string;
-};
-
-type ActualDataSummary = {
-  eventCount: number;
-  latestPriceSol: number | null;
-  latestRealTradeAt: string | null;
-  latestVolumeSol: number | null;
-  observationOnly: true;
-  paperOnly: true;
-  provider: "pumpportal";
-  reasonCodes: string[];
-  subscriptionStatus: string;
 };
 
 type PumpPortalTradeRow = {
@@ -349,58 +213,34 @@ type PumpPortalTradeRow = {
   createdAt: string;
 };
 
-type CandidateApiRow = {
+type MarketObservationRow = {
+  id: number;
+  signature: string;
   mint: string;
-  identity?: TokenIdentitySummary;
-  symbol?: string;
-  name?: string;
-  source?: string;
-  lifecycleState: string;
-  chainVerificationStatus?: ChainVerificationStatus;
-  chainVerifiedAt?: string;
-  chainReasonCodes?: string[];
-  onChainMintAuthorityActive?: boolean | null;
-  onChainFreezeAuthorityActive?: boolean | null;
-  onChainTopHolderPct?: number | null;
-  onChainTop10HolderPct?: number | null;
-  latestDecision?: CandidateDecision;
-  latestMetrics?: RollingMetricsSnapshot;
-  latestRisk?: RiskSnapshot;
-  latestMarketObservationSummary?: MarketObservationSummary;
-  actualData?: ActualDataSummary;
-  latestWatchPlanSummary?: WatchPlanSummary;
-  lastUpdatedAt: string;
-  marketReasonCodes?: string[];
-  watchReasonCodes?: string[];
-  paperOrderStatus: string;
-};
-
-type TokenIdentityRow = TokenIdentitySummary & {
-  id?: number;
-  createdAt?: string;
-};
-
-type LiveTokenRow = {
-  mint: string;
-  name?: string;
-  symbol?: string;
-  title?: string;
-  displayName: string;
-  source: "pumpportal";
-  sourceMode: "real";
-  realData: true;
-  eventTypes: string[];
-  firstSeenAt: string;
-  lastSeenAt: string;
-  latestEventAt: string;
-  latestSignature?: string;
-  rawSource?: string;
-  identityConfidence?: string;
-  candidateState?: string;
-  action?: string;
-  riskLevel?: string;
-  score?: number;
+  side: string;
+  quoteAsset: string;
+  priceQuote: number | null;
+  priceSol: number | null;
+  priceUsd: number | null;
+  volumeSol: number | null;
+  volumeUsd: number | null;
+  confidence: string;
+  usableForMetrics: boolean;
   reasonCodes: string[];
+  createdAt: string;
+};
+
+type ChainVerificationRow = {
+  id?: number;
+  mint: string;
+  status: string;
+  mintAuthorityActive?: boolean | null;
+  freezeAuthorityActive?: boolean | null;
+  topHolderPct?: number | null;
+  top10HolderPct?: number | null;
+  reasonCodes: string[];
+  inspectedAt?: string | null;
+  createdAt?: string;
 };
 
 type ServerMessage =
@@ -413,63 +253,87 @@ type ServerMessage =
       signal: OverlaySignal;
     };
 
+const tabs: Array<{ id: TabId; label: string }> = [
+  { id: "live", label: "LIVE" },
+  { id: "signals", label: "SIGNALS" },
+  { id: "metrics", label: "METRICS" },
+  { id: "risk", label: "RISK" },
+  { id: "data", label: "DATA" },
+  { id: "storage", label: "STORAGE / DEBUG" }
+];
+
 const wsUrl =
   import.meta.env.VITE_AXI_WS_URL ?? "ws://localhost:8787/ws/signals";
 const apiBaseUrl = import.meta.env.VITE_AXI_API_URL ?? "http://localhost:8787";
 
 export function App() {
-  const [signals, setSignals] = useState<OverlaySignal[]>([]);
+  const [activeTab, setActiveTab] = useState<TabId>(getInitialTab);
+  const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("connecting");
-  const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
-  const [candidates, setCandidates] = useState<CandidateApiRow[]>([]);
+  const [cards, setCards] = useState<LiveTokenCardViewModel[]>([]);
+  const [signals, setSignals] = useState<OverlaySignal[]>([]);
+  const [metrics, setMetrics] = useState<MetricsRow[]>([]);
+  const [riskRows, setRiskRows] = useState<RiskSnapshot[]>([]);
   const [healthStatus, setHealthStatus] = useState<HealthStatus | null>(null);
-  const [chainStatus, setChainStatus] = useState<ChainVerifierStatus | null>(
-    null
-  );
-  const [chainEventsStatus, setChainEventsStatus] =
-    useState<ChainEventsStatus | null>(null);
-  const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
-  const [actualDataStatus, setActualDataStatus] =
-    useState<ActualDataStatus | null>(null);
   const [feedStatus, setFeedStatus] = useState<FeedStatus | null>(null);
   const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
-  const [liveTokens, setLiveTokens] = useState<LiveTokenRow[]>([]);
-  const [actualTrades, setActualTrades] = useState<PumpPortalTradeRow[]>([]);
+  const [strategyStatus, setStrategyStatus] = useState<StrategyStatus | null>(
+    null
+  );
+  const [actualDataStatus, setActualDataStatus] =
+    useState<ActualDataStatus | null>(null);
+  const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
+  const [chainStatus, setChainStatus] = useState<ChainStatus | null>(null);
   const [tokenIdentityStatus, setTokenIdentityStatus] =
     useState<TokenIdentityStatus | null>(null);
   const [tokenIdentities, setTokenIdentities] = useState<TokenIdentityRow[]>(
     []
   );
-  const [watchStatus, setWatchStatus] = useState<WatchStatus | null>(null);
-  const [chainTransactions, setChainTransactions] = useState<
-    ChainTransactionRow[]
-  >([]);
-  const [chainTrades, setChainTrades] = useState<ChainTradeRow[]>([]);
+  const [storageStats, setStorageStats] = useState<StorageStats | null>(null);
+  const [liveEvents, setLiveEvents] = useState<LiveEventRow[]>([]);
+  const [actualTrades, setActualTrades] = useState<PumpPortalTradeRow[]>([]);
   const [marketObservations, setMarketObservations] = useState<
     MarketObservationRow[]
   >([]);
-  const [watchPlans, setWatchPlans] = useState<WatchPlanRow[]>([]);
-  const [watchActions, setWatchActions] = useState<WatchActionRow[]>([]);
-  const [watchedAddresses, setWatchedAddresses] = useState<WatchedAddressRow[]>(
-    []
-  );
-  const [storageStats, setStorageStats] = useState<StorageStats | null>(null);
+  const [chainVerifications, setChainVerifications] = useState<
+    ChainVerificationRow[]
+  >([]);
+  const [sortMode, setSortMode] = useState<SortMode>("newest");
+  const [actionFilter, setActionFilter] = useState<ActionFilter>("all");
+  const [realOnly, setRealOnly] = useState(true);
+  const [search, setSearch] = useState("");
+  const [expandedMint, setExpandedMint] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>("never");
+
+  useEffect(() => {
+    const onHashChange = () => setActiveTab(getInitialTab());
+
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
 
   useEffect(() => {
     let socket: WebSocket | undefined;
     let retryTimer: number | undefined;
     let closedByReact = false;
 
+    const refreshCards = async () => {
+      try {
+        const nextCards = await fetchJson<LiveTokenCardViewModel[]>(
+          "/ui/live-token-cards"
+        );
+        setCards(nextCards);
+      } catch {
+        // Polling remains the fallback path.
+      }
+    };
+
     const connect = () => {
       setConnectionStatus("connecting");
       socket = new WebSocket(wsUrl);
 
-      socket.addEventListener("open", () => {
-        setConnectionStatus("open");
-      });
-
+      socket.addEventListener("open", () => setConnectionStatus("open"));
       socket.addEventListener("message", (event) => {
         const message = JSON.parse(String(event.data)) as ServerMessage;
 
@@ -479,11 +343,11 @@ export function App() {
 
         if (message.type === "signal") {
           setSignals((current) => upsertSignal(current, message.signal));
+          void refreshCards();
         }
 
         setLastUpdated(new Date().toLocaleTimeString());
       });
-
       socket.addEventListener("close", () => {
         setConnectionStatus("closed");
 
@@ -509,136 +373,69 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
 
-    const loadApiStatus = async () => {
+    const loadDashboardData = async () => {
       try {
         const [
-          healthResponse,
-          statsResponse,
-          candidatesResponse,
-          chainResponse,
-          chainEventsResponse,
-          marketStatusResponse,
-          feedStatusResponse,
-          liveStatusResponse,
-          liveTokensResponse,
-          actualDataStatusResponse,
-          actualTradesResponse,
-          tokenIdentityStatusResponse,
-          tokenIdentitiesResponse,
-          watchStatusResponse,
-          watchedAddressesResponse,
-          chainTransactionsResponse,
-          chainTradesResponse,
-          marketObservationsResponse,
-          watchPlansResponse,
-          watchActionsResponse
+          health,
+          stats,
+          nextFeedStatus,
+          nextLiveStatus,
+          nextCards,
+          nextStrategy,
+          nextSignals,
+          nextMetrics,
+          nextRiskRows,
+          nextActualDataStatus,
+          nextActualTrades,
+          nextMarketStatus,
+          nextMarketObservations,
+          nextChainStatus,
+          nextChainVerifications,
+          nextTokenIdentityStatus,
+          nextTokenIdentities,
+          nextLiveEvents
         ] = await Promise.all([
-          fetch(`${apiBaseUrl}/health`),
-          fetch(`${apiBaseUrl}/storage/stats`),
-          fetch(`${apiBaseUrl}/candidates`),
-          fetch(`${apiBaseUrl}/chain/status`),
-          fetch(`${apiBaseUrl}/chain/events/status`),
-          fetch(`${apiBaseUrl}/market/status`),
-          fetch(`${apiBaseUrl}/feed/status`),
-          fetch(`${apiBaseUrl}/live/status`),
-          fetch(`${apiBaseUrl}/live/tokens`),
-          fetch(`${apiBaseUrl}/actual-data/status`),
-          fetch(`${apiBaseUrl}/actual-data/trades?limit=10`),
-          fetch(`${apiBaseUrl}/tokens/status`),
-          fetch(`${apiBaseUrl}/tokens?limit=25`),
-          fetch(`${apiBaseUrl}/watch/status`),
-          fetch(`${apiBaseUrl}/chain/events/watches`),
-          fetch(`${apiBaseUrl}/chain/events/transactions?limit=10`),
-          fetch(`${apiBaseUrl}/chain/events/trades?limit=10`),
-          fetch(`${apiBaseUrl}/market/observations?limit=10`),
-          fetch(`${apiBaseUrl}/watch/plans?limit=10`),
-          fetch(`${apiBaseUrl}/watch/actions?limit=10`)
+          fetchJson<HealthStatus>("/health"),
+          fetchJson<StorageStats>("/storage/stats"),
+          fetchJson<FeedStatus>("/feed/status"),
+          fetchJson<LiveStatus>("/live/status"),
+          fetchJson<LiveTokenCardViewModel[]>("/ui/live-token-cards"),
+          fetchJson<StrategyStatus>("/strategy/status"),
+          fetchJson<OverlaySignal[]>("/signals"),
+          fetchJson<MetricsRow[]>("/metrics"),
+          fetchJson<RiskSnapshot[]>("/risk"),
+          fetchJson<ActualDataStatus>("/actual-data/status"),
+          fetchJson<PumpPortalTradeRow[]>("/actual-data/trades?limit=10"),
+          fetchJson<MarketStatus>("/market/status"),
+          fetchJson<MarketObservationRow[]>("/market/observations?limit=10"),
+          fetchJson<ChainStatus>("/chain/status"),
+          fetchJson<ChainVerificationRow[]>("/chain/verifications?limit=10"),
+          fetchJson<TokenIdentityStatus>("/tokens/status"),
+          fetchJson<TokenIdentityRow[]>("/tokens?limit=25"),
+          fetchJson<LiveEventRow[]>("/live/events?limit=25")
         ]);
-
-        if (
-          !healthResponse.ok ||
-          !statsResponse.ok ||
-          !candidatesResponse.ok ||
-          !chainResponse.ok ||
-          !chainEventsResponse.ok ||
-          !marketStatusResponse.ok ||
-          !feedStatusResponse.ok ||
-          !liveStatusResponse.ok ||
-          !liveTokensResponse.ok ||
-          !actualDataStatusResponse.ok ||
-          !actualTradesResponse.ok ||
-          !tokenIdentityStatusResponse.ok ||
-          !tokenIdentitiesResponse.ok ||
-          !watchStatusResponse.ok ||
-          !watchedAddressesResponse.ok ||
-          !chainTransactionsResponse.ok ||
-          !chainTradesResponse.ok ||
-          !marketObservationsResponse.ok ||
-          !watchPlansResponse.ok ||
-          !watchActionsResponse.ok
-        ) {
-          throw new Error("API status check failed");
-        }
-
-        const health = (await healthResponse.json()) as HealthStatus;
-        const stats = (await statsResponse.json()) as StorageStats;
-        const nextCandidates =
-          (await candidatesResponse.json()) as CandidateApiRow[];
-        const nextChainStatus =
-          (await chainResponse.json()) as ChainVerifierStatus;
-        const nextChainEventsStatus =
-          (await chainEventsResponse.json()) as ChainEventsStatus;
-        const nextMarketStatus =
-          (await marketStatusResponse.json()) as MarketStatus;
-        const nextFeedStatus = (await feedStatusResponse.json()) as FeedStatus;
-        const nextLiveStatus = (await liveStatusResponse.json()) as LiveStatus;
-        const nextLiveTokens =
-          (await liveTokensResponse.json()) as LiveTokenRow[];
-        const nextActualDataStatus =
-          (await actualDataStatusResponse.json()) as ActualDataStatus;
-        const nextActualTrades =
-          (await actualTradesResponse.json()) as PumpPortalTradeRow[];
-        const nextTokenIdentityStatus =
-          (await tokenIdentityStatusResponse.json()) as TokenIdentityStatus;
-        const nextTokenIdentities =
-          (await tokenIdentitiesResponse.json()) as TokenIdentityRow[];
-        const nextWatchStatus =
-          (await watchStatusResponse.json()) as WatchStatus;
-        const nextWatchedAddresses =
-          (await watchedAddressesResponse.json()) as WatchedAddressRow[];
-        const nextChainTransactions =
-          (await chainTransactionsResponse.json()) as ChainTransactionRow[];
-        const nextChainTrades =
-          (await chainTradesResponse.json()) as ChainTradeRow[];
-        const nextMarketObservations =
-          (await marketObservationsResponse.json()) as MarketObservationRow[];
-        const nextWatchPlans =
-          (await watchPlansResponse.json()) as WatchPlanRow[];
-        const nextWatchActions =
-          (await watchActionsResponse.json()) as WatchActionRow[];
 
         if (!cancelled) {
           setApiStatus("connected");
-          setCandidates(nextCandidates);
-          setChainStatus(nextChainStatus);
-          setChainEventsStatus(nextChainEventsStatus);
-          setMarketStatus(nextMarketStatus);
-          setFeedStatus(nextFeedStatus);
-          setLiveStatus(nextLiveStatus);
-          setLiveTokens(nextLiveTokens);
-          setActualDataStatus(nextActualDataStatus);
-          setActualTrades(nextActualTrades);
-          setTokenIdentityStatus(nextTokenIdentityStatus);
-          setTokenIdentities(nextTokenIdentities);
-          setWatchStatus(nextWatchStatus);
-          setWatchedAddresses(nextWatchedAddresses);
-          setChainTransactions(nextChainTransactions);
-          setChainTrades(nextChainTrades);
-          setMarketObservations(nextMarketObservations);
-          setWatchPlans(nextWatchPlans);
-          setWatchActions(nextWatchActions);
           setHealthStatus(health);
           setStorageStats(stats);
+          setFeedStatus(nextFeedStatus);
+          setLiveStatus(nextLiveStatus);
+          setCards(nextCards);
+          setStrategyStatus(nextStrategy);
+          setSignals(nextSignals);
+          setMetrics(nextMetrics);
+          setRiskRows(nextRiskRows);
+          setActualDataStatus(nextActualDataStatus);
+          setActualTrades(nextActualTrades);
+          setMarketStatus(nextMarketStatus);
+          setMarketObservations(nextMarketObservations);
+          setChainStatus(nextChainStatus);
+          setChainVerifications(nextChainVerifications);
+          setTokenIdentityStatus(nextTokenIdentityStatus);
+          setTokenIdentities(nextTokenIdentities);
+          setLiveEvents(nextLiveEvents);
+          setLastUpdated(new Date().toLocaleTimeString());
         }
       } catch {
         if (!cancelled) {
@@ -647,52 +444,33 @@ export function App() {
       }
     };
 
-    void loadApiStatus();
+    void loadDashboardData();
     const timer = window.setInterval(() => {
-      void loadApiStatus();
+      void loadDashboardData();
     }, 3000);
 
     return () => {
       cancelled = true;
-
       window.clearInterval(timer);
     };
   }, []);
 
-  const sortedSignals = useMemo(
-    () => [...signals].sort((left, right) => right.score - left.score),
-    [signals]
-  );
-  const sortedCandidates = useMemo(
+  const visibleCards = useMemo(
     () =>
-      [...candidates].sort(
-        (left, right) =>
-          (right.latestDecision?.score ?? 0) - (left.latestDecision?.score ?? 0)
+      sortCards(
+        filterCards(cards, { actionFilter, realOnly, search }),
+        sortMode
       ),
-    [candidates]
+    [actionFilter, cards, realOnly, search, sortMode]
   );
-
-  const buyReadyCount = signals.filter(
-    (signal) => signal.action === "BUY_READY"
+  const buyReadyCount = cards.filter((card) => card.buyReady).length;
+  const rejectedCount = cards.filter(
+    (card) => card.hardReject || card.signalStrength === "reject"
   ).length;
-  const hardRejectCount = signals.filter((signal) => signal.hardReject).length;
-  const incompleteMetricCount = signals.filter(
-    (signal) =>
-      signal.reasonCodes.includes("INSUFFICIENT_METRICS") ||
-      signal.reasonCodes.includes("INSUFFICIENT_TRADE_METRICS")
-  ).length;
-  const statusMessage = getStatusMessage({
-    apiStatus,
-    feedProvider: healthStatus?.feedProvider,
-    feedStatus,
-    liveStatus,
-    noFeedMode: healthStatus?.noFeedMode,
-    noRealFeedMessage: healthStatus?.noRealFeedMessage,
-    incompleteMetricCount,
-    candidateCount: candidates.length,
-    signalCount: signals.length,
-    storageStats
-  });
+  const unavailableFieldCount = cards.reduce(
+    (total, card) => total + card.unavailableFields.length,
+    0
+  );
   const modeLabel = (healthStatus?.mode ?? "paper").toUpperCase();
   const feedModeLabel = (
     feedStatus?.mode ??
@@ -701,47 +479,23 @@ export function App() {
   ).toUpperCase();
   const feedLabel = (
     feedStatus?.provider ??
-    healthStatus?.dataFeed ??
     healthStatus?.feedProvider ??
     "unknown"
   ).toUpperCase();
-  const liveConnectionLabel = getLiveConnectionLabel(feedStatus, healthStatus);
-  const liveConnectionTone = getLiveConnectionTone(feedStatus, healthStatus);
   const apiLabel =
     apiStatus === "connected"
       ? "ONLINE"
       : apiStatus === "checking"
         ? "CHECKING"
         : "OFFLINE";
-  const apiTone =
-    apiStatus === "connected"
-      ? "online"
-      : apiStatus === "checking"
-        ? "warning"
-        : "offline";
   const websocketLabel =
     connectionStatus === "open"
       ? "ONLINE"
       : connectionStatus === "connecting"
         ? "CONNECTING"
         : "OFFLINE";
-  const websocketTone =
-    connectionStatus === "open"
-      ? "online"
-      : connectionStatus === "connecting"
-        ? "warning"
-        : "offline";
-  const actualData = actualDataStatus ?? healthStatus?.actualData ?? null;
-  const identityStatus =
-    tokenIdentityStatus ?? healthStatus?.tokenIdentity ?? null;
-  const actualDataLabel =
-    actualData?.enabled && actualData.compatibleProvider
-      ? "REAL/PUMPPORTAL"
-      : healthStatus?.mockFeedEnabled
-        ? "MOCK"
-        : healthStatus?.noFeedMode
-          ? "NO REAL FEED"
-          : "PAPER FEED";
+  const liveLabel = getLiveConnectionLabel(feedStatus, healthStatus);
+  const liveTone = getLiveConnectionTone(feedStatus, healthStatus);
 
   return (
     <main className="app-shell">
@@ -749,7 +503,7 @@ export function App() {
         <div className="brand-cluster">
           <span className="prompt">&gt;</span>
           <div>
-            <p className="eyebrow">operator console</p>
+            <p className="eyebrow">live token intelligence</p>
             <h1>AXI</h1>
           </div>
           <span className="terminal-cursor" aria-hidden="true" />
@@ -758,82 +512,26 @@ export function App() {
           <ConnectionBadge label={modeLabel} tone="online" />
           <ConnectionBadge label={`MODE ${feedModeLabel}`} tone="online" />
           <ConnectionBadge label={`FEED ${feedLabel}`} tone="neutral" />
-          <ConnectionBadge
-            label={liveConnectionLabel}
-            tone={liveConnectionTone}
-          />
+          <ConnectionBadge label={liveLabel} tone={liveTone} />
           <ConnectionBadge label="PAPER ONLY" tone="online" />
-          <ConnectionBadge label={`API ${apiLabel}`} tone={apiTone} />
+          <ConnectionBadge
+            label={`API ${apiLabel}`}
+            tone={apiStatus === "connected" ? "online" : "offline"}
+          />
           <ConnectionBadge
             label={`WS ${websocketLabel}`}
-            tone={websocketTone}
+            tone={connectionStatus === "open" ? "online" : "warning"}
           />
-          <span className="last-update">LAST MSG {lastUpdated}</span>
+          <span className="last-update">UPDATED {lastUpdated}</span>
         </div>
       </header>
 
       <section className="status-grid" aria-label="System status">
-        <MetricValue label="feed" value={feedLabel} detail="source" />
-        <MetricValue label="feed mode" value={feedModeLabel} detail="runtime" />
         <MetricValue
-          label="live feed"
-          value={liveConnectionLabel}
-          detail={formatTimestamp(
-            feedStatus?.lastEventAt ?? liveStatus?.lastEventAt
-          )}
-          tone={
-            liveConnectionTone === "online"
-              ? "good"
-              : liveConnectionTone === "warning"
-                ? "warn"
-                : "bad"
-          }
-        />
-        <MetricValue
-          label="live tokens"
-          value={formatCompactNumber(
-            liveStatus?.liveTokenCount ?? liveTokens.length
-          )}
+          label="live cards"
+          value={formatCompactNumber(cards.length)}
           detail="current session"
-          tone={
-            (liveStatus?.liveTokenCount ?? liveTokens.length) > 0
-              ? "good"
-              : "neutral"
-          }
-        />
-        <MetricValue
-          label="real data"
-          value={healthStatus?.realDataConfigured ? "[CFG]" : "[NONE]"}
-          detail={healthStatus?.realDataActive ? "active" : "inactive"}
-          tone={healthStatus?.realDataActive ? "good" : "neutral"}
-        />
-        <MetricValue
-          label="mock"
-          value={
-            healthStatus?.mockFeedEnabled
-              ? "[ON]"
-              : healthStatus?.mockFeedBlocked
-                ? "[BLOCKED]"
-                : "[OFF]"
-          }
-          detail={
-            healthStatus?.mockFeedBlocked
-              ? "explicit opt-in required"
-              : "runtime"
-          }
-          tone={
-            healthStatus?.mockFeedEnabled
-              ? "warn"
-              : healthStatus?.mockFeedBlocked
-                ? "bad"
-                : "neutral"
-          }
-        />
-        <MetricValue
-          label="signals"
-          value={formatCompactNumber(signals.length)}
-          detail={`${formatCompactNumber(storageStats?.signalCount ?? 0)} stored`}
-          tone="good"
+          tone={cards.length > 0 ? "good" : "neutral"}
         />
         <MetricValue
           label="buy ready"
@@ -842,1020 +540,1088 @@ export function App() {
           tone={buyReadyCount > 0 ? "good" : "neutral"}
         />
         <MetricValue
-          label="hard reject"
-          value={formatCompactNumber(hardRejectCount)}
-          detail="blocked"
-          tone={hardRejectCount > 0 ? "bad" : "neutral"}
+          label="rejects"
+          value={formatCompactNumber(rejectedCount)}
+          detail="risk blocked"
+          tone={rejectedCount > 0 ? "bad" : "neutral"}
         />
         <MetricValue
-          label="metrics"
-          value={healthStatus?.metricsEnabled ? "[ON]" : "[OFF]"}
-          detail={`${incompleteMetricCount} incomplete`}
-          tone={healthStatus?.metricsEnabled ? "good" : "bad"}
+          label="unavailable"
+          value={formatCompactNumber(unavailableFieldCount)}
+          detail="shown as --"
+          tone={unavailableFieldCount > 0 ? "warn" : "good"}
         />
         <MetricValue
-          label="risk"
-          value={healthStatus?.riskEnabled ? "[ON]" : "[OFF]"}
-          detail={`${formatCompactNumber(storageStats?.riskSnapshotCount ?? 0)} snapshots`}
-          tone={healthStatus?.riskEnabled ? "good" : "bad"}
+          label="feed events"
+          value={formatCompactNumber(feedStatus?.newTokenEventCount ?? 0)}
+          detail={`${feedStatus?.migrationEventCount ?? 0} migrations`}
+          tone={feedStatus?.connected ? "good" : "neutral"}
         />
         <MetricValue
-          label="candidates"
-          value={formatCompactNumber(
-            healthStatus?.candidateCount ?? candidates.length
-          )}
-          detail={`${formatCompactNumber(healthStatus?.trackedTokenCount ?? 0)} tracked`}
+          label="token trades"
+          value={formatCompactNumber(feedStatus?.tokenTradeEventCount ?? 0)}
+          detail="metered opt-in"
+          tone={
+            (feedStatus?.tokenTradeEventCount ?? 0) > 0 ? "good" : "neutral"
+          }
+        />
+        <MetricValue
+          label="mock"
+          value={healthStatus?.mockFeedEnabled ? "[ON]" : "[OFF]"}
+          detail={
+            healthStatus?.historicalMockRowsHidden
+              ? "historical hidden"
+              : "unknown"
+          }
+          tone={healthStatus?.mockFeedEnabled ? "warn" : "good"}
         />
         <MetricValue
           label="storage"
-          value={formatCompactNumber(storageStats?.feedEventCount ?? 0)}
-          detail="feed events"
-        />
-        <MetricValue
-          label="chain verifier"
-          value={(
-            chainStatus?.status ??
-            healthStatus?.chainVerifier.status ??
-            "unknown"
-          ).toUpperCase()}
-          detail={
-            chainStatus?.rpcHttpUrlConfigured ? "rpc configured" : "rpc unset"
-          }
-          tone={chainStatus?.enabled ? "good" : "neutral"}
-        />
-        <MetricValue
-          label="chain events"
-          value={(chainEventsStatus?.status ?? "unknown").toUpperCase()}
-          detail={`${chainEventsStatus?.watchedAddressCount ?? healthStatus?.chainWatchedAddressCount ?? 0} watched`}
-          tone={chainEventsStatus?.enabled ? "good" : "neutral"}
-        />
-        <MetricValue
-          label="market data"
-          value={marketStatus?.enabled ? "[ON]" : "[OFF]"}
-          detail={`${marketStatus?.minConfidenceForMetrics ?? healthStatus?.marketDataMinConfidence ?? "unknown"} min`}
-          tone={marketStatus?.enabled ? "good" : "neutral"}
-        />
-        <MetricValue
-          label="data mode"
-          value={actualDataLabel}
-          detail="observation only"
-          tone={actualData?.enabled ? "warn" : "neutral"}
-        />
-        <MetricValue
-          label="actual trades"
-          value={formatCompactNumber(actualData?.totalEventsThisSession ?? 0)}
-          detail={`${formatCompactNumber(storageStats?.pumpPortalTokenTradeEventCount ?? 0)} stored`}
-          tone={
-            (actualData?.totalEventsThisSession ?? 0) > 0 ? "good" : "neutral"
-          }
-        />
-        <MetricValue
-          label="actual subs"
-          value={`${actualData?.subscribedTokenCount ?? 0}/${actualData?.maxSubscribedTokens ?? 0}`}
-          detail={actualData?.budgetReached ? "budget reached" : "token trades"}
-          tone={
-            actualData?.budgetReached
-              ? "bad"
-              : actualData?.enabled
-                ? "warn"
-                : "neutral"
-          }
-        />
-        <MetricValue
-          label="identities"
-          value={formatCompactNumber(identityStatus?.identityCount ?? 0)}
-          detail={`${identityStatus?.resolvedCount ?? 0} resolved / ${identityStatus?.unresolvedCount ?? 0} unresolved`}
-          tone={(identityStatus?.resolvedCount ?? 0) > 0 ? "good" : "neutral"}
-        />
-        <MetricValue
-          label="metadata"
-          value={identityStatus?.solanaMetadataEnabled ? "[SOL]" : "[OFF]"}
-          detail={
-            identityStatus?.offchainFetchEnabled
-              ? "offchain on"
-              : "offchain off"
-          }
-          tone={identityStatus?.solanaMetadataEnabled ? "warn" : "neutral"}
-        />
-        <MetricValue
-          label="watch orch"
-          value={
-            (watchStatus?.enabled ?? healthStatus?.watchOrchestratorEnabled)
-              ? "[ON]"
-              : "[OFF]"
-          }
-          detail={`${storageStats?.watchPlanCount ?? watchStatus?.watchPlanCount ?? 0} plans / ${storageStats?.watchActionCount ?? watchStatus?.watchActionCount ?? 0} actions`}
-          tone={
-            (watchStatus?.enabled ?? healthStatus?.watchOrchestratorEnabled)
-              ? "good"
-              : "neutral"
-          }
-        />
-        <MetricValue
-          label="paper"
-          value={healthStatus?.paperOnly ? "[PAPER]" : "[UNKNOWN]"}
-          detail={`auto order ${healthStatus?.paperAutoOrder ? "on" : "off"}`}
-          tone={healthStatus?.paperOnly ? "good" : "warn"}
-        />
-        <MetricValue
-          label="last signal"
-          value={formatTimestamp(storageStats?.lastSignalAt)}
-          detail="sqlite"
+          value={formatCompactNumber(storageStats?.liveFeedEventCount ?? 0)}
+          detail="live rows"
         />
       </section>
 
-      <section className="console-line" aria-live="polite">
-        <span className="prompt">&gt;</span>
-        <span>{statusMessage}</span>
-      </section>
+      <nav className="tab-bar" role="tablist" aria-label="Dashboard tabs">
+        {tabs.map((tab) => (
+          <button
+            aria-selected={activeTab === tab.id}
+            className={
+              activeTab === tab.id ? "tab-button active" : "tab-button"
+            }
+            key={tab.id}
+            onClick={() => activateTab(tab.id, setActiveTab)}
+            role="tab"
+            type="button"
+          >
+            {tab.label}
+          </button>
+        ))}
+      </nav>
 
-      <section
-        className="table-region live-token-region"
-        aria-label="Live tokens"
-      >
-        <div className="table-heading">
-          <h2>LIVE TOKENS</h2>
-          <span className="table-meta">
-            FEED: {feedLabel} / MODE: {feedModeLabel} / {liveConnectionLabel} /
-            MOCK: {healthStatus?.mockFeedEnabled ? "ENABLED" : "BLOCKED"}
-          </span>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Token</th>
-              <th>Symbol</th>
-              <th>Name</th>
-              <th>Mint</th>
-              <th>Event</th>
-              <th>First Seen</th>
-              <th>Last Seen</th>
-              <th>Source</th>
-              <th>Real</th>
-              <th>State</th>
-              <th>Action</th>
-              <th>Risk</th>
-              <th>Score</th>
-              <th>Identity</th>
-              <th>Reasons</th>
-            </tr>
-          </thead>
-          <tbody>
-            {liveTokens.map((token) => (
-              <tr key={token.mint}>
-                <td>
-                  <TokenCell
-                    fallbackName={token.displayName}
-                    fallbackSymbol={token.symbol}
-                    mint={token.mint}
-                  />
-                </td>
-                <td>{token.symbol ?? "UNKNOWN"}</td>
-                <td>{token.name ?? "--"}</td>
-                <td className="mono" title={token.mint}>
-                  {shortMint(token.mint)}
-                </td>
-                <td>{token.eventTypes.join(", ")}</td>
-                <td>{formatTimestamp(token.firstSeenAt)}</td>
-                <td>
-                  {formatTimestamp(token.lastSeenAt ?? token.latestEventAt)}
-                </td>
-                <td>{token.source}</td>
-                <td>{token.realData ? "true" : "false"}</td>
-                <td>{token.candidateState ?? "--"}</td>
-                <td>{token.action ?? "--"}</td>
-                <td>{token.riskLevel ?? "--"}</td>
-                <td>{token.score ?? "--"}</td>
-                <td>{token.identityConfidence ?? "--"}</td>
-                <td>
-                  <ReasonCodes codes={token.reasonCodes} />
-                </td>
-              </tr>
-            ))}
-            {liveTokens.length === 0 ? (
-              <tr>
-                <td colSpan={15} className="empty-state">
-                  {getLiveEmptyState(feedStatus, liveStatus, healthStatus)}
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </section>
-
-      <section
-        className="table-region actual-data-region"
-        aria-label="Actual data status"
-      >
-        <div className="table-heading">
-          <h2>Actual Data Status</h2>
-          <span className="table-meta">PAPER ONLY / OBSERVATION ONLY</span>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Enabled</th>
-              <th>Metered Ack</th>
-              <th>API Key</th>
-              <th>Provider</th>
-              <th>Compatible</th>
-              <th>Subscribed</th>
-              <th>Events</th>
-              <th>Session Max</th>
-              <th>Mint Max</th>
-              <th>Budget</th>
-              <th>Est Cost SOL</th>
-              <th>Reasons</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>{actualData?.enabled ? "yes" : "no"}</td>
-              <td>{actualData?.acknowledgedMetered ? "yes" : "no"}</td>
-              <td>{actualData?.apiKeyConfigured ? "yes" : "no"}</td>
-              <td>{actualData?.provider ?? "unknown"}</td>
-              <td>{actualData?.compatibleProvider ? "yes" : "no"}</td>
-              <td>
-                {actualData?.subscribedTokenCount ?? 0}/
-                {actualData?.maxSubscribedTokens ?? 0}
-              </td>
-              <td>
-                {formatCompactNumber(actualData?.totalEventsThisSession ?? 0)}
-              </td>
-              <td>
-                {formatCompactNumber(actualData?.maxEventsPerSession ?? 0)}
-              </td>
-              <td>{formatCompactNumber(actualData?.maxEventsPerMint ?? 0)}</td>
-              <td>{actualData?.budgetReached ? "reached" : "open"}</td>
-              <td>
-                {formatNullableNumber(actualData?.estimatedMeteredCostSol)}
-              </td>
-              <td>
-                <ReasonCodes codes={actualData?.reasonCodes} />
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
-
-      <section
-        className="table-region token-region"
-        aria-label="Token identities"
-      >
-        <div className="table-heading">
-          <h2>Token Identities</h2>
-          <span className="table-meta">
-            {identityStatus?.resolvedCount ?? 0} resolved /{" "}
-            {identityStatus?.unresolvedCount ?? 0} unresolved
-          </span>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Token</th>
-              <th>Symbol</th>
-              <th>Name</th>
-              <th>Confidence</th>
-              <th>Source</th>
-              <th>Metadata URI</th>
-              <th>Image</th>
-              <th>Status</th>
-              <th>Updated</th>
-            </tr>
-          </thead>
-          <tbody>
-            {tokenIdentities.map((identity) => (
-              <tr key={identity.mint}>
-                <td>
-                  <TokenCell identity={identity} mint={identity.mint} />
-                </td>
-                <td>{identity.symbol ?? "UNKNOWN"}</td>
-                <td>{identity.name ?? "--"}</td>
-                <td>{identity.confidence}</td>
-                <td>{identity.dataSource}</td>
-                <td className="mono" title={identity.metadataUri ?? ""}>
-                  {identity.metadataUri
-                    ? compactUri(identity.metadataUri)
-                    : "--"}
-                </td>
-                <td>{identity.imageUri ? "yes" : "no"}</td>
-                <td>{identity.resolved ? "resolved" : "unresolved"}</td>
-                <td>{formatTimestamp(identity.updatedAt)}</td>
-              </tr>
-            ))}
-            {tokenIdentities.length === 0 ? (
-              <tr>
-                <td colSpan={9} className="empty-state compact-empty">
-                  No token identities
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </section>
-
-      <section
-        className="table-region actual-data-region"
-        aria-label="Actual PumpPortal trades"
-      >
-        <div className="table-heading">
-          <h2>Actual PumpPortal Trades</h2>
-          <span className="table-meta">{actualTrades.length} rows</span>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Token</th>
-              <th>Side</th>
-              <th>Price SOL</th>
-              <th>Volume SOL</th>
-              <th>Token Amt</th>
-              <th>Trader</th>
-              <th>Confidence</th>
-              <th>Usable</th>
-              <th>Reasons</th>
-              <th>Signature</th>
-              <th>Time</th>
-            </tr>
-          </thead>
-          <tbody>
-            {actualTrades.map((trade) => (
-              <tr key={trade.id}>
-                <td>
-                  <TokenCell identity={trade.identity} mint={trade.mint} />
-                </td>
-                <td>{trade.side}</td>
-                <td>{formatNullableNumber(trade.priceSol)}</td>
-                <td>{formatNullableNumber(trade.volumeSol)}</td>
-                <td>{formatNullableNumber(trade.tokenAmount)}</td>
-                <td className="mono" title={trade.trader ?? ""}>
-                  {trade.trader ? shortMint(trade.trader) : "--"}
-                </td>
-                <td>{trade.confidence}</td>
-                <td>{trade.usableForMetrics ? "yes" : "no"}</td>
-                <td>
-                  <ReasonCodes codes={trade.reasonCodes} />
-                </td>
-                <td className="mono" title={trade.signature ?? ""}>
-                  {trade.signature ? shortMint(trade.signature) : "--"}
-                </td>
-                <td>{formatTimestamp(trade.createdAt)}</td>
-              </tr>
-            ))}
-            {actualTrades.length === 0 ? (
-              <tr>
-                <td colSpan={11} className="empty-state compact-empty">
-                  No actual PumpPortal token trades
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </section>
-
-      <section
-        className="table-region watch-region"
-        aria-label="Watch orchestration plans"
-      >
-        <div className="table-heading">
-          <h2>Watch Orchestration Plans</h2>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Token</th>
-              <th>Symbol</th>
-              <th>Source</th>
-              <th>Verify</th>
-              <th>Watch</th>
-              <th>Selected</th>
-              <th>Skipped</th>
-              <th>Reasons</th>
-              <th>Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            {watchPlans.map((plan) => (
-              <tr key={plan.id}>
-                <td>
-                  <TokenCell
-                    fallbackSymbol={plan.symbol}
-                    identity={plan.identity}
-                    mint={plan.mint}
-                  />
-                </td>
-                <td>{plan.symbol ?? "UNKNOWN"}</td>
-                <td>{plan.source ?? "unknown"}</td>
-                <td>{plan.shouldVerifyMint ? "yes" : "no"}</td>
-                <td>{plan.shouldWatchEvents ? "yes" : "no"}</td>
-                <td>
-                  <TargetList targets={plan.watchTargets} />
-                </td>
-                <td>
-                  <TargetList targets={plan.skippedTargets} />
-                </td>
-                <td>
-                  <ReasonCodes codes={plan.reasonCodes} />
-                </td>
-                <td>{formatTimestamp(plan.createdAt)}</td>
-              </tr>
-            ))}
-            {watchPlans.length === 0 ? (
-              <tr>
-                <td colSpan={9} className="empty-state compact-empty">
-                  No persisted watch plans
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </section>
-
-      <section
-        className="table-region watch-region"
-        aria-label="Watch orchestration actions"
-      >
-        <div className="table-heading">
-          <h2>Watch Orchestration Actions</h2>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Mint</th>
-              <th>Action</th>
-              <th>Address</th>
-              <th>Kind</th>
-              <th>Status</th>
-              <th>Reasons</th>
-              <th>Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            {watchActions.map((action) => (
-              <tr key={action.id}>
-                <td className="mono" title={action.mint}>
-                  {shortMint(action.mint)}
-                </td>
-                <td>{action.action}</td>
-                <td className="mono" title={action.address}>
-                  {shortMint(action.address)}
-                </td>
-                <td>{action.addressKind}</td>
-                <td>{action.status}</td>
-                <td>
-                  <ReasonCodes codes={action.reasonCodes} />
-                </td>
-                <td>{formatTimestamp(action.createdAt)}</td>
-              </tr>
-            ))}
-            {watchActions.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="empty-state compact-empty">
-                  No persisted watch actions
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </section>
-
-      <section
-        className="table-region chain-events-region"
-        aria-label="Chain events"
-      >
-        <div className="table-heading">
-          <h2>Read-Only Chain Events</h2>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Kind</th>
-              <th>Address</th>
-              <th>Mint</th>
-              <th>Source</th>
-              <th>Reasons</th>
-              <th>Observed</th>
-            </tr>
-          </thead>
-          <tbody>
-            {watchedAddresses.map((watch) => (
-              <tr key={watch.address}>
-                <td>{watch.kind}</td>
-                <td className="mono" title={watch.address}>
-                  {shortMint(watch.address)}
-                </td>
-                <td className="mono" title={watch.mint ?? ""}>
-                  {watch.mint ? shortMint(watch.mint) : "--"}
-                </td>
-                <td>{watch.source ?? "manual"}</td>
-                <td>
-                  <ReasonCodes codes={watch.reasonCodes} />
-                </td>
-                <td>{formatTimestamp(watch.addedAt)}</td>
-              </tr>
-            ))}
-            {watchedAddresses.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="empty-state compact-empty">
-                  No read-only watched addresses
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </section>
-
-      <section
-        className="table-region chain-events-region"
-        aria-label="Recent chain transactions"
-      >
-        <div className="table-heading">
-          <h2>Recent Chain Transactions</h2>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Signature</th>
-              <th>Status</th>
-              <th>Watched</th>
-              <th>Kind</th>
-              <th>Mint</th>
-              <th>Reasons</th>
-              <th>Observed</th>
-            </tr>
-          </thead>
-          <tbody>
-            {chainTransactions.map((event) => (
-              <tr key={`${event.id}-${event.signature}`}>
-                <td className="mono" title={event.signature}>
-                  {shortMint(event.signature)}
-                </td>
-                <td>{event.status}</td>
-                <td className="mono" title={event.watchedAddress}>
-                  {shortMint(event.watchedAddress)}
-                </td>
-                <td>{event.watchedAddressKind}</td>
-                <td className="mono" title={event.mint ?? ""}>
-                  {event.mint ? shortMint(event.mint) : "--"}
-                </td>
-                <td>
-                  <ReasonCodes codes={event.reasonCodes} />
-                </td>
-                <td>{formatTimestamp(event.receivedAt ?? event.createdAt)}</td>
-              </tr>
-            ))}
-            {chainTransactions.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="empty-state compact-empty">
-                  No persisted chain transactions
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </section>
-
-      <section
-        className="table-region chain-events-region"
-        aria-label="Recent chain trades"
-      >
-        <div className="table-heading">
-          <h2>Recent Chain Trades</h2>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Signature</th>
-              <th>Mint</th>
-              <th>Side</th>
-              <th>Confidence</th>
-              <th>Price</th>
-              <th>Volume</th>
-              <th>Tokens</th>
-              <th>Watched</th>
-              <th>Reasons</th>
-              <th>Observed</th>
-            </tr>
-          </thead>
-          <tbody>
-            {chainTrades.map((event) => (
-              <tr key={`${event.id}-${event.signature}`}>
-                <td className="mono" title={event.signature}>
-                  {shortMint(event.signature)}
-                </td>
-                <td className="mono" title={event.mint}>
-                  {shortMint(event.mint)}
-                </td>
-                <td>{event.side}</td>
-                <td>{event.confidence}</td>
-                <td>
-                  {event.priceUsd == null ? "--" : formatUsd(event.priceUsd)}
-                </td>
-                <td>
-                  {event.volumeUsd == null ? "--" : formatUsd(event.volumeUsd)}
-                </td>
-                <td>{formatNullableNumber(event.tokenAmount)}</td>
-                <td className="mono" title={event.watchedAddress}>
-                  {shortMint(event.watchedAddress)}
-                </td>
-                <td>
-                  <ReasonCodes codes={event.reasonCodes} />
-                </td>
-                <td>{formatTimestamp(event.timestamp ?? event.createdAt)}</td>
-              </tr>
-            ))}
-            {chainTrades.length === 0 ? (
-              <tr>
-                <td colSpan={10} className="empty-state compact-empty">
-                  No persisted chain trades
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </section>
-
-      <section
-        className="table-region market-region"
-        aria-label="Market observations"
-      >
-        <div className="table-heading">
-          <h2>Market Observations</h2>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Mint</th>
-              <th>Side</th>
-              <th>Quote</th>
-              <th>Base Amt</th>
-              <th>Quote Amt</th>
-              <th>Price Quote</th>
-              <th>Price SOL</th>
-              <th>Price USD</th>
-              <th>Vol SOL</th>
-              <th>Vol USD</th>
-              <th>Confidence</th>
-              <th>Usable</th>
-              <th>Reasons</th>
-              <th>Signature</th>
-              <th>Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            {marketObservations.map((observation) => (
-              <tr key={`${observation.id}-${observation.signature}`}>
-                <td className="mono" title={observation.mint}>
-                  {shortMint(observation.mint)}
-                </td>
-                <td>{observation.side}</td>
-                <td>{observation.quoteAsset}</td>
-                <td>{formatNullableNumber(observation.baseTokenAmount)}</td>
-                <td>{formatNullableNumber(observation.quoteAmount)}</td>
-                <td>{formatNullableNumber(observation.priceQuote)}</td>
-                <td>{formatNullableNumber(observation.priceSol)}</td>
-                <td>{formatNullableUsd(observation.priceUsd)}</td>
-                <td>{formatNullableNumber(observation.volumeSol)}</td>
-                <td>{formatNullableUsd(observation.volumeUsd)}</td>
-                <td>{observation.confidence}</td>
-                <td>{observation.usableForMetrics ? "yes" : "no"}</td>
-                <td>
-                  <ReasonCodes codes={observation.reasonCodes} />
-                </td>
-                <td className="mono" title={observation.signature}>
-                  {shortMint(observation.signature)}
-                </td>
-                <td>{formatTimestamp(observation.createdAt)}</td>
-              </tr>
-            ))}
-            {marketObservations.length === 0 ? (
-              <tr>
-                <td colSpan={15} className="empty-state compact-empty">
-                  No persisted market observations
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </section>
-
-      <DataPanel
-        ariaLabel="Candidate lifecycle"
-        className="candidate-region primary-region"
-        meta={`${sortedCandidates.length} rows`}
-        title="CANDIDATES"
-      >
-        <table>
-          <thead>
-            <tr>
-              <th>Token</th>
-              <th>Symbol</th>
-              <th>Name</th>
-              <th>Identity</th>
-              <th>Source</th>
-              <th>State</th>
-              <th>Action</th>
-              <th>Score</th>
-              <th>Risk</th>
-              <th>Hard Reject</th>
-              <th>Chain</th>
-              <th>Mint Auth</th>
-              <th>Freeze Auth</th>
-              <th>Top Holder</th>
-              <th>Top 10</th>
-              <th>Chain Reasons</th>
-              <th>Watch Targets</th>
-              <th>Watch Status</th>
-              <th>Watch Reasons</th>
-              <th>Actual Trades</th>
-              <th>Actual Sub</th>
-              <th>Real Trade</th>
-              <th>Price SOL</th>
-              <th>Volume SOL</th>
-              <th>Reasons</th>
-              <th>10s USD</th>
-              <th>10s SOL</th>
-              <th>SOL Fallback</th>
-              <th>Vol Vel</th>
-              <th>Buyer Vel</th>
-              <th>Buy/Sell</th>
-              <th>Net Pressure</th>
-              <th>Risk Warnings</th>
-              <th>Last Updated</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sortedCandidates.map((candidate) => {
-              const decision = candidate.latestDecision;
-              const risk = candidate.latestRisk;
-
-              return (
-                <tr key={candidate.mint}>
-                  <td>
-                    <TokenCell
-                      fallbackName={candidate.name}
-                      fallbackSymbol={candidate.symbol}
-                      identity={candidate.identity}
-                      mint={candidate.mint}
-                    />
-                  </td>
-                  <td>
-                    {candidate.identity?.symbol ??
-                      candidate.symbol ??
-                      "UNKNOWN"}
-                  </td>
-                  <td>{candidate.identity?.name ?? candidate.name ?? "--"}</td>
-                  <td>
-                    {candidate.identity
-                      ? `${candidate.identity.confidence}/${candidate.identity.resolved ? "resolved" : "unresolved"}`
-                      : "unresolved"}
-                  </td>
-                  <td>
-                    {candidate.identity?.dataSource ??
-                      candidate.source ??
-                      "unknown"}
-                  </td>
-                  <td>
-                    <span className={`state state-${candidate.lifecycleState}`}>
-                      {candidate.lifecycleState}
-                    </span>
-                  </td>
-                  <td>
-                    <span
-                      className={`action action-${normalizeClassName(
-                        decision?.action ?? "IGNORE"
-                      )}`}
-                    >
-                      {decision?.action ?? "IGNORE"}
-                    </span>
-                  </td>
-                  <td>
-                    <span className="score">{decision?.score ?? 0}</span>
-                  </td>
-                  <td>
-                    <span
-                      className={`risk-level risk-${risk?.riskLevel ?? "unknown"}`}
-                    >
-                      {risk?.riskLevel ?? "unknown"}
-                    </span>
-                  </td>
-                  <td>
-                    {decision?.hardReject || risk?.hardReject ? "yes" : "no"}
-                  </td>
-                  <td>{candidate.chainVerificationStatus ?? "not_checked"}</td>
-                  <td>
-                    {formatNullableBoolean(
-                      candidate.onChainMintAuthorityActive
-                    )}
-                  </td>
-                  <td>
-                    {formatNullableBoolean(
-                      candidate.onChainFreezeAuthorityActive
-                    )}
-                  </td>
-                  <td>{formatPercent(candidate.onChainTopHolderPct)}</td>
-                  <td>{formatPercent(candidate.onChainTop10HolderPct)}</td>
-                  <td>
-                    <ReasonCodes codes={candidate.chainReasonCodes} />
-                  </td>
-                  <td>
-                    {candidate.latestWatchPlanSummary?.selectedTargetCount ?? 0}
-                  </td>
-                  <td>
-                    {formatWatchSummary(candidate.latestWatchPlanSummary)}
-                  </td>
-                  <td>
-                    <ReasonCodes codes={candidate.watchReasonCodes} />
-                  </td>
-                  <td>{candidate.actualData?.eventCount ?? 0}</td>
-                  <td>{candidate.actualData?.subscriptionStatus ?? "none"}</td>
-                  <td>
-                    {formatTimestamp(candidate.actualData?.latestRealTradeAt)}
-                  </td>
-                  <td>
-                    {formatNullableNumber(candidate.actualData?.latestPriceSol)}
-                  </td>
-                  <td>
-                    {formatNullableNumber(
-                      candidate.actualData?.latestVolumeSol
-                    )}
-                  </td>
-                  <td>
-                    <ReasonCodes codes={decision?.combinedReasonCodes} />
-                  </td>
-                  <td>
-                    {formatUsd(
-                      candidate.latestMetrics?.windows["10s"].totalVolumeUsd ??
-                        0
-                    )}
-                  </td>
-                  <td>
-                    {formatNullableNumber(
-                      candidate.latestMetrics?.windows["10s"].totalVolumeSol
-                    )}
-                  </td>
-                  <td>
-                    {candidate.latestMetrics?.usedSolMetricsFallback
-                      ? "yes"
-                      : "no"}
-                  </td>
-                  <td>
-                    {formatNumber(
-                      effectiveVolumeVelocity(candidate.latestMetrics)
-                    )}
-                  </td>
-                  <td>
-                    {formatNumber(candidate.latestMetrics?.buyerVelocityPerSec)}
-                  </td>
-                  <td>{formatNumber(candidate.latestMetrics?.buySellRatio)}</td>
-                  <td>
-                    {formatNumber(candidate.latestMetrics?.netBuyPressure)}
-                  </td>
-                  <td>
-                    <ReasonCodes codes={risk?.reasonCodes} />
-                  </td>
-                  <td>{formatTimestamp(candidate.lastUpdatedAt)}</td>
-                </tr>
-              );
-            })}
-            {sortedCandidates.length === 0 ? (
-              <tr>
-                <td colSpan={34} className="empty-state">
-                  {statusMessage}
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </DataPanel>
-
-      <DataPanel
-        ariaLabel="Live token signals"
-        className="signal-region primary-region"
-        meta={`${sortedSignals.length} rows`}
-        title="SIGNALS"
-      >
-        <table>
-          <thead>
-            <tr>
-              <th>Token</th>
-              <th>Symbol</th>
-              <th>Name</th>
-              <th>Identity</th>
-              <th>Source</th>
-              <th>Score</th>
-              <th>Action</th>
-              <th>State</th>
-              <th>Risk</th>
-              <th>Reasons</th>
-              <th>Feed</th>
-              <th>Data</th>
-              <th>Actual Events</th>
-              <th>Insufficient</th>
-              <th>1s Vol</th>
-              <th>5s Vol</th>
-              <th>10s Vol</th>
-              <th>10s SOL</th>
-              <th>SOL Fallback</th>
-              <th>Vol Vel</th>
-              <th>Vol Acc</th>
-              <th>Buyer Vel</th>
-              <th>Buyer Acc</th>
-              <th>Price Vel</th>
-              <th>Buy/Sell</th>
-              <th>Net Pressure</th>
-              <th>Last Updated</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sortedSignals.map((signal) => (
-              <tr key={signal.mint}>
-                <td>
-                  <TokenCell
-                    fallbackName={signal.name}
-                    fallbackSymbol={signal.symbol}
-                    identity={signal.identity}
-                    mint={signal.mint}
-                  />
-                </td>
-                <td>{signal.identity?.symbol ?? signal.symbol}</td>
-                <td>{signal.identity?.name ?? signal.name ?? "--"}</td>
-                <td>
-                  {signal.identity
-                    ? `${signal.identity.confidence}/${signal.identity.resolved ? "resolved" : "unresolved"}`
-                    : "unresolved"}
-                </td>
-                <td>
-                  {signal.identity?.dataSource ??
-                    signal.feedProvider ??
-                    "unknown"}
-                </td>
-                <td>
-                  <span className="score">{signal.score}</span>
-                </td>
-                <td>
-                  <span
-                    className={`action action-${signal.action.toLowerCase()}`}
-                  >
-                    {signal.action}
-                  </span>
-                </td>
-                <td>
-                  <span
-                    className={`state state-${signal.lifecycleState ?? "unknown"}`}
-                  >
-                    {signal.lifecycleState ?? "unknown"}
-                  </span>
-                </td>
-                <td>
-                  <span
-                    className={`risk-level risk-${signal.riskLevel ?? "unknown"}`}
-                  >
-                    {signal.riskLevel ?? "unknown"}
-                  </span>
-                </td>
-                <td>
-                  <ReasonCodes codes={signal.reasonCodes} />
-                </td>
-                <td>
-                  {signal.feedProvider ??
-                    healthStatus?.feedProvider ??
-                    "unknown"}
-                </td>
-                <td>
-                  {formatSignalDataMode(signal, healthStatus?.feedProvider)}
-                </td>
-                <td>{signal.actualData?.eventCount ?? 0}</td>
-                <td>{signal.insufficientMetrics ? "yes" : "no"}</td>
-                <td>{formatUsd(metricVolume(signal, "1s"))}</td>
-                <td>{formatUsd(metricVolume(signal, "5s"))}</td>
-                <td>{formatUsd(metricVolume(signal, "10s"))}</td>
-                <td>{formatNullableNumber(metricVolumeSol(signal, "10s"))}</td>
-                <td>
-                  {signal.rollingMetrics?.usedSolMetricsFallback ? "yes" : "no"}
-                </td>
-                <td>{formatNumber(signal.volumeVelocity)}</td>
-                <td>{formatNumber(signal.volumeAcceleration)}</td>
-                <td>{formatNumber(signal.buyerVelocity)}</td>
-                <td>{formatNumber(signal.buyerAcceleration)}</td>
-                <td>{formatNumber(signal.priceVelocity)}</td>
-                <td>{formatNumber(signal.buySellRatio)}</td>
-                <td>{formatNumber(signal.netBuyPressure)}</td>
-                <td>{formatTimestamp(signal.rollingMetrics?.lastUpdatedAt)}</td>
-              </tr>
-            ))}
-            {sortedSignals.length === 0 ? (
-              <tr>
-                <td colSpan={27} className="empty-state">
-                  {statusMessage}
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </DataPanel>
+      {activeTab === "live" ? (
+        <LiveTab
+          actionFilter={actionFilter}
+          cards={visibleCards}
+          expandedMint={expandedMint}
+          feedStatus={feedStatus}
+          healthStatus={healthStatus}
+          liveStatus={liveStatus}
+          realOnly={realOnly}
+          search={search}
+          setActionFilter={setActionFilter}
+          setExpandedMint={setExpandedMint}
+          setRealOnly={setRealOnly}
+          setSearch={setSearch}
+          setSortMode={setSortMode}
+          sortMode={sortMode}
+          totalCards={cards.length}
+        />
+      ) : null}
+      {activeTab === "signals" ? (
+        <SignalsTab cards={cards} signals={signals} strategy={strategyStatus} />
+      ) : null}
+      {activeTab === "metrics" ? <MetricsTab metrics={metrics} /> : null}
+      {activeTab === "risk" ? <RiskTab riskRows={riskRows} /> : null}
+      {activeTab === "data" ? (
+        <DataTab
+          actualDataStatus={actualDataStatus}
+          actualTrades={actualTrades}
+          chainStatus={chainStatus}
+          feedStatus={feedStatus}
+          liveStatus={liveStatus}
+          marketObservations={marketObservations}
+          marketStatus={marketStatus}
+          tokenIdentities={tokenIdentities}
+          tokenIdentityStatus={tokenIdentityStatus}
+        />
+      ) : null}
+      {activeTab === "storage" ? (
+        <StorageTab
+          chainVerifications={chainVerifications}
+          liveEvents={liveEvents}
+          storageStats={storageStats}
+        />
+      ) : null}
     </main>
   );
+}
+
+function LiveTab({
+  actionFilter,
+  cards,
+  expandedMint,
+  feedStatus,
+  healthStatus,
+  liveStatus,
+  realOnly,
+  search,
+  setActionFilter,
+  setExpandedMint,
+  setRealOnly,
+  setSearch,
+  setSortMode,
+  sortMode,
+  totalCards
+}: {
+  actionFilter: ActionFilter;
+  cards: LiveTokenCardViewModel[];
+  expandedMint: string | null;
+  feedStatus: FeedStatus | null;
+  healthStatus: HealthStatus | null;
+  liveStatus: LiveStatus | null;
+  realOnly: boolean;
+  search: string;
+  setActionFilter: (value: ActionFilter) => void;
+  setExpandedMint: (value: string | null) => void;
+  setRealOnly: (value: boolean) => void;
+  setSearch: (value: string) => void;
+  setSortMode: (value: SortMode) => void;
+  sortMode: SortMode;
+  totalCards: number;
+}) {
+  return (
+    <section className="tab-panel live-panel" role="tabpanel">
+      <div className="panel-heading">
+        <div>
+          <h2>LIVE TOKENS</h2>
+          <p>
+            {totalCards} current-session cards / sort {sortMode} / unavailable
+            fields render as --
+          </p>
+        </div>
+        <span className="table-meta">
+          {getLiveEmptyState(feedStatus, liveStatus, healthStatus)}
+        </span>
+      </div>
+
+      <div className="live-controls" aria-label="Live token controls">
+        <label>
+          <span>Search</span>
+          <input
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="symbol / name / mint"
+            value={search}
+          />
+        </label>
+        <label>
+          <span>Sort</span>
+          <select
+            onChange={(event) => setSortMode(event.target.value as SortMode)}
+            value={sortMode}
+          >
+            <option value="newest">newest</option>
+            <option value="score">score</option>
+            <option value="volumeVelocity">volume velocity</option>
+            <option value="volume10s">volume 10s</option>
+            <option value="risk">risk</option>
+          </select>
+        </label>
+        <label>
+          <span>Action</span>
+          <select
+            onChange={(event) =>
+              setActionFilter(event.target.value as ActionFilter)
+            }
+            value={actionFilter}
+          >
+            <option value="all">all</option>
+            <option value="watch">watch</option>
+            <option value="qualified">qualified</option>
+            <option value="rejected">rejected</option>
+          </select>
+        </label>
+        <label className="check-control">
+          <input
+            checked={realOnly}
+            onChange={(event) => setRealOnly(event.target.checked)}
+            type="checkbox"
+          />
+          <span>REAL only</span>
+        </label>
+      </div>
+
+      {cards.length > 0 ? (
+        <div className="token-grid">
+          {cards.map((card) => (
+            <TokenCard
+              card={card}
+              expanded={expandedMint === card.mint}
+              key={card.mint}
+              onToggle={() =>
+                setExpandedMint(expandedMint === card.mint ? null : card.mint)
+              }
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state live-empty">
+          {getLiveEmptyState(feedStatus, liveStatus, healthStatus)}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function TokenCard({
+  card,
+  expanded,
+  onToggle
+}: {
+  card: LiveTokenCardViewModel;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <article className="token-card">
+      <div className="token-card-header">
+        <div className="token-title-block">
+          <h3>{card.displayName}</h3>
+          <span>
+            {card.symbol ?? "UNKNOWN"} / {card.shortMint}
+          </span>
+        </div>
+        <div className="token-card-actions">
+          <span className="terminal-badge terminal-badge-online">
+            {card.realData ? "REAL" : "MOCK"}
+          </span>
+          <span className="terminal-badge terminal-badge-neutral">
+            {card.source.toUpperCase()}
+          </span>
+          <span className={`action action-${normalizeClassName(card.action)}`}>
+            {card.action}
+          </span>
+          <span className="score">{card.score}</span>
+        </div>
+      </div>
+
+      <div className="stat-row top-stat-row">
+        <Stat
+          detail={formatUsd(card.priceUsd)}
+          label="price"
+          value={formatSol(card.priceSol)}
+        />
+        <Stat
+          detail={`FDV ${formatUsd(card.fdvUsd)}`}
+          label="mcap"
+          value={formatUsd(card.marketCapUsd)}
+        />
+        <Stat label="liquidity" value={formatUsd(card.liquidityUsd)} />
+        <Stat
+          detail={`60s ${formatUsd(card.volume60sUsd)}`}
+          label="vol 10s"
+          value={formatUsd(card.volume10sUsd)}
+        />
+        <Stat label="holders" value={formatCompactNumber(card.holderCount)} />
+        <Stat
+          label="txns 10s"
+          value={formatCompactNumber(card.totalTradeCount10s)}
+        />
+      </div>
+
+      <div className="stat-row">
+        <Stat
+          label="buys/sells"
+          value={`${formatCompactNumber(card.buyTradeCount10s)}/${formatCompactNumber(
+            card.sellTradeCount10s
+          )}`}
+        />
+        <Stat
+          label="unique"
+          value={`${formatCompactNumber(card.uniqueBuyers10s)}/${formatCompactNumber(
+            card.uniqueSellers10s
+          )}`}
+          detail="buyers/sellers"
+        />
+        <Stat label="buy/sell" value={formatCompactNumber(card.buySellRatio)} />
+        <Stat label="net pressure" value={formatPct(card.netBuyPressure)} />
+        <Stat label="buy vol" value={formatUsd(card.buyVolume10s)} />
+        <Stat label="sell vol" value={formatUsd(card.sellVolume10s)} />
+      </div>
+
+      <div className="stat-row technical-row">
+        <Stat
+          label="dVol/dt"
+          value={formatVelocity(card.volumeVelocityUsdPerSec, "usd")}
+        />
+        <Stat
+          label="d2Vol/dt2"
+          value={formatAcceleration(card.volumeAccelerationUsdPerSec2, "usd")}
+        />
+        <Stat
+          label="dPrice/dt"
+          value={formatVelocity(card.priceVelocityPctPerSec, "pct")}
+        />
+        <Stat
+          label="d2Price/dt2"
+          value={formatAcceleration(card.priceAccelerationPctPerSec2, "pct")}
+        />
+        <Stat
+          label="dBuyers/dt"
+          value={formatVelocity(card.buyerVelocityPerSec, "buyers")}
+        />
+        <Stat
+          label="d2Buyers/dt2"
+          value={formatAcceleration(card.buyerAccelerationPerSec2, "buyers")}
+        />
+        <Stat
+          label="dHolders/dt"
+          value={formatVelocity(card.holderVelocityPerSec, "holders")}
+        />
+        <Stat
+          label="d2Holders/dt2"
+          value={formatAcceleration(card.holderAccelerationPerSec2, "holders")}
+        />
+      </div>
+
+      <div className="signal-risk-strip">
+        <span className={`risk-level risk-${card.riskLevel}`}>
+          {card.riskLevel}
+        </span>
+        <span className="state">
+          {card.hardReject ? "HARD REJECT" : "PASS"}
+        </span>
+        <span>top {formatPct(card.topHolderPct)}</span>
+        <span>top10 {formatPct(card.top10HolderPct)}</span>
+        <span>mint auth {formatBool(card.mintAuthorityActive)}</span>
+        <span>freeze {formatBool(card.freezeAuthorityActive)}</span>
+      </div>
+
+      <div className="strategy-strip">
+        <div>
+          <span className="muted">signal</span>
+          <strong>{card.signalStrength}</strong>
+        </div>
+        <div>
+          <span className="muted">strategy</span>
+          <strong>{card.strategyName}</strong>
+        </div>
+        <div>
+          <span className="muted">positive</span>
+          <DriverList drivers={card.strategy.positiveDrivers} />
+        </div>
+        <div>
+          <span className="muted">negative</span>
+          <DriverList drivers={card.strategy.negativeDrivers} />
+        </div>
+        <div>
+          <span className="muted">blockers</span>
+          <DriverList drivers={card.strategy.blockers} />
+        </div>
+      </div>
+
+      <footer className="token-card-footer">
+        <span>age {formatAge(card.ageSeconds)}</span>
+        <span>updated {formatTimeAgo(card.lastUpdatedAt)}</span>
+        <span>{card.eventTypes.at(-1) ?? "--"}</span>
+        <span>{formatMintShort(card.latestSignature)}</span>
+        <span>
+          missing {card.missingFields.length} / unavailable{" "}
+          {card.unavailableFields.length}
+        </span>
+        <button onClick={onToggle} type="button">
+          {expanded ? "HIDE AUDIT" : "AUDIT"}
+        </button>
+      </footer>
+
+      {expanded ? <TokenAudit card={card} /> : null}
+    </article>
+  );
+}
+
+function TokenAudit({ card }: { card: LiveTokenCardViewModel }) {
+  return (
+    <div className="token-audit">
+      <div>
+        <h4>Calculation Inputs</h4>
+        <dl>
+          <dt>samples</dt>
+          <dd>{card.validMetricSampleCount}</dd>
+          <dt>confidence</dt>
+          <dd>{card.calculationConfidence}</dd>
+          <dt>volume velocity</dt>
+          <dd>
+            {formatVelocity(
+              card.strategy.calculationInputs.volumeVelocity,
+              "usd"
+            )}
+          </dd>
+          <dt>volume acceleration</dt>
+          <dd>
+            {formatAcceleration(
+              card.strategy.calculationInputs.volumeAcceleration,
+              "usd"
+            )}
+          </dd>
+          <dt>price velocity</dt>
+          <dd>
+            {formatVelocity(
+              card.strategy.calculationInputs.priceVelocity,
+              "pct"
+            )}
+          </dd>
+          <dt>buyer velocity</dt>
+          <dd>
+            {formatVelocity(
+              card.strategy.calculationInputs.buyerVelocity,
+              "buyers"
+            )}
+          </dd>
+          <dt>holder velocity</dt>
+          <dd>
+            {formatVelocity(
+              card.strategy.calculationInputs.holderVelocity,
+              "holders"
+            )}
+          </dd>
+        </dl>
+      </div>
+      <div>
+        <h4>Source Audit</h4>
+        <dl>
+          <dt>identity</dt>
+          <dd>
+            {card.identitySource} / {card.identityConfidence} /{" "}
+            {card.identityResolved ? "resolved" : "unresolved"}
+          </dd>
+          <dt>price source</dt>
+          <dd>
+            {card.priceSol === null && card.priceUsd === null
+              ? "UNAVAILABLE"
+              : "DERIVED"}
+          </dd>
+          <dt>volume source</dt>
+          <dd>
+            {card.volume10sUsd === null && card.volume10sSol === null
+              ? "UNAVAILABLE"
+              : "DERIVED"}
+          </dd>
+          <dt>holder source</dt>
+          <dd>{card.holderDataSource ?? "UNAVAILABLE"}</dd>
+          <dt>raw events</dt>
+          <dd>{card.rawEventCount}</dd>
+          <dt>actual trades</dt>
+          <dd>{card.actualTradeEventCount}</dd>
+          <dt>market observations</dt>
+          <dd>{card.marketObservationCount}</dd>
+        </dl>
+      </div>
+      <div>
+        <h4>Reason Codes</h4>
+        <ReasonCodes codes={card.combinedReasonCodes} limit={16} />
+        <h4>Unavailable Fields</h4>
+        <ReasonCodes codes={card.unavailableFields} limit={16} />
+        <h4>Warnings</h4>
+        <ReasonCodes codes={card.dataSourceWarnings} limit={16} />
+      </div>
+    </div>
+  );
+}
+
+function SignalsTab({
+  cards,
+  signals,
+  strategy
+}: {
+  cards: LiveTokenCardViewModel[];
+  signals: OverlaySignal[];
+  strategy: StrategyStatus | null;
+}) {
+  const sortedCards = sortCards(cards, "score");
+
+  return (
+    <section className="tab-panel" role="tabpanel">
+      <div className="panel-heading">
+        <div>
+          <h2>SIGNALS</h2>
+          <p>Read-only strategy status and current card signal explanations.</p>
+        </div>
+      </div>
+      <div className="strategy-status">
+        <Stat
+          label="strategy"
+          value={strategy?.strategyName ?? "--"}
+          detail="read only"
+        />
+        <Stat
+          label="buy ready"
+          value={formatCompactNumber(
+            strategy?.thresholds.minScoreForPaperBuyReady
+          )}
+          detail="min score"
+        />
+        <Stat
+          label="min samples"
+          value={formatCompactNumber(strategy?.thresholds.minSampleCount)}
+        />
+        <Stat
+          label="safety"
+          value={strategy?.paperOnly ? "PAPER ONLY" : "--"}
+        />
+        <div className="formula-list">
+          {(strategy?.formula ?? []).map((line) => (
+            <span key={line}>{line}</span>
+          ))}
+        </div>
+      </div>
+      <TableShell
+        empty="No live card signals"
+        headers={[
+          "Token",
+          "Score",
+          "Action",
+          "Strength",
+          "Risk",
+          "Momentum",
+          "Quality",
+          "Penalty",
+          "Drivers",
+          "Blockers"
+        ]}
+        rows={sortedCards.map((card) => [
+          <TokenName card={card} key="token" />,
+          card.scoreLabel,
+          card.action,
+          card.signalStrength,
+          card.riskLevel,
+          card.strategy.components.momentumScore,
+          card.strategy.components.qualityScore,
+          card.strategy.components.riskPenalty,
+          <DriverList drivers={card.strategy.positiveDrivers} key="drivers" />,
+          <DriverList drivers={card.strategy.blockers} key="blockers" />
+        ])}
+      />
+      <TableShell
+        empty="No raw WebSocket signals"
+        headers={["Mint", "Score", "Action", "Risk", "Reasons"]}
+        rows={signals.map((signal) => [
+          formatMintShort(signal.mint),
+          signal.score,
+          signal.action,
+          signal.riskLevel ?? "unknown",
+          <ReasonCodes codes={signal.reasonCodes} key="reasons" />
+        ])}
+        title="RAW SIGNALS"
+      />
+    </section>
+  );
+}
+
+function MetricsTab({ metrics }: { metrics: MetricsRow[] }) {
+  return (
+    <section className="tab-panel" role="tabpanel">
+      <div className="panel-heading">
+        <div>
+          <h2>METRICS</h2>
+          <p>Rolling windows, derivatives, and sample counts.</p>
+        </div>
+      </div>
+      <TableShell
+        empty="No metrics yet"
+        headers={[
+          "Token",
+          "Samples",
+          "10s USD",
+          "10s SOL",
+          "dVol/dt",
+          "d2Vol/dt2",
+          "dPrice/dt",
+          "dBuyers/dt",
+          "Buy/Sell",
+          "Net Pressure",
+          "Updated"
+        ]}
+        rows={metrics.map((metric) => [
+          metric.identity?.displayName ?? formatMintShort(metric.mint),
+          metric.sampleCount,
+          formatUsd(metric.windows["10s"].totalVolumeUsd),
+          formatSol(metric.windows["10s"].totalVolumeSol),
+          formatVelocity(
+            metric.usedSolMetricsFallback
+              ? metric.volumeVelocitySolPerSec
+              : metric.volumeVelocityUsdPerSec,
+            metric.usedSolMetricsFallback ? "sol" : "usd"
+          ),
+          formatAcceleration(
+            metric.usedSolMetricsFallback
+              ? metric.volumeAccelerationSolPerSec2
+              : metric.volumeAccelerationUsdPerSec2,
+            metric.usedSolMetricsFallback ? "sol" : "usd"
+          ),
+          formatVelocity(
+            metric.usedSolMetricsFallback
+              ? metric.priceSolVelocityPctPerSec
+              : metric.priceVelocityPctPerSec,
+            "pct"
+          ),
+          formatVelocity(metric.buyerVelocityPerSec, "buyers"),
+          formatCompactNumber(metric.buySellRatio),
+          formatPct(metric.netBuyPressure),
+          formatTime(metric.lastUpdatedAt)
+        ])}
+      />
+    </section>
+  );
+}
+
+function RiskTab({ riskRows }: { riskRows: RiskSnapshot[] }) {
+  return (
+    <section className="tab-panel" role="tabpanel">
+      <div className="panel-heading">
+        <div>
+          <h2>RISK</h2>
+          <p>
+            Hard rejects, authority flags, holder concentration, and risk
+            reasons.
+          </p>
+        </div>
+      </div>
+      <TableShell
+        empty="No risk snapshots yet"
+        headers={[
+          "Token",
+          "Level",
+          "Score",
+          "Reject",
+          "Mint Auth",
+          "Freeze",
+          "Holders",
+          "Top",
+          "Top10",
+          "Liquidity",
+          "Reasons"
+        ]}
+        rows={riskRows.map((risk) => [
+          risk.symbol ?? formatMintShort(risk.mint),
+          risk.riskLevel,
+          risk.riskScore,
+          risk.hardReject ? "yes" : "no",
+          formatBool(risk.flags.mintAuthorityActive),
+          formatBool(risk.flags.freezeAuthorityActive),
+          formatCompactNumber(risk.flags.holderCount),
+          formatPct(risk.flags.topHolderPct),
+          formatPct(risk.flags.top10HolderPct),
+          formatUsd(risk.flags.liquidityUsd),
+          <ReasonCodes codes={risk.reasonCodes} key="reasons" />
+        ])}
+      />
+    </section>
+  );
+}
+
+function DataTab({
+  actualDataStatus,
+  actualTrades,
+  chainStatus,
+  feedStatus,
+  liveStatus,
+  marketObservations,
+  marketStatus,
+  tokenIdentities,
+  tokenIdentityStatus
+}: {
+  actualDataStatus: ActualDataStatus | null;
+  actualTrades: PumpPortalTradeRow[];
+  chainStatus: ChainStatus | null;
+  feedStatus: FeedStatus | null;
+  liveStatus: LiveStatus | null;
+  marketObservations: MarketObservationRow[];
+  marketStatus: MarketStatus | null;
+  tokenIdentities: TokenIdentityRow[];
+  tokenIdentityStatus: TokenIdentityStatus | null;
+}) {
+  return (
+    <section className="tab-panel" role="tabpanel">
+      <div className="panel-heading">
+        <div>
+          <h2>DATA</h2>
+          <p>
+            Feed health, source status, identities, and recent observations.
+          </p>
+        </div>
+      </div>
+      <div className="status-grid secondary-grid">
+        <MetricValue
+          label="feed"
+          value={feedStatus?.connected ? "CONNECTED" : "OFFLINE"}
+          detail={feedStatus?.provider ?? "unknown"}
+          tone={feedStatus?.connected ? "good" : "bad"}
+        />
+        <MetricValue
+          label="live session"
+          value={formatCompactNumber(liveStatus?.liveTokenCount)}
+          detail={liveStatus?.sessionId ?? "--"}
+        />
+        <MetricValue
+          label="actual data"
+          value={actualDataStatus?.enabled ? "ON" : "OFF"}
+          detail="token trades opt-in"
+          tone={actualDataStatus?.enabled ? "warn" : "neutral"}
+        />
+        <MetricValue
+          label="market"
+          value={marketStatus?.enabled ? "ON" : "OFF"}
+          detail={`${marketStatus?.minConfidenceForMetrics ?? "--"} min`}
+        />
+        <MetricValue
+          label="chain"
+          value={(chainStatus?.status ?? "unknown").toUpperCase()}
+          detail={chainStatus?.rpcHttpUrlConfigured ? "rpc set" : "rpc unset"}
+        />
+        <MetricValue
+          label="identity"
+          value={formatCompactNumber(tokenIdentityStatus?.identityCount)}
+          detail={`${tokenIdentityStatus?.resolvedCount ?? 0} resolved`}
+        />
+      </div>
+      <ReasonBlock title="Feed Reasons" codes={feedStatus?.reasonCodes} />
+      <ReasonBlock
+        title="Actual Data Reasons"
+        codes={actualDataStatus?.reasonCodes}
+      />
+      <TableShell
+        empty="No token identities"
+        headers={[
+          "Token",
+          "Source",
+          "Confidence",
+          "Resolved",
+          "Metadata",
+          "Updated"
+        ]}
+        rows={tokenIdentities.map((identity) => [
+          identity.displayName,
+          identity.dataSource,
+          identity.confidence,
+          identity.resolved ? "yes" : "no",
+          identity.metadataUri ? "yes" : "--",
+          formatTime(identity.updatedAt)
+        ])}
+        title="TOKEN IDENTITIES"
+      />
+      <TableShell
+        empty="No actual PumpPortal token trades"
+        headers={[
+          "Mint",
+          "Side",
+          "Price SOL",
+          "Volume SOL",
+          "Usable",
+          "Reasons"
+        ]}
+        rows={actualTrades.map((trade) => [
+          trade.identity?.displayName ?? formatMintShort(trade.mint),
+          trade.side,
+          formatSol(trade.priceSol),
+          formatSol(trade.volumeSol),
+          trade.usableForMetrics ? "yes" : "no",
+          <ReasonCodes codes={trade.reasonCodes} key="reasons" />
+        ])}
+        title="ACTUAL TOKEN TRADES"
+      />
+      <TableShell
+        empty="No market observations"
+        headers={[
+          "Mint",
+          "Side",
+          "Quote",
+          "Price",
+          "Volume",
+          "Confidence",
+          "Usable"
+        ]}
+        rows={marketObservations.map((observation) => [
+          formatMintShort(observation.mint),
+          observation.side,
+          observation.quoteAsset,
+          formatUsdOrSol(observation.priceUsd, observation.priceSol),
+          formatUsdOrSol(observation.volumeUsd, observation.volumeSol),
+          observation.confidence,
+          observation.usableForMetrics ? "yes" : "no"
+        ])}
+        title="MARKET OBSERVATIONS"
+      />
+    </section>
+  );
+}
+
+function StorageTab({
+  chainVerifications,
+  liveEvents,
+  storageStats
+}: {
+  chainVerifications: ChainVerificationRow[];
+  liveEvents: LiveEventRow[];
+  storageStats: StorageStats | null;
+}) {
+  return (
+    <section className="tab-panel" role="tabpanel">
+      <div className="panel-heading">
+        <div>
+          <h2>STORAGE / DEBUG</h2>
+          <p>
+            Persisted counts, live feed rows, and read-only chain verification
+            rows.
+          </p>
+        </div>
+      </div>
+      <div className="debug-grid">
+        {Object.entries(storageStats ?? {}).map(([key, value]) => (
+          <div className="debug-row" key={key}>
+            <span>{key}</span>
+            <strong>{String(value ?? "--")}</strong>
+          </div>
+        ))}
+      </div>
+      <TableShell
+        empty="No live feed events"
+        headers={["Mint", "Type", "Real", "Created", "Reasons"]}
+        rows={liveEvents.map((event) => [
+          event.symbol ?? formatMintShort(event.mint),
+          event.eventType,
+          event.realData ? "REAL" : "MOCK",
+          formatTime(event.createdAt),
+          <ReasonCodes codes={event.reasonCodes} key="reasons" />
+        ])}
+        title="LIVE FEED EVENTS"
+      />
+      <TableShell
+        empty="No chain verifications"
+        headers={[
+          "Mint",
+          "Status",
+          "Mint Auth",
+          "Freeze",
+          "Top",
+          "Top10",
+          "Reasons"
+        ]}
+        rows={chainVerifications.map((row) => [
+          formatMintShort(row.mint),
+          row.status,
+          formatBool(row.mintAuthorityActive),
+          formatBool(row.freezeAuthorityActive),
+          formatPct(row.topHolderPct),
+          formatPct(row.top10HolderPct),
+          <ReasonCodes codes={row.reasonCodes} key="reasons" />
+        ])}
+        title="CHAIN VERIFICATIONS"
+      />
+    </section>
+  );
+}
+
+function TableShell({
+  empty,
+  headers,
+  rows,
+  title
+}: {
+  empty: string;
+  headers: string[];
+  rows: Array<Array<ReactNode>>;
+  title?: string;
+}) {
+  return (
+    <div className="table-region">
+      {title ? (
+        <div className="table-heading">
+          <h3>{title}</h3>
+          <span className="table-meta">{rows.length} rows</span>
+        </div>
+      ) : null}
+      <table>
+        <thead>
+          <tr>
+            {headers.map((header) => (
+              <th key={header}>{header}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              {row.map((cell, cellIndex) => (
+                <td key={`${rowIndex}-${cellIndex}`}>{cell}</td>
+              ))}
+            </tr>
+          ))}
+          {rows.length === 0 ? (
+            <tr>
+              <td
+                className="empty-state compact-empty"
+                colSpan={headers.length}
+              >
+                {empty}
+              </td>
+            </tr>
+          ) : null}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function Stat({
+  detail,
+  label,
+  value
+}: {
+  detail?: string;
+  label: string;
+  value: string | number;
+}) {
+  return (
+    <div className="card-stat">
+      <span>{label}</span>
+      <strong>{formatUnknown(value)}</strong>
+      {detail ? <small>{detail}</small> : null}
+    </div>
+  );
+}
+
+function TokenName({ card }: { card: LiveTokenCardViewModel }) {
+  return (
+    <span className="token-cell" title={card.mint}>
+      <span className="token-title">{card.displayName}</span>
+      <span className="token-mint mono">{card.shortMint}</span>
+    </span>
+  );
+}
+
+function DriverList({
+  drivers
+}: {
+  drivers: LiveTokenCardViewModel["strategy"]["positiveDrivers"];
+}) {
+  if (drivers.length === 0) {
+    return <span className="muted">--</span>;
+  }
+
+  return (
+    <span className="driver-list">
+      {drivers.slice(0, 3).map((driver) => (
+        <span
+          className="driver-code"
+          key={`${driver.reasonCode}-${driver.label}`}
+        >
+          {driver.label}
+        </span>
+      ))}
+      {drivers.length > 3 ? (
+        <span className="driver-code">+{drivers.length - 3}</span>
+      ) : null}
+    </span>
+  );
+}
+
+function ReasonBlock({
+  codes,
+  title
+}: {
+  codes: string[] | undefined;
+  title: string;
+}) {
+  return (
+    <div className="reason-block">
+      <h3>{title}</h3>
+      <ReasonCodes codes={codes} limit={10} />
+    </div>
+  );
+}
+
+function filterCards(
+  cards: LiveTokenCardViewModel[],
+  options: {
+    actionFilter: ActionFilter;
+    realOnly: boolean;
+    search: string;
+  }
+): LiveTokenCardViewModel[] {
+  const query = options.search.trim().toLowerCase();
+
+  return cards.filter((card) => {
+    if (options.realOnly && !card.realData) {
+      return false;
+    }
+
+    if (query.length > 0) {
+      const haystack = [
+        card.mint,
+        card.name ?? "",
+        card.symbol ?? "",
+        card.title,
+        card.displayName
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      if (!haystack.includes(query)) {
+        return false;
+      }
+    }
+
+    if (options.actionFilter === "watch") {
+      return (
+        card.action.includes("WATCH") || card.lifecycleState === "watching"
+      );
+    }
+
+    if (options.actionFilter === "qualified") {
+      return card.buyReady || card.lifecycleState === "qualified";
+    }
+
+    if (options.actionFilter === "rejected") {
+      return (
+        card.hardReject ||
+        card.signalStrength === "reject" ||
+        card.lifecycleState === "rejected"
+      );
+    }
+
+    return true;
+  });
+}
+
+function sortCards(
+  cards: LiveTokenCardViewModel[],
+  sortMode: SortMode
+): LiveTokenCardViewModel[] {
+  const riskWeight: Record<string, number> = {
+    critical: 5,
+    high: 4,
+    medium: 3,
+    unknown: 2,
+    low: 1
+  };
+
+  return [...cards].sort((left, right) => {
+    if (sortMode === "score") {
+      return right.score - left.score;
+    }
+
+    if (sortMode === "volumeVelocity") {
+      return (
+        (right.volumeVelocityUsdPerSec ?? right.volumeVelocitySolPerSec ?? -1) -
+        (left.volumeVelocityUsdPerSec ?? left.volumeVelocitySolPerSec ?? -1)
+      );
+    }
+
+    if (sortMode === "volume10s") {
+      return (
+        (right.volume10sUsd ?? right.volume10sSol ?? -1) -
+        (left.volume10sUsd ?? left.volume10sSol ?? -1)
+      );
+    }
+
+    if (sortMode === "risk") {
+      return (
+        (riskWeight[right.riskLevel] ?? 0) - (riskWeight[left.riskLevel] ?? 0)
+      );
+    }
+
+    return Date.parse(right.latestEventAt) - Date.parse(left.latestEventAt);
+  });
 }
 
 function upsertSignal(
@@ -1867,126 +1633,6 @@ function upsertSignal(
   );
 
   return [nextSignal, ...withoutNext].slice(0, 100);
-}
-
-function shortMint(mint: string): string {
-  return `${mint.slice(0, 8)}...${mint.slice(-6)}`;
-}
-
-function TokenCell({
-  fallbackName,
-  fallbackSymbol,
-  identity,
-  mint
-}: {
-  fallbackName?: string | undefined;
-  fallbackSymbol?: string | undefined;
-  identity?: TokenIdentitySummary | undefined;
-  mint: string;
-}) {
-  const title =
-    identity?.title ??
-    (fallbackSymbol && fallbackName
-      ? `${fallbackSymbol} - ${fallbackName}`
-      : (fallbackName ?? fallbackSymbol ?? shortMint(mint)));
-  const displayName = identity?.displayName ?? title;
-  const unresolved = identity && !identity.resolved;
-
-  return (
-    <span className="token-cell" title={mint}>
-      <span className="token-title">{displayName}</span>
-      <span className="token-mint mono">{shortMint(mint)}</span>
-      {unresolved ? <span className="token-unresolved">unresolved</span> : null}
-    </span>
-  );
-}
-
-function metricVolume(
-  signal: OverlaySignal,
-  window: "1s" | "5s" | "10s"
-): number {
-  return signal.rollingMetrics?.windows[window].totalVolumeUsd ?? 0;
-}
-
-function metricVolumeSol(
-  signal: OverlaySignal,
-  window: "1s" | "5s" | "10s"
-): number | undefined {
-  return signal.rollingMetrics?.windows[window].totalVolumeSol;
-}
-
-function effectiveVolumeVelocity(
-  metrics: RollingMetricsSnapshot | undefined
-): number | undefined {
-  if (!metrics) {
-    return undefined;
-  }
-
-  return metrics.usedSolMetricsFallback
-    ? metrics.volumeVelocitySolPerSec
-    : metrics.volumeVelocityUsdPerSec;
-}
-
-function normalizeClassName(value: string): string {
-  return value.toLowerCase();
-}
-
-function TargetList({ targets }: { targets: WatchTargetRow[] | undefined }) {
-  if (!targets || targets.length === 0) {
-    return <span className="muted">--</span>;
-  }
-
-  const visibleTargets = targets.slice(0, 3);
-  const remainingCount = targets.length - visibleTargets.length;
-
-  return (
-    <span
-      className="target-list"
-      title={targets.map((target) => target.address).join(", ")}
-    >
-      {visibleTargets.map((target) => (
-        <span className="target-code" key={`${target.kind}-${target.address}`}>
-          {target.kind}:{shortMint(target.address)}
-        </span>
-      ))}
-      {remainingCount > 0 ? (
-        <span className="target-code target-more">+{remainingCount}</span>
-      ) : null}
-    </span>
-  );
-}
-
-function formatWatchSummary(summary: WatchPlanSummary | undefined): string {
-  if (!summary) {
-    return "--";
-  }
-
-  if (summary.shouldVerifyMint && summary.shouldWatchEvents) {
-    return "verify + watch";
-  }
-
-  if (summary.shouldVerifyMint) {
-    return "verify";
-  }
-
-  if (summary.shouldWatchEvents) {
-    return "watch";
-  }
-
-  return "dry-run";
-}
-
-function formatSignalDataMode(
-  signal: OverlaySignal,
-  fallbackFeed: string | undefined
-): string {
-  if (signal.actualData) {
-    return "REAL/PUMPPORTAL";
-  }
-
-  const feed = signal.feedProvider ?? fallbackFeed ?? "unknown";
-
-  return feed === "mock" ? "MOCK" : "PAPER ONLY";
 }
 
 function getLiveConnectionLabel(
@@ -2040,38 +1686,24 @@ function getLiveEmptyState(
     return "LIVE FEED CONNECTED - NO TOKENS YET";
   }
 
-  return "LIVE FEED OFFLINE";
+  return feedStatus?.connected ? "LIVE FEED CONNECTED" : "LIVE FEED OFFLINE";
 }
 
-function formatNumber(value: number | undefined): string {
-  return value === undefined ? "--" : value.toFixed(2);
+function activateTab(tab: TabId, setActiveTab: (tab: TabId) => void): void {
+  setActiveTab(tab);
+  window.location.hash = tab;
 }
 
-function formatNullableNumber(value: number | null | undefined): string {
-  return value === null || value === undefined ? "--" : value.toFixed(4);
+function getInitialTab(): TabId {
+  const hash = window.location.hash.replace("#", "");
+  return tabs.some((tab) => tab.id === hash) ? (hash as TabId) : "live";
 }
 
-function formatUsd(value: number): string {
-  if (value >= 1000) {
-    return `$${(value / 1000).toFixed(1)}k`;
-  }
-
-  return `$${value.toFixed(0)}`;
+function normalizeClassName(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "_");
 }
 
-function formatNullableUsd(value: number | null | undefined): string {
-  if (value === null || value === undefined) {
-    return "--";
-  }
-
-  return formatUsd(value);
-}
-
-function formatPercent(value: number | null | undefined): string {
-  return value === null || value === undefined ? "--" : `${value.toFixed(2)}%`;
-}
-
-function formatNullableBoolean(value: boolean | null | undefined): string {
+function formatBool(value: boolean | null | undefined): string {
   if (value === null || value === undefined) {
     return "--";
   }
@@ -2079,93 +1711,25 @@ function formatNullableBoolean(value: boolean | null | undefined): string {
   return value ? "yes" : "no";
 }
 
-function formatTimestamp(timestamp: string | null | undefined): string {
-  if (!timestamp) {
-    return "--";
+function formatUsdOrSol(
+  usdValue: number | null | undefined,
+  solValue: number | null | undefined
+): string {
+  const usd = formatUsd(usdValue);
+
+  if (usd !== "--") {
+    return usd;
   }
 
-  return new Date(timestamp).toLocaleTimeString();
+  return formatSol(solValue);
 }
 
-function formatCompactNumber(value: number): string {
-  return Intl.NumberFormat("en", {
-    maximumFractionDigits: 1,
-    notation: "compact"
-  }).format(value);
-}
+async function fetchJson<T>(path: string): Promise<T> {
+  const response = await fetch(`${apiBaseUrl}${path}`);
 
-function compactUri(uri: string): string {
-  return uri.length > 34 ? `${uri.slice(0, 24)}...${uri.slice(-7)}` : uri;
-}
-
-function getStatusMessage(options: {
-  apiStatus: ApiStatus;
-  candidateCount: number;
-  feedProvider: string | undefined;
-  feedStatus: FeedStatus | null;
-  incompleteMetricCount: number;
-  liveStatus: LiveStatus | null;
-  noFeedMode: boolean | undefined;
-  noRealFeedMessage: string | undefined;
-  signalCount: number;
-  storageStats: StorageStats | null;
-}): string {
-  if (options.apiStatus === "disconnected") {
-    return "API disconnected";
+  if (!response.ok) {
+    throw new Error(`GET ${path} failed with ${response.status}`);
   }
 
-  if (options.apiStatus === "checking") {
-    return "Checking API";
-  }
-
-  if (options.noFeedMode) {
-    return options.noRealFeedMessage ?? "NO REAL FEED CONFIGURED";
-  }
-
-  if (
-    options.feedStatus?.connected &&
-    options.liveStatus?.liveTokenCount === 0
-  ) {
-    return "Live feed connected, waiting for live tokens";
-  }
-
-  if (options.feedStatus?.connecting) {
-    return "Live feed connecting";
-  }
-
-  if (options.feedStatus?.live && !options.feedStatus.connected) {
-    return "LIVE FEED OFFLINE";
-  }
-
-  if (options.storageStats?.feedEventCount === 0) {
-    return "API connected, no feed events yet";
-  }
-
-  if (options.candidateCount === 0) {
-    return "API connected, waiting for candidate lifecycle data";
-  }
-
-  if (
-    options.feedProvider === "pumpportal" &&
-    options.incompleteMetricCount > 0
-  ) {
-    return "PumpPortal feed connected with insufficient metrics for scoring";
-  }
-
-  if (
-    options.signalCount === 0 &&
-    (options.storageStats?.signalCount ?? 0) > 0
-  ) {
-    return "Persisted paper data exists, waiting for live signals";
-  }
-
-  if (options.signalCount === 0) {
-    return "API connected, waiting for paper signals";
-  }
-
-  if ((options.storageStats?.signalCount ?? 0) > options.signalCount) {
-    return "Persistence active with replayable paper data";
-  }
-
-  return "Paper signals updating";
+  return (await response.json()) as T;
 }

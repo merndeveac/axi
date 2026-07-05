@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { TokenCreatedEvent } from "@axi/data-feeds";
+import type { LiveTokenCardViewModel, StrategyStatus } from "@axi/shared";
 import type { ApiServer } from "../src/app";
 import { createApiServer } from "../src/app";
 import { createActualDataConfig } from "../src/actual-data-service";
@@ -599,6 +600,112 @@ describe("@axi/api", () => {
     expect(tokens).toEqual([]);
   });
 
+  it("GET /ui/live-token-cards returns an empty array with no live tokens", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/ui/live-token-cards"
+    });
+    const body = response.json() as LiveTokenCardViewModel[];
+
+    expect(response.statusCode).toBe(200);
+    expect(body).toEqual([]);
+  });
+
+  it("GET /ui/live-token-cards returns a live PumpPortal token card", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+    server.emitFeedEvent(createPumpPortalEvent());
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/ui/live-token-cards"
+    });
+    const cards = response.json() as LiveTokenCardViewModel[];
+
+    expect(response.statusCode).toBe(200);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]?.mint).toBe(createPumpPortalEvent().candidate.mint);
+    expect(cards[0]?.title).toBe("PORTAL - Portal Token");
+    expect(cards[0]?.displayName).toBe("PORTAL Portal Token");
+    expect(cards[0]?.source).toBe("pumpportal");
+    expect(cards[0]?.sourceMode).toBe("real");
+    expect(cards[0]?.realData).toBe(true);
+    expect(cards[0]?.liveSessionOnly).toBe(true);
+    expect(cards[0]?.priceSol).toBeNull();
+    expect(cards[0]?.holders).toBeNull();
+    expect(cards[0]?.unavailableFields).toContain("priceSol");
+    expect(cards[0]?.unavailableFields).toContain("holderVelocityPerSec");
+    expect(cards[0]?.calculationReasonCodes).toContain(
+      "HOLDER_TIME_SERIES_UNAVAILABLE"
+    );
+    expect(cards[0]?.action).toBe("IGNORE");
+    expect(cards[0]?.strategy.signalStrength).toBe("none");
+  });
+
+  it("GET /ui/live-token-cards includes metrics when available", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+    const event = createPumpPortalEvent();
+    server.emitFeedEvent(event);
+    server.metrics.ingestTradeObservation({
+      mint: event.candidate.mint,
+      priceSol: 0.00042,
+      quoteAsset: "SOL",
+      side: "buy",
+      symbol: event.candidate.symbol,
+      timestamp: "2026-01-01T00:00:02.000Z",
+      trader: "Buyer1111111111111111111111111111111111111",
+      usableForMetrics: true,
+      volumeSol: 1.5
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/ui/live-token-cards"
+    });
+    const cards = response.json() as LiveTokenCardViewModel[];
+
+    expect(response.statusCode).toBe(200);
+    expect(cards[0]?.priceSol).toBe(0.00042);
+    expect(cards[0]?.volume10sSol).toBe(1.5);
+    expect(cards[0]?.uniqueBuyers10s).toBe(1);
+    expect(cards[0]?.buyTradeCount10s).toBe(1);
+    expect(cards[0]?.sampleCount).toBe(1);
+    expect(cards[0]?.strategy.calculationInputs.volumeVelocity).toBe(0.3);
+  });
+
+  it("GET /strategy/status returns read-only paper strategy details", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/strategy/status"
+    });
+    const body = response.json() as StrategyStatus;
+
+    expect(response.statusCode).toBe(200);
+    expect(body.paperOnly).toBe(true);
+    expect(body.thresholds.minScoreForPaperBuyReady).toBe(75);
+    expect(body.thresholds.minSampleCount).toBe(8);
+    expect(body.safetyGates).toContain("NO_TRADING_CONTROLS");
+  });
+
   it("GET /tokens/status works", async () => {
     server = createTestServer();
 
@@ -1111,14 +1218,21 @@ describe("@axi/api", () => {
   it("historical mock runtime rows do not appear in /live/tokens", async () => {
     server = createTestServer();
 
-    const response = await server.app.inject({
+    const liveTokensResponse = await server.app.inject({
       method: "GET",
       url: "/live/tokens"
     });
-    const body = response.json() as unknown[];
+    const liveCardsResponse = await server.app.inject({
+      method: "GET",
+      url: "/ui/live-token-cards"
+    });
+    const liveTokens = liveTokensResponse.json() as unknown[];
+    const liveCards = liveCardsResponse.json() as unknown[];
 
-    expect(response.statusCode).toBe(200);
-    expect(body).toEqual([]);
+    expect(liveTokensResponse.statusCode).toBe(200);
+    expect(liveCardsResponse.statusCode).toBe(200);
+    expect(liveTokens).toEqual([]);
+    expect(liveCards).toEqual([]);
   });
 
   // TODO: Add a WebSocket integration test after the test harness grows a

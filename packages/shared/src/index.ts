@@ -256,7 +256,14 @@ export const RollingMetricsSchema = z.object({
 });
 export type RollingMetrics = z.infer<typeof RollingMetricsSchema>;
 
-export const MetricWindowSchema = z.enum(["1s", "3s", "5s", "10s", "30s", "60s"]);
+export const MetricWindowSchema = z.enum([
+  "1s",
+  "3s",
+  "5s",
+  "10s",
+  "30s",
+  "60s"
+]);
 export type MetricWindow = z.infer<typeof MetricWindowSchema>;
 
 export const RollingWindowMetricsSchema = z.object({
@@ -350,7 +357,9 @@ export const RollingMetricsSnapshotSchema = z.object({
   firstSeenAt: z.string().datetime(),
   lastUpdatedAt: z.string().datetime()
 });
-export type RollingMetricsSnapshot = z.infer<typeof RollingMetricsSnapshotSchema>;
+export type RollingMetricsSnapshot = z.infer<
+  typeof RollingMetricsSnapshotSchema
+>;
 
 export const RiskFlagsSchema = z.object({
   mintAuthorityActive: z.boolean(),
@@ -464,9 +473,7 @@ export const CandidateRiskSummarySchema = z.object({
   hardReject: z.boolean(),
   humanSummary: z.string().min(1)
 });
-export type CandidateRiskSummary = z.infer<
-  typeof CandidateRiskSummarySchema
->;
+export type CandidateRiskSummary = z.infer<typeof CandidateRiskSummarySchema>;
 
 export const CandidateDecisionSchema = z.object({
   mint: z.string().min(32),
@@ -556,3 +563,176 @@ export const OverlaySignalSchema = z.object({
   state: SignalStateSchema
 });
 export type OverlaySignal = z.infer<typeof OverlaySignalSchema>;
+
+export type SignalStrength = "none" | "weak" | "moderate" | "strong" | "reject";
+
+export type StrategySignalDriver = {
+  reasonCode: string;
+  label: string;
+  value: number | string | boolean | null;
+};
+
+export type StrategySignalExplanation = {
+  strategyName: string;
+  score: number;
+  action: string;
+  signalStrength: SignalStrength;
+  components: {
+    momentumScore: number;
+    qualityScore: number;
+    riskPenalty: number;
+    liquidityPenalty: number;
+    concentrationPenalty: number;
+    missingDataPenalty: number;
+  };
+  positiveDrivers: StrategySignalDriver[];
+  negativeDrivers: StrategySignalDriver[];
+  blockers: StrategySignalDriver[];
+  calculationInputs: {
+    volumeVelocity: number | null;
+    volumeAcceleration: number | null;
+    priceVelocity: number | null;
+    priceAcceleration: number | null;
+    buyerVelocity: number | null;
+    buyerAcceleration: number | null;
+    holderVelocity: number | null;
+    holderAcceleration: number | null;
+  };
+  lastUpdatedAt: string | null;
+};
+
+export type StrategyStatus = {
+  strategyName: string;
+  thresholds: {
+    minScoreForPaperBuyReady: number;
+    minScoreForWatch: number;
+    minSampleCount: number;
+    criticalRiskBlocksBuyReady: boolean;
+    hardRejectBlocksBuyReady: boolean;
+    insufficientMetricsBlocksBuyReady: boolean;
+  };
+  scoringWeights: {
+    rollingMomentumWeight: number;
+    legacyMomentumWeight: number;
+    momentumMultiplier: number;
+    qualityMultiplier: number;
+    riskPenaltyMultiplier: number;
+  };
+  safetyGates: string[];
+  formula: string[];
+  paperOnly: true;
+  reasonCodes: string[];
+};
+
+export type LiveTokenCardViewModel = {
+  mint: string;
+  shortMint: string;
+  name: string | null;
+  symbol: string | null;
+  title: string;
+  displayName: string;
+  imageUri: string | null;
+  identityConfidence: TokenIdentityConfidence;
+  identitySource: TokenIdentityDataSource;
+  identityResolved: boolean;
+  metadataUri: string | null;
+  source: string;
+  sourceMode: string;
+  realData: boolean;
+  eventTypes: string[];
+  firstSeenAt: string;
+  lastSeenAt: string;
+  ageSeconds: number;
+  latestEventAt: string;
+  latestSignature: string | null;
+  liveSessionOnly: boolean;
+  stale: boolean;
+  dataFreshnessMs: number | null;
+  priceSol: number | null;
+  priceUsd: number | null;
+  priceQuote: number | null;
+  quoteAsset: QuoteAsset | null;
+  marketCapUsd: number | null;
+  fdvUsd: number | null;
+  liquidityUsd: number | null;
+  volume1sUsd: number | null;
+  volume3sUsd: number | null;
+  volume5sUsd: number | null;
+  volume10sUsd: number | null;
+  volume30sUsd: number | null;
+  volume60sUsd: number | null;
+  volume1sSol: number | null;
+  volume3sSol: number | null;
+  volume5sSol: number | null;
+  volume10sSol: number | null;
+  volume30sSol: number | null;
+  volume60sSol: number | null;
+  buyVolume10s: number | null;
+  sellVolume10s: number | null;
+  netVolume10s: number | null;
+  buySellRatio: number | null;
+  netBuyPressure: number | null;
+  uniqueBuyers1s: number | null;
+  uniqueBuyers5s: number | null;
+  uniqueBuyers10s: number | null;
+  uniqueSellers10s: number | null;
+  uniqueTraders10s: number | null;
+  buyTradeCount10s: number | null;
+  sellTradeCount10s: number | null;
+  totalTradeCount10s: number | null;
+  holders: number | null;
+  holderCount: number | null;
+  topHolderPct: number | null;
+  top10HolderPct: number | null;
+  devHolderPct: number | null;
+  holderDataSource: string | null;
+  holderDataFreshnessMs: number | null;
+  volumeVelocityUsdPerSec: number | null;
+  volumeAccelerationUsdPerSec2: number | null;
+  volumeVelocitySolPerSec: number | null;
+  volumeAccelerationSolPerSec2: number | null;
+  priceVelocityPctPerSec: number | null;
+  priceAccelerationPctPerSec2: number | null;
+  priceSolVelocityPctPerSec: number | null;
+  priceSolAccelerationPctPerSec2: number | null;
+  buyerVelocityPerSec: number | null;
+  buyerAccelerationPerSec2: number | null;
+  holderVelocityPerSec: number | null;
+  holderAccelerationPerSec2: number | null;
+  sampleCount: number;
+  validMetricSampleCount: number;
+  insufficientMetrics: boolean;
+  calculationConfidence: ObservationConfidence;
+  calculationReasonCodes: string[];
+  riskLevel: RiskLevel;
+  riskScore: number | null;
+  hardReject: boolean;
+  riskReasonCodes: string[];
+  topRiskWarnings: string[];
+  mintAuthorityActive: boolean | null;
+  freezeAuthorityActive: boolean | null;
+  liquidityRisk: string;
+  concentrationRisk: string;
+  washTradingSuspected: boolean | null;
+  honeypotSuspected: boolean | null;
+  action: string;
+  lifecycleState: CandidateLifecycleState;
+  score: number;
+  scoreLabel: string;
+  signalStrength: SignalStrength;
+  combinedReasonCodes: string[];
+  buyReady: boolean;
+  rejectReason: string | null;
+  strategyName: string;
+  signalUpdatedAt: string | null;
+  strategy: StrategySignalExplanation;
+  rawEventCount: number;
+  actualTradeEventCount: number;
+  marketObservationCount: number;
+  chainVerificationStatus: ChainVerificationStatus | "not_checked";
+  feedProvider: string;
+  dataSourceWarnings: string[];
+  missingFields: string[];
+  unavailableFields: string[];
+  lastUpdatedAt: string;
+};
