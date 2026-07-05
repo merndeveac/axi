@@ -5,6 +5,8 @@ import { runPumpfunFetchFixtureCli } from "./pumpfun-fetch-cli";
 import {
   createManagedStreamStatusFromConfig,
   runManagedStreamBuildSubscriptionCli,
+  runManagedStreamConnectCheckCli,
+  runManagedStreamLaserStreamConnectCli,
   runManagedStreamConfigCli
 } from "./sources/managed-stream-source";
 
@@ -99,6 +101,12 @@ if (command === "smoke") {
   app.stop();
 } else if (command === "stream:build-subscription") {
   runManagedStreamBuildSubscriptionCli(config, process.argv.slice(3));
+  app.stop();
+} else if (command === "stream:connect:check") {
+  runManagedStreamConnectCheckCli(config, process.argv.slice(3));
+  app.stop();
+} else if (command === "stream:connect:laserstream") {
+  await runManagedStreamLaserStreamConnectCli(config, process.argv.slice(3));
   app.stop();
 } else if (command === "decode:pumpfun") {
   runPumpfunDecodeCli(process.argv.slice(3));

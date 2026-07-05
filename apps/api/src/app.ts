@@ -688,6 +688,15 @@ export const apiConfigSchema = z.object({
     emptyStringToUndefined,
     z.string().min(1).optional()
   ),
+  MANAGED_STREAM_ALLOW_REAL_CONNECTION: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  MANAGED_STREAM_REAL_PROVIDER: z
+    .enum(["mock", "yellowstone", "laserstream", "geyser", "unknown"])
+    .default("mock"),
+  MANAGED_STREAM_REAL_CONNECTION_ACK: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
   MANAGED_STREAM_MAX_RECONNECT_ATTEMPTS: z.coerce
     .number()
     .int()
@@ -733,7 +742,66 @@ export const apiConfigSchema = z.object({
     emptyStringToUndefined,
     z.string().min(1).optional()
   ),
+  LASERSTREAM_REGION: z.preprocess(
+    emptyStringToUndefined,
+    z.string().min(1).optional()
+  ),
+  LASERSTREAM_COMMITMENT: z
+    .enum(["processed", "confirmed", "finalized"])
+    .default("confirmed"),
+  LASERSTREAM_TRANSACTIONS_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  LASERSTREAM_ACCOUNT_INCLUDE: z
+    .preprocess(parseStringListEnv, z.array(z.string()))
+    .default([]),
+  LASERSTREAM_ACCOUNT_EXCLUDE: z
+    .preprocess(parseStringListEnv, z.array(z.string()))
+    .default([]),
+  LASERSTREAM_ACCOUNT_REQUIRED: z
+    .preprocess(parseStringListEnv, z.array(z.string()))
+    .default([]),
+  LASERSTREAM_PROGRAM_INCLUDE: z
+    .preprocess(parseStringListEnv, z.array(z.string()))
+    .default([]),
+  LASERSTREAM_INCLUDE_VOTES: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  LASERSTREAM_INCLUDE_FAILED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  LASERSTREAM_MAX_MESSAGES_PER_SESSION: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(10000),
+  LASERSTREAM_MAX_RUNTIME_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(300000),
+  LASERSTREAM_STOP_ON_ERROR: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  LASERSTREAM_RECONNECT_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  LASERSTREAM_REPLAY_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  LASERSTREAM_REPLAY_FROM_SLOT: z.preprocess(
+    emptyStringToUndefined,
+    z.coerce.number().int().nonnegative().optional()
+  ),
   LASERSTREAM_ENABLED: z.preprocess(parseBooleanEnv, z.boolean()).default(false),
+  PUMPFUN_PROGRAM_ID: z.preprocess(
+    emptyStringToUndefined,
+    z.string().min(1).optional()
+  ),
+  PUMPSWAP_PROGRAM_ID: z.preprocess(
+    emptyStringToUndefined,
+    z.string().min(1).optional()
+  ),
   LOG_LEVEL: logLevelSchema.default("info")
 });
 
@@ -851,6 +919,8 @@ const streamBuildSubscriptionBodySchema = z.object({
     .enum([
       "pumpfun_program_transactions",
       "pumpfun_and_pumpswap_transactions",
+      "laserstream_pumpfun_transactions",
+      "yellowstone_pumpfun_transactions",
       "watched_addresses",
       "minimal_healthcheck"
     ])
@@ -1175,6 +1245,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   app.get("/indexer/status", async () => indexerAdapter.getStatus());
 
   app.get("/indexer/stream/status", async () => indexerAdapter.getStreamStatus());
+
+  app.get("/indexer/stream/real-readiness", async () =>
+    indexerAdapter.getStreamRealReadiness()
+  );
 
   app.get("/indexer/stream/config", async () => indexerAdapter.getStreamConfig());
 

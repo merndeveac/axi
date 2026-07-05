@@ -14,9 +14,12 @@ import {
 } from "../src/pumpfun-fetch-cli";
 import {
   buildManagedStreamSubscriptionPreview,
+  createLaserStreamRealReadiness,
   createManagedStreamSource,
   createManagedStreamStatusFromConfig,
   runManagedStreamBuildSubscriptionCli,
+  runManagedStreamConnectCheckCli,
+  runManagedStreamLaserStreamConnectCli,
   runManagedStreamConfigCli
 } from "../src/sources/managed-stream-source";
 
@@ -30,7 +33,11 @@ describe("@axi/indexer", () => {
     expect(config.GEYSER_ENABLED).toBe(false);
     expect(config.MANAGED_STREAM_ENABLED).toBe(false);
     expect(config.MANAGED_STREAM_PROVIDER).toBe("mock");
+    expect(config.MANAGED_STREAM_ALLOW_REAL_CONNECTION).toBe(false);
+    expect(config.MANAGED_STREAM_REAL_PROVIDER).toBe("mock");
     expect(config.MANAGED_STREAM_API_KEY).toBeUndefined();
+    expect(config.LASERSTREAM_MAX_MESSAGES_PER_SESSION).toBe(10000);
+    expect(config.LASERSTREAM_MAX_RUNTIME_MS).toBe(300000);
   });
 
   it("mock source emits events", () => {
@@ -182,7 +189,8 @@ describe("@axi/indexer", () => {
     expect(yellowstone.providerStatus.connectionState).toBe("not_implemented");
     expect(yellowstone.authTokenMasked).toBe("configured:16");
     expect(JSON.stringify(yellowstone)).not.toContain("not-a-real-token");
-    expect(laserstream.providerStatus.connectionState).toBe("not_implemented");
+    expect(laserstream.providerStatus.connectionState).toBe("blocked");
+    expect(laserstream.reasonCodes).toContain("REAL_STREAM_DISABLED");
     expect(JSON.stringify(laserstream)).not.toContain("not-a-real-key");
   });
 
@@ -190,8 +198,8 @@ describe("@axi/indexer", () => {
     const config = loadIndexerConfig({
       MANAGED_STREAM_ENABLED: "true",
       MANAGED_STREAM_PROVIDER: "laserstream",
-      MANAGED_STREAM_ENDPOINT: "https://laserstream.example.invalid?api_key=secret",
-      MANAGED_STREAM_API_KEY: "not-a-real-key"
+      LASERSTREAM_GRPC_URL: "https://laserstream.example.invalid?api_key=secret",
+      LASERSTREAM_API_KEY: "not-a-real-key"
     });
     const result = runWithCapturedConsole(() =>
       runManagedStreamConfigCli(config, [])
@@ -202,7 +210,47 @@ describe("@axi/indexer", () => {
     expect(result.endpointMasked).toContain("api_key=****");
     expect(result.authConfigured).toBe(true);
     expect(serialized).not.toContain("not-a-real-key");
-    expect(serialized).not.toContain("secret");
+    expect(serialized).not.toContain("api_key=secret");
+  });
+
+  it("reports LaserStream real readiness and connect-check without connecting", () => {
+    const blocked = runWithCapturedConsole(() =>
+      runManagedStreamConnectCheckCli(loadIndexerConfig({}), [])
+    );
+    const readyConfig = loadIndexerConfig({
+      MANAGED_STREAM_ALLOW_REAL_CONNECTION: "true",
+      MANAGED_STREAM_REAL_CONNECTION_ACK: "true",
+      MANAGED_STREAM_REAL_PROVIDER: "laserstream",
+      LASERSTREAM_ENABLED: "true",
+      LASERSTREAM_GRPC_URL: "https://laserstream.example.invalid?api-key=secret",
+      LASERSTREAM_API_KEY: "not-a-real-key",
+      PUMPFUN_PROGRAM_ID: "FakePumpfunProgram111111111111111111111111111"
+    });
+    const ready = runWithCapturedConsole(() =>
+      runManagedStreamConnectCheckCli(readyConfig, [])
+    );
+    const readiness = createLaserStreamRealReadiness(readyConfig);
+    const serialized = JSON.stringify({ blocked, ready, readiness });
+
+    expect(blocked.wouldConnect).toBe(false);
+    expect(blocked.reasonCodes).toContain("REAL_STREAM_DISABLED");
+    expect(ready.wouldConnect).toBe(true);
+    expect(readiness.canConnect).toBe(true);
+    expect(readiness.maskedConfig.endpointMasked).toContain("api-key=****");
+    expect(serialized).not.toContain("not-a-real-key");
+    expect(serialized).not.toContain("api-key=secret");
+  });
+
+  it("refuses LaserStream connect command when real gates are closed", async () => {
+    const result = await runWithCapturedConsoleAsync(() =>
+      runManagedStreamLaserStreamConnectCli(loadIndexerConfig({}), [])
+    );
+
+    expect(result.attempted).toBe(false);
+    expect(result.connected).toBe(false);
+    expect(result.messageCount).toBe(0);
+    expect(result.reasonCodes).toContain("NO_NETWORK");
+    expect(result.reasonCodes).toContain("REAL_STREAM_DISABLED");
   });
 
   it("managed stream build-subscription previews Yellowstone and LaserStream", () => {
@@ -226,6 +274,7 @@ describe("@axi/indexer", () => {
     const laserstream = buildManagedStreamSubscriptionPreview(config, {
       provider: "laserstream",
       commitment: "processed",
+      profile: "laserstream_pumpfun_transactions",
       includeProgram: ["FakeLaserProgram111111111111111111111111111"],
       requiredAccount: ["FakeLaserRequired1111111111111111111111111"]
     });

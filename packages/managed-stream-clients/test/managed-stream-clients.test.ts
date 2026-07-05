@@ -1,16 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { createDefaultSubscriptionConfig } from "@axi/stream-core";
 import {
+  buildLaserStreamSdkSubscriptionRequest,
   buildLaserStreamSubscriptionRequest,
   buildManagedStreamSubscriptionProfile,
   buildYellowstoneSubscriptionRequest,
   createDisabledManagedStreamClient,
   createLaserStreamClient,
+  createLaserStreamRealClient,
   createManagedStreamClient,
   createManagedStreamClientFactory,
   createMockManagedStreamTransport,
   createNotImplementedManagedStreamClient,
   createYellowstoneClient,
+  evaluateLaserStreamRealReadiness,
   managedStreamClientReasonCodes,
   managedStreamProfileReasonCodes,
   validateManagedStreamClientConfig
@@ -116,6 +119,51 @@ describe("@axi/managed-stream-clients", () => {
     expect(JSON.stringify(laserstream)).not.toContain("secret");
   });
 
+  it("builds SDK-shaped LaserStream transaction subscriptions", () => {
+    const request = buildLaserStreamSdkSubscriptionRequest({
+      ...baseSubscription,
+      provider: "laserstream"
+    });
+
+    expect(request).toMatchObject({
+      commitment: "confirmed",
+      transactions: {
+        axi_pumpfun_transactions: {
+          vote: false,
+          failed: false,
+          accountInclude: ["FakeProgram111111111111111111111111111111111"]
+        }
+      }
+    });
+  });
+
+  it("evaluates real LaserStream gates without exposing secrets", () => {
+    const blocked = evaluateLaserStreamRealReadiness({});
+    const ready = evaluateLaserStreamRealReadiness({
+      allowRealConnection: true,
+      realConnectionAck: true,
+      realProvider: "laserstream",
+      enabled: true,
+      endpoint: "https://laserstream.example.invalid?api-key=secret",
+      apiKey: "laserstream-secret"
+    });
+
+    expect(blocked.canConnect).toBe(false);
+    expect(blocked.reasonCodes).toContain(
+      managedStreamClientReasonCodes.realStreamDisabled
+    );
+    expect(blocked.reasonCodes).toContain(
+      managedStreamClientReasonCodes.realStreamAckMissing
+    );
+    expect(ready.canConnect).toBe(true);
+    expect(ready.reasonCodes).toContain(
+      managedStreamClientReasonCodes.laserstreamReadyToConnect
+    );
+    expect(ready.maskedConfig.endpointMasked).toContain("api-key=****");
+    expect(ready.maskedConfig.apiKeyMasked).toBe("configured:18");
+    expect(JSON.stringify(ready)).not.toContain("laserstream-secret");
+  });
+
   it("uses injected mock transport without opening a real network connection", async () => {
     const transport = createMockManagedStreamTransport({
       now: () => new Date("2026-01-01T00:00:00.000Z")
@@ -156,6 +204,146 @@ describe("@axi/managed-stream-clients", () => {
     expect(signatures).toEqual(["Sig111"]);
   });
 
+  it("blocks real LaserStream transport unless every gate is explicit", async () => {
+    const transport = createMockManagedStreamTransport();
+    const client = createLaserStreamRealClient({
+      enabled: true,
+      endpoint: "https://laserstream.example.invalid",
+      apiKey: "laserstream-secret",
+      transport
+    });
+
+    await client.start();
+
+    expect(client.getStatus().connectionState).toBe("blocked");
+    expect(client.getStatus().reasonCodes).toContain(
+      managedStreamClientReasonCodes.realStreamDisabled
+    );
+    expect(transport.getStatus().connected).toBe(false);
+    expect(transport.sentMessages).toHaveLength(0);
+  });
+
+  it("connects a gated LaserStream mock transport and normalizes tx messages", async () => {
+    const transport = createMockManagedStreamTransport({
+      now: () => new Date("2026-01-01T00:00:00.000Z")
+    });
+    const client = createLaserStreamRealClient({
+      allowRealConnection: true,
+      realConnectionAck: true,
+      realProvider: "laserstream",
+      enabled: true,
+      endpoint: "https://laserstream.example.invalid",
+      apiKey: "laserstream-secret",
+      transport,
+      maxMessagesPerSession: 1,
+      maxRuntimeMs: 100000,
+      subscriptionConfig: {
+        ...baseSubscription,
+        provider: "laserstream"
+      }
+    });
+    const envelopes: Array<{ signature?: string | null; accountKeys?: string[] }> =
+      [];
+
+    client.onEnvelope((envelope) => {
+      envelopes.push({
+        signature: envelope.signature ?? null,
+        accountKeys: envelope.accountKeys ?? []
+      });
+    });
+
+    await client.start();
+    transport.emitMessage({
+      transaction: {
+        signature: "LaserSig111",
+        slot: 99,
+        transaction: {
+          message: {
+            accountKeys: ["Account111111111111111111111111111111111"]
+          }
+        },
+        meta: {
+          logMessages: ["Program log: hello"],
+          err: null
+        }
+      }
+    });
+    await Promise.resolve();
+
+    const status = client.getStatus();
+
+    expect(transport.sentMessages[0]).toMatchObject({
+      commitment: "confirmed",
+      transactions: {
+        axi_pumpfun_transactions: {
+          accountInclude: ["FakeProgram111111111111111111111111111111111"]
+        }
+      }
+    });
+    expect(envelopes).toEqual([
+      {
+        signature: "LaserSig111",
+        accountKeys: ["Account111111111111111111111111111111111"]
+      }
+    ]);
+    expect(status.receivedCount).toBe(1);
+    expect(status.transactionCount).toBe(1);
+    expect(status.connectionState).toBe("disconnected");
+    expect(status.reasonCodes).toContain(
+      managedStreamClientReasonCodes.laserstreamSessionLimitReached
+    );
+    expect(JSON.stringify(status)).not.toContain("laserstream-secret");
+  });
+
+  it("stops a gated LaserStream session at the runtime limit", async () => {
+    const transport = createMockManagedStreamTransport();
+    const runtime = { handler: null as (() => void) | null };
+    const client = createLaserStreamRealClient({
+      allowRealConnection: true,
+      realConnectionAck: true,
+      realProvider: "laserstream",
+      enabled: true,
+      endpoint: "https://laserstream.example.invalid",
+      apiKey: "laserstream-secret",
+      transport,
+      maxRuntimeMs: 1000,
+      setTimeout: (handler) => {
+        runtime.handler = handler;
+        return "timer";
+      },
+      clearTimeout: () => undefined
+    });
+
+    await client.start();
+    expect(runtime.handler).not.toBeNull();
+    runtime.handler?.();
+    await Promise.resolve();
+
+    expect(client.getStatus().connectionState).toBe("disconnected");
+    expect(client.getStatus().reasonCodes).toContain(
+      managedStreamClientReasonCodes.laserstreamRuntimeLimitReached
+    );
+  });
+
+  it("reports a clear SDK boundary when gates are open but SDK is unavailable", async () => {
+    const client = createLaserStreamRealClient({
+      allowRealConnection: true,
+      realConnectionAck: true,
+      realProvider: "laserstream",
+      enabled: true,
+      endpoint: "https://laserstream.example.invalid",
+      apiKey: "laserstream-secret",
+      sdkLoader: async () => ({})
+    });
+
+    await client.start();
+
+    expect(client.getStatus().connectionState).toBe("not_implemented");
+    expect(client.getStatus().reasonCodes).toContain(
+      managedStreamClientReasonCodes.sdkNotInstalledOrNotImplemented
+    );
+  });
+
   it("creates disabled and not implemented clients directly", () => {
     const disabled = createDisabledManagedStreamClient("laserstream");
     const notImplemented = createNotImplementedManagedStreamClient("yellowstone");
@@ -184,7 +372,7 @@ describe("@axi/managed-stream-clients", () => {
       }
     );
     const supplied = buildManagedStreamSubscriptionProfile(
-      "pumpfun_and_pumpswap_transactions",
+      "laserstream_pumpfun_transactions",
       {
         provider: "laserstream",
         programIds: [

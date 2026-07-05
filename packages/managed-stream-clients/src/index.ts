@@ -1,4 +1,5 @@
 import {
+  createDefaultSubscriptionConfig,
   createStreamEnvelopeId,
   maskAuthToken,
   maskStreamEndpoint,
@@ -36,9 +37,25 @@ export const managedStreamClientReasonCodes = {
   endpointMasked: "MANAGED_CLIENT_ENDPOINT_MASKED",
   endpointMissing: "MANAGED_CLIENT_ENDPOINT_MISSING",
   error: "MANAGED_CLIENT_ERROR",
+  laserstreamBlockedByDefault: "LASERSTREAM_CONNECTION_BLOCKED_BY_DEFAULT",
+  laserstreamConfigMissingApiKey: "LASERSTREAM_CONFIG_MISSING_API_KEY",
+  laserstreamConfigMissingEndpoint: "LASERSTREAM_CONFIG_MISSING_ENDPOINT",
+  laserstreamConnected: "LASERSTREAM_CONNECTED",
+  laserstreamConnectionAttempted: "LASERSTREAM_CONNECTION_ATTEMPTED",
+  laserstreamDisconnected: "LASERSTREAM_DISCONNECTED",
+  laserstreamEnabled: "LASERSTREAM_ENABLED",
   laserstreamSkeleton: "LASERSTREAM_CLIENT_SKELETON",
+  laserstreamMessageReceived: "LASERSTREAM_MESSAGE_RECEIVED",
+  laserstreamReadyToConnect: "LASERSTREAM_READY_TO_CONNECT",
+  laserstreamRuntimeLimitReached: "LASERSTREAM_RUNTIME_LIMIT_REACHED",
+  laserstreamSecretMasked: "LASERSTREAM_SECRET_MASKED",
+  laserstreamSessionLimitReached: "LASERSTREAM_SESSION_LIMIT_REACHED",
   messageReceived: "MANAGED_CLIENT_MESSAGE_RECEIVED",
   notImplemented: "MANAGED_CLIENT_NOT_IMPLEMENTED",
+  realStreamAckMissing: "REAL_STREAM_ACK_MISSING",
+  realStreamDisabled: "REAL_STREAM_DISABLED",
+  realStreamProviderNotSelected: "REAL_STREAM_PROVIDER_NOT_SELECTED",
+  sdkNotInstalledOrNotImplemented: "SDK_NOT_INSTALLED_OR_NOT_IMPLEMENTED",
   subscriptionBuilt: "MANAGED_CLIENT_SUBSCRIPTION_BUILT",
   transportConnected: "MANAGED_CLIENT_TRANSPORT_CONNECTED",
   transportDisconnected: "MANAGED_CLIENT_TRANSPORT_DISCONNECTED",
@@ -59,6 +76,85 @@ export type ManagedStreamClientOptions = {
   subscriptionConfig?: ManagedStreamSubscriptionConfig;
   transport?: ManagedStreamTransport;
   now?: () => Date;
+};
+
+export type LaserStreamRealConnectionOptions = Omit<
+  ManagedStreamClientOptions,
+  "kind" | "authToken"
+> & {
+  allowRealConnection?: boolean;
+  realConnectionAck?: boolean;
+  realProvider?: ManagedStreamProviderKind | string | undefined;
+  region?: string | undefined;
+  accountInclude?: string[] | undefined;
+  accountExclude?: string[] | undefined;
+  accountRequired?: string[] | undefined;
+  programInclude?: string[] | undefined;
+  includeVotes?: boolean;
+  includeFailed?: boolean;
+  transactionsEnabled?: boolean;
+  maxMessagesPerSession?: number;
+  maxRuntimeMs?: number;
+  stopOnError?: boolean;
+  reconnectEnabled?: boolean;
+  replayEnabled?: boolean;
+  replayFromSlot?: number | undefined;
+  sdkLoader?: (() => Promise<unknown>) | undefined;
+  setTimeout?: ((handler: () => void, ms: number) => unknown) | undefined;
+  clearTimeout?: ((handle: unknown) => void) | undefined;
+};
+
+export type LaserStreamMaskedConfig = {
+  endpointMasked: string | null;
+  apiKeyMasked: string | null;
+  region: string | null;
+  commitment: ManagedStreamCommitment;
+  transactionsEnabled: boolean;
+  accountIncludeCount: number;
+  accountExcludeCount: number;
+  accountRequiredCount: number;
+  programIncludeCount: number;
+  includeVotes: boolean;
+  includeFailed: boolean;
+  maxMessagesPerSession: number;
+  maxRuntimeMs: number;
+  stopOnError: boolean;
+  reconnectEnabled: boolean;
+  replayEnabled: boolean;
+  replayFromSlot: number | null;
+};
+
+export type LaserStreamRealReadiness = {
+  provider: "laserstream";
+  canConnect: boolean;
+  realConnectionAllowed: boolean;
+  realConnectionAck: boolean;
+  realProvider: string;
+  laserstreamEnabled: boolean;
+  configured: boolean;
+  apiKeyConfigured: boolean;
+  endpointMasked: string | null;
+  maskedConfig: LaserStreamMaskedConfig;
+  missingRequirements: string[];
+  connectionBlockedReasons: string[];
+  reasonCodes: ManagedStreamClientReasonCode[];
+  safeNextSteps: string[];
+  paperOnly: true;
+  tradingDisabled: true;
+  secretsExposed: false;
+};
+
+export type LaserStreamSdkSubscriptionRequest = {
+  accounts: Record<string, unknown>;
+  slots: Record<string, unknown>;
+  transactions: Record<string, unknown>;
+  transactionsStatus: Record<string, unknown>;
+  blocks: Record<string, unknown>;
+  blocksMeta: Record<string, unknown>;
+  entry: Record<string, unknown>;
+  accountsDataSlice: unknown[];
+  commitment: ManagedStreamCommitment;
+  fromSlot?: number;
 };
 
 export type ManagedStreamTransportStatus = {
@@ -179,6 +275,13 @@ type MutableClientState = {
   cleanups: Array<() => void>;
 };
 
+type LaserStreamSubscribe = (
+  config: Record<string, unknown>,
+  request: LaserStreamSdkSubscriptionRequest,
+  onData: (message: unknown) => void,
+  onError: (error: unknown) => void
+) => unknown;
+
 export function createManagedStreamClient(
   options: ManagedStreamClientOptions = {}
 ): ManagedStreamClient {
@@ -232,6 +335,441 @@ export function createLaserStreamClient(
     ...options,
     kind: "laserstream",
     enabled: true
+  });
+}
+
+export function evaluateLaserStreamRealReadiness(
+  options: LaserStreamRealConnectionOptions = {}
+): LaserStreamRealReadiness {
+  const endpointMasked = maskStreamEndpoint(options.endpoint);
+  const apiKeyMasked = maskAuthToken(options.apiKey);
+  const realConnectionAllowed = options.allowRealConnection ?? false;
+  const realConnectionAck = options.realConnectionAck ?? false;
+  const realProvider = options.realProvider ?? "mock";
+  const laserstreamEnabled = options.enabled ?? false;
+  const configured =
+    options.endpoint !== undefined && options.endpoint.trim().length > 0;
+  const apiKeyConfigured =
+    options.apiKey !== undefined && options.apiKey.trim().length > 0;
+  const missingRequirements: string[] = [];
+  const connectionBlockedReasons: string[] = [];
+  const reasonCodes: ManagedStreamClientReasonCode[] = [];
+
+  if (!realConnectionAllowed) {
+    missingRequirements.push("MANAGED_STREAM_ALLOW_REAL_CONNECTION=true");
+    connectionBlockedReasons.push(
+      managedStreamClientReasonCodes.realStreamDisabled
+    );
+    reasonCodes.push(
+      managedStreamClientReasonCodes.realStreamDisabled,
+      managedStreamClientReasonCodes.laserstreamBlockedByDefault
+    );
+  }
+
+  if (!realConnectionAck) {
+    missingRequirements.push("MANAGED_STREAM_REAL_CONNECTION_ACK=true");
+    connectionBlockedReasons.push(
+      managedStreamClientReasonCodes.realStreamAckMissing
+    );
+    reasonCodes.push(managedStreamClientReasonCodes.realStreamAckMissing);
+  }
+
+  if (realProvider !== "laserstream") {
+    missingRequirements.push("MANAGED_STREAM_REAL_PROVIDER=laserstream");
+    connectionBlockedReasons.push(
+      managedStreamClientReasonCodes.realStreamProviderNotSelected
+    );
+    reasonCodes.push(
+      managedStreamClientReasonCodes.realStreamProviderNotSelected
+    );
+  }
+
+  if (!laserstreamEnabled) {
+    missingRequirements.push("LASERSTREAM_ENABLED=true");
+    connectionBlockedReasons.push(managedStreamClientReasonCodes.laserstreamEnabled);
+    reasonCodes.push(managedStreamClientReasonCodes.laserstreamEnabled);
+  }
+
+  if (!configured) {
+    missingRequirements.push("LASERSTREAM_GRPC_URL");
+    connectionBlockedReasons.push(
+      managedStreamClientReasonCodes.laserstreamConfigMissingEndpoint
+    );
+    reasonCodes.push(
+      managedStreamClientReasonCodes.laserstreamConfigMissingEndpoint
+    );
+  }
+
+  if (!apiKeyConfigured) {
+    missingRequirements.push("LASERSTREAM_API_KEY");
+    connectionBlockedReasons.push(
+      managedStreamClientReasonCodes.laserstreamConfigMissingApiKey
+    );
+    reasonCodes.push(
+      managedStreamClientReasonCodes.laserstreamConfigMissingApiKey
+    );
+  }
+
+  if (endpointMasked !== null || apiKeyMasked !== null) {
+    reasonCodes.push(managedStreamClientReasonCodes.laserstreamSecretMasked);
+  }
+
+  const canConnect = missingRequirements.length === 0;
+
+  if (canConnect) {
+    reasonCodes.push(managedStreamClientReasonCodes.laserstreamReadyToConnect);
+  }
+
+  return {
+    provider: "laserstream",
+    canConnect,
+    realConnectionAllowed,
+    realConnectionAck,
+    realProvider,
+    laserstreamEnabled,
+    configured,
+    apiKeyConfigured,
+    endpointMasked,
+    maskedConfig: {
+      endpointMasked,
+      apiKeyMasked,
+      region: options.region ?? null,
+      commitment: options.commitment ?? "confirmed",
+      transactionsEnabled: options.transactionsEnabled ?? true,
+      accountIncludeCount: uniqueStrings(options.accountInclude ?? []).length,
+      accountExcludeCount: uniqueStrings(options.accountExclude ?? []).length,
+      accountRequiredCount: uniqueStrings(options.accountRequired ?? []).length,
+      programIncludeCount: uniqueStrings(options.programInclude ?? []).length,
+      includeVotes: options.includeVotes ?? false,
+      includeFailed: options.includeFailed ?? false,
+      maxMessagesPerSession: normalizePositiveInt(
+        options.maxMessagesPerSession,
+        10000
+      ),
+      maxRuntimeMs: normalizePositiveInt(options.maxRuntimeMs, 300000),
+      stopOnError: options.stopOnError ?? false,
+      reconnectEnabled: options.reconnectEnabled ?? true,
+      replayEnabled: options.replayEnabled ?? false,
+      replayFromSlot: options.replayFromSlot ?? null
+    },
+    missingRequirements: uniqueStrings(missingRequirements),
+    connectionBlockedReasons: uniqueStrings(connectionBlockedReasons),
+    reasonCodes: uniqueStrings(reasonCodes),
+    safeNextSteps: canConnect
+      ? [
+          "Run a short stream:connect:laserstream session with low max runtime and message limits."
+        ]
+      : [
+          "Set all real connection gates explicitly.",
+          "Keep credentials in a gitignored local environment file.",
+          "Run stream:connect:check before any real stream command."
+        ],
+    paperOnly: true,
+    tradingDisabled: true,
+    secretsExposed: false
+  };
+}
+
+export function createLaserStreamRealClient(
+  options: LaserStreamRealConnectionOptions = {}
+): ManagedStreamClient {
+  const readiness = evaluateLaserStreamRealReadiness(options);
+  const validation = validateManagedStreamClientConfig({
+    ...options,
+    kind: "laserstream",
+    enabled: options.enabled ?? false
+  });
+  const now = options.now ?? (() => new Date());
+  const handlers = new Set<ManagedStreamEnvelopeHandler>();
+  const maxMessagesPerSession = readiness.maskedConfig.maxMessagesPerSession;
+  const maxRuntimeMs = readiness.maskedConfig.maxRuntimeMs;
+  const setRuntimeTimeout = options.setTimeout ?? setTimeout;
+  const clearRuntimeTimeout =
+    options.clearTimeout ??
+    ((handle: unknown) => {
+      clearTimeout(handle as ReturnType<typeof setTimeout>);
+    });
+  const state: MutableClientState = {
+    connectionState: readiness.canConnect ? "configured" : "blocked",
+    subscribed: false,
+    subscriptionConfig: options.subscriptionConfig
+      ? cloneSubscriptionConfig(options.subscriptionConfig)
+      : createDefaultLaserStreamSubscriptionConfig(options),
+    receivedCount: 0,
+    transactionCount: 0,
+    accountCount: 0,
+    errorCount: 0,
+    lastMessageAt: null,
+    lastError: null,
+    reasonCodes: uniqueStrings([
+      ...validation.reasonCodes,
+      ...readiness.reasonCodes
+    ]),
+    cleanups: []
+  };
+  let runtimeTimer: unknown = null;
+  let sdkHandle: unknown = null;
+  let started = false;
+
+  function clearRuntimeTimer(): void {
+    if (runtimeTimer !== null) {
+      clearRuntimeTimeout(runtimeTimer);
+      runtimeTimer = null;
+    }
+  }
+
+  async function stopForLimit(
+    reasonCode: ManagedStreamClientReasonCode
+  ): Promise<void> {
+    state.reasonCodes = uniqueStrings([...state.reasonCodes, reasonCode]);
+    await stopClient();
+  }
+
+  function handleMessage(message: unknown): void {
+    const envelope = messageToEnvelope(message, {
+      provider: "laserstream",
+      commitment:
+        state.subscriptionConfig?.commitment ?? options.commitment ?? "confirmed",
+      now
+    });
+    state.receivedCount += 1;
+    state.lastMessageAt = envelope.receivedAt;
+    state.reasonCodes = uniqueStrings([
+      ...state.reasonCodes,
+      managedStreamClientReasonCodes.messageReceived,
+      managedStreamClientReasonCodes.laserstreamMessageReceived
+    ]);
+
+    if (envelope.streamType === "transaction") {
+      state.transactionCount += 1;
+    }
+
+    if (envelope.streamType === "account") {
+      state.accountCount += 1;
+    }
+
+    for (const handler of handlers) {
+      try {
+        const result = handler(envelope);
+
+        if (isPromiseLike(result)) {
+          void Promise.resolve(result).catch((error: unknown) => {
+            recordLaserStreamError(error);
+          });
+        }
+      } catch (error) {
+        recordLaserStreamError(error);
+      }
+    }
+
+    if (state.receivedCount >= maxMessagesPerSession) {
+      void stopForLimit(managedStreamClientReasonCodes.laserstreamSessionLimitReached);
+    }
+  }
+
+  function recordLaserStreamError(error: unknown): void {
+    const normalized = normalizeProviderError(error);
+    state.errorCount += 1;
+    state.lastError = normalized.message;
+    state.reasonCodes = uniqueStrings([
+      ...state.reasonCodes,
+      managedStreamClientReasonCodes.error
+    ]);
+
+    if (options.stopOnError ?? false) {
+      state.connectionState = "error";
+      void stopClient();
+    }
+  }
+
+  function startRuntimeTimer(): void {
+    clearRuntimeTimer();
+    runtimeTimer = setRuntimeTimeout(() => {
+      void stopForLimit(managedStreamClientReasonCodes.laserstreamRuntimeLimitReached);
+    }, maxRuntimeMs);
+  }
+
+  async function stopClient(): Promise<void> {
+    clearRuntimeTimer();
+
+    if (options.transport) {
+      await options.transport.disconnect();
+    }
+
+    if (sdkHandle !== null) {
+      await closeSdkHandle(sdkHandle);
+      sdkHandle = null;
+    }
+
+    state.connectionState = readiness.canConnect ? "disconnected" : "blocked";
+    state.reasonCodes = uniqueStrings([
+      ...state.reasonCodes,
+      managedStreamClientReasonCodes.laserstreamDisconnected
+    ]);
+    started = false;
+  }
+
+  if (options.transport) {
+    state.cleanups.push(options.transport.onMessage(handleMessage));
+    state.cleanups.push(options.transport.onError(recordLaserStreamError));
+    state.cleanups.push(
+      options.transport.onClose(() => {
+        clearRuntimeTimer();
+        state.connectionState = "disconnected";
+        state.reasonCodes = uniqueStrings([
+          ...state.reasonCodes,
+          managedStreamClientReasonCodes.laserstreamDisconnected
+        ]);
+        started = false;
+      })
+    );
+  }
+
+  return createClientFacade({
+    kind: "laserstream",
+    provider: "laserstream",
+    enabled: options.enabled ?? false,
+    validation,
+    state,
+    start: async () => {
+      if (!readiness.canConnect) {
+        state.connectionState = "blocked";
+        return;
+      }
+
+      if (started) {
+        return;
+      }
+
+      state.connectionState = "connecting";
+      state.reasonCodes = uniqueStrings([
+        ...state.reasonCodes,
+        managedStreamClientReasonCodes.laserstreamConnectionAttempted
+      ]);
+
+      if (options.transport) {
+        await options.transport.connect();
+        state.connectionState = "connected";
+        state.reasonCodes = uniqueStrings([
+          ...state.reasonCodes,
+          managedStreamClientReasonCodes.laserstreamConnected
+        ]);
+
+        if (state.subscriptionConfig) {
+          await options.transport.send(
+            buildLaserStreamSdkSubscriptionRequest(
+              state.subscriptionConfig,
+              createReplayOptions(readiness)
+            )
+          );
+          state.subscribed = true;
+          state.reasonCodes = uniqueStrings([
+            ...state.reasonCodes,
+            managedStreamClientReasonCodes.subscriptionBuilt
+          ]);
+        }
+
+        started = true;
+        startRuntimeTimer();
+        return;
+      }
+
+      let sdk: unknown;
+
+      try {
+        sdk = await loadLaserStreamSdk(options.sdkLoader);
+      } catch (error) {
+        const normalized = normalizeProviderError(error);
+        state.connectionState = "not_implemented";
+        state.lastError = normalized.message;
+        state.errorCount += 1;
+        state.reasonCodes = uniqueStrings([
+          ...state.reasonCodes,
+          managedStreamClientReasonCodes.sdkNotInstalledOrNotImplemented
+        ]);
+        return;
+      }
+
+      const subscribe = readLaserStreamSubscribe(sdk);
+
+      if (!subscribe) {
+        state.connectionState = "not_implemented";
+        state.lastError = managedStreamClientReasonCodes.sdkNotInstalledOrNotImplemented;
+        state.reasonCodes = uniqueStrings([
+          ...state.reasonCodes,
+          managedStreamClientReasonCodes.sdkNotInstalledOrNotImplemented
+        ]);
+        return;
+      }
+
+      const request = buildLaserStreamSdkSubscriptionRequest(
+        state.subscriptionConfig ?? createDefaultLaserStreamSubscriptionConfig(options),
+        createReplayOptions(readiness)
+      );
+      const subscribeResult = subscribe(
+        createLaserStreamSdkConfig(options),
+        request,
+        handleMessage,
+        recordLaserStreamError
+      );
+
+      if (isPromiseLike(subscribeResult)) {
+        void Promise.resolve(subscribeResult)
+          .then((handle) => {
+            sdkHandle = handle;
+          })
+          .catch((error: unknown) => {
+            recordLaserStreamError(error);
+            state.connectionState = "not_implemented";
+            state.reasonCodes = uniqueStrings([
+              ...state.reasonCodes,
+              managedStreamClientReasonCodes.sdkNotInstalledOrNotImplemented
+            ]);
+          });
+      } else {
+        sdkHandle = subscribeResult;
+      }
+
+      state.subscribed = true;
+      state.connectionState = "connected";
+      state.reasonCodes = uniqueStrings([
+        ...state.reasonCodes,
+        managedStreamClientReasonCodes.subscriptionBuilt,
+        managedStreamClientReasonCodes.laserstreamConnected
+      ]);
+      started = true;
+      startRuntimeTimer();
+    },
+    stop: stopClient,
+    subscribe: async (config) => {
+      state.subscriptionConfig = cloneSubscriptionConfig({
+        ...config,
+        provider: "laserstream"
+      });
+      state.subscribed = true;
+
+      if (readiness.canConnect && state.connectionState === "connected") {
+        const request = buildLaserStreamSdkSubscriptionRequest(
+          state.subscriptionConfig,
+          createReplayOptions(readiness)
+        );
+
+        if (options.transport) {
+          await options.transport.send(request);
+        }
+      }
+
+      state.reasonCodes = uniqueStrings([
+        ...state.reasonCodes,
+        managedStreamClientReasonCodes.subscriptionBuilt
+      ]);
+    },
+    onEnvelope: (handler) => {
+      handlers.add(handler);
+      return () => {
+        handlers.delete(handler);
+      };
+    }
   });
 }
 
@@ -412,6 +950,49 @@ export function buildLaserStreamSubscriptionRequest(
     subscriptionSummary: createManagedStreamSubscriptionSummary(subscriptionConfig),
     reasonCodes: [managedStreamClientReasonCodes.subscriptionBuilt]
   };
+}
+
+export function buildLaserStreamSdkSubscriptionRequest(
+  config: ManagedStreamSubscriptionConfig,
+  options: { replayFromSlot?: number | undefined } = {}
+): LaserStreamSdkSubscriptionRequest {
+  const subscriptionConfig = cloneSubscriptionConfig({
+    ...config,
+    provider: "laserstream"
+  });
+  const request: LaserStreamSdkSubscriptionRequest = {
+    accounts: subscriptionConfig.accounts.enabled
+      ? {
+          axi_accounts: {
+            owner: [...subscriptionConfig.accounts.owners],
+            account: [...subscriptionConfig.accounts.accounts]
+          }
+        }
+      : {},
+    slots: subscriptionConfig.slots.enabled ? { axi_slots: {} } : {},
+    transactions: subscriptionConfig.transactions.enabled
+      ? {
+          axi_pumpfun_transactions: {
+            vote: subscriptionConfig.transactions.vote,
+            failed: subscriptionConfig.transactions.failed,
+            accountInclude: [...subscriptionConfig.transactions.accountInclude],
+            accountExclude: [...subscriptionConfig.transactions.accountExclude],
+            accountRequired: [...subscriptionConfig.transactions.accountRequired]
+          }
+        }
+      : {},
+    transactionsStatus: {},
+    blocks: subscriptionConfig.blocks.enabled ? { axi_blocks: {} } : {},
+    blocksMeta: {},
+    entry: {},
+    accountsDataSlice: [],
+    commitment: subscriptionConfig.commitment,
+    ...(options.replayFromSlot !== undefined
+      ? { fromSlot: options.replayFromSlot }
+      : {})
+  };
+
+  return request;
 }
 
 export function createMockManagedStreamTransport(
@@ -896,16 +1477,66 @@ function messageToEnvelope(
   }
 
   const record = isRecord(message) ? message : {};
+  const transactionRecord = readRecord(record, "transaction");
+  const innerTransactionRecord = transactionRecord
+    ? readRecord(transactionRecord, "transaction")
+    : null;
+  const transactionMessageRecord =
+    (innerTransactionRecord
+      ? readRecord(innerTransactionRecord, "message")
+      : null) ??
+    (transactionRecord ? readRecord(transactionRecord, "message") : null);
+  const metaRecord =
+    readRecord(record, "meta") ??
+    (transactionRecord ? readRecord(transactionRecord, "meta") : null) ??
+    (innerTransactionRecord ? readRecord(innerTransactionRecord, "meta") : null);
   const streamType = readStreamType(record);
   const receivedAt =
     typeof record.receivedAt === "string"
       ? record.receivedAt
       : options.now().toISOString();
-  const signature = readString(record, "signature");
-  const slot = readNumber(record, "slot");
-  const blockTime = readStringOrNumber(record, "blockTime");
-  const programIds = readStringArray(record, "programIds");
-  const accountKeys = readStringArray(record, "accountKeys");
+  const signature = readFirstString([
+    record.signature,
+    transactionRecord?.signature,
+    innerTransactionRecord?.signature
+  ]);
+  const slot = readFirstNumber([
+    record.slot,
+    transactionRecord?.slot,
+    innerTransactionRecord?.slot
+  ]);
+  const blockTime = readFirstStringOrNumber([
+    record.blockTime,
+    transactionRecord?.blockTime,
+    innerTransactionRecord?.blockTime
+  ]);
+  const programIds = uniqueStrings([
+    ...readStringArray(record, "programIds"),
+    ...(transactionRecord ? readStringArray(transactionRecord, "programIds") : []),
+    ...(innerTransactionRecord
+      ? readStringArray(innerTransactionRecord, "programIds")
+      : [])
+  ]);
+  const accountKeys = uniqueStrings([
+    ...readStringArray(record, "accountKeys"),
+    ...(transactionRecord ? readStringArray(transactionRecord, "accountKeys") : []),
+    ...(innerTransactionRecord
+      ? readStringArray(innerTransactionRecord, "accountKeys")
+      : []),
+    ...(transactionMessageRecord
+      ? readStringArray(transactionMessageRecord, "accountKeys")
+      : [])
+  ]);
+  const logs = uniqueStrings([
+    ...readStringArray(record, "logs"),
+    ...(transactionRecord ? readStringArray(transactionRecord, "logs") : []),
+    ...(metaRecord ? readStringArray(metaRecord, "logMessages") : [])
+  ]);
+  const err =
+    record.err ??
+    transactionRecord?.err ??
+    innerTransactionRecord?.err ??
+    metaRecord?.err;
   const base = {
     id: createStreamEnvelopeId({
       provider: options.provider,
@@ -923,9 +1554,11 @@ function messageToEnvelope(
     raw: message,
     reasonCodes: [
       managedStreamClientReasonCodes.messageReceived,
-      streamType === "transaction"
-        ? streamReasonCodes.transactionReceived
-        : streamReasonCodes.accountReceived
+      ...(streamType === "transaction"
+        ? [streamReasonCodes.transactionReceived]
+        : streamType === "account"
+          ? [streamReasonCodes.accountReceived]
+          : [])
     ],
     ...(slot !== undefined ? { slot } : {}),
     ...(blockTime !== undefined ? { blockTime } : {}),
@@ -938,10 +1571,14 @@ function messageToEnvelope(
     const envelope: ManagedStreamTransactionEnvelope = {
       ...base,
       streamType: "transaction",
-      transaction: record.transaction ?? message,
-      ...(record.meta !== undefined ? { meta: record.meta } : {}),
-      ...(Array.isArray(record.logs) ? { logs: readStringArray(record, "logs") } : {}),
-      ...(record.err !== undefined ? { err: record.err } : {})
+      transaction:
+        innerTransactionRecord ??
+        transactionRecord?.transaction ??
+        record.transaction ??
+        message,
+      ...(metaRecord !== null ? { meta: metaRecord } : {}),
+      ...(logs.length > 0 ? { logs } : {}),
+      ...(err !== undefined ? { err } : {})
     };
 
     return envelope;
@@ -985,6 +1622,120 @@ function recordClientError(state: MutableClientState, error: unknown): void {
     ...state.reasonCodes,
     managedStreamClientReasonCodes.error
   ]);
+}
+
+function createDefaultLaserStreamSubscriptionConfig(
+  options: LaserStreamRealConnectionOptions
+): ManagedStreamSubscriptionConfig {
+  const accountInclude = uniqueStrings([
+    ...(options.accountInclude ?? []),
+    ...(options.programInclude ?? [])
+  ]);
+
+  return createDefaultSubscriptionConfig({
+    provider: "laserstream",
+    authConfigured:
+      options.apiKey !== undefined && options.apiKey.trim().length > 0,
+    commitment: options.commitment ?? "confirmed",
+    transactions: {
+      enabled: options.transactionsEnabled ?? true,
+      accountInclude,
+      accountExclude: uniqueStrings(options.accountExclude ?? []),
+      accountRequired: uniqueStrings(options.accountRequired ?? []),
+      vote: options.includeVotes ?? false,
+      failed: options.includeFailed ?? false
+    },
+    maxReconnectAttempts: options.reconnectEnabled === false ? 0 : 10,
+    reconnectBackoffMs: options.reconnectEnabled === false ? 0 : 1000,
+    ...(options.endpoint !== undefined ? { endpoint: options.endpoint } : {})
+  });
+}
+
+function createReplayOptions(
+  readiness: LaserStreamRealReadiness
+): { replayFromSlot?: number } {
+  if (
+    readiness.maskedConfig.replayEnabled &&
+    readiness.maskedConfig.replayFromSlot !== null
+  ) {
+    return { replayFromSlot: readiness.maskedConfig.replayFromSlot };
+  }
+
+  return {};
+}
+
+async function loadLaserStreamSdk(
+  sdkLoader: (() => Promise<unknown>) | undefined
+): Promise<unknown> {
+  if (sdkLoader) {
+    return sdkLoader();
+  }
+
+  try {
+    const moduleName = "helius-laserstream";
+    return await import(moduleName);
+  } catch (error) {
+    const normalized = normalizeProviderError(error);
+    throw new Error(
+      `${managedStreamClientReasonCodes.sdkNotInstalledOrNotImplemented}: ${normalized.message}`
+    );
+  }
+}
+
+function readLaserStreamSubscribe(sdk: unknown): LaserStreamSubscribe | null {
+  if (isRecord(sdk) && typeof sdk.subscribe === "function") {
+    return sdk.subscribe as LaserStreamSubscribe;
+  }
+
+  return null;
+}
+
+function createLaserStreamSdkConfig(
+  options: LaserStreamRealConnectionOptions
+): Record<string, unknown> {
+  return {
+    endpoint: options.endpoint,
+    apiKey: options.apiKey,
+    ...(options.region !== undefined ? { region: options.region } : {}),
+    reconnect: options.reconnectEnabled ?? true
+  };
+}
+
+async function closeSdkHandle(handle: unknown): Promise<void> {
+  if (!isRecord(handle)) {
+    return;
+  }
+
+  for (const method of ["close", "stop", "unsubscribe", "cancel"] as const) {
+    const candidate = handle[method];
+
+    if (typeof candidate === "function") {
+      const result = candidate.call(handle);
+
+      if (isPromiseLike(result)) {
+        await result;
+      }
+
+      return;
+    }
+  }
+}
+
+function normalizePositiveInt(value: number | undefined, fallback: number): number {
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+
+  return fallback;
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "then" in value &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
 }
 
 function resolveClientAuth(options: ManagedStreamClientOptions): string | undefined {
@@ -1036,37 +1787,49 @@ function readStreamType(
   return "unknown";
 }
 
-function readString(record: Record<string, unknown>, key: string): string | null {
+function readRecord(
+  record: Record<string, unknown>,
+  key: string
+): Record<string, unknown> | null {
   const value = record[key];
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  return isRecord(value) ? value : null;
 }
 
-function readNumber(record: Record<string, unknown>, key: string): number | undefined {
-  const value = record[key];
+function readFirstString(values: readonly unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
 
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
+  return null;
+}
+
+function readFirstNumber(values: readonly unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
   }
 
   return undefined;
 }
 
-function readStringOrNumber(
-  record: Record<string, unknown>,
-  key: string
+function readFirstStringOrNumber(
+  values: readonly unknown[]
 ): number | string | null | undefined {
-  const value = record[key];
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
 
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
 
-  if (typeof value === "string" && value.trim().length > 0) {
-    return value.trim();
-  }
-
-  if (value === null) {
-    return null;
+    if (value === null) {
+      return null;
+    }
   }
 
   return undefined;

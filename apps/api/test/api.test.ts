@@ -1334,8 +1334,9 @@ describe("@axi/api", () => {
         managedStream: {
           enabled: true,
           provider: "laserstream",
-          endpoint: "https://laserstream.example.invalid?api_key=super-secret",
-          apiKey: "not-a-real-key"
+          laserstreamEndpoint:
+            "https://laserstream.example.invalid?api_key=super-secret",
+          laserstreamAuthToken: "not-a-real-key"
         }
       }
     });
@@ -1363,6 +1364,80 @@ describe("@axi/api", () => {
     expect(body.endpointMasked).toContain("api_key=****");
     expect(body.authTokenMasked).toBe("configured:14");
     expect(body.reasonCodes).toContain("MANAGED_STREAM_CLIENT_SKELETON");
+    expect(serialized).not.toContain("super-secret");
+    expect(serialized).not.toContain("not-a-real-key");
+  });
+
+  it("GET /indexer/stream/real-readiness reports LaserStream gates safely", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath,
+      indexer: {
+        managedStream: {
+          provider: "laserstream",
+          allowRealConnection: true,
+          realConnectionAck: true,
+          realProvider: "laserstream",
+          laserstreamEnabled: true,
+          laserstreamEndpoint:
+            "https://laserstream.example.invalid?api-key=super-secret",
+          laserstreamAuthToken: "not-a-real-key",
+          laserstreamMaxMessagesPerSession: 5,
+          laserstreamMaxRuntimeMs: 1000
+        }
+      }
+    });
+
+    const statusResponse = await server.app.inject({
+      method: "GET",
+      url: "/indexer/stream/status"
+    });
+    const readinessResponse = await server.app.inject({
+      method: "GET",
+      url: "/indexer/stream/real-readiness"
+    });
+    const status = statusResponse.json() as {
+      realConnectionAllowed: boolean;
+      realConnectionAck: boolean;
+      realProvider: string;
+      laserstream: {
+        readyToConnect: boolean;
+        maxMessagesPerSession: number;
+        maxRuntimeMs: number;
+        endpointMasked: string | null;
+      };
+      secretsExposed: boolean;
+    };
+    const readiness = readinessResponse.json() as {
+      canConnect: boolean;
+      maskedConfig: {
+        endpointMasked: string | null;
+        maxMessagesPerSession: number;
+        maxRuntimeMs: number;
+      };
+      paperOnly: boolean;
+      tradingDisabled: boolean;
+      secretsExposed: boolean;
+      reasonCodes: string[];
+    };
+    const serialized = JSON.stringify({ status, readiness });
+
+    expect(statusResponse.statusCode).toBe(200);
+    expect(readinessResponse.statusCode).toBe(200);
+    expect(status.realConnectionAllowed).toBe(true);
+    expect(status.realConnectionAck).toBe(true);
+    expect(status.realProvider).toBe("laserstream");
+    expect(status.laserstream.readyToConnect).toBe(true);
+    expect(status.laserstream.maxMessagesPerSession).toBe(5);
+    expect(status.laserstream.maxRuntimeMs).toBe(1000);
+    expect(status.secretsExposed).toBe(false);
+    expect(readiness.canConnect).toBe(true);
+    expect(readiness.reasonCodes).toContain("LASERSTREAM_READY_TO_CONNECT");
+    expect(readiness.maskedConfig.endpointMasked).toContain("api-key=****");
+    expect(readiness.paperOnly).toBe(true);
+    expect(readiness.tradingDisabled).toBe(true);
+    expect(readiness.secretsExposed).toBe(false);
     expect(serialized).not.toContain("super-secret");
     expect(serialized).not.toContain("not-a-real-key");
   });

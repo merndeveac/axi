@@ -15,9 +15,13 @@ import {
   buildLaserStreamSubscriptionRequest,
   buildManagedStreamSubscriptionProfile,
   buildYellowstoneSubscriptionRequest,
+  createLaserStreamRealClient,
   createManagedStreamClient,
   createManagedStreamSubscriptionSummary,
+  evaluateLaserStreamRealReadiness,
   managedStreamClientReasonCodes,
+  type LaserStreamRealConnectionOptions,
+  type LaserStreamRealReadiness,
   type ManagedStreamClientKind,
   type ManagedStreamClientStatus,
   type ManagedStreamSubscriptionProfileName,
@@ -55,6 +59,9 @@ export type ManagedStreamAdapterConfig = {
   endpoint?: string | undefined;
   authToken?: string | undefined;
   apiKey?: string | undefined;
+  allowRealConnection?: boolean;
+  realProvider?: ManagedStreamProviderKind;
+  realConnectionAck?: boolean;
   maxReconnectAttempts?: number;
   reconnectBackoffMs?: number;
   transactionsEnabled?: boolean;
@@ -69,6 +76,23 @@ export type ManagedStreamAdapterConfig = {
   laserstreamEnabled?: boolean;
   laserstreamEndpoint?: string | undefined;
   laserstreamAuthToken?: string | undefined;
+  laserstreamRegion?: string | undefined;
+  laserstreamCommitment?: ManagedStreamCommitment;
+  laserstreamTransactionsEnabled?: boolean;
+  laserstreamAccountInclude?: string[];
+  laserstreamAccountExclude?: string[];
+  laserstreamAccountRequired?: string[];
+  laserstreamProgramInclude?: string[];
+  laserstreamIncludeVotes?: boolean;
+  laserstreamIncludeFailed?: boolean;
+  laserstreamMaxMessagesPerSession?: number;
+  laserstreamMaxRuntimeMs?: number;
+  laserstreamStopOnError?: boolean;
+  laserstreamReconnectEnabled?: boolean;
+  laserstreamReplayEnabled?: boolean;
+  laserstreamReplayFromSlot?: number | undefined;
+  pumpfunProgramId?: string | undefined;
+  pumpswapProgramId?: string | undefined;
 };
 
 export type ManagedStreamPreviewProvider = "yellowstone" | "laserstream" | "mock";
@@ -111,6 +135,24 @@ export type ManagedStreamApiStatus = {
   reasonCodes: string[];
   yellowstoneStatus: ManagedStreamClientStatus;
   laserstreamStatus: ManagedStreamClientStatus;
+  realConnectionAllowed: boolean;
+  realConnectionAck: boolean;
+  realProvider: string;
+  laserstream: {
+    enabled: boolean;
+    configured: boolean;
+    apiKeyConfigured: boolean;
+    endpointMasked: string | null;
+    readyToConnect: boolean;
+    connected: boolean;
+    reasonCodes: string[];
+    messageCount: number;
+    lastMessageAt: string | null;
+    maxMessagesPerSession: number;
+    maxRuntimeMs: number;
+  };
+  connectionBlockedReasons: string[];
+  secretsExposed: false;
   paperOnly: true;
   tradingDisabled: true;
 };
@@ -130,12 +172,32 @@ type NormalizedManagedStreamConfig = {
   transactionAccountRequired: string[];
   includeVotes: boolean;
   includeFailed: boolean;
+  allowRealConnection: boolean;
+  realProvider: ManagedStreamProviderKind;
+  realConnectionAck: boolean;
   yellowstoneEnabled: boolean;
   yellowstoneEndpoint: string | undefined;
   yellowstoneAuthToken: string | undefined;
   laserstreamEnabled: boolean;
   laserstreamEndpoint: string | undefined;
   laserstreamAuthToken: string | undefined;
+  laserstreamRegion: string | undefined;
+  laserstreamCommitment: ManagedStreamCommitment;
+  laserstreamTransactionsEnabled: boolean;
+  laserstreamAccountInclude: string[];
+  laserstreamAccountExclude: string[];
+  laserstreamAccountRequired: string[];
+  laserstreamProgramInclude: string[];
+  laserstreamIncludeVotes: boolean;
+  laserstreamIncludeFailed: boolean;
+  laserstreamMaxMessagesPerSession: number;
+  laserstreamMaxRuntimeMs: number;
+  laserstreamStopOnError: boolean;
+  laserstreamReconnectEnabled: boolean;
+  laserstreamReplayEnabled: boolean;
+  laserstreamReplayFromSlot: number | undefined;
+  pumpfunProgramId: string | undefined;
+  pumpswapProgramId: string | undefined;
 };
 
 export type ManagedStreamConfigPreview = {
@@ -151,9 +213,21 @@ export type ManagedStreamConfigPreview = {
   subscriptionSummary: ManagedStreamSubscriptionSummary;
   yellowstoneStatus: ManagedStreamClientStatus;
   laserstreamStatus: ManagedStreamClientStatus;
+  realReadiness: LaserStreamRealReadiness;
+  connectionBlockedReasons: string[];
   paperOnly: true;
   tradingDisabled: true;
   reasonCodes: string[];
+};
+
+export type ManagedStreamRealReadinessResponse = LaserStreamRealReadiness & {
+  canConnect: boolean;
+  provider: "laserstream";
+  missingRequirements: string[];
+  safeNextSteps: string[];
+  maskedConfig: LaserStreamRealReadiness["maskedConfig"];
+  paperOnly: true;
+  tradingDisabled: true;
 };
 
 export type ManagedStreamBuildSubscriptionRequest = {
@@ -220,6 +294,7 @@ export type IndexerAdapter = {
   getStatus: () => IndexerAdapterStatus;
   getStreamStatus: () => ManagedStreamApiStatus;
   getStreamConfig: () => ManagedStreamConfigPreview;
+  getStreamRealReadiness: () => ManagedStreamRealReadinessResponse;
   buildStreamSubscriptionPreview: (
     request?: ManagedStreamBuildSubscriptionRequest
   ) => ManagedStreamSubscriptionPreview;
@@ -330,6 +405,7 @@ export function createIndexerAdapter(
     }),
     getStreamStatus: () => createManagedStreamApiStatus(streamConfig, streamAdapter),
     getStreamConfig: () => createManagedStreamConfigPreview(streamConfig),
+    getStreamRealReadiness: () => createManagedStreamRealReadiness(streamConfig),
     buildStreamSubscriptionPreview: (request = {}) =>
       buildManagedStreamSubscriptionPreview(streamConfig, request),
     getTimeseries: (mint) => ({
@@ -358,12 +434,33 @@ function normalizeManagedStreamConfig(
     transactionAccountRequired: input.transactionAccountRequired ?? [],
     includeVotes: input.includeVotes ?? false,
     includeFailed: input.includeFailed ?? false,
+    allowRealConnection: input.allowRealConnection ?? false,
+    realProvider: input.realProvider ?? "mock",
+    realConnectionAck: input.realConnectionAck ?? false,
     yellowstoneEnabled: input.yellowstoneEnabled ?? false,
     yellowstoneEndpoint: input.yellowstoneEndpoint,
     yellowstoneAuthToken: input.yellowstoneAuthToken,
     laserstreamEnabled: input.laserstreamEnabled ?? false,
     laserstreamEndpoint: input.laserstreamEndpoint,
-    laserstreamAuthToken: input.laserstreamAuthToken
+    laserstreamAuthToken: input.laserstreamAuthToken,
+    laserstreamRegion: input.laserstreamRegion,
+    laserstreamCommitment: input.laserstreamCommitment ?? "confirmed",
+    laserstreamTransactionsEnabled: input.laserstreamTransactionsEnabled ?? true,
+    laserstreamAccountInclude: input.laserstreamAccountInclude ?? [],
+    laserstreamAccountExclude: input.laserstreamAccountExclude ?? [],
+    laserstreamAccountRequired: input.laserstreamAccountRequired ?? [],
+    laserstreamProgramInclude: input.laserstreamProgramInclude ?? [],
+    laserstreamIncludeVotes: input.laserstreamIncludeVotes ?? false,
+    laserstreamIncludeFailed: input.laserstreamIncludeFailed ?? false,
+    laserstreamMaxMessagesPerSession:
+      input.laserstreamMaxMessagesPerSession ?? 10000,
+    laserstreamMaxRuntimeMs: input.laserstreamMaxRuntimeMs ?? 300000,
+    laserstreamStopOnError: input.laserstreamStopOnError ?? false,
+    laserstreamReconnectEnabled: input.laserstreamReconnectEnabled ?? true,
+    laserstreamReplayEnabled: input.laserstreamReplayEnabled ?? false,
+    laserstreamReplayFromSlot: input.laserstreamReplayFromSlot,
+    pumpfunProgramId: input.pumpfunProgramId,
+    pumpswapProgramId: input.pumpswapProgramId
   };
 }
 
@@ -374,6 +471,8 @@ function createManagedStreamApiStatus(
   const adapterStatus = adapter.getAdapterStatus();
   const subscriptionConfig = createManagedStreamSubscriptionConfig(config);
   const clientStatus = createClientStatus(config, subscriptionConfig);
+  const realReadiness = createManagedStreamRealReadiness(config);
+  const laserstreamStatus = createLaserStreamStatus(config);
 
   return {
     managedStreamEnabled: config.enabled,
@@ -403,10 +502,30 @@ function createManagedStreamApiStatus(
       ...(config.enabled ? [] : [streamReasonCodes.providerDisabled]),
       ...(config.provider === "mock" ? [streamReasonCodes.providerMock] : []),
       ...clientStatus.reasonCodes,
+      ...realReadiness.reasonCodes,
       "NO_TRADING"
     ]),
     yellowstoneStatus: createYellowstoneStatus(config),
-    laserstreamStatus: createLaserStreamStatus(config),
+    laserstreamStatus,
+    realConnectionAllowed: realReadiness.realConnectionAllowed,
+    realConnectionAck: realReadiness.realConnectionAck,
+    realProvider: realReadiness.realProvider,
+    laserstream: {
+      enabled: realReadiness.laserstreamEnabled,
+      configured: realReadiness.configured,
+      apiKeyConfigured: realReadiness.apiKeyConfigured,
+      endpointMasked: realReadiness.endpointMasked,
+      readyToConnect: realReadiness.canConnect,
+      connected: laserstreamStatus.connectionState === "connected",
+      reasonCodes: realReadiness.reasonCodes,
+      messageCount: laserstreamStatus.receivedCount,
+      lastMessageAt: laserstreamStatus.lastMessageAt,
+      maxMessagesPerSession:
+        realReadiness.maskedConfig.maxMessagesPerSession,
+      maxRuntimeMs: realReadiness.maskedConfig.maxRuntimeMs
+    },
+    connectionBlockedReasons: realReadiness.connectionBlockedReasons,
+    secretsExposed: false,
     paperOnly: true,
     tradingDisabled: true
   };
@@ -417,6 +536,7 @@ function createManagedStreamConfigPreview(
 ): ManagedStreamConfigPreview {
   const subscriptionConfig = createManagedStreamSubscriptionConfig(config);
   const clientStatus = createClientStatus(config, subscriptionConfig);
+  const realReadiness = createManagedStreamRealReadiness(config);
 
   return {
     enabled: config.enabled,
@@ -431,11 +551,14 @@ function createManagedStreamConfigPreview(
     subscriptionSummary: createManagedStreamSubscriptionSummary(subscriptionConfig),
     yellowstoneStatus: createYellowstoneStatus(config),
     laserstreamStatus: createLaserStreamStatus(config),
+    realReadiness,
+    connectionBlockedReasons: realReadiness.connectionBlockedReasons,
     paperOnly: true,
     tradingDisabled: true,
     reasonCodes: uniqueStrings([
       "MANAGED_STREAM_CLIENT_SKELETON",
       ...clientStatus.reasonCodes,
+      ...realReadiness.reasonCodes,
       "NO_TRADING"
     ])
   };
@@ -463,7 +586,9 @@ function buildManagedStreamSubscriptionPreview(
         provider,
         commitment: request.commitment ?? baseConfig.commitment,
         programIds:
-          request.includeProgram ?? request.config?.transactionAccountInclude,
+          request.includeProgram ??
+          request.config?.transactionAccountInclude ??
+          resolveManagedStreamProfileProgramIds(config, request.profile),
         watchedAddresses:
           request.requiredAccount ?? request.config?.transactionAccountRequired,
         baseConfig
@@ -513,6 +638,12 @@ function createClientStatus(
   config: NormalizedManagedStreamConfig,
   subscriptionConfig: ManagedStreamSubscriptionConfig
 ): ManagedStreamClientStatus {
+  if (config.provider === "laserstream") {
+    return createLaserStreamRealClient(
+      createLaserStreamRealOptions(config, subscriptionConfig)
+    ).getStatus();
+  }
+
   return createManagedStreamClient({
     kind: providerToClientKind(config.provider),
     enabled: config.enabled,
@@ -548,14 +679,47 @@ function createLaserStreamStatus(
     provider: "laserstream"
   });
 
-  return createManagedStreamClient({
-    kind: "laserstream",
+  return createLaserStreamRealClient(
+    createLaserStreamRealOptions(config, subscriptionConfig)
+  ).getStatus();
+}
+
+function createManagedStreamRealReadiness(
+  config: NormalizedManagedStreamConfig
+): ManagedStreamRealReadinessResponse {
+  return evaluateLaserStreamRealReadiness(createLaserStreamRealOptions(config));
+}
+
+function createLaserStreamRealOptions(
+  config: NormalizedManagedStreamConfig,
+  subscriptionConfig = createManagedStreamSubscriptionConfig(config, {
+    provider: "laserstream"
+  })
+): LaserStreamRealConnectionOptions {
+  return {
+    allowRealConnection: config.allowRealConnection,
+    realConnectionAck: config.realConnectionAck,
+    realProvider: config.realProvider,
     enabled: config.laserstreamEnabled,
     endpoint: config.laserstreamEndpoint,
     apiKey: config.laserstreamAuthToken,
-    commitment: subscriptionConfig.commitment,
-    subscriptionConfig
-  }).getStatus();
+    region: config.laserstreamRegion,
+    commitment: config.laserstreamCommitment,
+    subscriptionConfig,
+    accountInclude: config.laserstreamAccountInclude,
+    accountExclude: config.laserstreamAccountExclude,
+    accountRequired: config.laserstreamAccountRequired,
+    programInclude: config.laserstreamProgramInclude,
+    includeVotes: config.laserstreamIncludeVotes,
+    includeFailed: config.laserstreamIncludeFailed,
+    transactionsEnabled: config.laserstreamTransactionsEnabled,
+    maxMessagesPerSession: config.laserstreamMaxMessagesPerSession,
+    maxRuntimeMs: config.laserstreamMaxRuntimeMs,
+    stopOnError: config.laserstreamStopOnError,
+    reconnectEnabled: config.laserstreamReconnectEnabled,
+    replayEnabled: config.laserstreamReplayEnabled,
+    replayFromSlot: config.laserstreamReplayFromSlot
+  };
 }
 
 function createProviderStatusPreview(
@@ -625,20 +789,26 @@ function createManagedStreamSubscriptionConfig(
   return createDefaultSubscriptionConfig({
     provider,
     authConfigured: resolveManagedStreamAuth(config, provider) !== undefined,
-    commitment: overrides.commitment ?? config.commitment,
+    commitment: overrides.commitment ?? resolveManagedStreamCommitment(config, provider),
     transactions: {
-      enabled: overrides.transactionsEnabled ?? config.transactionsEnabled,
+      enabled:
+        overrides.transactionsEnabled ??
+        resolveManagedStreamTransactionsEnabled(config, provider),
       accountInclude:
-        overrides.transactionAccountInclude ?? config.transactionAccountInclude,
+        overrides.transactionAccountInclude ??
+        resolveManagedStreamAccountInclude(config, provider),
       accountExclude:
-        overrides.transactionAccountExclude ?? config.transactionAccountExclude,
+        overrides.transactionAccountExclude ??
+        resolveManagedStreamAccountExclude(config, provider),
       accountRequired:
-        overrides.transactionAccountRequired ?? config.transactionAccountRequired,
-      vote: overrides.includeVotes ?? config.includeVotes,
-      failed: overrides.includeFailed ?? config.includeFailed
+        overrides.transactionAccountRequired ??
+        resolveManagedStreamAccountRequired(config, provider),
+      vote: overrides.includeVotes ?? resolveManagedStreamIncludeVotes(config, provider),
+      failed:
+        overrides.includeFailed ?? resolveManagedStreamIncludeFailed(config, provider)
     },
-    maxReconnectAttempts: config.maxReconnectAttempts,
-    reconnectBackoffMs: config.reconnectBackoffMs,
+    maxReconnectAttempts: resolveManagedStreamMaxReconnectAttempts(config, provider),
+    reconnectBackoffMs: resolveManagedStreamReconnectBackoffMs(config, provider),
     ...(endpoint !== undefined ? { endpoint } : {})
   });
 }
@@ -656,6 +826,132 @@ function resolveManagedStreamEndpoint(
   }
 
   return config.endpoint;
+}
+
+function resolveManagedStreamCommitment(
+  config: NormalizedManagedStreamConfig,
+  provider: ManagedStreamProviderKind
+): ManagedStreamCommitment {
+  if (provider === "laserstream") {
+    return config.laserstreamCommitment;
+  }
+
+  return config.commitment;
+}
+
+function resolveManagedStreamTransactionsEnabled(
+  config: NormalizedManagedStreamConfig,
+  provider: ManagedStreamProviderKind
+): boolean {
+  if (provider === "laserstream") {
+    return config.laserstreamTransactionsEnabled;
+  }
+
+  return config.transactionsEnabled;
+}
+
+function resolveManagedStreamAccountInclude(
+  config: NormalizedManagedStreamConfig,
+  provider: ManagedStreamProviderKind
+): string[] {
+  if (provider === "laserstream") {
+    return uniqueStrings([
+      ...config.laserstreamAccountInclude,
+      ...config.laserstreamProgramInclude,
+      ...config.transactionAccountInclude
+    ]);
+  }
+
+  return config.transactionAccountInclude;
+}
+
+function resolveManagedStreamAccountExclude(
+  config: NormalizedManagedStreamConfig,
+  provider: ManagedStreamProviderKind
+): string[] {
+  if (provider === "laserstream") {
+    return config.laserstreamAccountExclude.length > 0
+      ? config.laserstreamAccountExclude
+      : config.transactionAccountExclude;
+  }
+
+  return config.transactionAccountExclude;
+}
+
+function resolveManagedStreamAccountRequired(
+  config: NormalizedManagedStreamConfig,
+  provider: ManagedStreamProviderKind
+): string[] {
+  if (provider === "laserstream") {
+    return config.laserstreamAccountRequired.length > 0
+      ? config.laserstreamAccountRequired
+      : config.transactionAccountRequired;
+  }
+
+  return config.transactionAccountRequired;
+}
+
+function resolveManagedStreamIncludeVotes(
+  config: NormalizedManagedStreamConfig,
+  provider: ManagedStreamProviderKind
+): boolean {
+  if (provider === "laserstream") {
+    return config.laserstreamIncludeVotes;
+  }
+
+  return config.includeVotes;
+}
+
+function resolveManagedStreamIncludeFailed(
+  config: NormalizedManagedStreamConfig,
+  provider: ManagedStreamProviderKind
+): boolean {
+  if (provider === "laserstream") {
+    return config.laserstreamIncludeFailed;
+  }
+
+  return config.includeFailed;
+}
+
+function resolveManagedStreamMaxReconnectAttempts(
+  config: NormalizedManagedStreamConfig,
+  provider: ManagedStreamProviderKind
+): number {
+  if (provider === "laserstream" && !config.laserstreamReconnectEnabled) {
+    return 0;
+  }
+
+  return config.maxReconnectAttempts;
+}
+
+function resolveManagedStreamReconnectBackoffMs(
+  config: NormalizedManagedStreamConfig,
+  provider: ManagedStreamProviderKind
+): number {
+  if (provider === "laserstream" && !config.laserstreamReconnectEnabled) {
+    return 0;
+  }
+
+  return config.reconnectBackoffMs;
+}
+
+function resolveManagedStreamProfileProgramIds(
+  config: NormalizedManagedStreamConfig,
+  profile: ManagedStreamSubscriptionProfileName
+): string[] {
+  if (profile === "pumpfun_and_pumpswap_transactions") {
+    return uniqueStrings([config.pumpfunProgramId, config.pumpswapProgramId]);
+  }
+
+  if (
+    profile === "pumpfun_program_transactions" ||
+    profile === "laserstream_pumpfun_transactions" ||
+    profile === "yellowstone_pumpfun_transactions"
+  ) {
+    return uniqueStrings([config.pumpfunProgramId]);
+  }
+
+  return [];
 }
 
 function resolveManagedStreamAuth(

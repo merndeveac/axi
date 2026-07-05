@@ -81,6 +81,7 @@ Indexer endpoints:
 - `GET /indexer/live-cards`
 - `GET /indexer/timeseries/:mint`
 - `GET /indexer/stream/status`
+- `GET /indexer/stream/real-readiness`
 - `GET /indexer/stream/config`
 - `POST /indexer/stream/build-subscription`
 - `GET /indexer/stream/recent`
@@ -97,6 +98,7 @@ pnpm --filter @axi/indexer stream:status
 pnpm --filter @axi/indexer stream:config
 pnpm --filter @axi/indexer stream:build-subscription -- --provider yellowstone
 pnpm --filter @axi/indexer stream:build-subscription -- --provider laserstream
+pnpm --filter @axi/indexer stream:connect:check
 pnpm --filter @axi/indexer decode:pumpfun -- --fixture buy-trade.json --summary true --show-evidence true
 pnpm --filter @axi/indexer fetch:pumpfun-fixture -- --signature <SIG> --kind buy_trade --update-manifest true
 ```
@@ -129,11 +131,13 @@ pnpm --filter @axi/indexer stream:status
 pnpm --filter @axi/indexer stream:config
 pnpm --filter @axi/indexer stream:build-subscription -- --provider yellowstone
 pnpm --filter @axi/indexer stream:build-subscription -- --provider laserstream --profile minimal_healthcheck
+pnpm --filter @axi/indexer stream:connect:check
 ```
 
 Managed stream API endpoints:
 
 - `GET /indexer/stream/status`
+- `GET /indexer/stream/real-readiness`
 - `GET /indexer/stream/config`
 - `POST /indexer/stream/build-subscription`
 - `GET /indexer/stream/recent`
@@ -155,10 +159,16 @@ MANAGED_STREAM_PROVIDER=mock
 MANAGED_STREAM_ENDPOINT=
 MANAGED_STREAM_AUTH_TOKEN=
 MANAGED_STREAM_API_KEY=
+MANAGED_STREAM_ALLOW_REAL_CONNECTION=false
+MANAGED_STREAM_REAL_PROVIDER=laserstream
+MANAGED_STREAM_REAL_CONNECTION_ACK=false
 YELLOWSTONE_GRPC_URL=
 YELLOWSTONE_GRPC_TOKEN=
 LASERSTREAM_GRPC_URL=
 LASERSTREAM_API_KEY=
+LASERSTREAM_ENABLED=false
+PUMPFUN_PROGRAM_ID=
+PUMPSWAP_PROGRAM_ID=
 ```
 
 Roadmap:
@@ -179,9 +189,10 @@ Solana stream providers. It includes Yellowstone and LaserStream client
 skeletons, sanitized config validation, subscription request preview builders,
 subscription profiles, and an injected mock transport for tests.
 
-This package does not install provider SDKs and does not open network
-connections. `yellowstone` and `laserstream` clients report `not_implemented`
-when enabled without an injected transport. Mock transport tests can exercise
+This package does not install provider SDKs by default and does not open network
+connections unless the real LaserStream gates are explicitly enabled.
+`yellowstone` and the skeleton `laserstream` path report `not_implemented`
+without an injected transport or SDK boundary. Mock transport tests can exercise
 connect/send/message handling without using a real provider. Endpoints, auth
 tokens, API keys, and URL query secrets are masked in status and config output.
 
@@ -201,6 +212,8 @@ Supported profiles:
 
 - `pumpfun_program_transactions`
 - `pumpfun_and_pumpswap_transactions`
+- `laserstream_pumpfun_transactions`
+- `yellowstone_pumpfun_transactions`
 - `watched_addresses`
 - `minimal_healthcheck`
 
@@ -211,8 +224,71 @@ reported with `STREAM_PROFILE_PLACEHOLDER` and
 
 The dashboard DATA tab shows the managed stream client kind, enabled/configured
 state, auth configured state, masked endpoint, subscription summary,
-Yellowstone/LaserStream skeleton status, and the explicit label
-`REAL MANAGED STREAM: NOT CONNECTED`.
+Yellowstone/LaserStream status, and the explicit real stream label.
+
+## Opt-in LaserStream Connection
+
+Branch `dev/laserstream-real-connection-opt-in` adds a real LaserStream client
+boundary that remains blocked by default. It only attempts a network connection
+when every real gate is explicitly set:
+
+```text
+MANAGED_STREAM_ALLOW_REAL_CONNECTION=true
+MANAGED_STREAM_REAL_CONNECTION_ACK=true
+MANAGED_STREAM_REAL_PROVIDER=laserstream
+LASERSTREAM_ENABLED=true
+LASERSTREAM_GRPC_URL=<helius-laserstream-grpc-url>
+LASERSTREAM_API_KEY=<helius-api-key>
+```
+
+Preflight is safe and does not connect:
+
+```bash
+MANAGED_STREAM_ALLOW_REAL_CONNECTION=true \
+MANAGED_STREAM_REAL_CONNECTION_ACK=true \
+MANAGED_STREAM_REAL_PROVIDER=laserstream \
+LASERSTREAM_ENABLED=true \
+LASERSTREAM_GRPC_URL=https://example.invalid \
+LASERSTREAM_API_KEY=example \
+PUMPFUN_PROGRAM_ID=YourPumpfunProgramIdHere \
+pnpm --filter @axi/indexer stream:connect:check
+```
+
+Real connection template:
+
+```bash
+MANAGED_STREAM_ALLOW_REAL_CONNECTION=true \
+MANAGED_STREAM_REAL_CONNECTION_ACK=true \
+MANAGED_STREAM_REAL_PROVIDER=laserstream \
+MANAGED_STREAM_PROVIDER=laserstream \
+LASERSTREAM_ENABLED=true \
+LASERSTREAM_GRPC_URL="$LASERSTREAM_GRPC_URL" \
+LASERSTREAM_API_KEY="$LASERSTREAM_API_KEY" \
+LASERSTREAM_MAX_RUNTIME_MS=60000 \
+LASERSTREAM_MAX_MESSAGES_PER_SESSION=100 \
+PUMPFUN_PROGRAM_ID="$PUMPFUN_PROGRAM_ID" \
+pnpm --filter @axi/indexer stream:connect:laserstream
+```
+
+Keep credentials in `.env.local` or another gitignored local environment file.
+Do not paste secrets into commits, README updates, dashboard screenshots, or
+issue text. Provider streams can incur costs, so start with low
+`LASERSTREAM_MAX_RUNTIME_MS` and `LASERSTREAM_MAX_MESSAGES_PER_SESSION` values.
+
+The client uses the official LaserStream SDK boundary when available. If the
+SDK is not installed or the adapter cannot load it, the command reports
+`SDK_NOT_INSTALLED_OR_NOT_IMPLEMENTED` without falling back to another network
+path. This project still does not trade, sign, load wallets, call Jupiter,
+call PumpPortal trading/Lightning APIs, use Axiom private APIs, or scrape Axiom.
+
+Readiness is also exposed through:
+
+- `GET /indexer/stream/status`
+- `GET /indexer/stream/real-readiness`
+
+The dashboard DATA tab shows `REAL MANAGED STREAM: DISABLED`, `READY`,
+`CONNECTED`, or `BLOCKED`, plus gates, message count, last message time, and
+reason codes. It has no connect button and never displays API keys.
 
 ## Pump.fun Decoder Fixtures
 
@@ -1456,6 +1532,10 @@ docker compose --profile indexer up -d
 - `dev/managed-stream-client-skeleton` contains disabled-by-default
   Yellowstone/LaserStream client skeletons, sanitized config/status endpoints,
   subscription preview builders, profile helpers, and dashboard client status.
+- `dev/laserstream-real-connection-opt-in` contains the hard-gated
+  LaserStream real connection boundary, readiness endpoint, CLI preflight,
+  short-run connect command, provider-specific Pump.fun profiles, and dashboard
+  real-stream status fields.
 
 Direct Solana RPC verification and watched-address transaction ingestion exist,
 and local market-data normalization and watch orchestration exist, but they are

@@ -18,6 +18,8 @@ export type ManagedStreamProfileReasonCode =
 export type ManagedStreamSubscriptionProfileName =
   | "pumpfun_program_transactions"
   | "pumpfun_and_pumpswap_transactions"
+  | "laserstream_pumpfun_transactions"
+  | "yellowstone_pumpfun_transactions"
   | "watched_addresses"
   | "minimal_healthcheck";
 
@@ -81,7 +83,9 @@ export function buildManagedStreamSubscriptionProfile(
 
   if (
     profile === "pumpfun_program_transactions" ||
-    profile === "pumpfun_and_pumpswap_transactions"
+    profile === "pumpfun_and_pumpswap_transactions" ||
+    profile === "laserstream_pumpfun_transactions" ||
+    profile === "yellowstone_pumpfun_transactions"
   ) {
     config.transactions.enabled = true;
     config.transactions.accountInclude = programIds;

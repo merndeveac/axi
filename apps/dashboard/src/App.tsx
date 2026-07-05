@@ -343,6 +343,24 @@ type IndexerStatus = {
       configured: boolean;
       connectionState: string;
     };
+    realConnectionAllowed?: boolean;
+    realConnectionAck?: boolean;
+    realProvider?: string;
+    laserstream?: {
+      enabled: boolean;
+      configured: boolean;
+      apiKeyConfigured: boolean;
+      endpointMasked: string | null;
+      readyToConnect: boolean;
+      connected: boolean;
+      reasonCodes: string[];
+      messageCount: number;
+      lastMessageAt: string | null;
+      maxMessagesPerSession: number;
+      maxRuntimeMs: number;
+    };
+    connectionBlockedReasons?: string[];
+    secretsExposed?: false;
   };
   streamProvider?: string;
   streamEnabled?: boolean;
@@ -1573,6 +1591,8 @@ function DataTab({
   tokenIdentities: TokenIdentityRow[];
   tokenIdentityStatus: TokenIdentityStatus | null;
 }) {
+  const realManagedStreamState = getRealManagedStreamState(indexerStatus);
+
   return (
     <section className="tab-panel" role="tabpanel">
       <div className="panel-heading">
@@ -1668,15 +1688,66 @@ function DataTab({
           tone={indexerStatus?.streamEnabled ? "warn" : "neutral"}
         />
         <MetricValue
-          label="REAL MANAGED STREAM: NOT CONNECTED"
-          value={
-            (
-              indexerStatus?.managedStream?.clientStatus?.connectionState ??
-              "disabled"
-            ).toUpperCase()
+          label={`REAL MANAGED STREAM: ${realManagedStreamState}`}
+          value={realManagedStreamState}
+          detail={`Provider ${
+            indexerStatus?.managedStream?.realProvider ?? "laserstream"
+          }`}
+          tone={
+            realManagedStreamState === "CONNECTED"
+              ? "good"
+              : realManagedStreamState === "READY"
+                ? "warn"
+                : realManagedStreamState === "BLOCKED"
+                  ? "bad"
+                  : "neutral"
           }
-          detail={indexerStatus?.managedStream?.clientKind ?? "mock"}
-          tone="neutral"
+        />
+        <MetricValue
+          label="laser gates"
+          value={
+            indexerStatus?.managedStream?.realConnectionAllowed &&
+            indexerStatus?.managedStream?.realConnectionAck
+              ? "OPEN"
+              : "CLOSED"
+          }
+          detail={`allow ${
+            indexerStatus?.managedStream?.realConnectionAllowed ? "yes" : "no"
+          } / ack ${
+            indexerStatus?.managedStream?.realConnectionAck ? "yes" : "no"
+          }`}
+          tone={
+            indexerStatus?.managedStream?.laserstream?.readyToConnect
+              ? "warn"
+              : "neutral"
+          }
+        />
+        <MetricValue
+          label="laser readiness"
+          value={
+            indexerStatus?.managedStream?.laserstream?.readyToConnect
+              ? "READY"
+              : "BLOCKED"
+          }
+          detail={
+            indexerStatus?.managedStream?.laserstream?.apiKeyConfigured
+              ? "api key configured"
+              : "api key unset"
+          }
+          tone={
+            indexerStatus?.managedStream?.laserstream?.readyToConnect
+              ? "warn"
+              : "neutral"
+          }
+        />
+        <MetricValue
+          label="laser messages"
+          value={formatCompactNumber(
+            indexerStatus?.managedStream?.laserstream?.messageCount
+          )}
+          detail={`limit ${formatCompactNumber(
+            indexerStatus?.managedStream?.laserstream?.maxMessagesPerSession
+          )}`}
         />
         <MetricValue
           label="stream state"
@@ -1727,8 +1798,13 @@ function DataTab({
         />
         <MetricValue
           label="stream last"
-          value={formatTimeAgo(indexerStatus?.managedStream?.lastMessageAt)}
-          detail={indexerStatus?.managedStream?.connectionState ?? "disabled"}
+          value={formatTimeAgo(
+            indexerStatus?.managedStream?.laserstream?.lastMessageAt ??
+              indexerStatus?.managedStream?.lastMessageAt
+          )}
+          detail={`runtime ${formatCompactNumber(
+            indexerStatus?.managedStream?.laserstream?.maxRuntimeMs
+          )} ms`}
         />
         <MetricValue
           label="yellowstone"
@@ -1848,6 +1924,27 @@ function DataTab({
       />
     </section>
   );
+}
+
+function getRealManagedStreamState(
+  indexerStatus: IndexerStatus | null
+): "DISABLED" | "READY" | "CONNECTED" | "BLOCKED" {
+  const managedStream = indexerStatus?.managedStream;
+  const laserstream = managedStream?.laserstream;
+
+  if (laserstream?.connected) {
+    return "CONNECTED";
+  }
+
+  if (laserstream?.readyToConnect) {
+    return "READY";
+  }
+
+  if ((managedStream?.connectionBlockedReasons?.length ?? 0) > 0) {
+    return "BLOCKED";
+  }
+
+  return "DISABLED";
 }
 
 function DataWalletPanel({

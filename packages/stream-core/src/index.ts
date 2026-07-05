@@ -7,6 +7,7 @@ export type ManagedStreamProviderKind =
 
 export type ManagedStreamConnectionState =
   | "disabled"
+  | "blocked"
   | "configured"
   | "connecting"
   | "connected"
