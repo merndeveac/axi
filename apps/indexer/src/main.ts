@@ -1,6 +1,7 @@
 import { createIndexerApp } from "./indexer-app";
 import { loadIndexerConfig } from "./config";
 import { runPumpfunDecodeCli } from "./pumpfun-cli";
+import { runPumpfunFetchFixtureCli } from "./pumpfun-fetch-cli";
 
 const command = process.argv[2] ?? "dev";
 const config = loadIndexerConfig();
@@ -32,11 +33,15 @@ if (command === "smoke") {
     JSON.stringify(
       {
         status: "ok",
+        fixtureCount: status.pumpfunFixtures?.fixtureCount ?? 0,
         decodedEventCount: status.pumpfunFixtures?.decodedEventCount ?? 0,
         eventsByType: status.pumpfunFixtures?.eventsByType ?? {},
         liveTokenCount: status.liveState.tokenCount,
         tradeCount: status.pumpfunFixtures?.tradeCount ?? 0,
+        usableTradeCount: status.pumpfunFixtures?.usableTradeCount ?? 0,
+        ohlcvBarCount: status.pumpfunFixtures?.ohlcvBarCount ?? 0,
         decodeErrors: status.pumpfunFixtures?.decodeErrors ?? 0,
+        confidenceSummary: status.pumpfunFixtures?.confidenceSummary ?? {},
         liveState: status.liveState,
         eventBus: status.eventBus,
         paperOnly: status.paperOnly,
@@ -49,6 +54,9 @@ if (command === "smoke") {
   app.stop();
 } else if (command === "decode:pumpfun") {
   runPumpfunDecodeCli(process.argv.slice(3));
+  app.stop();
+} else if (command === "fetch:pumpfun-fixture") {
+  await runPumpfunFetchFixtureCli(process.argv.slice(3));
   app.stop();
 } else {
   const status = app.start();

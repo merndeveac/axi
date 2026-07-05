@@ -11,6 +11,7 @@
     "smoke": "tsx --conditions=development src/main.ts smoke",
     "smoke:pumpfun": "tsx --conditions=development src/main.ts smoke:pumpfun",
     "decode:pumpfun": "tsx --conditions=development src/main.ts decode:pumpfun",
+    "fetch:pumpfun-fixture": "tsx --conditions=development src/main.ts fetch:pumpfun-fixture",
     "clean": "rm -rf dist"
   },
   "dependencies": {

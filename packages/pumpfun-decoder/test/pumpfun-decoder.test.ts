@@ -1,11 +1,15 @@
 import { readFileSync } from "node:fs";
+import { Buffer } from "node:buffer";
 import { describe, expect, it } from "vitest";
 import { isTradeUsableForMetrics } from "@axi/indexer-core";
 import {
+  classifyPumpfunTransaction,
   decodePumpfunTransaction,
   decodePumpfunTransactionBatch,
+  getAnchorInstructionDiscriminator,
   pumpfunEventToIndexerEvent,
-  pumpfunReasonCodes
+  pumpfunReasonCodes,
+  type PumpfunIdl
 } from "../src/index";
 
 const fixtureNames = [
@@ -95,9 +99,14 @@ describe("@axi/pumpfun-decoder", () => {
   it("marks invalid trade amounts unusable for metrics", () => {
     const fixture = readFixture("buy-trade.json");
     const instruction = readFixtureInstruction(fixture);
+    const meta = fixture.meta as { logMessages: string[] };
 
     instruction.parsed.info.solAmount = 0;
     instruction.parsed.info.tokenAmount = 0;
+    meta.logMessages = [
+      "Program log: pumpfun fixture",
+      "Program log: Instruction: Buy"
+    ];
 
     const decoded = decodePumpfunTransaction(fixture);
     const normalized = pumpfunEventToIndexerEvent(decoded);
@@ -144,6 +153,85 @@ describe("@axi/pumpfun-decoder", () => {
       pumpfunReasonCodes.transactionClassified
     );
     expect(decoded.reasonCodes).toContain(pumpfunReasonCodes.tradeDecoded);
+  });
+
+  it("classifies buy fixtures with trade evidence", () => {
+    const classification = classifyPumpfunTransaction(readFixture("buy-trade.json"));
+
+    expect(classification.kind).toBe("token_trade");
+    expect(classification.side).toBe("buy");
+    expect(classification.evidence.logHints.length).toBeGreaterThan(0);
+    expect(classification.evidence.balanceDeltaHints.length).toBeGreaterThan(0);
+  });
+
+  it("classifies sell fixtures with trade evidence", () => {
+    const classification = classifyPumpfunTransaction(readFixture("sell-trade.json"));
+
+    expect(classification.kind).toBe("token_trade");
+    expect(classification.side).toBe("sell");
+    expect(classification.evidence.logHints.length).toBeGreaterThan(0);
+    expect(classification.evidence.balanceDeltaHints.length).toBeGreaterThan(0);
+  });
+
+  it("keeps unknown fixtures blocked by insufficient evidence", () => {
+    const classification = classifyPumpfunTransaction(
+      readFixture("unknown-transaction.json")
+    );
+
+    expect(classification.kind).toBe("unknown");
+    expect(classification.blockers).toContain("insufficient_event_type_evidence");
+  });
+
+  it("uses IDL hints to raise classification confidence", () => {
+    const idl: PumpfunIdl = {
+      instructions: [{ name: "buy" }]
+    };
+    const fixture = readFixture("unknown-transaction.json");
+    const transaction = fixture.transaction as {
+      message: { instructions: Array<Record<string, unknown>> };
+    };
+
+    transaction.message.instructions[0] = {
+      programId: "PumpFunFixtureProgram1111111111111111111111",
+      data: Buffer.from(getAnchorInstructionDiscriminator("buy")).toString(
+        "base64"
+      )
+    };
+
+    const classification = classifyPumpfunTransaction(fixture, { idl });
+
+    expect(classification.kind).toBe("token_trade");
+    expect(classification.confidence).toBe("high");
+    expect(classification.evidence.idlHints).toContain("idl_instruction=buy");
+  });
+
+  it("keeps balance-only inference low confidence", () => {
+    const fixture = readFixture("buy-trade.json");
+    const meta = fixture.meta as { logMessages: string[] };
+    const transaction = fixture.transaction as {
+      message: { instructions: Array<Record<string, unknown>> };
+    };
+
+    meta.logMessages = [];
+    transaction.message.instructions = [];
+
+    const classification = classifyPumpfunTransaction(fixture);
+
+    expect(classification.kind).toBe("unknown");
+    expect(classification.confidence).toBe("low");
+    expect(classification.evidence.balanceDeltaHints.length).toBeGreaterThan(0);
+  });
+
+  it("classifies failed transactions as ignored with blockers", () => {
+    const classification = classifyPumpfunTransaction(
+      readFixture("failed-transaction.json")
+    );
+
+    expect(classification.kind).toBe("unknown");
+    expect(classification.blockers).toContain("transaction_failed");
+    expect(classification.reasonCodes).toContain(
+      pumpfunReasonCodes.failedTransactionIgnored
+    );
   });
 });
 

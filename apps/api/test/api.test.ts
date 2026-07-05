@@ -1263,7 +1263,13 @@ describe("@axi/api", () => {
       url: "/indexer/decoders"
     });
     const body = response.json() as {
-      pumpfun: { available: boolean; fixtures: string[] };
+      pumpfun: {
+        available: boolean;
+        fixtureCount: number;
+        fixtureManifestLoaded: boolean;
+        fixtures: string[];
+        idlStatus: string;
+      };
       geyser: { status: string };
       paperOnly: boolean;
       tradingDisabled: boolean;
@@ -1272,7 +1278,10 @@ describe("@axi/api", () => {
 
     expect(response.statusCode).toBe(200);
     expect(body.pumpfun.available).toBe(true);
+    expect(body.pumpfun.fixtureCount).toBeGreaterThanOrEqual(6);
+    expect(body.pumpfun.fixtureManifestLoaded).toBe(true);
     expect(body.pumpfun.fixtures).toContain("buy-trade.json");
+    expect(body.pumpfun.idlStatus).toBe("unavailable");
     expect(body.geyser.status).toBe("not_implemented");
     expect(body.paperOnly).toBe(true);
     expect(body.tradingDisabled).toBe(true);
@@ -1330,6 +1339,9 @@ describe("@axi/api", () => {
       }
     });
     const body = response.json() as {
+      manifestEntry: { id: string; fixtureType: string };
+      fixtureSummary: { signature: string | null; logCount: number };
+      expectedComparison: { checked: boolean; ok: boolean };
       normalizedEvent: {
         type: string;
         side?: string;
@@ -1339,6 +1351,14 @@ describe("@axi/api", () => {
     };
 
     expect(response.statusCode).toBe(200);
+    expect(body.manifestEntry.id).toBe("buy-trade");
+    expect(body.manifestEntry.fixtureType).toBe("synthetic");
+    expect(body.fixtureSummary.signature).toBe("pumpfun_fixture_buy_trade_sig");
+    expect(body.fixtureSummary.logCount).toBeGreaterThan(0);
+    expect(body.expectedComparison).toMatchObject({
+      checked: true,
+      ok: true
+    });
     expect(body.normalizedEvent.type).toBe("token_trade");
     expect(body.normalizedEvent.side).toBe("buy");
     expect(body.normalizedEvent.priceSol).toBe(0.0005);

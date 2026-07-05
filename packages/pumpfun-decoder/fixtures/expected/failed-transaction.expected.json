@@ -1,0 +1,10 @@
+{
+  "type": "unknown",
+  "source": "pumpfun_decoder",
+  "sourceMode": "replay",
+  "chain": "solana",
+  "signature": "pumpfun_fixture_failed_sig",
+  "slot": 1005,
+  "blockTime": 1767225630,
+  "mint": null
+}

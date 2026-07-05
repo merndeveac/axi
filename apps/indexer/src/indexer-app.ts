@@ -116,7 +116,10 @@ export function createIndexerApp(config: IndexerConfig): IndexerApp {
       liveState: liveState.getStats(),
       pumpfunFixtures:
         activeSource?.name === "pumpfun-fixtures"
-          ? activeSource.getSummary()
+          ? {
+              ...activeSource.getSummary(),
+              ohlcvBarCount: computeOhlcvBarCount(liveState, timeseries)
+            }
           : null,
       pumpPortal: getPumpPortalIndexerSourceStatus(),
       paperOnly: true,
@@ -154,4 +157,15 @@ function createSource(config: IndexerConfig): IndexerSource | null {
   }
 
   return null;
+}
+
+function computeOhlcvBarCount(
+  liveState: ReturnType<typeof createLiveTokenStateStore>,
+  timeseries: ReturnType<typeof createTradeTimeseries>
+): number {
+  return liveState.getTokens().reduce((count, token) => {
+    const windows = timeseries.getWindows(token.mint);
+    return count +
+      Object.values(windows).filter((window) => window.tradeCount > 0).length;
+  }, 0);
 }

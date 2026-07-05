@@ -87,21 +87,37 @@ Indexer app commands:
 pnpm --filter @axi/indexer dev
 pnpm --filter @axi/indexer smoke
 pnpm --filter @axi/indexer smoke:pumpfun
-pnpm --filter @axi/indexer decode:pumpfun -- --file packages/pumpfun-decoder/fixtures/buy-trade.json
+pnpm --filter @axi/indexer decode:pumpfun -- --fixture buy-trade.json --summary true --show-evidence true
+pnpm --filter @axi/indexer fetch:pumpfun-fixture -- --signature <SIG> --kind buy_trade --update-manifest true
 ```
 
 ## Pump.fun Decoder Fixtures
 
-Branch `dev/pumpfun-decoder-fixtures` adds `@axi/pumpfun-decoder`, a pure local
-TypeScript decoder package with synthetic Pump.fun-shaped fixtures. It accepts
+Branch `dev/pumpfun-verified-fixtures-idl-decoder` extends
+`@axi/pumpfun-decoder`, a pure local TypeScript decoder package. It accepts
 parsed Solana transaction-like payloads, extracts local logs, instruction hints,
-accounts, SOL/token balance deltas, and emits normalized indexer events for
-token creation, trades, migrations, and unknown/failed transactions.
+accounts, SOL/token balance deltas, optional Anchor/IDL hints, and emits
+normalized indexer events for token creation, trades, migrations, and
+unknown/failed transactions.
 
-The fixtures live in `packages/pumpfun-decoder/fixtures`. They are synthetic
-test inputs, not secrets, not live trading data, and not definitive Pump.fun
-documentation. The decoder does not connect to Geyser, Yellowstone,
-LaserStream, Solana RPC, PumpPortal, wallets, or trading APIs.
+The fixtures live in `packages/pumpfun-decoder/fixtures`. The checked-in
+fixtures are synthetic today and are registered in
+`packages/pumpfun-decoder/fixtures/manifest.json` with provenance metadata,
+expected event types, sanitized status, and golden expected-output snapshots.
+Verified public Solana `getTransaction` fixtures can be imported locally with
+the fetch CLI. Public fixtures may contain public on-chain wallet/account
+addresses; they must not contain API keys, private keys, seed phrases, wallet
+files, or `.env` data.
+
+The decoder remains conservative. Fixture tests do not hit RPC or PumpPortal.
+The fetch/import CLI requires an explicit `SOLANA_RPC_HTTP` or `--rpc` URL and
+is read-only: it fetches public transaction data, sanitizes it, optionally
+updates the manifest, and never loads wallets, signs, sends transactions, or
+trades. IDL-aware hooks exist for Anchor discriminators and `Program data:`
+logs, but no verified Pump.fun IDL is checked in yet.
+
+This still does not connect to Geyser, Yellowstone, LaserStream, live Pump.fun
+streams, PumpPortal trading APIs, wallets, or trading APIs.
 
 Run the local fixture smoke:
 
@@ -112,7 +128,14 @@ pnpm --filter @axi/indexer smoke:pumpfun
 Decode one fixture to normalized indexer JSON:
 
 ```bash
-pnpm --filter @axi/indexer decode:pumpfun -- --file packages/pumpfun-decoder/fixtures/buy-trade.json
+pnpm --filter @axi/indexer decode:pumpfun -- --fixture buy-trade.json --summary true --show-evidence true
+pnpm --filter @axi/indexer decode:pumpfun -- --manifest-id buy-trade --compare-expected true
+```
+
+Import a verified public transaction fixture locally:
+
+```bash
+SOLANA_RPC_HTTP=https://... pnpm --filter @axi/indexer fetch:pumpfun-fixture -- --signature <SIG> --kind buy_trade --update-manifest true
 ```
 
 Inspect local decoder availability from the API:
@@ -140,13 +163,14 @@ docker compose --profile indexer up -d
 
 Roadmap:
 
-1. Replace synthetic fixtures with verified public transaction fixtures.
-2. Add IDL-aware Pump.fun instruction/event parsing.
-3. Connect managed Yellowstone/LaserStream stream.
-4. Feed decoded live transactions into event bus/live-state.
-5. Add ClickHouse raw tick writes.
-6. Add Redis live-state fanout.
-7. Add Raydium/Meteora/Orca decoders.
+1. Add verified public transaction fixtures.
+2. Add verified Pump.fun IDL if available.
+3. Improve IDL-aware instruction/event parsing.
+4. Connect managed Yellowstone/LaserStream stream.
+5. Feed live decoded transactions into event bus/live-state.
+6. Write raw ticks to ClickHouse.
+7. Write live state to Redis.
+8. Add PumpSwap/Raydium/Meteora/Orca decoders.
 
 ## Local Persistence
 

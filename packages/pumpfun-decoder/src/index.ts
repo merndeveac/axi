@@ -5,6 +5,11 @@ import {
   type NormalizedIndexerEvent,
   type TradeSide
 } from "@axi/indexer-core";
+import {
+  decodeAnchorEventFromProgramData,
+  identifyAnchorInstructionByDiscriminator,
+  type PumpfunIdl
+} from "./idl";
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
 const DEFAULT_RECEIVED_AT = "1970-01-01T00:00:00.000Z";
@@ -17,6 +22,7 @@ export const pumpfunReasonCodes = {
   decodeError: "PUMPFUN_DECODE_ERROR",
   decoderStarted: "PUMPFUN_DECODER_STARTED",
   failedTransactionIgnored: "PUMPFUN_FAILED_TRANSACTION_IGNORED",
+  idlHintFound: "PUMPFUN_IDL_HINT_FOUND",
   insufficientTradeAmounts: "PUMPFUN_INSUFFICIENT_TRADE_AMOUNTS",
   instructionHintFound: "PUMPFUN_INSTRUCTION_HINT_FOUND",
   logHintFound: "PUMPFUN_LOG_HINT_FOUND",
@@ -41,7 +47,9 @@ export type PumpfunEventKind =
   | "unknown";
 
 export type PumpfunDecoderOptions = {
+  idl?: PumpfunIdl | null;
   includeRaw?: boolean;
+  programIds?: string[];
 };
 
 export type PumpfunDecodedEventBase = {
@@ -107,13 +115,23 @@ export type PumpfunDecodedEvent =
   | PumpfunMigrationEvent
   | PumpfunUnknownEvent;
 
+export type PumpfunClassificationEvidence = {
+  logHints: string[];
+  instructionHints: string[];
+  balanceDeltaHints: string[];
+  idlHints: string[];
+};
+
 export type PumpfunTransactionClassification = {
   kind: PumpfunEventKind;
   side: TradeSide;
   likelyPumpfun: boolean;
   confidence: PumpfunConfidence;
+  evidence: PumpfunClassificationEvidence;
+  blockers: string[];
   reasonCodes: string[];
 };
+export type PumpfunClassification = PumpfunTransactionClassification;
 
 export type PumpfunAccounts = {
   accountKeys: string[];
@@ -166,7 +184,7 @@ export function createPumpfunDecoder(
     decodePumpfunTransaction: (input) => decodePumpfunTransaction(input, options),
     decodePumpfunTransactionBatch: (inputs) =>
       decodePumpfunTransactionBatch(inputs, options),
-    classifyPumpfunTransaction
+    classifyPumpfunTransaction: (input) => classifyPumpfunTransaction(input, options)
   };
 }
 
@@ -175,7 +193,7 @@ export function decodePumpfunTransaction(
   options: PumpfunDecoderOptions = {}
 ): PumpfunDecodedEvent {
   try {
-    const classification = classifyPumpfunTransaction(input);
+    const classification = classifyPumpfunTransaction(input, options);
 
     if (isFailedTransaction(input)) {
       return decodeUnknown(input, {
@@ -226,34 +244,76 @@ export function decodePumpfunTransactionBatch(
 }
 
 export function classifyPumpfunTransaction(
-  input: unknown
+  input: unknown,
+  options: PumpfunDecoderOptions = {}
 ): PumpfunTransactionClassification {
   const logs = extractPumpfunLogs(input);
   const accounts = extractPumpfunAccounts(input);
   const instructionTexts = extractInstructionTexts(input);
-  const haystack = [...logs, ...instructionTexts, ...accounts.programs]
+  const idlHints = extractIdlHints(input, options.idl);
+  const configuredProgramHints = accounts.programs.filter((program) =>
+    options.programIds?.includes(program)
+  );
+  const haystack = [
+    ...logs,
+    ...instructionTexts,
+    ...accounts.programs,
+    ...idlHints
+  ]
     .join("\n")
     .toLowerCase();
-  const logHint = logs.some((log) => hasPumpfunHint(log));
-  const instructionHint = [...instructionTexts, ...accounts.programs].some((text) =>
-    hasPumpfunHint(text)
+  const logHints = logs.filter(
+    (log) =>
+      hasPumpfunHint(log) ||
+      containsWord(log, "create") ||
+      containsWord(log, "buy") ||
+      containsWord(log, "sell") ||
+      containsWord(log, "migrate")
+  );
+  const instructionHints = [...instructionTexts, ...accounts.programs].filter((text) =>
+    hasPumpfunHint(text) ||
+    containsWord(text, "create") ||
+    containsWord(text, "buy") ||
+    containsWord(text, "sell") ||
+    containsWord(text, "migrate")
   );
   const deltas = extractPumpfunBalanceDeltas(input);
   const hasDeltas = deltas.solDeltas.length > 0 || deltas.tokenDeltas.length > 0;
+  const balanceDeltaHints = hasDeltas
+    ? [
+        `solDeltas=${deltas.solDeltas.length}`,
+        `tokenDeltas=${deltas.tokenDeltas.length}`
+      ]
+    : [];
+  const evidence: PumpfunClassificationEvidence = {
+    logHints,
+    instructionHints: [...instructionHints, ...configuredProgramHints],
+    balanceDeltaHints,
+    idlHints
+  };
   const reasonCodes = uniqueReasonCodes([
     pumpfunReasonCodes.decoderStarted,
     pumpfunReasonCodes.transactionClassified,
-    ...(logHint ? [pumpfunReasonCodes.logHintFound] : []),
-    ...(instructionHint ? [pumpfunReasonCodes.instructionHintFound] : []),
-    ...(hasDeltas ? [pumpfunReasonCodes.balanceDeltasFound] : [])
+    ...(logHints.length > 0 ? [pumpfunReasonCodes.logHintFound] : []),
+    ...(instructionHints.length > 0 || configuredProgramHints.length > 0
+      ? [pumpfunReasonCodes.instructionHintFound]
+      : []),
+    ...(balanceDeltaHints.length > 0 ? [pumpfunReasonCodes.balanceDeltasFound] : []),
+    ...(idlHints.length > 0 ? [pumpfunReasonCodes.idlHintFound] : [])
   ]);
 
   if (isFailedTransaction(input)) {
     return {
       kind: "unknown",
       side: "unknown",
-      likelyPumpfun: logHint || instructionHint,
+      likelyPumpfun:
+        logHints.length > 0 ||
+        instructionHints.length > 0 ||
+        configuredProgramHints.length > 0 ||
+        idlHints.length > 0,
       confidence: "high",
+      evidence,
+      blockers: ["transaction_failed"],
       reasonCodes: uniqueReasonCodes([
         ...reasonCodes,
         pumpfunReasonCodes.failedTransactionIgnored
@@ -261,7 +321,11 @@ export function classifyPumpfunTransaction(
     };
   }
 
-  const likelyPumpfun = logHint || instructionHint;
+  const likelyPumpfun =
+    logHints.length > 0 ||
+    instructionHints.length > 0 ||
+    configuredProgramHints.length > 0 ||
+    idlHints.length > 0;
 
   if (!likelyPumpfun) {
     return {
@@ -269,6 +333,8 @@ export function classifyPumpfunTransaction(
       side: "unknown",
       likelyPumpfun: false,
       confidence: "low",
+      evidence,
+      blockers: ["insufficient_pumpfun_evidence"],
       reasonCodes: uniqueReasonCodes([
         ...reasonCodes,
         pumpfunReasonCodes.unknownTransaction
@@ -281,7 +347,9 @@ export function classifyPumpfunTransaction(
       kind: "token_migrated",
       side: "unknown",
       likelyPumpfun,
-      confidence: "high",
+      confidence: idlHints.length > 0 ? "high" : "high",
+      evidence,
+      blockers: [],
       reasonCodes
     };
   }
@@ -291,7 +359,9 @@ export function classifyPumpfunTransaction(
       kind: "token_created",
       side: "unknown",
       likelyPumpfun,
-      confidence: "high",
+      confidence: idlHints.length > 0 ? "high" : "high",
+      evidence,
+      blockers: [],
       reasonCodes
     };
   }
@@ -303,7 +373,9 @@ export function classifyPumpfunTransaction(
       kind: "token_trade",
       side,
       likelyPumpfun,
-      confidence: side === "unknown" ? "medium" : "high",
+      confidence: side === "unknown" ? "medium" : idlHints.length > 0 ? "high" : "high",
+      evidence,
+      blockers: side === "unknown" ? ["trade_side_unknown"] : [],
       reasonCodes
     };
   }
@@ -313,6 +385,8 @@ export function classifyPumpfunTransaction(
     side: "unknown",
     likelyPumpfun,
     confidence: "medium",
+    evidence,
+    blockers: ["insufficient_event_type_evidence"],
     reasonCodes: uniqueReasonCodes([
       ...reasonCodes,
       pumpfunReasonCodes.unknownTransaction
@@ -399,7 +473,7 @@ export function decodePumpfunTokenCreated(
 ): PumpfunTokenCreatedEvent | PumpfunUnknownEvent {
   const hints = extractHints(input);
   const mint = readHintString(hints, ["mint", "tokenMint"]);
-  const classification = classifyPumpfunTransaction(input);
+  const classification = classifyPumpfunTransaction(input, options);
   const reasonCodes = uniqueReasonCodes([
     ...classification.reasonCodes,
     pumpfunReasonCodes.tokenCreatedDecoded,
@@ -439,7 +513,7 @@ export function decodePumpfunTrade(
   input: unknown,
   options: PumpfunDecoderOptions = {}
 ): PumpfunTradeEvent | PumpfunUnknownEvent {
-  const classification = classifyPumpfunTransaction(input);
+  const classification = classifyPumpfunTransaction(input, options);
   const hints = extractHints(input);
   const deltas = extractPumpfunBalanceDeltas(input);
   const mint =
@@ -505,7 +579,7 @@ export function decodePumpfunMigration(
   input: unknown,
   options: PumpfunDecoderOptions = {}
 ): PumpfunMigrationEvent | PumpfunUnknownEvent {
-  const classification = classifyPumpfunTransaction(input);
+  const classification = classifyPumpfunTransaction(input, options);
   const hints = extractHints(input);
   const mint = readHintString(hints, ["mint", "tokenMint"]);
   const reasonCodes = uniqueReasonCodes([
@@ -1016,7 +1090,11 @@ function extractHints(input: unknown): PumpfunHints {
 
   for (const text of texts) {
     for (const [key, value] of parseKeyValues(text)) {
-      values.set(key.toLowerCase(), value);
+      const normalizedKey = key.toLowerCase();
+
+      if (!values.has(normalizedKey)) {
+        values.set(normalizedKey, value);
+      }
     }
   }
 
@@ -1119,6 +1197,33 @@ function extractInstructionTexts(input: unknown): string[] {
 
     return texts;
   });
+}
+
+function extractIdlHints(input: unknown, idl: PumpfunIdl | null | undefined): string[] {
+  if (!idl) {
+    return [];
+  }
+
+  const instructionHints = collectInstructions(input).flatMap((instruction) => {
+    const data = readFirstString(instruction, ["data"]);
+
+    if (!data) {
+      return [];
+    }
+
+    const identified = identifyAnchorInstructionByDiscriminator(data, idl);
+    return identified.matched && identified.name
+      ? [`idl_instruction=${identified.name}`]
+      : [];
+  });
+  const eventHints = extractPumpfunLogs(input).flatMap((log) => {
+    const decoded = decodeAnchorEventFromProgramData(log, idl);
+    return decoded.ok && decoded.eventName
+      ? [`idl_event=${decoded.eventName}`]
+      : [];
+  });
+
+  return uniqueStrings([...instructionHints, ...eventHints]);
 }
 
 function collectInstructions(input: unknown): JsonRecord[] {
@@ -1390,3 +1495,6 @@ function unquote(value: string): string {
 
   return trimmed;
 }
+
+export * from "./fixtures";
+export * from "./idl";

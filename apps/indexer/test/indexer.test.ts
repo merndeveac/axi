@@ -8,6 +8,10 @@ import { createLiveTokenStateStore } from "@axi/live-state";
 import { createTradeTimeseries } from "@axi/timeseries";
 import { createInMemoryIndexerSink } from "../src/sinks/in-memory-sink";
 import { parsePumpfunDecodeArgs, runPumpfunDecodeCli } from "../src/pumpfun-cli";
+import {
+  parsePumpfunFetchArgs,
+  runPumpfunFetchFixtureCli
+} from "../src/pumpfun-fetch-cli";
 
 describe("@axi/indexer", () => {
   it("parses config defaults", () => {
@@ -65,6 +69,7 @@ describe("@axi/indexer", () => {
     expect(events).toContain("token_created");
     expect(events.filter((type) => type === "token_trade")).toHaveLength(2);
     expect(events).toContain("token_migrated");
+    expect(source.getSummary().fixtureCount).toBe(6);
     expect(source.getSummary().decodeErrors).toBe(0);
   });
 
@@ -111,6 +116,8 @@ describe("@axi/indexer", () => {
     expect(status.source).toBe("pumpfun-fixtures");
     expect(status.pumpfunFixtures?.decodedEventCount).toBe(6);
     expect(status.pumpfunFixtures?.tradeCount).toBe(2);
+    expect(status.pumpfunFixtures?.usableTradeCount).toBe(2);
+    expect(status.pumpfunFixtures?.ohlcvBarCount).toBeGreaterThan(0);
     expect(status.pumpfunFixtures?.decodeErrors).toBe(0);
     expect(status.liveState.tokenCount).toBe(1);
     expect(status.liveState.eventsByType.token_migrated).toBe(1);
@@ -139,6 +146,96 @@ describe("@axi/indexer", () => {
     expect(result.events[0]?.type).toBe("token_trade");
     expect(result.summary.tradeCount).toBe(1);
   });
+
+  it("parses and runs pumpfun decode CLI manifest modes", () => {
+    const fixtureResult = runWithCapturedConsole(() =>
+      runPumpfunDecodeCli([
+        "--fixture",
+        "buy-trade.json",
+        "--summary",
+        "true",
+        "--show-evidence",
+        "true"
+      ])
+    );
+    const manifestResult = runWithCapturedConsole(() =>
+      runPumpfunDecodeCli([
+        "--manifest-id",
+        "buy-trade",
+        "--compare-expected",
+        "true"
+      ])
+    );
+
+    expect(fixtureResult.results[0]?.classification?.evidence.logHints.length)
+      .toBeGreaterThan(0);
+    expect(manifestResult.results[0]?.expectedComparison?.ok).toBe(true);
+  });
+
+  it("parses fetch:pumpfun-fixture args", () => {
+    const options = parsePumpfunFetchArgs([
+      "--signature",
+      "Sig111",
+      "--kind",
+      "buy_trade",
+      "--update-manifest",
+      "true"
+    ]);
+
+    expect(options.signature).toBe("Sig111");
+    expect(options.kind).toBe("buy_trade");
+    expect(options.updateManifest).toBe(true);
+  });
+
+  it("fetch:pumpfun-fixture uses mocked RPC and writes sanitized output", async () => {
+    const writes: Array<{ path: string; value: string }> = [];
+    const fixture = {
+      slot: 123,
+      blockTime: 1767225600,
+      transaction: {
+        signatures: ["Sig111"],
+        message: {
+          accountKeys: [],
+          instructions: []
+        }
+      },
+      meta: {
+        err: null,
+        logMessages: [],
+        preBalances: [],
+        postBalances: [],
+        preTokenBalances: [],
+        postTokenBalances: []
+      }
+    };
+    const fetchImpl = async () => ({
+      json: async () => ({ result: fixture })
+    });
+    const result = await runWithCapturedConsoleAsync(() =>
+      runPumpfunFetchFixtureCli(
+        [
+          "--signature",
+          "Sig111",
+          "--kind",
+          "buy_trade",
+          "--rpc",
+          "https://example.invalid",
+          "--out",
+          "packages/pumpfun-decoder/fixtures/imported/Sig111.json"
+        ],
+        {
+          fetchImpl: fetchImpl as unknown as typeof fetch,
+          writeFile: (path, value) => writes.push({ path, value })
+        }
+      )
+    );
+
+    expect(result.transactionFound).toBe(true);
+    expect(writes).toHaveLength(1);
+    expect(JSON.parse(writes[0]?.value ?? "{}")).toMatchObject({
+      signature: "Sig111"
+    });
+  });
 });
 
 function runWithCapturedConsole<T>(fn: () => T): T {
@@ -147,6 +244,17 @@ function runWithCapturedConsole<T>(fn: () => T): T {
   try {
     console.log = () => undefined;
     return fn();
+  } finally {
+    console.log = originalLog;
+  }
+}
+
+async function runWithCapturedConsoleAsync<T>(fn: () => Promise<T>): Promise<T> {
+  const originalLog = console.log;
+
+  try {
+    console.log = () => undefined;
+    return await fn();
   } finally {
     console.log = originalLog;
   }

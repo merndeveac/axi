@@ -1,4 +1,3 @@
-import { readFileSync, readdirSync } from "node:fs";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
@@ -22,8 +21,16 @@ import {
   type RollingMetricsEngine
 } from "@axi/metrics";
 import {
+  classifyPumpfunTransaction,
+  compareExpectedNormalizedOutput,
+  createPumpfunIdlDecoder,
   decodePumpfunTransaction,
-  pumpfunEventToIndexerEvent
+  getFixtureEntry,
+  listPumpfunFixtures,
+  loadFixtureManifest,
+  loadPumpfunFixture,
+  pumpfunEventToIndexerEvent,
+  summarizeTransactionFixture
 } from "@axi/pumpfun-decoder";
 import { createRiskEngine, type RiskEngine, type RiskInput } from "@axi/risk";
 import { scoreCandidate } from "@axi/scoring";
@@ -1080,7 +1087,18 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       enabled: true,
       available: true,
       source: "local_debug",
-      fixtures: getPumpfunFixtureNames()
+      fixtureCount: getPumpfunFixtureNames().length,
+      fixtureManifestLoaded: isPumpfunFixtureManifestLoaded(),
+      fixtures: getPumpfunFixtureNames(),
+      idlStatus: createPumpfunIdlDecoder().status,
+      supportedKinds: [
+        "token_created",
+        "buy_trade",
+        "sell_trade",
+        "migration",
+        "failed_transaction",
+        "unknown"
+      ]
     },
     geyser: {
       enabled: false,
@@ -1111,7 +1129,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       try {
         return {
           fixture: body.fixture,
-          ...decodePumpfunPayloadForDebug(readPumpfunFixtureInput(body.fixture))
+          ...decodePumpfunFixtureForDebug(body.fixture)
         };
       } catch (error) {
         return reply.code(400).send({
@@ -4874,14 +4892,10 @@ function uniqueReasonCodes(reasonCodes: string[]): string[] {
   return Array.from(new Set(reasonCodes));
 }
 
-const pumpfunFixtureDirUrl = new URL(
-  "../../../packages/pumpfun-decoder/fixtures/",
-  import.meta.url
-);
-
 function decodePumpfunPayloadForDebug(transaction: unknown): {
   decodedEvent: ReturnType<typeof decodePumpfunTransaction>;
   normalizedEvent: ReturnType<typeof pumpfunEventToIndexerEvent>;
+  classification: ReturnType<typeof classifyPumpfunTransaction>;
   persisted: false;
   paperOnly: true;
   tradingDisabled: true;
@@ -4892,6 +4906,7 @@ function decodePumpfunPayloadForDebug(transaction: unknown): {
   return {
     decodedEvent,
     normalizedEvent: pumpfunEventToIndexerEvent(decodedEvent),
+    classification: classifyPumpfunTransaction(transaction),
     persisted: false,
     paperOnly: true,
     tradingDisabled: true,
@@ -4899,32 +4914,45 @@ function decodePumpfunPayloadForDebug(transaction: unknown): {
   };
 }
 
-function getPumpfunFixtureNames(): string[] {
-  return readdirSync(pumpfunFixtureDirUrl)
-    .filter((entry) => entry.endsWith(".json"))
-    .sort((left, right) => left.localeCompare(right));
+function decodePumpfunFixtureForDebug(fixtureName: string): ReturnType<
+  typeof decodePumpfunPayloadForDebug
+> & {
+  manifestEntry: ReturnType<typeof getFixtureEntry>;
+  fixtureSummary: ReturnType<typeof summarizePumpfunFixtureForDebug>;
+  expectedComparison: ReturnType<typeof compareExpectedNormalizedOutput>;
+} {
+  const manifestEntry = getFixtureEntry(fixtureName);
+  const transaction = loadPumpfunFixture(manifestEntry.filename);
+  const decoded = decodePumpfunPayloadForDebug(transaction);
+
+  return {
+    ...decoded,
+    manifestEntry,
+    fixtureSummary: summarizePumpfunFixtureForDebug(transaction),
+    expectedComparison: compareExpectedNormalizedOutput(
+      manifestEntry,
+      decoded.normalizedEvent
+    )
+  };
 }
 
-function readPumpfunFixtureInput(fixtureName: string): unknown {
-  const normalized = fixtureName.trim();
+function getPumpfunFixtureNames(): string[] {
+  return listPumpfunFixtures().map((entry) => entry.filename);
+}
 
-  if (
-    normalized.length === 0 ||
-    normalized.includes("/") ||
-    normalized.includes("\\") ||
-    normalized.includes("..") ||
-    !normalized.endsWith(".json")
-  ) {
-    throw new Error("Fixture must be the name of a local JSON fixture file");
+function isPumpfunFixtureManifestLoaded(): boolean {
+  try {
+    loadFixtureManifest();
+    return true;
+  } catch {
+    return false;
   }
+}
 
-  if (!getPumpfunFixtureNames().includes(normalized)) {
-    throw new Error(`Unknown Pump.fun fixture: ${normalized}`);
-  }
-
-  return JSON.parse(
-    readFileSync(new URL(normalized, pumpfunFixtureDirUrl), "utf8")
-  ) as unknown;
+function summarizePumpfunFixtureForDebug(
+  transaction: unknown
+): ReturnType<typeof summarizeTransactionFixture> {
+  return summarizeTransactionFixture(transaction);
 }
 
 export async function startApiServer(

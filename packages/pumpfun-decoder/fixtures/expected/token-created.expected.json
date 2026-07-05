@@ -1,0 +1,18 @@
+{
+  "type": "token_created",
+  "source": "pumpfun_decoder",
+  "sourceMode": "replay",
+  "chain": "solana",
+  "signature": "pumpfun_fixture_token_created_sig",
+  "slot": 1001,
+  "blockTime": 1767225600,
+  "mint": "FixturePumpMint11111111111111111111111111111",
+  "name": "Fixture Token",
+  "symbol": "FIX",
+  "metadataUri": "https://example.invalid/fixture-token.json",
+  "creator": "FixtureCreator111111111111111111111111111111",
+  "bondingCurve": "FixtureBondingCurve111111111111111111111111",
+  "associatedBondingCurve": "FixtureAssocBondingCurve1111111111111111111",
+  "initialBuySol": 1.25,
+  "marketCapSol": 42
+}

@@ -1,0 +1,14 @@
+{
+  "type": "token_migrated",
+  "source": "pumpfun_decoder",
+  "sourceMode": "replay",
+  "chain": "solana",
+  "signature": "pumpfun_fixture_migration_sig",
+  "slot": 1004,
+  "blockTime": 1767225620,
+  "mint": "FixturePumpMint11111111111111111111111111111",
+  "pool": "FixtureMigratedPool1111111111111111111111111",
+  "oldBondingCurve": "FixtureBondingCurve111111111111111111111111",
+  "newPool": "FixtureMigratedPool1111111111111111111111111",
+  "migrationSource": "pumpfun"
+}

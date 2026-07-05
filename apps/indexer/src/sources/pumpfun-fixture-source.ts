@@ -1,6 +1,5 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import {
-  basename,
   extname,
   isAbsolute,
   join,
@@ -12,16 +11,25 @@ import type {
 } from "@axi/indexer-core";
 import {
   decodePumpfunTransaction,
-  pumpfunEventToIndexerEvent
+  classifyPumpfunTransaction,
+  listPumpfunFixtures,
+  loadPumpfunFixture,
+  pumpfunEventToIndexerEvent,
+  type FixtureManifestEntry,
+  type PumpfunConfidence
 } from "@axi/pumpfun-decoder";
 
 export type PumpfunFixtureSourceSummary = {
+  fixtureCount: number;
   fixtureDir: string;
   decodedEventCount: number;
   decodeErrors: number;
   eventsByType: Partial<Record<IndexerEventType, number>>;
   files: string[];
+  usableTradeCount: number;
   tradeCount: number;
+  confidenceSummary: Partial<Record<PumpfunConfidence, number>>;
+  ohlcvBarCount?: number;
   reasonCodes: string[];
 };
 
@@ -51,21 +59,30 @@ export function createPumpfunFixtureSource(options: {
       stopped = false;
       summary = createEmptySummary(fixtureDir);
 
-      for (const filePath of listPumpfunFixtureFiles(fixtureDir)) {
+      for (const entry of listPumpfunFixtures()) {
         if (stopped) {
           return;
         }
 
-        summary.files.push(basename(filePath));
+        summary.fixtureCount += 1;
+        summary.files.push(entry.filename);
 
         try {
-          const event = decodePumpfunFixtureFile(filePath);
+          const event = decodePumpfunFixtureEntry(entry);
+          const fixture = loadPumpfunFixture(entry.filename);
+          const classification = classifyPumpfunTransaction(fixture);
           summary.decodedEventCount += 1;
           summary.eventsByType[event.type] =
             (summary.eventsByType[event.type] ?? 0) + 1;
+          summary.confidenceSummary[classification.confidence] =
+            (summary.confidenceSummary[classification.confidence] ?? 0) + 1;
 
           if (event.type === "token_trade") {
             summary.tradeCount += 1;
+
+            if (event.usableForMetrics) {
+              summary.usableTradeCount += 1;
+            }
           }
 
           handler(event);
@@ -91,6 +108,13 @@ export function decodePumpfunFixtureFile(
   return pumpfunEventToIndexerEvent(decodePumpfunTransaction(input));
 }
 
+export function decodePumpfunFixtureEntry(
+  entry: FixtureManifestEntry
+): NormalizedIndexerEvent {
+  const input = loadPumpfunFixture(entry.filename);
+  return pumpfunEventToIndexerEvent(decodePumpfunTransaction(input));
+}
+
 export function listPumpfunFixtureFiles(fixturePath: string): string[] {
   const resolvedPath = resolvePumpfunFixturePath(fixturePath);
   const stats = statSync(resolvedPath);
@@ -100,7 +124,7 @@ export function listPumpfunFixtureFiles(fixturePath: string): string[] {
   }
 
   return readdirSync(resolvedPath)
-    .filter((entry) => extname(entry) === ".json")
+    .filter((entry) => extname(entry) === ".json" && entry !== "manifest.json")
     .sort(compareFixtureNames)
     .map((entry) => join(resolvedPath, entry));
 }
@@ -121,12 +145,15 @@ export function resolvePumpfunFixturePath(inputPath: string): string {
 
 function createEmptySummary(fixtureDir: string): PumpfunFixtureSourceSummary {
   return {
+    fixtureCount: 0,
     fixtureDir,
     decodedEventCount: 0,
     decodeErrors: 0,
     eventsByType: {},
     files: [],
+    usableTradeCount: 0,
     tradeCount: 0,
+    confidenceSummary: {},
     reasonCodes: ["PUMPFUN_FIXTURE_SOURCE", "NO_NETWORK", "NO_TRADING"]
   };
 }

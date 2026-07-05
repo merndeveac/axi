@@ -1,0 +1,18 @@
+{
+  "type": "token_trade",
+  "source": "pumpfun_decoder",
+  "sourceMode": "replay",
+  "chain": "solana",
+  "signature": "pumpfun_fixture_buy_trade_sig",
+  "slot": 1002,
+  "blockTime": 1767225605,
+  "mint": "FixturePumpMint11111111111111111111111111111",
+  "side": "buy",
+  "trader": "FixtureBuyer1111111111111111111111111111111",
+  "priceSol": 0.0005,
+  "volumeSol": 1.5,
+  "tokenAmount": 3000,
+  "bondingCurve": "FixtureBondingCurve111111111111111111111111",
+  "confidence": "high",
+  "usableForMetrics": true
+}
