@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { TokenCreatedEvent, TokenTradeEvent } from "@axi/data-feeds";
+import type { NormalizedIndexerEvent } from "@axi/indexer-core";
 import type { SolanaChainClient } from "@axi/solana-chain";
 import type { LiveTokenCardViewModel, StrategyStatus } from "@axi/shared";
 import type { ApiServer } from "../src/app";
@@ -1221,6 +1222,100 @@ describe("@axi/api", () => {
     expect(body).toEqual([]);
   });
 
+  it("GET /indexer/status reports the API adapter", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/indexer/status"
+    });
+    const body = response.json() as {
+      enabled: boolean;
+      liveStateEnabled: boolean;
+      futureGeyser: { status: string };
+      paperOnly: boolean;
+      tradingDisabled: boolean;
+      reasonCodes: string[];
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.enabled).toBe(true);
+    expect(body.liveStateEnabled).toBe(true);
+    expect(body.futureGeyser.status).toBe("not_implemented");
+    expect(body.paperOnly).toBe(true);
+    expect(body.tradingDisabled).toBe(true);
+    expect(body.reasonCodes).toContain("NO_GEYSER_CONNECTION");
+  });
+
+  it("ingesting a normalized token_created creates indexer live state", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    server.indexerAdapter.ingestIndexerEvent(createIndexerTokenCreatedEvent());
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/indexer/live-state"
+    });
+    const body = response.json() as {
+      stats: { tokenCount: number };
+      tokens: Array<{ mint: string; displayName: string }>;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.stats.tokenCount).toBe(1);
+    expect(body.tokens[0]?.displayName).toBe("IDX Indexer Token");
+  });
+
+  it("GET /indexer/live-cards returns live-state cards", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    server.indexerAdapter.ingestIndexerEvent(createIndexerTokenCreatedEvent());
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/indexer/live-cards"
+    });
+    const cards = response.json() as Array<{ mint: string; eventTypes: string[] }>;
+
+    expect(response.statusCode).toBe(200);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]?.eventTypes).toContain("token_created");
+  });
+
+  it("does not leak historical mock rows into indexer live state", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/indexer/live-state"
+    });
+    const body = response.json() as {
+      stats: { tokenCount: number; eventCount: number };
+      tokens: unknown[];
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.stats.tokenCount).toBe(0);
+    expect(body.stats.eventCount).toBe(0);
+    expect(body.tokens).toEqual([]);
+  });
+
   it("GET /ui/live-token-cards returns a live PumpPortal token card", async () => {
     server = createApiServer({
       logLevel: false,
@@ -2067,6 +2162,28 @@ function createPumpPortalEvent(): TokenCreatedEvent {
     },
     source: "pumpportal",
     timestamp: "2026-01-01T00:00:00.000Z"
+  };
+}
+
+function createIndexerTokenCreatedEvent(): NormalizedIndexerEvent {
+  return {
+    id: "idx_api_test_created",
+    schemaVersion: 1,
+    source: "mock",
+    sourceMode: "mock",
+    chain: "solana",
+    receivedAt: "2026-01-01T00:00:00.000Z",
+    reasonCodes: ["INDEXER_SCHEMA_V1"],
+    type: "token_created",
+    mint: "IndexerMint11111111111111111111111111111111",
+    name: "Indexer Token",
+    symbol: "IDX",
+    metadataUri: null,
+    creator: null,
+    bondingCurve: null,
+    associatedBondingCurve: null,
+    initialBuySol: null,
+    marketCapSol: null
   };
 }
 

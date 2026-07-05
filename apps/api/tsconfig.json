@@ -11,6 +11,9 @@
   "references": [
     { "path": "../../packages/candidates" },
     { "path": "../../packages/chain-events" },
+    { "path": "../../packages/event-bus" },
+    { "path": "../../packages/indexer-core" },
+    { "path": "../../packages/live-state" },
     { "path": "../../packages/shared" },
     { "path": "../../packages/scoring" },
     { "path": "../../packages/data-feeds" },
@@ -21,6 +24,7 @@
     { "path": "../../packages/risk" },
     { "path": "../../packages/solana-chain" },
     { "path": "../../packages/storage" },
+    { "path": "../../packages/timeseries" },
     { "path": "../../packages/token-identity" },
     { "path": "../../packages/watch-orchestrator" }
   ]

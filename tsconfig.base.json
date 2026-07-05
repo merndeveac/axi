@@ -21,10 +21,14 @@
     "paths": {
       "@axi/candidates": ["packages/candidates/src/index.ts"],
       "@axi/chain-events": ["packages/chain-events/src/index.ts"],
+      "@axi/event-bus": ["packages/event-bus/src/index.ts"],
+      "@axi/indexer-core": ["packages/indexer-core/src/index.ts"],
+      "@axi/live-state": ["packages/live-state/src/index.ts"],
       "@axi/market-data": ["packages/market-data/src/index.ts"],
       "@axi/pumpportal-lightning": [
         "packages/pumpportal-lightning/src/index.ts"
       ],
+      "@axi/timeseries": ["packages/timeseries/src/index.ts"],
       "@axi/watch-orchestrator": ["packages/watch-orchestrator/src/index.ts"],
       "@axi/shared": ["packages/shared/src/index.ts"],
       "@axi/scoring": ["packages/scoring/src/index.ts"],

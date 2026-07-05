@@ -196,6 +196,12 @@ const options: ApiServerOptions = {
       jitoOnly: config.PUMPPORTAL_LIGHTNING_JITO_ONLY
     }
   },
+  indexer: {
+    enabled: config.API_INDEXER_ADAPTER_ENABLED,
+    liveStateEnabled: config.API_INDEXER_LIVE_STATE_ENABLED,
+    preferLiveStateCards: config.API_INDEXER_PREFER_LIVE_STATE_CARDS,
+    recentEventLimit: config.API_INDEXER_RECENT_EVENT_LIMIT
+  },
   allowMockData: config.ALLOW_MOCK_DATA,
   failIfNoRealData: config.FAIL_IF_NO_REAL_DATA,
   mockFeedEnabled: config.MOCK_FEED_ENABLED,

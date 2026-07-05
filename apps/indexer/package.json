@@ -1,0 +1,21 @@
+{
+  "name": "@axi/indexer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --conditions=development src/main.ts",
+    "build": "tsc -b tsconfig.json",
+    "typecheck": "tsc -b tsconfig.json && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "smoke": "tsx --conditions=development src/main.ts smoke",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@axi/event-bus": "workspace:*",
+    "@axi/indexer-core": "workspace:*",
+    "@axi/live-state": "workspace:*",
+    "@axi/timeseries": "workspace:*",
+    "zod": "^3.25.0"
+  }
+}

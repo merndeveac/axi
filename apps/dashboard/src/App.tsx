@@ -283,6 +283,33 @@ type LiveCardEnrichmentStatus = {
   requestsThisMinute: number;
 };
 
+type IndexerStatus = {
+  enabled: boolean;
+  liveStateEnabled: boolean;
+  preferLiveStateCards: boolean;
+  source: string;
+  sourceMode: string;
+  eventBus: {
+    publishedCount: number;
+    subscriberCount: number;
+    lastEventAt: string | null;
+    errorCount: number;
+  };
+  liveState: {
+    tokenCount: number;
+    eventCount: number;
+    lastEventAt: string | null;
+  };
+  futureGeyser: {
+    enabled: boolean;
+    implemented: boolean;
+    status: string;
+  };
+  paperOnly: true;
+  tradingDisabled: true;
+  reasonCodes: string[];
+};
+
 type TokenIdentityStatus = {
   enabled: true;
   solanaMetadataEnabled: boolean;
@@ -460,6 +487,9 @@ export function App() {
     useState<LiveTradeTrackingStatus | null>(null);
   const [liveCardEnrichmentStatus, setLiveCardEnrichmentStatus] =
     useState<LiveCardEnrichmentStatus | null>(null);
+  const [indexerStatus, setIndexerStatus] = useState<IndexerStatus | null>(
+    null
+  );
   const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
   const [chainStatus, setChainStatus] = useState<ChainStatus | null>(null);
   const [tokenIdentityStatus, setTokenIdentityStatus] =
@@ -575,6 +605,7 @@ export function App() {
           nextChainVerifications,
           nextTokenIdentityStatus,
           nextTokenIdentities,
+          nextIndexerStatus,
           nextLiveEvents
         ] = await Promise.all([
           fetchJson<HealthStatus>("/health"),
@@ -601,6 +632,7 @@ export function App() {
           fetchJson<ChainVerificationRow[]>("/chain/verifications?limit=10"),
           fetchJson<TokenIdentityStatus>("/tokens/status"),
           fetchJson<TokenIdentityRow[]>("/tokens?limit=25"),
+          fetchJson<IndexerStatus>("/indexer/status"),
           fetchJson<LiveEventRow[]>("/live/events?limit=25")
         ]);
 
@@ -628,6 +660,7 @@ export function App() {
           setChainVerifications(nextChainVerifications);
           setTokenIdentityStatus(nextTokenIdentityStatus);
           setTokenIdentities(nextTokenIdentities);
+          setIndexerStatus(nextIndexerStatus);
           setLiveEvents(nextLiveEvents);
           setLastUpdated(new Date().toLocaleTimeString());
         }
@@ -844,6 +877,7 @@ export function App() {
           lightningStatus={lightningStatus}
           feedStatus={feedStatus}
           liveCardEnrichmentStatus={liveCardEnrichmentStatus}
+          indexerStatus={indexerStatus}
           liveStatus={liveStatus}
           liveTradeTrackingStatus={liveTradeTrackingStatus}
           marketObservations={marketObservations}
@@ -1469,6 +1503,7 @@ function DataTab({
   dataWalletStatus,
   lightningStatus,
   feedStatus,
+  indexerStatus,
   liveCardEnrichmentStatus,
   liveStatus,
   liveTradeTrackingStatus,
@@ -1484,6 +1519,7 @@ function DataTab({
   dataWalletStatus: PumpPortalDataWalletStatus | null;
   lightningStatus: LightningStatus | null;
   feedStatus: FeedStatus | null;
+  indexerStatus: IndexerStatus | null;
   liveCardEnrichmentStatus: LiveCardEnrichmentStatus | null;
   liveStatus: LiveStatus | null;
   liveTradeTrackingStatus: LiveTradeTrackingStatus | null;
@@ -1560,8 +1596,30 @@ function DataTab({
           value={formatCompactNumber(tokenIdentityStatus?.identityCount)}
           detail={`${tokenIdentityStatus?.resolvedCount ?? 0} resolved`}
         />
+        <MetricValue
+          label="indexer"
+          value={indexerStatus?.enabled ? "ON" : "OFF"}
+          detail={indexerStatus?.source ?? "api_adapter"}
+          tone={indexerStatus?.enabled ? "good" : "neutral"}
+        />
+        <MetricValue
+          label="indexer events"
+          value={formatCompactNumber(indexerStatus?.eventBus.publishedCount)}
+          detail={`${indexerStatus?.liveState.tokenCount ?? 0} live-state tokens`}
+        />
+        <MetricValue
+          label="future geyser"
+          value={
+            indexerStatus?.futureGeyser.implemented
+              ? "IMPLEMENTED"
+              : "NOT IMPLEMENTED"
+          }
+          detail={indexerStatus?.futureGeyser.status ?? "not_implemented"}
+          tone="neutral"
+        />
       </div>
       <ReasonBlock title="Feed Reasons" codes={feedStatus?.reasonCodes} />
+      <ReasonBlock title="Indexer Reasons" codes={indexerStatus?.reasonCodes} />
       <ReasonBlock
         title="Actual Data Reasons"
         codes={actualDataStatus?.reasonCodes}

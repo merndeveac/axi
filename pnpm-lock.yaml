@@ -62,9 +62,18 @@ importers:
       '@axi/data-feeds':
         specifier: workspace:*
         version: link:../../packages/data-feeds
+      '@axi/event-bus':
+        specifier: workspace:*
+        version: link:../../packages/event-bus
       '@axi/execution':
         specifier: workspace:*
         version: link:../../packages/execution
+      '@axi/indexer-core':
+        specifier: workspace:*
+        version: link:../../packages/indexer-core
+      '@axi/live-state':
+        specifier: workspace:*
+        version: link:../../packages/live-state
       '@axi/market-data':
         specifier: workspace:*
         version: link:../../packages/market-data
@@ -89,6 +98,9 @@ importers:
       '@axi/storage':
         specifier: workspace:*
         version: link:../../packages/storage
+      '@axi/timeseries':
+        specifier: workspace:*
+        version: link:../../packages/timeseries
       '@axi/token-identity':
         specifier: workspace:*
         version: link:../../packages/token-identity
@@ -123,6 +135,24 @@ importers:
         specifier: workspace:*
         version: link:../../packages/shared
 
+  apps/indexer:
+    dependencies:
+      '@axi/event-bus':
+        specifier: workspace:*
+        version: link:../../packages/event-bus
+      '@axi/indexer-core':
+        specifier: workspace:*
+        version: link:../../packages/indexer-core
+      '@axi/live-state':
+        specifier: workspace:*
+        version: link:../../packages/live-state
+      '@axi/timeseries':
+        specifier: workspace:*
+        version: link:../../packages/timeseries
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
+
   packages/candidates:
     dependencies:
       '@axi/data-feeds':
@@ -147,11 +177,29 @@ importers:
         specifier: ^8.18.0
         version: 8.21.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
 
+  packages/event-bus:
+    dependencies:
+      '@axi/indexer-core':
+        specifier: workspace:*
+        version: link:../indexer-core
+
   packages/execution:
     dependencies:
       '@axi/shared':
         specifier: workspace:*
         version: link:../shared
+
+  packages/indexer-core:
+    dependencies:
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
+
+  packages/live-state:
+    dependencies:
+      '@axi/indexer-core':
+        specifier: workspace:*
+        version: link:../indexer-core
 
   packages/market-data:
     dependencies:
@@ -226,6 +274,12 @@ importers:
       zod:
         specifier: ^3.25.0
         version: 3.25.76
+
+  packages/timeseries:
+    dependencies:
+      '@axi/indexer-core':
+        specifier: workspace:*
+        version: link:../indexer-core
 
   packages/token-identity: {}
 

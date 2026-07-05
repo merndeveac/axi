@@ -1,24 +1,53 @@
 services:
   postgres:
     image: postgres:17-alpine
-    profiles: ["infra"]
+    profiles: ["infra", "indexer"]
     environment:
-      POSTGRES_DB: axi
-      POSTGRES_USER: axi
-      POSTGRES_PASSWORD: axi_dev_only
+      POSTGRES_DB: ${AXI_POSTGRES_DB:-axi}
+      POSTGRES_USER: ${AXI_POSTGRES_USER:-axi}
+      POSTGRES_PASSWORD: ${AXI_POSTGRES_PASSWORD:-axi_dev_only}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:8-alpine
-    profiles: ["infra"]
+    profiles: ["infra", "indexer"]
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25-alpine
+    profiles: ["indexer"]
+    environment:
+      CLICKHOUSE_DB: ${AXI_CLICKHOUSE_DB:-axi}
+      CLICKHOUSE_USER: ${AXI_CLICKHOUSE_USER:-axi}
+      CLICKHOUSE_PASSWORD: ${AXI_CLICKHOUSE_PASSWORD:-axi_dev_only}
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
+  clickhouse_data:
   postgres_data:
   redis_data:

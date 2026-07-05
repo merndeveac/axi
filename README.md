@@ -41,6 +41,69 @@ normalized from PumpPortal payloads, normalized from read-only Solana
 observations, enriched from optional off-chain metadata, or mock-generated only
 when mock mode is explicitly enabled. It remains paper-only.
 
+## AXI Indexer Foundation
+
+This branch adds the first backend/indexer foundation for Axiom-scale market
+coverage while preserving the current API and dashboard. It introduces
+normalized indexer event contracts, an in-memory event bus, a current-session
+live-state store, a pure trade timeseries package, an indexer app skeleton, and
+API endpoints that can read from the new layer.
+
+This step does not connect to Geyser, Yellowstone, LaserStream, shreds, or any
+live validator stream. It does not decode Pump.fun, Raydium, Meteora, Orca, or
+other DEX transactions directly yet. It does not trade, sign, send
+transactions, load wallets, call PumpPortal Lightning execution, call
+PumpPortal Local Transaction APIs, use Axiom private APIs, or scrape Axiom. The
+PumpPortal data-wallet and Lightning readiness work remains readiness-only.
+
+```text
+stream source
+  -> indexer
+  -> normalized events
+  -> event bus
+  -> live state
+  -> timeseries
+  -> API
+  -> dashboard
+```
+
+The current API adapter ingests normalized events from the existing local feed
+pipeline and exposes the indexer state through `/indexer/*`. The existing
+`/ui/live-token-cards` dashboard endpoint keeps its current response source by
+default. Set `API_INDEXER_PREFER_LIVE_STATE_CARDS=true` only when testing the
+new live-state card adapter.
+
+Indexer endpoints:
+
+- `GET /indexer/status`
+- `GET /indexer/events/recent`
+- `GET /indexer/live-state`
+- `GET /indexer/live-cards`
+- `GET /indexer/timeseries/:mint`
+
+Indexer app commands:
+
+```bash
+pnpm --filter @axi/indexer dev
+pnpm --filter @axi/indexer smoke
+```
+
+Future indexer infrastructure can be started for local development with:
+
+```bash
+docker compose --profile indexer up -d
+```
+
+Roadmap:
+
+1. Connect a managed Yellowstone/LaserStream source.
+2. Add Pump.fun decoder fixtures.
+3. Decode Pump.fun token creation, trades, and migrations.
+4. Write raw trades to ClickHouse.
+5. Write live state to Redis.
+6. Switch dashboard cards to indexer-backed live state.
+7. Add Raydium, Meteora, and Orca decoders.
+
 ## Local Persistence
 
 Paper-mode development data is stored in a local SQLite database:
@@ -780,6 +843,11 @@ Endpoints:
 - `GET /live/tokens`
 - `GET /live/tokens/:mint`
 - `GET /live/events`
+- `GET /indexer/status`
+- `GET /indexer/events/recent`
+- `GET /indexer/live-state`
+- `GET /indexer/live-cards`
+- `GET /indexer/timeseries/:mint`
 - `GET /ui/live-token-cards`
 - `GET /strategy/status`
 - `GET /signals`
@@ -1098,11 +1166,13 @@ does not attach to token cards yet.
 ## Optional Infrastructure
 
 `docker-compose.yml` includes optional Postgres and Redis services for later
-development. They are behind the `infra` profile and are not required to run the
-current API or dashboard.
+development behind the `infra` profile. The `indexer` profile also starts
+Postgres, Redis, and ClickHouse as future indexer infrastructure. None of these
+services are required to run the current API, dashboard, or local SQLite flow.
 
 ```bash
 docker compose --profile infra up -d
+docker compose --profile indexer up -d
 ```
 
 ## Packages
@@ -1111,6 +1181,11 @@ docker compose --profile infra up -d
 - `@axi/scoring`: pure scoring functions and unit tests.
 - `@axi/data-feeds`: feed interfaces plus mock and PumpPortal feed providers,
   including gated token-trade subscription helpers.
+- `@axi/indexer-core`: pure normalized indexer event contracts and utilities.
+- `@axi/event-bus`: typed in-memory indexer event bus with bounded replay.
+- `@axi/live-state`: current-session in-memory live token state from normalized
+  indexer events.
+- `@axi/timeseries`: pure indexer-side trade OHLCV and rolling derivatives.
 - `@axi/token-identity`: local token identity normalization and source
   confidence helpers.
 - `@axi/execution`: in-memory paper execution only.
@@ -1127,6 +1202,7 @@ docker compose --profile infra up -d
   verification/watch targets.
 - `@axi/storage`: local SQLite persistence for paper-mode development.
 - `@axi/api`: Fastify API and local WebSocket broadcaster.
+- `@axi/indexer`: standalone mock-mode indexer skeleton and smoke command.
 - `@axi/dashboard`: Vite React signal dashboard.
 - `@axi/extension`: Chrome MV3 overlay skeleton.
 
@@ -1166,6 +1242,9 @@ docker compose --profile infra up -d
   readiness for metered data billing.
 - `dev/pumpportal-lightning-readiness` contains PumpPortal wallet readiness,
   Lightning status, and dry-run planning with live execution disabled.
+- `dev/indexer-foundation` contains normalized indexer events, the in-memory
+  event bus, live-state store, timeseries package, mock indexer app, optional
+  indexer API endpoints, and the future Docker indexer profile.
 
 Direct Solana RPC verification and watched-address transaction ingestion exist,
 and local market-data normalization and watch orchestration exist, but they are

@@ -8,6 +8,9 @@
     "paths": {
       "@axi/candidates": ["../../packages/candidates/dist/index.d.ts"],
       "@axi/chain-events": ["../../packages/chain-events/dist/index.d.ts"],
+      "@axi/event-bus": ["../../packages/event-bus/dist/index.d.ts"],
+      "@axi/indexer-core": ["../../packages/indexer-core/dist/index.d.ts"],
+      "@axi/live-state": ["../../packages/live-state/dist/index.d.ts"],
       "@axi/shared": ["../../packages/shared/dist/index.d.ts"],
       "@axi/scoring": ["../../packages/scoring/dist/index.d.ts"],
       "@axi/data-feeds": ["../../packages/data-feeds/dist/index.d.ts"],
@@ -19,7 +22,14 @@
       ],
       "@axi/risk": ["../../packages/risk/dist/index.d.ts"],
       "@axi/solana-chain": ["../../packages/solana-chain/dist/index.d.ts"],
-      "@axi/storage": ["../../packages/storage/dist/index.d.ts"]
+      "@axi/storage": ["../../packages/storage/dist/index.d.ts"],
+      "@axi/timeseries": ["../../packages/timeseries/dist/index.d.ts"],
+      "@axi/token-identity": [
+        "../../packages/token-identity/dist/index.d.ts"
+      ],
+      "@axi/watch-orchestrator": [
+        "../../packages/watch-orchestrator/dist/index.d.ts"
+      ]
     }
   },
   "include": ["src", "test"]

@@ -45,6 +45,7 @@ import {
   type StrategySignalExplanation,
   type StrategyStatus,
   type TokenIdentitySummary,
+  type TokenIdentityDataSource,
   type TokenCandidate
 } from "@axi/shared";
 import {
@@ -137,6 +138,12 @@ import {
   type LightningReadinessConfig,
   type LightningReadinessService
 } from "./lightning-readiness-service";
+import {
+  createIndexerAdapter,
+  type IndexerAdapter,
+  type IndexerAdapterOptions
+} from "./indexer-adapter";
+import type { LiveTokenState } from "@axi/live-state";
 
 const logLevelSchema = z.enum([
   "fatal",
@@ -636,6 +643,20 @@ export const apiConfigSchema = z.object({
     .int()
     .positive()
     .default(262144),
+  API_INDEXER_ADAPTER_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  API_INDEXER_LIVE_STATE_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  API_INDEXER_PREFER_LIVE_STATE_CARDS: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  API_INDEXER_RECENT_EVENT_LIMIT: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(1000),
   LOG_LEVEL: logLevelSchema.default("info")
 });
 
@@ -699,6 +720,7 @@ export type ApiServerOptions = {
   pumpPortalWallets?: Partial<PumpPortalWalletsConfig> &
     Pick<PumpPortalWalletsServiceOptions, "solanaClient">;
   lightning?: Partial<LightningReadinessConfig>;
+  indexer?: IndexerAdapterOptions;
   realDataRequired?: boolean;
   signalIntervalMs?: number;
   startFeed?: boolean;
@@ -726,6 +748,7 @@ export type ApiServer = {
   pumpPortalDataWallet: PumpPortalDataWalletService;
   pumpPortalWallets: PumpPortalWalletsService;
   lightningReadiness: LightningReadinessService;
+  indexerAdapter: IndexerAdapter;
   liveTokens: LiveTokenService;
   tokenIdentity: TokenIdentityService;
 };
@@ -897,6 +920,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     mode: dataFeedMode,
     provider: feed.name
   });
+  const indexerAdapter = createIndexerAdapter(options.indexer);
   const signals = new Map<string, OverlaySignal>();
   const riskSnapshots = new Map<string, RiskSnapshot>();
   const lightningReadiness = createLightningReadinessService({
@@ -950,6 +974,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       lightningReadiness: lightningReadiness.getStatus(),
       liveTradeTracking: getLiveTradeTrackingStatus(),
       liveCardEnrichment: getLiveCardEnrichmentStatus(),
+      indexer: indexerAdapter.getStatus(),
+      indexerLiveStateTokenCount:
+        indexerAdapter.getStatus().liveState.tokenCount,
+      indexerRecentEventCount:
+        indexerAdapter.getStatus().eventBus.publishedCount,
       dataFeedMode,
       dataFeed: options.dataFeed ?? "pumpportal",
       dataFeedReasonCodes:
@@ -1024,6 +1053,25 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     feed: getFeedStatus()
   }));
 
+  app.get("/indexer/status", async () => indexerAdapter.getStatus());
+
+  app.get("/indexer/events/recent", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return indexerAdapter.getRecentEvents(query.limit);
+  });
+
+  app.get("/indexer/live-state", async () => ({
+    stats: indexerAdapter.getStatus().liveState,
+    tokens: indexerAdapter.getLiveCards()
+  }));
+
+  app.get("/indexer/live-cards", async () => indexerAdapter.getLiveCards());
+
+  app.get("/indexer/timeseries/:mint", async (request) => {
+    const params = mintParamSchema.parse(request.params);
+    return indexerAdapter.getTimeseries(params.mint);
+  });
+
   app.get("/live/tokens", async () => liveTokens.getLiveTokens());
 
   app.get("/live/tokens/:mint", async (request, reply) => {
@@ -1045,7 +1093,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     return liveTokens.getLiveFeedEvents(query.limit);
   });
 
-  app.get("/ui/live-token-cards", async () => buildLiveTokenCards());
+  app.get("/ui/live-token-cards", async () =>
+    indexerAdapter.getStatus().preferLiveStateCards
+      ? buildIndexerBackedLiveTokenCards()
+      : buildLiveTokenCards()
+  );
 
   app.get("/strategy/status", async () => getStrategyStatus());
 
@@ -2092,6 +2144,187 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     });
   }
 
+  function buildIndexerBackedLiveTokenCards(): LiveTokenCardViewModel[] {
+    const nowMs = Date.now();
+
+    return indexerAdapter.getLiveCards().map((token) => {
+      const timeseries = indexerAdapter.getTimeseries(token.mint);
+      const window1s = timeseries.windows["1s"];
+      const window5s = timeseries.windows["5s"];
+      const window10s = timeseries.windows["10s"];
+      const window30s = timeseries.windows["30s"];
+      const window60s = timeseries.windows["60s"];
+      const latestEventMs = Date.parse(token.lastSeenAt);
+      const dataFreshnessMs = Number.isFinite(latestEventMs)
+        ? Math.max(0, nowMs - latestEventMs)
+        : null;
+      const dataCompleteness = toLiveCardCompleteness(token);
+      const sourceWarnings = uniqueReasonCodes([
+        ...token.dataCompleteness.unavailableFields.map(
+          (field) => `${field.toUpperCase()}_UNAVAILABLE`
+        ),
+        "INDEXER_LIVE_STATE_CARD",
+        "PAPER_ONLY"
+      ]);
+      const latestPriceSol = numberOrNull(token.market.priceSol);
+      const latestPriceUsd = numberOrNull(token.market.priceUsd);
+      const strategy = createIndexerStrategyExplanation(token);
+
+      return {
+        mint: token.mint,
+        shortMint: token.shortMint,
+        name: token.name,
+        symbol: token.symbol,
+        title: token.title ?? token.displayName,
+        displayName: token.displayName,
+        imageUri: token.identity.imageUri,
+        identityConfidence: token.name || token.symbol ? "low" : "none",
+        identitySource: toTokenIdentityDataSource(token.identity.source),
+        identityResolved: Boolean(token.name || token.symbol),
+        metadataUri: token.identity.metadataUri,
+        source: token.source,
+        sourceMode: token.sourceMode,
+        realData: token.sourceMode === "real",
+        eventTypes: token.eventTypes,
+        firstSeenAt: token.firstSeenAt,
+        lastSeenAt: token.lastSeenAt,
+        ageSeconds: token.ageSeconds,
+        latestEventAt: token.lastSeenAt,
+        latestSignature: token.latestSignature,
+        liveSessionOnly: true,
+        stale: dataFreshnessMs !== null && dataFreshnessMs > 30_000,
+        dataFreshnessMs,
+        priceSol: latestPriceSol,
+        priceUsd: latestPriceUsd,
+        priceQuote: latestPriceSol,
+        quoteAsset: latestPriceSol !== null ? "SOL" : null,
+        marketCapUsd: token.market.marketCapUsd,
+        fdvUsd: token.market.fdvUsd,
+        liquidityUsd: token.market.liquidityUsd,
+        volume1sUsd: numberOrNull(token.market.volumeUsd1s),
+        volume3sUsd: null,
+        volume5sUsd: numberOrNull(token.market.volumeUsd5s),
+        volume10sUsd: numberOrNull(token.market.volumeUsd10s),
+        volume30sUsd: null,
+        volume60sUsd: numberOrNull(token.market.volumeUsd60s),
+        volume1sSol: numberOrNull(window1s.volumeSol),
+        volume3sSol: null,
+        volume5sSol: numberOrNull(window5s.volumeSol),
+        volume10sSol: numberOrNull(window10s.volumeSol),
+        volume30sSol: numberOrNull(window30s.volumeSol),
+        volume60sSol: numberOrNull(window60s.volumeSol),
+        buyVolume10s: numberOrNull(window10s.buyVolumeSol),
+        sellVolume10s: numberOrNull(window10s.sellVolumeSol),
+        netVolume10s: numberOrNull(
+          window10s.buyVolumeSol - window10s.sellVolumeSol
+        ),
+        buySellRatio: token.flow.buySellRatio,
+        netBuyPressure: token.flow.netBuyPressure,
+        uniqueBuyers1s: numberOrNull(window1s.uniqueBuyers),
+        uniqueBuyers5s: numberOrNull(window5s.uniqueBuyers),
+        uniqueBuyers10s: numberOrNull(window10s.uniqueBuyers),
+        uniqueSellers10s: numberOrNull(window10s.uniqueSellers),
+        uniqueTraders10s: numberOrNull(
+          window10s.uniqueBuyers + window10s.uniqueSellers
+        ),
+        buyTradeCount10s: numberOrNull(window10s.buyCount),
+        sellTradeCount10s: numberOrNull(window10s.sellCount),
+        totalTradeCount10s: numberOrNull(window10s.tradeCount),
+        holders: token.holders.holderCount,
+        holderCount: token.holders.holderCount,
+        topHolderPct: token.holders.topHolderPct,
+        top10HolderPct: token.holders.top10HolderPct,
+        devHolderPct: null,
+        holderDataSource: token.holders.source,
+        holderDataFreshnessMs: null,
+        volumeVelocityUsdPerSec: null,
+        volumeAccelerationUsdPerSec2: null,
+        volumeVelocitySolPerSec: numberOrNull(
+          timeseries.rollingStats.volumeVelocitySolPerSec
+        ),
+        volumeAccelerationSolPerSec2: numberOrNull(
+          timeseries.rollingStats.volumeAccelerationSolPerSec2
+        ),
+        priceVelocityPctPerSec: null,
+        priceAccelerationPctPerSec2: null,
+        priceSolVelocityPctPerSec: numberOrNull(
+          timeseries.rollingStats.priceVelocityPctPerSec
+        ),
+        priceSolAccelerationPctPerSec2: numberOrNull(
+          timeseries.rollingStats.priceAccelerationPctPerSec2
+        ),
+        buyerVelocityPerSec: numberOrNull(
+          timeseries.rollingStats.buyerVelocityPerSec
+        ),
+        buyerAccelerationPerSec2: numberOrNull(
+          timeseries.rollingStats.buyerAccelerationPerSec2
+        ),
+        holderVelocityPerSec: null,
+        holderAccelerationPerSec2: null,
+        sampleCount: window60s.tradeCount,
+        validMetricSampleCount: window60s.tradeCount,
+        insufficientMetrics: window60s.tradeCount < 3,
+        calculationConfidence: token.latestTrade?.confidence ?? "low",
+        calculationReasonCodes: uniqueReasonCodes([
+          "INDEXER_LIVE_STATE_CARD",
+          ...(window60s.tradeCount < 3 ? ["INSUFFICIENT_TRADE_METRICS"] : []),
+          "HOLDER_TIME_SERIES_UNAVAILABLE"
+        ]),
+        riskLevel: "unknown",
+        riskScore: null,
+        hardReject: false,
+        riskReasonCodes: [],
+        topRiskWarnings: [],
+        mintAuthorityActive: null,
+        freezeAuthorityActive: null,
+        liquidityRisk: "unknown",
+        concentrationRisk: "unknown",
+        washTradingSuspected: null,
+        honeypotSuspected: null,
+        action: "IGNORE",
+        lifecycleState: "new",
+        score: 0,
+        scoreLabel: "0/100",
+        signalStrength: "none",
+        combinedReasonCodes: uniqueReasonCodes([
+          ...token.reasonCodes,
+          "INDEXER_LIVE_STATE_CARD",
+          "PAPER_ONLY"
+        ]),
+        buyReady: false,
+        rejectReason: window60s.tradeCount < 3 ? "INSUFFICIENT_TRADE_METRICS" : null,
+        strategyName: "paper-momentum-risk-v1",
+        signalUpdatedAt: null,
+        strategy,
+        rawEventCount: token.rawEventCount,
+        actualTradeEventCount: window60s.tradeCount,
+        marketObservationCount: 0,
+        chainVerificationStatus: "not_checked",
+        feedProvider: token.source,
+        dataSourceWarnings: sourceWarnings,
+        dataCompleteness,
+        tradeTrackingState: token.latestTrade ? "tracking" : "not_tracked",
+        tradeTrackingReasonCodes: uniqueReasonCodes([
+          ...(token.latestTrade ? ["INDEXER_TRADE_TRACKED"] : []),
+          "INDEXER_LIVE_STATE_CARD",
+          "PAPER_ONLY"
+        ]),
+        latestTradeAt: token.latestTrade?.at ?? null,
+        latestTradeAgeSeconds: token.latestTrade
+          ? Math.max(0, Math.round((nowMs - Date.parse(token.latestTrade.at)) / 1000))
+          : null,
+        tradeEventCount: window60s.tradeCount,
+        enrichmentStatus: token.dataCompleteness.label === "enriched" ? "partial" : "disabled",
+        enrichmentSource: null,
+        pairAddress: null,
+        dexId: null,
+        missingFields: token.dataCompleteness.missingFields,
+        unavailableFields: token.dataCompleteness.unavailableFields,
+        lastUpdatedAt: token.lastSeenAt
+      };
+    });
+  }
+
   function getStrategyStatus(): StrategyStatus {
     return {
       strategyName: "paper-momentum-risk-v1",
@@ -2578,6 +2811,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       event.type === "trade" && event.source === "pumpportal"
         ? actualData.handlePumpPortalTradeEvent(event)
         : undefined;
+    indexerAdapter.ingestFeedEvent(event);
     const identity = tokenIdentity.ingestFeedEvent(event);
     const identitySummary = toTokenIdentitySummary(identity);
 
@@ -3228,6 +3462,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     emitFeedEvent: handleFeedEvent,
     feed,
     getSignals: () => Array.from(signals.values()),
+    indexerAdapter,
     metrics: metricsEngine,
     pumpPortalDataWallet,
     pumpPortalWallets,
@@ -3241,6 +3476,84 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     storage,
     tokenIdentity
   };
+}
+
+function toLiveCardCompleteness(token: LiveTokenState): LiveCardDataCompleteness {
+  const unavailableFieldCount = token.dataCompleteness.unavailableFields.length;
+  const missingCriticalFields = token.dataCompleteness.missingFields;
+
+  return {
+    requiredFieldCount: 4,
+    availableFieldCount: Math.round(
+      (token.dataCompleteness.completenessPct / 100) * 4
+    ),
+    unavailableFieldCount,
+    completenessPct: token.dataCompleteness.completenessPct,
+    missingCriticalFields,
+    missingOptionalFields: token.dataCompleteness.unavailableFields,
+    dataQualityLabel: token.dataCompleteness.label,
+    reasonCodes: uniqueReasonCodes([
+      `DATA_QUALITY_${token.dataCompleteness.label.toUpperCase()}`,
+      "INDEXER_LIVE_STATE_CARD"
+    ])
+  };
+}
+
+function createIndexerStrategyExplanation(
+  token: LiveTokenState
+): StrategySignalExplanation {
+  return {
+    strategyName: "paper-momentum-risk-v1",
+    score: 0,
+    action: "IGNORE",
+    signalStrength: "none",
+    components: {
+      momentumScore: 0,
+      qualityScore: 0,
+      riskPenalty: 0,
+      liquidityPenalty: 0,
+      concentrationPenalty: 0,
+      missingDataPenalty:
+        token.dataCompleteness.missingFields.length +
+        token.dataCompleteness.unavailableFields.length
+    },
+    positiveDrivers: [],
+    negativeDrivers: [],
+    blockers: [
+      {
+        reasonCode: "INDEXER_FOUNDATION_ONLY",
+        label: "Indexer foundation only",
+        value: true
+      }
+    ],
+    calculationInputs: {
+      volumeVelocity: null,
+      volumeAcceleration: null,
+      priceVelocity: null,
+      priceAcceleration: null,
+      buyerVelocity: null,
+      buyerAcceleration: null,
+      holderVelocity: null,
+      holderAcceleration: null
+    },
+    lastUpdatedAt: token.lastSeenAt
+  };
+}
+
+function toTokenIdentityDataSource(source: string): TokenIdentityDataSource {
+  if (
+    source === "pumpportal" ||
+    source === "solana_metadata" ||
+    source === "offchain_metadata" ||
+    source === "dexscreener" ||
+    source === "jupiter_price" ||
+    source === "manual" ||
+    source === "mock"
+  ) {
+    return source;
+  }
+
+  return "unknown";
 }
 
 function createRiskInput(options: {
