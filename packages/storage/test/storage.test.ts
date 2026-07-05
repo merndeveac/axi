@@ -33,8 +33,15 @@ import {
   listLiveFeedEventsBySession,
   listLightningTradePlans,
   listLightningTradePlansByMint,
+  listLaunchCandidates,
+  listLaunchScoreSnapshots,
+  listLaunchScoreSnapshotsByMint,
+  listLaunchTrackingEvents,
+  listLaunchTrackingSessions,
+  listLaunchTradeSamplesByMint,
   listPumpPortalWalletStatusSnapshots,
   getStorageStats,
+  getLaunchCandidate,
   initStorage,
   listCandidateDecisionsForReplay,
   listChainVerifications,
@@ -78,6 +85,11 @@ import {
   saveFeedEvent,
   saveLiveFeedEvent,
   saveLightningTradePlan,
+  saveLaunchCandidate,
+  saveLaunchScoreSnapshot,
+  saveLaunchTrackingEvent,
+  saveLaunchTrackingSession,
+  saveLaunchTradeSample,
   saveMarketObservation,
   saveActualDataSession,
   saveActualDataSubscription,
@@ -126,6 +138,11 @@ describe("@axi/storage", () => {
     expect(stats.watchActionCount).toBe(0);
     expect(stats.lightningTradePlanCount).toBe(0);
     expect(stats.pumpPortalWalletStatusSnapshotCount).toBe(0);
+    expect(stats.launchCandidateCount).toBe(0);
+    expect(stats.launchTradeSampleCount).toBe(0);
+    expect(stats.launchScoreSnapshotCount).toBe(0);
+    expect(stats.launchTrackingEventCount).toBe(0);
+    expect(stats.launchTrackingSessionCount).toBe(0);
     expect(stats.riskSnapshotCount).toBe(0);
     expect(stats.candidateDecisionCount).toBe(0);
   });
@@ -609,6 +626,96 @@ describe("@axi/storage", () => {
     expect(listed[0]?.dataWalletBalanceSol).toBe(0.05);
     expect(serialized).not.toContain("api-key-value");
     expect(serialized).not.toContain("private-key-value");
+  });
+
+  it("launch scanner records can be saved, listed, and counted", () => {
+    initStorage({ databasePath });
+    const candidate = saveLaunchCandidate({
+      mint,
+      source: "pumpportal",
+      eventType: "new_token",
+      name: "Mock Token",
+      symbol: "MOCK",
+      title: "MOCK - Mock Token",
+      status: "discovery_only",
+      reasonCodes: ["LAUNCH_DISCOVERED", "LAUNCH_DISCOVERY_ONLY"],
+      payload: { phase: "discovery_only" },
+      discoveredAt: "2026-01-01T00:00:00.000Z",
+      latestEventAt: "2026-01-01T00:00:00.000Z",
+      createdAt: "2026-01-01T00:00:00.000Z"
+    });
+    const sample = saveLaunchTradeSample({
+      mint,
+      signature: "launch-sig-1",
+      side: "buy",
+      trader: "Buyer1111111111111111111111111111111111111",
+      priceSol: 0.00042,
+      volumeSol: 1.5,
+      tokenAmount: 3571.42,
+      confidence: "high",
+      usableForMetrics: true,
+      reasonCodes: ["PUMPPORTAL_TOKEN_TRADE", "LAUNCH_TRADE_SAMPLE"],
+      payload: { source: "pumpportal" },
+      createdAt: "2026-01-01T00:00:02.000Z"
+    });
+    const snapshot = saveLaunchScoreSnapshot({
+      mint,
+      score: 76,
+      label: "ripping",
+      phase: "ripping",
+      tradeSampleCount: 8,
+      priceSol: 0.0005,
+      volumeSol: 5.5,
+      reasonCodes: ["LAUNCH_RIPPING"],
+      payload: { score: 76 },
+      evaluatedAt: "2026-01-01T00:00:10.000Z",
+      createdAt: "2026-01-01T00:00:10.000Z"
+    });
+    const trackingEvent = saveLaunchTrackingEvent({
+      mint,
+      action: "track",
+      status: "subscribed",
+      reason: "manual",
+      reasonCodes: ["PUMPPORTAL_LAUNCH_TRACKING_SUBSCRIBED"],
+      payload: { mint },
+      createdAt: "2026-01-01T00:00:01.000Z"
+    });
+    const session = saveLaunchTrackingSession({
+      provider: "pumpportal",
+      status: "running",
+      trackedTokenCount: 1,
+      totalEventCount: 8,
+      estimatedCostSol: 0.000008,
+      budgetLimitSol: 0.001,
+      reasonCodes: ["RUNTIME_PUMPPORTAL_FIRST"],
+      payload: { provider: "pumpportal" },
+      startedAt: "2026-01-01T00:00:00.000Z",
+      stoppedAt: null,
+      createdAt: "2026-01-01T00:00:00.000Z"
+    });
+    const stats = getStorageStats();
+
+    expect(candidate.id).toBeGreaterThan(0);
+    expect(getLaunchCandidate(mint)?.status).toBe("discovery_only");
+    expect(listLaunchCandidates(10)[0]?.mint).toBe(mint);
+    expect(sample.id).toBeGreaterThan(0);
+    expect(listLaunchTradeSamplesByMint(mint, 10)[0]?.signature).toBe(
+      "launch-sig-1"
+    );
+    expect(snapshot.id).toBeGreaterThan(0);
+    expect(listLaunchScoreSnapshots(10)[0]?.score).toBe(76);
+    expect(listLaunchScoreSnapshotsByMint(mint, 10)[0]?.phase).toBe(
+      "ripping"
+    );
+    expect(trackingEvent.id).toBeGreaterThan(0);
+    expect(listLaunchTrackingEvents(10)[0]?.action).toBe("track");
+    expect(session.id).toBeGreaterThan(0);
+    expect(listLaunchTrackingSessions(10)[0]?.provider).toBe("pumpportal");
+    expect(stats.launchCandidateCount).toBe(1);
+    expect(stats.launchTradeSampleCount).toBe(1);
+    expect(stats.launchScoreSnapshotCount).toBe(1);
+    expect(stats.launchTrackingEventCount).toBe(1);
+    expect(stats.launchTrackingSessionCount).toBe(1);
   });
 
   it("storage stats return counts", () => {

@@ -79,6 +79,10 @@ import {
   saveRiskSnapshot,
   saveSignal,
   listActualDataSubscriptions,
+  listLaunchCandidates,
+  listLaunchScoreSnapshots,
+  listLaunchTrackingEvents,
+  listLaunchTrackingSessions,
   listPumpPortalTokenTradeEvents,
   listPumpPortalTokenTradeEventsByMint,
   listTokenIdentities,
@@ -150,6 +154,12 @@ import {
   type LightningReadinessConfig,
   type LightningReadinessService
 } from "./lightning-readiness-service";
+import {
+  createLaunchScannerConfig,
+  createLaunchScannerService,
+  type LaunchScannerConfig,
+  type LaunchScannerService
+} from "./launch-scanner-service";
 import {
   createIndexerAdapter,
   type IndexerAdapter,
@@ -224,6 +234,9 @@ type LiveCardEnrichmentRecord = {
 export const apiConfigSchema = z.object({
   NODE_ENV: z.string().default("development"),
   BOT_MODE: BotModeSchema.default("paper"),
+  AXI_RUNTIME_MODE: z
+    .enum(["pumpportal_first", "standard"])
+    .default("pumpportal_first"),
   DATA_FEED_MODE: z.enum(["live", "none", "mock", "replay"]).default("live"),
   DATA_FEED: z.enum(["none", "mock", "pumpportal"]).default("pumpportal"),
   ALLOW_MOCK_DATA: z.preprocess(parseBooleanEnv, z.boolean()).default(false),
@@ -504,6 +517,68 @@ export const apiConfigSchema = z.object({
     .preprocess(parseBooleanEnv, z.boolean())
     .default(true),
   PUMPPORTAL_SUBSCRIBE_MIGRATION: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  PUMPPORTAL_LIVE_DISCOVERY_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  PUMPPORTAL_LAUNCH_TRACKING_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  PUMPPORTAL_LAUNCH_TRACKING_ACK_METERED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  PUMPPORTAL_LAUNCH_TRACKING_MODE: z
+    .enum(["manual", "newest", "scored", "qualified"])
+    .default("manual"),
+  PUMPPORTAL_LAUNCH_TRACKING_MAX_CONCURRENT: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(3),
+  PUMPPORTAL_LAUNCH_TRACKING_INITIAL_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(30000),
+  PUMPPORTAL_LAUNCH_TRACKING_EXTENDED_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(300000),
+  PUMPPORTAL_LAUNCH_TRACKING_MAX_EVENTS_PER_TOKEN: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(250),
+  PUMPPORTAL_LAUNCH_TRACKING_MAX_EVENTS_PER_SESSION: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(1000),
+  PUMPPORTAL_LAUNCH_TRACKING_MAX_SESSION_COST_SOL: z.coerce
+    .number()
+    .positive()
+    .default(0.001),
+  PUMPPORTAL_LAUNCH_TRACKING_MIN_SCORE_TO_EXTEND: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .default(45),
+  PUMPPORTAL_LAUNCH_TRACKING_MIN_SCORE_TO_RIP: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .default(75),
+  PUMPPORTAL_LAUNCH_TRACKING_REQUIRE_DATA_WALLET_READY: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  PUMPPORTAL_LAUNCH_TRACKING_AUTO_UNSUBSCRIBE_ON_HARD_REJECT: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  PUMPPORTAL_LAUNCH_TRACKING_AUTO_UNSUBSCRIBE_ON_LOW_SCORE: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(true),
   PUMPPORTAL_TOKEN_TRADES_ENABLED: z
@@ -858,6 +933,7 @@ export type ApiServerOptions = {
   port?: number;
   pumpPortal?: PumpPortalFeedProviderOptions | undefined;
   actualData?: ActualDataServiceConfig;
+  launchScanner?: Partial<LaunchScannerConfig>;
   liveTradeTracking?: Partial<LiveTradeTrackingConfig>;
   liveCardEnrichment?: Partial<LiveCardEnrichmentConfig>;
   pumpPortalDataWallet?: Partial<PumpPortalDataWalletConfig> &
@@ -890,6 +966,7 @@ export type ApiServer = {
   chainVerifier: ChainVerifierService;
   watchOrchestration: WatchOrchestrationService;
   actualData: ActualDataService;
+  launchScanner: LaunchScannerService;
   pumpPortalDataWallet: PumpPortalDataWalletService;
   pumpPortalWallets: PumpPortalWalletsService;
   lightningReadiness: LightningReadinessService;
@@ -981,6 +1058,17 @@ const watchPlanBodySchema = z.object({
 const actualDataSubscribeBodySchema = z.object({
   mint: z.string().min(1),
   reason: z.string().min(1).default("manual")
+});
+const launchTrackBodySchema = z.object({
+  mint: z.string().min(1),
+  reason: z.string().min(1).default("manual_launch")
+});
+const launchEvaluateBodySchema = z.object({
+  mint: z.string().min(1)
+});
+const launchCostQuerySchema = z.object({
+  avgEventsPerToken: z.coerce.number().positive().default(20),
+  tokensPerHour: z.coerce.number().positive().default(500)
 });
 const liveTradeTrackingBodySchema = z.object({
   mint: z.string().min(1),
@@ -1112,6 +1200,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const indexerAdapter = createIndexerAdapter(options.indexer);
   const signals = new Map<string, OverlaySignal>();
   const riskSnapshots = new Map<string, RiskSnapshot>();
+  const launchScanner = createLaunchScannerService({
+    actualData,
+    config: options.launchScanner ?? createLaunchScannerConfig(),
+    getRiskSnapshot: (mint) => riskSnapshots.get(mint),
+    providerName: feed.name
+  });
   const lightningReadiness = createLightningReadinessService({
     config: createLightningReadinessConfig(options.lightning),
     wallets: pumpPortalWallets,
@@ -1158,6 +1252,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       actualData: actualData.getStatus(),
       actualDataSessionCount: stats.actualDataSessionCount,
       actualDataSubscriptionCount: stats.actualDataSubscriptionCount,
+      launchScanner: launchScanner.getStatus(),
+      launchCandidateCount: stats.launchCandidateCount,
+      launchScoreSnapshotCount: stats.launchScoreSnapshotCount,
+      launchTradeSampleCount: stats.launchTradeSampleCount,
+      launchTrackingEventCount: stats.launchTrackingEventCount,
+      launchTrackingSessionCount: stats.launchTrackingSessionCount,
       dataWallet: dataWalletStatus,
       pumpPortalWallets: pumpPortalWalletsStatus,
       lightningReadiness: lightningReadiness.getStatus(),
@@ -1412,6 +1512,111 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       ? buildIndexerBackedLiveTokenCards()
       : buildLiveTokenCards()
   );
+
+  app.get("/launch/status", async () => launchScanner.getStatus());
+
+  app.get("/launch/cards", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return launchScanner.getCandidates(query.limit);
+  });
+
+  app.get("/launch/candidates", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return {
+      current: launchScanner.getCandidates(query.limit),
+      persisted: listLaunchCandidates(query.limit),
+      status: launchScanner.getStatus()
+    };
+  });
+
+  app.get("/launch/candidates/:mint", async (request, reply) => {
+    const params = mintParamSchema.parse(request.params);
+    const candidate = launchScanner.getCandidate(params.mint);
+
+    if (!candidate) {
+      return reply.code(404).send({
+        error: "not_found",
+        message: `No current-session launch candidate tracked for mint ${params.mint}`,
+        persisted: listLaunchCandidates(100).find(
+          (item) => item.mint === params.mint
+        ) ?? null,
+        paperOnly: true
+      });
+    }
+
+    return candidate;
+  });
+
+  app.get("/launch/scores", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return {
+      current: launchScanner.getScores(query.limit),
+      persisted: listLaunchScoreSnapshots(query.limit),
+      status: launchScanner.getStatus()
+    };
+  });
+
+  app.get("/launch/tracked", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return {
+      current: launchScanner.getTracked(),
+      events: listLaunchTrackingEvents(query.limit),
+      sessions: listLaunchTrackingSessions(query.limit),
+      status: launchScanner.getStatus()
+    };
+  });
+
+  app.post("/launch/evaluate", async (request, reply) => {
+    const body = launchEvaluateBodySchema.parse(request.body);
+    const snapshot = launchScanner.evaluateMint(body.mint);
+
+    if (!snapshot) {
+      return reply.code(404).send({
+        error: "not_found",
+        message: `No current-session launch candidate tracked for mint ${body.mint}`,
+        paperOnly: true
+      });
+    }
+
+    return {
+      paperOnly: true,
+      snapshot,
+      tradingDisabled: true
+    };
+  });
+
+  app.post("/launch/track", async (request, reply) => {
+    const body = launchTrackBodySchema.parse(request.body);
+    await pumpPortalDataWallet.refreshBalance();
+
+    try {
+      return launchScanner.trackMint(body.mint, body.reason);
+    } catch (error) {
+      if (error instanceof ActualDataServiceError) {
+        return reply.code(error.statusCode).send({
+          error: error.code,
+          message: error.message,
+          launch: launchScanner.getStatus(),
+          paperOnly: true
+        });
+      }
+
+      throw error;
+    }
+  });
+
+  app.delete("/launch/track/:mint", async (request) => {
+    const params = mintParamSchema.parse(request.params);
+    return launchScanner.untrackMint(params.mint, "manual_delete");
+  });
+
+  app.get("/launch/cost", async (request) => {
+    const query = launchCostQuerySchema.parse(request.query);
+    return launchScanner.estimateCost({
+      avgEventsPerToken: query.avgEventsPerToken,
+      tokensPerHour: query.tokensPerHour
+    });
+  });
 
   app.get("/strategy/status", async () => getStrategyStatus());
 
@@ -1997,6 +2202,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
     feedStarted = true;
     actualData.start();
+    launchScanner.start();
     void feed.start(handleFeedEvent);
     void chainEvents.start();
   }
@@ -2007,6 +2213,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     }
 
     feedStarted = false;
+    launchScanner.stop();
     actualData.stop();
     await feed.stop();
     await chainEvents.stop();
@@ -2018,10 +2225,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const noFeedReasonCodes =
       feed instanceof NoFeedProvider ? feed.reasonCodes : [];
     const reasonCodes = uniqueReasonCodes([
+      "RUNTIME_PUMPPORTAL_FIRST",
+      "MANAGED_STREAM_DISABLED_FOR_RUNTIME",
       ...(dataFeedMode === "live" ? ["LIVE_FEED_EXPECTED"] : []),
       ...(dataFeedMode === "none" ? ["NO_FEED_MODE"] : []),
       ...(feed.name === "mock" ? ["MOCK_EXPLICITLY_ENABLED"] : []),
       ...(feed.name === "mock-blocked" ? ["MOCK_RUNTIME_BLOCKED"] : []),
+      ...(feed.name === "pumpportal"
+        ? ["PUMPPORTAL_LIVE_DISCOVERY_ACTIVE"]
+        : ["PUMPPORTAL_LIVE_DISCOVERY_OFFLINE"]),
       "HISTORICAL_MOCK_ROWS_HIDDEN",
       ...(pumpPortalStatus?.reasonCodes ?? noFeedReasonCodes)
     ]);
@@ -2059,6 +2271,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const feedStatus = getFeedStatus();
     const liveEvents = liveTokens.getLiveFeedEvents(1000);
     const liveTradeTrackingStatus = getLiveTradeTrackingStatus();
+    const launchStatus = launchScanner.getStatus();
 
     return liveTokens.getLiveTokens().map((token) => {
       const candidate = candidateEngine.getCandidate(token.mint);
@@ -2072,6 +2285,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       const score = candidate?.latestScore;
       const actualDataSummary = actualData.getCandidateSummary(token.mint);
       const tradeTracking = getLiveTradeTrackingForMint(token.mint);
+      const launchCandidate = launchScanner.getCandidate(token.mint);
+      const launchSnapshot = launchCandidate?.snapshot;
       const enrichment = liveCardEnrichments.get(token.mint);
       const marketObservations = chainEvents.getMarketObservationsByMint(
         token.mint,
@@ -2174,6 +2389,18 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       const hardReject =
         decision?.hardReject ?? riskSnapshot?.hardReject ?? false;
       const insufficientMetrics = metrics?.insufficientMetrics ?? true;
+      const launchBuyReadyPaper =
+        launchSnapshot !== undefined &&
+        launchSnapshot.score >= launchStatus.minScoreToRip &&
+        (launchSnapshot.phase === "hot" ||
+          launchSnapshot.phase === "ripping") &&
+        launchSnapshot.tradeSampleCount >= 3 &&
+        !hardReject &&
+        !launchSnapshot.blockers.includes("HARD_REJECT");
+      const launchMissingDataReasons =
+        launchSnapshot?.blockers.filter(
+          (blocker) => blocker.includes("DATA") || blocker.includes("TRADE")
+        ) ?? ["PUMPPORTAL_LAUNCH_SCANNER_UNAVAILABLE"];
       const signalStrength = getSignalStrength({
         action,
         hardReject,
@@ -2441,6 +2668,70 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         latestTradeAt: tradeTracking.latestTradeAt,
         latestTradeAgeSeconds: tradeTracking.latestTradeAgeSeconds,
         tradeEventCount: tradeTracking.tradeEventCount,
+        launchAgeSeconds: launchSnapshot?.ageSeconds ?? null,
+        launchPhase: launchSnapshot?.phase ?? "discovery_only",
+        launchScore: launchSnapshot?.score ?? 0,
+        launchScoreLabel: launchSnapshot
+          ? `${launchSnapshot.score}/100 ${launchSnapshot.label}`
+          : "0/100 none",
+        launchBuyReadyPaper,
+        launchTradeSampleCount: launchSnapshot?.tradeSampleCount ?? 0,
+        launchPriceSol: launchSnapshot?.priceSol ?? null,
+        launchWindows: launchSnapshot?.windows ?? null,
+        launchDerivatives: launchSnapshot?.derivatives ?? null,
+        launchTrackingState:
+          launchCandidate?.tracking.state ?? "not_tracked",
+        launchVolume5sSol:
+          numberOrNull(launchSnapshot?.windows["5s"].volumeSol) ?? null,
+        launchVolume10sSol:
+          numberOrNull(launchSnapshot?.windows["10s"].volumeSol) ?? null,
+        launchVolume30sSol:
+          numberOrNull(launchSnapshot?.windows["30s"].volumeSol) ?? null,
+        launchVolume2mSol:
+          numberOrNull(launchSnapshot?.windows["2m"].volumeSol) ?? null,
+        launchVolume5mSol:
+          numberOrNull(launchSnapshot?.windows["5m"].volumeSol) ?? null,
+        launchBuyCount10s:
+          numberOrNull(launchSnapshot?.windows["10s"].buyCount) ?? null,
+        launchSellCount10s:
+          numberOrNull(launchSnapshot?.windows["10s"].sellCount) ?? null,
+        launchUniqueBuyers10s:
+          numberOrNull(launchSnapshot?.windows["10s"].uniqueBuyers) ?? null,
+        launchUniqueSellers10s:
+          numberOrNull(launchSnapshot?.windows["10s"].uniqueSellers) ?? null,
+        launchNetBuyPressure10s:
+          numberOrNull(launchSnapshot?.windows["10s"].netBuyPressure) ?? null,
+        launchPriceChange10sPct:
+          numberOrNull(launchSnapshot?.windows["10s"].priceChangePct) ?? null,
+        launchVolumeVelocitySolPerSec:
+          numberOrNull(launchSnapshot?.derivatives.volumeVelocitySolPerSec) ??
+          null,
+        launchVolumeAccelerationSolPerSec2:
+          numberOrNull(
+            launchSnapshot?.derivatives.volumeAccelerationSolPerSec2
+          ) ?? null,
+        launchPriceVelocityPctPerSec:
+          numberOrNull(launchSnapshot?.derivatives.priceVelocityPctPerSec) ??
+          null,
+        launchPriceAccelerationPctPerSec2:
+          numberOrNull(
+            launchSnapshot?.derivatives.priceAccelerationPctPerSec2
+          ) ?? null,
+        launchBuyerVelocityPerSec:
+          numberOrNull(launchSnapshot?.derivatives.buyerVelocityPerSec) ??
+          null,
+        launchBuyerAccelerationPerSec2:
+          numberOrNull(launchSnapshot?.derivatives.buyerAccelerationPerSec2) ??
+          null,
+        launchDrivers: launchSnapshot?.drivers ?? [],
+        launchBlockers: launchSnapshot?.blockers ?? [],
+        launchReasonCodes: uniqueReasonCodes([
+          ...(launchCandidate?.reasonCodes ?? []),
+          ...(launchSnapshot?.reasonCodes ?? [])
+        ]),
+        launchMissingDataReasons,
+        dataCompletenessLabel: dataCompleteness.dataQualityLabel,
+        missingCriticalFields: dataCompleteness.missingCriticalFields,
         enrichmentStatus,
         enrichmentSource: enrichment?.source ?? null,
         pairAddress: enrichment?.pairAddress ?? null,
@@ -2628,6 +2919,42 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           ? Math.max(0, Math.round((nowMs - Date.parse(token.latestTrade.at)) / 1000))
           : null,
         tradeEventCount: window60s.tradeCount,
+        launchAgeSeconds: null,
+        launchPhase: "discovery_only",
+        launchScore: 0,
+        launchScoreLabel: "0/100 none",
+        launchBuyReadyPaper: false,
+        launchTradeSampleCount: 0,
+        launchPriceSol: null,
+        launchWindows: null,
+        launchDerivatives: null,
+        launchTrackingState: "not_tracked",
+        launchVolume5sSol: null,
+        launchVolume10sSol: null,
+        launchVolume30sSol: null,
+        launchVolume2mSol: null,
+        launchVolume5mSol: null,
+        launchBuyCount10s: null,
+        launchSellCount10s: null,
+        launchUniqueBuyers10s: null,
+        launchUniqueSellers10s: null,
+        launchNetBuyPressure10s: null,
+        launchPriceChange10sPct: null,
+        launchVolumeVelocitySolPerSec: null,
+        launchVolumeAccelerationSolPerSec2: null,
+        launchPriceVelocityPctPerSec: null,
+        launchPriceAccelerationPctPerSec2: null,
+        launchBuyerVelocityPerSec: null,
+        launchBuyerAccelerationPerSec2: null,
+        launchDrivers: [],
+        launchBlockers: ["INDEXER_LIVE_STATE_CARD"],
+        launchReasonCodes: [
+          "INDEXER_LIVE_STATE_CARD",
+          "PUMPPORTAL_LAUNCH_SCANNER_UNAVAILABLE"
+        ],
+        launchMissingDataReasons: ["PUMPPORTAL_LAUNCH_SCANNER_UNAVAILABLE"],
+        dataCompletenessLabel: dataCompleteness.dataQualityLabel,
+        missingCriticalFields: dataCompleteness.missingCriticalFields,
         enrichmentStatus: token.dataCompleteness.label === "enriched" ? "partial" : "disabled",
         enrichmentSource: null,
         pairAddress: null,
@@ -2663,16 +2990,20 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         "CRITICAL_RISK_BLOCKS_BUY_READY",
         "INSUFFICIENT_METRICS_BLOCKS_BUY_READY",
         "PAPER_AUTO_ORDER_DEFAULT_FALSE",
+        "PUMPPORTAL_LAUNCH_TRACKING_METERED_OPT_IN",
         "NO_TRADING_CONTROLS"
       ],
       formula: [
         "total = clamp(momentum * 0.55 + quality * 0.55 - riskPenalty, 0, 100)",
         "rolling momentum blends volume, volume acceleration, buyer velocity, buyer acceleration, price velocity, buy/sell ratio, net pressure, and trade activity",
+        "launch momentum = early volume + volume acceleration + price action + buyer growth + buy pressure - risk/missing-data penalties",
+        `launch extend threshold = ${launchScanner.getStatus().minScoreToExtend}; launch ripping threshold = ${launchScanner.getStatus().minScoreToRip}`,
         "holder derivatives are displayed only when a real holder time series exists"
       ],
       paperOnly: true,
       reasonCodes: [
         "STRATEGY_STATUS_READ_ONLY",
+        "RUNTIME_PUMPPORTAL_FIRST",
         "PAPER_ONLY",
         "NO_TRADING_CONTROLS"
       ]
@@ -3197,6 +3528,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     riskSnapshots.set(candidate.mint, riskSnapshot);
     saveRiskSnapshot(riskSnapshot);
     candidateEngine.updateRisk(candidate.mint, riskSnapshot);
+    launchScanner.ingestFeedEvent(event);
 
     const score = scoreFeedCandidate({
       candidate,
@@ -3777,6 +4109,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     feed,
     getSignals: () => Array.from(signals.values()),
     indexerAdapter,
+    launchScanner,
     metrics: metricsEngine,
     pumpPortalDataWallet,
     pumpPortalWallets,

@@ -1177,6 +1177,143 @@ describe("@axi/api", () => {
     expect(body.reasonCodes).toContain("HISTORICAL_MOCK_ROWS_HIDDEN");
   });
 
+  it("GET /launch/status reports PumpPortal-first disabled tracking defaults", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/launch/status"
+    });
+    const body = response.json() as {
+      runtimeMode: string;
+      liveDiscoveryEnabled: boolean;
+      launchTrackingEnabled: boolean;
+      launchTrackingAcknowledgedMetered: boolean;
+      paperOnly: boolean;
+      reasonCodes: string[];
+      tradingDisabled: boolean;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.runtimeMode).toBe("pumpportal_first");
+    expect(body.liveDiscoveryEnabled).toBe(true);
+    expect(body.launchTrackingEnabled).toBe(false);
+    expect(body.launchTrackingAcknowledgedMetered).toBe(false);
+    expect(body.paperOnly).toBe(true);
+    expect(body.tradingDisabled).toBe(true);
+    expect(body.reasonCodes).toContain("RUNTIME_PUMPPORTAL_FIRST");
+    expect(body.reasonCodes).toContain("PUMPPORTAL_LAUNCH_TRACKING_DISABLED");
+  });
+
+  it("PumpPortal discovery immediately creates launch candidates and score snapshots", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+    server.emitFeedEvent(createPumpPortalEvent());
+
+    const cardsResponse = await server.app.inject({
+      method: "GET",
+      url: "/launch/cards"
+    });
+    const candidatesResponse = await server.app.inject({
+      method: "GET",
+      url: "/launch/candidates"
+    });
+    const statsResponse = await server.app.inject({
+      method: "GET",
+      url: "/storage/stats"
+    });
+    const cards = cardsResponse.json() as Array<{
+      mint: string;
+      snapshot: {
+        phase: string;
+        reasonCodes: string[];
+        score: number;
+      };
+    }>;
+    const candidates = candidatesResponse.json() as {
+      current: unknown[];
+      persisted: unknown[];
+    };
+    const stats = statsResponse.json() as {
+      launchCandidateCount: number;
+      launchScoreSnapshotCount: number;
+    };
+
+    expect(cardsResponse.statusCode).toBe(200);
+    expect(candidatesResponse.statusCode).toBe(200);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]?.snapshot.phase).toBe("discovery_only");
+    expect(cards[0]?.snapshot.score).toBe(0);
+    expect(cards[0]?.snapshot.reasonCodes).toContain("LAUNCH_DISCOVERY_ONLY");
+    expect(candidates.current).toHaveLength(1);
+    expect(candidates.persisted).toHaveLength(1);
+    expect(stats.launchCandidateCount).toBe(1);
+    expect(stats.launchScoreSnapshotCount).toBe(1);
+  });
+
+  it("GET /launch/cost estimates metered tracking budgets", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/launch/cost?tokensPerHour=500&avgEventsPerToken=20"
+    });
+    const body = response.json() as {
+      estimatedHourlyCostSol: number;
+      estimatedSessionCostSol: number;
+      paperOnly: boolean;
+      reasonCodes: string[];
+      tradingDisabled: boolean;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.estimatedHourlyCostSol).toBeGreaterThan(0);
+    expect(body.estimatedSessionCostSol).toBeGreaterThan(0);
+    expect(body.paperOnly).toBe(true);
+    expect(body.tradingDisabled).toBe(true);
+    expect(body.reasonCodes).toContain("PUMPPORTAL_LAUNCH_COST_ESTIMATE");
+  });
+
+  it("POST /launch/track rejects when launch tracking is disabled", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/launch/track",
+      payload: {
+        mint: "So11111111111111111111111111111111111111112",
+        reason: "test"
+      }
+    });
+    const body = response.json() as {
+      error: string;
+      launch: {
+        launchTrackingEnabled: boolean;
+      };
+      paperOnly: boolean;
+    };
+
+    expect(response.statusCode).toBe(409);
+    expect(body.error).toBe("PUMPPORTAL_LAUNCH_TRACKING_DISABLED");
+    expect(body.launch.launchTrackingEnabled).toBe(false);
+    expect(body.paperOnly).toBe(true);
+  });
+
   it("GET /live/status and /live/tokens start empty for current session", async () => {
     server = createApiServer({
       logLevel: false,
@@ -1809,11 +1946,24 @@ describe("@axi/api", () => {
     );
     expect(cards[0]?.dataCompleteness.dataQualityLabel).toBe("discovery_only");
     expect(cards[0]?.dataCompleteness.missingCriticalFields).toContain("price");
+    expect(cards[0]?.dataCompletenessLabel).toBe("discovery_only");
+    expect(cards[0]?.missingCriticalFields).toContain("price");
     expect(cards[0]?.tradeTrackingState).toBe("not_tracked");
     expect(cards[0]?.tradeTrackingReasonCodes).toContain(
       "LIVE_TRADE_TRACKING_DISABLED"
     );
     expect(cards[0]?.tradeEventCount).toBe(0);
+    expect(cards[0]?.launchPhase).toBe("discovery_only");
+    expect(cards[0]?.launchScore).toBe(0);
+    expect(cards[0]?.launchBuyReadyPaper).toBe(false);
+    expect(cards[0]?.launchTrackingState).toBe("blocked");
+    expect(cards[0]?.launchWindows?.["5s"].volumeSol).toBe(0);
+    expect(cards[0]?.launchDerivatives?.volumeVelocitySolPerSec).toBe(0);
+    expect(cards[0]?.launchTradeSampleCount).toBe(0);
+    expect(cards[0]?.launchReasonCodes).toContain("LAUNCH_DISCOVERY_ONLY");
+    expect(cards[0]?.launchMissingDataReasons).toContain(
+      "PRICE_ACTION_REQUIRES_METERED_TOKEN_TRADES"
+    );
     expect(cards[0]?.latestTradeAt).toBeNull();
     expect(cards[0]?.enrichmentStatus).toBe("disabled");
     expect(cards[0]?.action).toBe("IGNORE");
@@ -1874,6 +2024,16 @@ describe("@axi/api", () => {
     expect(response.statusCode).toBe(200);
     expect(cards[0]?.tradeEventCount).toBe(1);
     expect(cards[0]?.actualTradeEventCount).toBe(1);
+    expect(cards[0]?.launchTradeSampleCount).toBe(1);
+    expect(cards[0]?.launchBuyReadyPaper).toBe(false);
+    expect(cards[0]?.launchTrackingState).toBe("blocked");
+    expect(cards[0]?.launchVolume5mSol).toBe(1.5);
+    expect(cards[0]?.launchWindows?.["5m"].volumeSol).toBe(1.5);
+    expect(cards[0]?.launchDerivatives?.volumeVelocitySolPerSec).toEqual(
+      expect.any(Number)
+    );
+    expect(cards[0]?.launchBuyCount10s).toBe(1);
+    expect(cards[0]?.launchReasonCodes).toContain("LAUNCH_TRADE_TRACKED");
     expect(cards[0]?.latestTradeAt).toBe("2026-01-01T00:00:02.000Z");
     expect(cards[0]?.priceSol).toBe(0.00042);
     expect(cards[0]?.volume10sSol).toBe(1.5);

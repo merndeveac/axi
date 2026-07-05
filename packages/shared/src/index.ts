@@ -650,6 +650,50 @@ export type LiveTradeTrackingState =
   | "unsubscribed"
   | "error";
 
+export type LiveLaunchTrackingState =
+  | "not_tracked"
+  | "tracking"
+  | "budget_reached"
+  | "unsubscribed"
+  | "blocked";
+
+export type LiveCardLaunchWindowLabel = "5s" | "10s" | "30s" | "2m" | "5m";
+
+export type LiveCardLaunchWindowMetrics = {
+  volumeSol: number;
+  buyVolumeSol: number;
+  sellVolumeSol: number;
+  netVolumeSol: number;
+  tradeCount: number;
+  buyCount: number;
+  sellCount: number;
+  uniqueBuyers: number;
+  uniqueSellers: number;
+  buySellRatio: number | null;
+  netBuyPressure: number;
+  openSol: number | null;
+  highSol: number | null;
+  lowSol: number | null;
+  closeSol: number | null;
+  priceChangePct: number;
+};
+
+export type LiveCardLaunchWindows = Record<
+  LiveCardLaunchWindowLabel,
+  LiveCardLaunchWindowMetrics
+>;
+
+export type LiveCardLaunchDerivatives = {
+  volumeVelocitySolPerSec: number;
+  volumeAccelerationSolPerSec2: number;
+  priceVelocityPctPerSec: number;
+  priceAccelerationPctPerSec2: number;
+  buyerVelocityPerSec: number;
+  buyerAccelerationPerSec2: number;
+  tradeVelocityPerSec: number;
+  tradeAccelerationPerSec2: number;
+};
+
 export type LiveTokenCardViewModel = {
   mint: string;
   shortMint: string;
@@ -764,6 +808,39 @@ export type LiveTokenCardViewModel = {
   latestTradeAt: string | null;
   latestTradeAgeSeconds: number | null;
   tradeEventCount: number;
+  launchAgeSeconds: number | null;
+  launchPhase: string;
+  launchScore: number;
+  launchScoreLabel: string;
+  launchBuyReadyPaper: boolean;
+  launchTradeSampleCount: number;
+  launchPriceSol: number | null;
+  launchWindows: LiveCardLaunchWindows | null;
+  launchDerivatives: LiveCardLaunchDerivatives | null;
+  launchTrackingState: LiveLaunchTrackingState;
+  launchVolume5sSol: number | null;
+  launchVolume10sSol: number | null;
+  launchVolume30sSol: number | null;
+  launchVolume2mSol: number | null;
+  launchVolume5mSol: number | null;
+  launchBuyCount10s: number | null;
+  launchSellCount10s: number | null;
+  launchUniqueBuyers10s: number | null;
+  launchUniqueSellers10s: number | null;
+  launchNetBuyPressure10s: number | null;
+  launchPriceChange10sPct: number | null;
+  launchVolumeVelocitySolPerSec: number | null;
+  launchVolumeAccelerationSolPerSec2: number | null;
+  launchPriceVelocityPctPerSec: number | null;
+  launchPriceAccelerationPctPerSec2: number | null;
+  launchBuyerVelocityPerSec: number | null;
+  launchBuyerAccelerationPerSec2: number | null;
+  launchDrivers: string[];
+  launchBlockers: string[];
+  launchReasonCodes: string[];
+  launchMissingDataReasons: string[];
+  dataCompletenessLabel: LiveCardDataQualityLabel;
+  missingCriticalFields: string[];
   enrichmentStatus: "disabled" | "not_checked" | "partial" | "available";
   enrichmentSource: string | null;
   pairAddress: string | null;

@@ -2,7 +2,6 @@ import {
   useEffect,
   useMemo,
   useState,
-  type FormEvent,
   type ReactNode
 } from "react";
 import type {
@@ -14,6 +13,7 @@ import type {
   TokenIdentitySummary
 } from "@axi/shared";
 import { ConnectionBadge } from "./components/ConnectionBadge";
+import { DataPanel } from "./components/DataPanel";
 import { MetricValue } from "./components/MetricValue";
 import { ReasonCodes } from "./components/ReasonCodes";
 import {
@@ -33,13 +33,24 @@ import {
 type ConnectionStatus = "connecting" | "open" | "closed";
 type ApiStatus = "checking" | "connected" | "disconnected";
 type TabId = "live" | "signals" | "metrics" | "risk" | "data" | "storage";
-type SortMode = "newest" | "score" | "volumeVelocity" | "volume10s" | "risk";
+type SortMode =
+  | "newest"
+  | "launchScore"
+  | "score"
+  | "volumeVelocity"
+  | "volume10s"
+  | "risk";
 type ActionFilter = "all" | "watch" | "qualified" | "rejected";
 
 type StorageStats = {
   databasePath: string;
   feedEventCount: number;
   liveFeedEventCount: number;
+  launchCandidateCount: number;
+  launchScoreSnapshotCount: number;
+  launchTradeSampleCount: number;
+  launchTrackingEventCount: number;
+  launchTrackingSessionCount: number;
   signalCount: number;
   chainVerificationCount: number;
   chainTransactionEventCount: number;
@@ -223,39 +234,6 @@ type LightningStatus = {
   tradingDisabled: true;
 };
 
-type LightningTradePlan = {
-  id: string;
-  mode: string;
-  request: {
-    action: string;
-    mint: string;
-    amount: number;
-    denominatedInSol: boolean;
-    slippage: number;
-    priorityFee: number;
-    pool: string;
-    skipPreflight: boolean;
-    jitoOnly: boolean;
-  };
-  mint: string;
-  amountSol: number;
-  maxBuySol: number;
-  estimatedRisk: string;
-  safetyChecks: Array<{
-    code: string;
-    passed: boolean;
-    severity: string;
-    message: string;
-  }>;
-  blocked: boolean;
-  blockers: string[];
-  warnings: string[];
-  createdAt: string;
-  noTransactionSent?: boolean;
-  paperOnly?: true;
-  tradingDisabled?: true;
-};
-
 type LiveTradeTrackingStatus = {
   acknowledgedMetered: boolean;
   autoMode: string;
@@ -269,6 +247,33 @@ type LiveTradeTrackingStatus = {
   subscribedTokenCount: number;
   totalEventsThisSession: number;
   trackedMints: string[];
+};
+
+type LaunchScannerStatus = {
+  runtimeMode: string;
+  provider: string;
+  liveDiscoveryEnabled: boolean;
+  liveDiscoveryActive: boolean;
+  subscribeNewToken: boolean;
+  subscribeMigration: boolean;
+  candidateCount: number;
+  scoreSnapshotCount: number;
+  trackedMintCount: number;
+  launchTrackingEnabled: boolean;
+  launchTrackingAcknowledgedMetered: boolean;
+  launchTrackingMode: string;
+  maxConcurrentTracked: number;
+  maxEventsPerToken: number;
+  maxEventsPerSession: number;
+  maxSessionCostSol: number;
+  totalEventsThisSession: number;
+  estimatedMeteredCostSol: number;
+  minScoreToExtend: number;
+  minScoreToRip: number;
+  trackedMints: string[];
+  reasonCodes: string[];
+  paperOnly: true;
+  tradingDisabled: true;
 };
 
 type LiveCardEnrichmentStatus = {
@@ -400,6 +405,7 @@ type HealthStatus = {
   liveFeedLastEventAt: string | null;
   liveFeedReady: boolean;
   liveTokenCount: number;
+  launchScanner: LaunchScannerStatus;
   mockFeedEnabled: boolean;
   mockRuntimeBlocked: boolean;
   noFeedMode: boolean;
@@ -547,6 +553,8 @@ export function App() {
     useState<LightningStatus | null>(null);
   const [liveTradeTrackingStatus, setLiveTradeTrackingStatus] =
     useState<LiveTradeTrackingStatus | null>(null);
+  const [launchScannerStatus, setLaunchScannerStatus] =
+    useState<LaunchScannerStatus | null>(null);
   const [liveCardEnrichmentStatus, setLiveCardEnrichmentStatus] =
     useState<LiveCardEnrichmentStatus | null>(null);
   const [indexerStatus, setIndexerStatus] = useState<IndexerStatus | null>(
@@ -568,7 +576,7 @@ export function App() {
   const [chainVerifications, setChainVerifications] = useState<
     ChainVerificationRow[]
   >([]);
-  const [sortMode, setSortMode] = useState<SortMode>("newest");
+  const [sortMode, setSortMode] = useState<SortMode>("launchScore");
   const [actionFilter, setActionFilter] = useState<ActionFilter>("all");
   const [realOnly, setRealOnly] = useState(true);
   const [search, setSearch] = useState("");
@@ -659,6 +667,7 @@ export function App() {
           nextPumpPortalWalletsStatus,
           nextLightningStatus,
           nextLiveTradeTrackingStatus,
+          nextLaunchScannerStatus,
           nextActualTrades,
           nextLiveCardEnrichmentStatus,
           nextMarketStatus,
@@ -686,6 +695,7 @@ export function App() {
           fetchJson<PumpPortalWalletsStatus>("/pumpportal/wallets/status"),
           fetchJson<LightningStatus>("/execution/lightning/status"),
           fetchJson<LiveTradeTrackingStatus>("/live/trade-tracking/status"),
+          fetchJson<LaunchScannerStatus>("/launch/status"),
           fetchJson<PumpPortalTradeRow[]>("/actual-data/trades?limit=10"),
           fetchJson<LiveCardEnrichmentStatus>("/enrichment/status"),
           fetchJson<MarketStatus>("/market/status"),
@@ -714,6 +724,7 @@ export function App() {
           setPumpPortalWalletsStatus(nextPumpPortalWalletsStatus);
           setLightningStatus(nextLightningStatus);
           setLiveTradeTrackingStatus(nextLiveTradeTrackingStatus);
+          setLaunchScannerStatus(nextLaunchScannerStatus);
           setActualTrades(nextActualTrades);
           setLiveCardEnrichmentStatus(nextLiveCardEnrichmentStatus);
           setMarketStatus(nextMarketStatus);
@@ -752,12 +763,14 @@ export function App() {
       ),
     [actionFilter, cards, realOnly, search, sortMode]
   );
-  const buyReadyCount = cards.filter((card) => card.buyReady).length;
-  const rejectedCount = cards.filter(
-    (card) => card.hardReject || card.signalStrength === "reject"
+  const hotLaunchCount = cards.filter((card) =>
+    ["hot", "ripping"].includes(card.launchPhase)
   ).length;
-  const strategyReadyCount = cards.filter(
-    (card) => card.dataCompleteness.dataQualityLabel === "strategy_ready"
+  const rippingLaunchCount = cards.filter(
+    (card) => card.launchPhase === "ripping"
+  ).length;
+  const launchTrackedCount = cards.filter(
+    (card) => card.launchTradeSampleCount > 0
   ).length;
   const trackedCardCount = cards.filter(
     (card) => card.tradeTrackingState === "tracking"
@@ -823,28 +836,34 @@ export function App() {
 
       <section className="status-grid" aria-label="System status">
         <MetricValue
-          label="live cards"
+          label="launch cards"
           value={formatCompactNumber(cards.length)}
           detail="current session"
           tone={cards.length > 0 ? "good" : "neutral"}
         />
         <MetricValue
-          label="buy ready"
-          value={formatCompactNumber(buyReadyCount)}
-          detail="paper signal"
-          tone={buyReadyCount > 0 ? "good" : "neutral"}
+          label="hot launches"
+          value={formatCompactNumber(hotLaunchCount)}
+          detail={`${rippingLaunchCount} ripping`}
+          tone={hotLaunchCount > 0 ? "good" : "neutral"}
         />
         <MetricValue
-          label="rejects"
-          value={formatCompactNumber(rejectedCount)}
-          detail="risk blocked"
-          tone={rejectedCount > 0 ? "bad" : "neutral"}
+          label="tracked launches"
+          value={formatCompactNumber(launchTrackedCount)}
+          detail="metered opt-in"
+          tone={launchTrackedCount > 0 ? "good" : "neutral"}
         />
         <MetricValue
-          label="complete"
-          value={formatCompactNumber(strategyReadyCount)}
-          detail="strategy ready"
-          tone={strategyReadyCount > 0 ? "good" : "neutral"}
+          label="launch scores"
+          value={formatCompactNumber(
+            healthStatus?.launchScanner.scoreSnapshotCount ?? 0
+          )}
+          detail={`extend ${healthStatus?.launchScanner.minScoreToExtend ?? 45}`}
+          tone={
+            (healthStatus?.launchScanner.scoreSnapshotCount ?? 0) > 0
+              ? "good"
+              : "neutral"
+          }
         />
         <MetricValue
           label="feed events"
@@ -853,9 +872,9 @@ export function App() {
           tone={feedStatus?.connected ? "good" : "neutral"}
         />
         <MetricValue
-          label="tracked trades"
+          label="trade streams"
           value={formatCompactNumber(trackedCardCount)}
-          detail="metered opt-in"
+          detail={`${healthStatus?.launchScanner.trackedMintCount ?? 0} launch`}
           tone={
             trackedCardCount > 0 ? "good" : "neutral"
           }
@@ -940,6 +959,7 @@ export function App() {
           feedStatus={feedStatus}
           liveCardEnrichmentStatus={liveCardEnrichmentStatus}
           indexerStatus={indexerStatus}
+          launchScannerStatus={launchScannerStatus}
           liveStatus={liveStatus}
           liveTradeTrackingStatus={liveTradeTrackingStatus}
           marketObservations={marketObservations}
@@ -997,10 +1017,10 @@ function LiveTab({
     <section className="tab-panel live-panel" role="tabpanel">
       <div className="panel-heading">
         <div>
-          <h2>LIVE TOKENS</h2>
+          <h2>PUMPPORTAL LAUNCH SCANNER</h2>
           <p>
-            {totalCards} current-session cards / sort {sortMode} / unavailable
-            fields render as --
+            {totalCards} current-session launches / sort {sortMode} /
+            unavailable fields render as --
           </p>
         </div>
         <span className="table-meta">
@@ -1023,6 +1043,7 @@ function LiveTab({
             onChange={(event) => setSortMode(event.target.value as SortMode)}
             value={sortMode}
           >
+            <option value="launchScore">launch score</option>
             <option value="newest">newest</option>
             <option value="score">score</option>
             <option value="volumeVelocity">volume velocity</option>
@@ -1101,6 +1122,9 @@ function TokenCard({
           <span className="terminal-badge terminal-badge-neutral">
             {card.source.toUpperCase()}
           </span>
+          <span className="terminal-badge terminal-badge-online">
+            {card.launchPhase.toUpperCase()}
+          </span>
           <span className="terminal-badge terminal-badge-neutral">
             {formatDataQuality(card.dataCompleteness.dataQualityLabel)}{" "}
             {card.dataCompleteness.completenessPct}%
@@ -1115,8 +1139,33 @@ function TokenCard({
           <span className={`action action-${normalizeClassName(card.action)}`}>
             {card.action}
           </span>
-          <span className="score">{card.score}</span>
+          <span className="score">{card.launchScore}</span>
         </div>
+      </div>
+
+      <div className="stat-row launch-stat-row">
+        <Stat
+          detail={card.launchScoreLabel}
+          label="launch"
+          value={card.launchPhase.toUpperCase()}
+        />
+        <Stat label="vol 5s" value={formatSol(card.launchVolume5sSol)} />
+        <Stat label="vol 30s" value={formatSol(card.launchVolume30sSol)} />
+        <Stat label="vol 5m" value={formatSol(card.launchVolume5mSol)} />
+        <Stat
+          label="launch txns"
+          value={`${formatCompactNumber(card.launchBuyCount10s)}/${formatCompactNumber(
+            card.launchSellCount10s
+          )}`}
+          detail="10s buy/sell"
+        />
+        <Stat
+          label="launch unique"
+          value={`${formatCompactNumber(card.launchUniqueBuyers10s)}/${formatCompactNumber(
+            card.launchUniqueSellers10s
+          )}`}
+          detail="10s buyers/sellers"
+        />
       </div>
 
       <div className="stat-row top-stat-row">
@@ -1198,6 +1247,42 @@ function TokenCard({
         />
       </div>
 
+      <div className="stat-row technical-row launch-technical-row">
+        <Stat
+          label="launch dVol/dt"
+          value={formatVelocity(card.launchVolumeVelocitySolPerSec, "sol")}
+        />
+        <Stat
+          label="launch d2Vol/dt2"
+          value={formatAcceleration(
+            card.launchVolumeAccelerationSolPerSec2,
+            "sol"
+          )}
+        />
+        <Stat
+          label="launch dPrice/dt"
+          value={formatVelocity(card.launchPriceVelocityPctPerSec, "pct")}
+        />
+        <Stat
+          label="launch d2Price/dt2"
+          value={formatAcceleration(
+            card.launchPriceAccelerationPctPerSec2,
+            "pct"
+          )}
+        />
+        <Stat
+          label="launch buyers/dt"
+          value={formatVelocity(card.launchBuyerVelocityPerSec, "buyers")}
+        />
+        <Stat
+          label="launch buyers/dt2"
+          value={formatAcceleration(
+            card.launchBuyerAccelerationPerSec2,
+            "buyers"
+          )}
+        />
+      </div>
+
       <div className="signal-risk-strip">
         <span className={`risk-level risk-${card.riskLevel}`}>
           {card.riskLevel}
@@ -1238,6 +1323,7 @@ function TokenCard({
         <span>age {formatAge(card.ageSeconds)}</span>
         <span>updated {formatTimeAgo(card.lastUpdatedAt)}</span>
         <span>trades {formatCompactNumber(card.tradeEventCount)}</span>
+        <span>launch trades {formatCompactNumber(card.launchTradeSampleCount)}</span>
         <span>latest trade {formatTimeAgo(card.latestTradeAt)}</span>
         <span>{card.eventTypes.at(-1) ?? "--"}</span>
         <span>{formatMintShort(card.latestSignature)}</span>
@@ -1342,6 +1428,14 @@ function TokenAudit({ card }: { card: LiveTokenCardViewModel }) {
           </dd>
           <dt>latest trade</dt>
           <dd>{formatTimeAgo(card.latestTradeAt)}</dd>
+          <dt>launch phase</dt>
+          <dd>
+            {card.launchPhase} / {card.launchScoreLabel}
+          </dd>
+          <dt>launch trades</dt>
+          <dd>{card.launchTradeSampleCount}</dd>
+          <dt>launch price</dt>
+          <dd>{formatSol(card.launchPriceSol)}</dd>
           <dt>enrichment</dt>
           <dd>
             {card.enrichmentStatus}
@@ -1358,6 +1452,10 @@ function TokenAudit({ card }: { card: LiveTokenCardViewModel }) {
         <ReasonCodes codes={card.dataCompleteness.reasonCodes} limit={16} />
         <h4>Trade Tracking</h4>
         <ReasonCodes codes={card.tradeTrackingReasonCodes} limit={16} />
+        <h4>Launch Scanner</h4>
+        <ReasonCodes codes={card.launchReasonCodes} limit={16} />
+        <h4>Launch Missing Data</h4>
+        <ReasonCodes codes={card.launchMissingDataReasons} limit={16} />
         <h4>Unavailable Fields</h4>
         <ReasonCodes codes={card.unavailableFields} limit={16} />
         <h4>Warnings</h4>
@@ -1566,6 +1664,7 @@ function DataTab({
   lightningStatus,
   feedStatus,
   indexerStatus,
+  launchScannerStatus,
   liveCardEnrichmentStatus,
   liveStatus,
   liveTradeTrackingStatus,
@@ -1582,6 +1681,7 @@ function DataTab({
   lightningStatus: LightningStatus | null;
   feedStatus: FeedStatus | null;
   indexerStatus: IndexerStatus | null;
+  launchScannerStatus: LaunchScannerStatus | null;
   liveCardEnrichmentStatus: LiveCardEnrichmentStatus | null;
   liveStatus: LiveStatus | null;
   liveTradeTrackingStatus: LiveTradeTrackingStatus | null;
@@ -1616,10 +1716,14 @@ function DataTab({
           detail={liveStatus?.sessionId ?? "--"}
         />
         <MetricValue
-          label="actual data"
-          value={actualDataStatus?.enabled ? "ON" : "OFF"}
-          detail="token trades opt-in"
-          tone={actualDataStatus?.enabled ? "warn" : "neutral"}
+          label="launch tracking"
+          value={launchScannerStatus?.launchTrackingEnabled ? "ON" : "OFF"}
+          detail={`${launchScannerStatus?.trackedMintCount ?? 0}/${
+            launchScannerStatus?.maxConcurrentTracked ?? 0
+          } mints`}
+          tone={
+            launchScannerStatus?.launchTrackingEnabled ? "warn" : "neutral"
+          }
         />
         <MetricValue
           label="data wallet"
@@ -1632,12 +1736,17 @@ function DataTab({
           tone={getDataWalletTone(dataWalletStatus?.balanceStatus)}
         />
         <MetricValue
-          label="trade tracking"
-          value={liveTradeTrackingStatus?.enabled ? "ON" : "OFF"}
-          detail={`${liveTradeTrackingStatus?.subscribedTokenCount ?? 0}/${
-            liveTradeTrackingStatus?.maxSubscribedTokens ?? 0
-          } mints`}
-          tone={liveTradeTrackingStatus?.enabled ? "warn" : "neutral"}
+          label="launch budget"
+          value={formatSol(launchScannerStatus?.estimatedMeteredCostSol)}
+          detail={`${formatSol(
+            launchScannerStatus?.maxSessionCostSol
+          )} cap`}
+          tone={
+            (launchScannerStatus?.estimatedMeteredCostSol ?? 0) >=
+            (launchScannerStatus?.maxSessionCostSol ?? Number.POSITIVE_INFINITY)
+              ? "bad"
+              : "neutral"
+          }
         />
         <MetricValue
           label="enrichment"
@@ -1684,7 +1793,7 @@ function DataTab({
         <MetricValue
           label="managed stream"
           value={indexerStatus?.streamEnabled ? "ON" : "OFF"}
-          detail={indexerStatus?.streamProvider ?? "mock"}
+          detail={`secondary / ${indexerStatus?.streamProvider ?? "mock"}`}
           tone={indexerStatus?.streamEnabled ? "warn" : "neutral"}
         />
         <MetricValue
@@ -1834,6 +1943,70 @@ function DataTab({
         />
       </div>
       <ReasonBlock title="Feed Reasons" codes={feedStatus?.reasonCodes} />
+      <ReasonBlock
+        title="Launch Scanner Reasons"
+        codes={launchScannerStatus?.reasonCodes}
+      />
+      <DataPanel
+        ariaLabel="PumpPortal launch tracking"
+        meta={
+          <span>
+            {launchScannerStatus?.launchTrackingAcknowledgedMetered
+              ? "METERED ACKED"
+              : "METERED NOT ACKED"}
+          </span>
+        }
+        title="PUMPPORTAL LAUNCH TRACKING"
+      >
+        <div className="status-grid secondary-grid embedded-grid">
+          <MetricValue
+            label="mode"
+            value={(launchScannerStatus?.launchTrackingMode ?? "manual").toUpperCase()}
+            detail={launchScannerStatus?.runtimeMode ?? "pumpportal_first"}
+          />
+          <MetricValue
+            label="discovery"
+            value={launchScannerStatus?.liveDiscoveryActive ? "ACTIVE" : "OFFLINE"}
+            detail={`${launchScannerStatus?.candidateCount ?? 0} candidates`}
+            tone={launchScannerStatus?.liveDiscoveryActive ? "good" : "bad"}
+          />
+          <MetricValue
+            label="session events"
+            value={formatCompactNumber(
+              launchScannerStatus?.totalEventsThisSession
+            )}
+            detail={`${formatCompactNumber(
+              launchScannerStatus?.maxEventsPerSession
+            )} cap`}
+          />
+          <MetricValue
+            label="per token"
+            value={formatCompactNumber(
+              launchScannerStatus?.maxEventsPerToken
+            )}
+            detail="event cap"
+          />
+          <MetricValue
+            label="extend"
+            value={formatCompactNumber(launchScannerStatus?.minScoreToExtend)}
+            detail={`rip ${formatCompactNumber(
+              launchScannerStatus?.minScoreToRip
+            )}`}
+          />
+          <MetricValue
+            label="tracked mints"
+            value={formatCompactNumber(launchScannerStatus?.trackedMintCount)}
+            detail={`${launchScannerStatus?.trackedMints.length ?? 0} listed`}
+          />
+        </div>
+        <div className="data-wallet-address-row">
+          <span className="mono">
+            {(launchScannerStatus?.trackedMints ?? [])
+              .map(formatMintShort)
+              .join(" / ") || "no launch mints tracked"}
+          </span>
+        </div>
+      </DataPanel>
       <ReasonBlock title="Indexer Reasons" codes={indexerStatus?.reasonCodes} />
       <ReasonBlock
         title="Managed Stream Reasons"
@@ -2073,30 +2246,6 @@ function PumpPortalWalletsLightningPanel({
   lightningStatus: LightningStatus | null;
   pumpPortalWalletsStatus: PumpPortalWalletsStatus | null;
 }) {
-  const [mint, setMint] = useState("");
-  const [amountSol, setAmountSol] = useState("0.001");
-  const [plan, setPlan] = useState<LightningTradePlan | null>(null);
-  const [planError, setPlanError] = useState<string | null>(null);
-
-  const submitPlan = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setPlanError(null);
-
-    try {
-      const nextPlan = await postJson<LightningTradePlan>(
-        "/execution/lightning/plan-buy",
-        {
-          mint,
-          amountSol: Number(amountSol),
-          reason: "dashboard_plan_only"
-        }
-      );
-      setPlan(nextPlan);
-    } catch (error) {
-      setPlanError(error instanceof Error ? error.message : String(error));
-    }
-  };
-
   return (
     <div className="data-wallet-panel lightning-panel">
       <div className="table-heading">
@@ -2165,72 +2314,6 @@ function PumpPortalWalletsLightningPanel({
         <span>NO API KEY FIELD</span>
         <span>FUND SMALL AMOUNTS ONLY</span>
       </div>
-      <form className="planner-form" onSubmit={submitPlan}>
-        <label>
-          <span>Mint</span>
-          <input
-            onChange={(event) => setMint(event.target.value)}
-            placeholder="token mint"
-            value={mint}
-          />
-        </label>
-        <label>
-          <span>Amount SOL</span>
-          <input
-            min="0"
-            onChange={(event) => setAmountSol(event.target.value)}
-            step="0.0001"
-            type="number"
-            value={amountSol}
-          />
-        </label>
-        <button type="submit">PLAN ONLY</button>
-      </form>
-      {planError ? <div className="inline-warning">{planError}</div> : null}
-      {plan ? (
-        <div className="plan-result">
-          <div className="table-heading">
-            <h3>DRY-RUN PLAN</h3>
-            <span className="table-meta">NO TRANSACTION SENT</span>
-          </div>
-          <div className="status-grid secondary-grid">
-            <MetricValue
-              label="mode"
-              value={plan.mode.toUpperCase()}
-              detail={plan.id}
-              tone={plan.blocked ? "warn" : "good"}
-            />
-            <MetricValue
-              label="blocked"
-              value={plan.blocked ? "YES" : "NO"}
-              detail={plan.estimatedRisk}
-              tone={plan.blocked ? "bad" : "good"}
-            />
-            <MetricValue
-              label="amount"
-              value={formatSol(plan.amountSol)}
-              detail={`${formatSol(plan.maxBuySol)} max`}
-            />
-            <MetricValue
-              label="request"
-              value={plan.request.action.toUpperCase()}
-              detail={`${plan.request.pool} pool`}
-            />
-          </div>
-          <div className="data-wallet-address-row">
-            <span className="mono">
-              {plan.request.mint} / {formatSol(plan.request.amount)} /{" "}
-              {plan.request.slippage}% slippage
-            </span>
-          </div>
-          <ReasonBlock title="Plan Blockers" codes={plan.blockers} />
-          <ReasonBlock title="Plan Warnings" codes={plan.warnings} />
-          <ReasonBlock
-            title="Plan Safety Checks"
-            codes={plan.safetyChecks.map((check) => check.code)}
-          />
-        </div>
-      ) : null}
       <ReasonBlock
         title="Wallet Reasons"
         codes={pumpPortalWalletsStatus?.reasonCodes}
@@ -2551,6 +2634,13 @@ function sortCards(
   };
 
   return [...cards].sort((left, right) => {
+    if (sortMode === "launchScore") {
+      return (
+        right.launchScore - left.launchScore ||
+        Date.parse(right.lastSeenAt) - Date.parse(left.lastSeenAt)
+      );
+    }
+
     if (sortMode === "score") {
       return right.score - left.score;
     }
@@ -2734,22 +2824,6 @@ async function fetchJson<T>(path: string): Promise<T> {
 
   if (!response.ok) {
     throw new Error(`GET ${path} failed with ${response.status}`);
-  }
-
-  return (await response.json()) as T;
-}
-
-async function postJson<T>(path: string, payload: unknown): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    body: JSON.stringify(payload),
-    headers: {
-      "content-type": "application/json"
-    },
-    method: "POST"
-  });
-
-  if (!response.ok) {
-    throw new Error(`POST ${path} failed with ${response.status}`);
   }
 
   return (await response.json()) as T;

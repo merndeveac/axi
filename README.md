@@ -24,10 +24,11 @@ data feeds -> watch orchestration -> metrics -> risk -> candidates -> scoring ->
 ```
 
 Default runtime starts in live token mode with `DATA_FEED_MODE=live` and
-`DATA_FEED=pumpportal`. It connects to PumpPortal new-token and migration
-streams and does not generate fake tokens. If the live feed is offline or no
-events have arrived, the dashboard shows an explicit live-feed waiting/offline
-state instead of silently showing historical mock rows.
+`DATA_FEED=pumpportal` under `AXI_RUNTIME_MODE=pumpportal_first`. It connects
+to PumpPortal new-token and migration streams and does not generate fake tokens.
+If the live feed is offline or no events have arrived, the dashboard shows an
+explicit live-feed waiting/offline state instead of silently showing historical
+mock rows.
 
 `MockFeedProvider` remains available for tests and explicit local demos only.
 It requires `DATA_FEED_MODE=mock`, `DATA_FEED=mock`, `ALLOW_MOCK_DATA=true`, and
@@ -35,6 +36,72 @@ It requires `DATA_FEED_MODE=mock`, `DATA_FEED=mock`, `ALLOW_MOCK_DATA=true`, and
 `DATA_FEED_MODE=live` / `DATA_FEED=pumpportal` for new-token and migration
 events, plus opt-in metered `subscribeTokenTrade` ingestion for selected mints
 only.
+
+## PumpPortal-First Launch Scanner
+
+The primary live runtime is now PumpPortal/Pump.fun launch discovery. Free
+PumpPortal `subscribeNewToken` and `subscribeMigration` events create launch
+candidates immediately. The launch scanner evaluates each candidate with
+5s/10s/30s/2m/5m windows, SOL volume, buy/sell counts, unique
+buyers/sellers, net buy pressure, price action, volume/price/buyer
+derivatives, launch phase, score, drivers, blockers, and missing-data reasons.
+
+Launch trade tracking uses PumpPortal `subscribeTokenTrade` only for selected
+mints, through the existing one-WebSocket PumpPortal provider and the metered
+actual-data gates. It never uses account-trade streams, trading APIs, wallet
+loading, signing, transaction sending, or live execution. Tracking is disabled
+by default and remains paper-only.
+
+Default launch runtime env:
+
+```bash
+AXI_RUNTIME_MODE=pumpportal_first
+DATA_FEED_MODE=live
+DATA_FEED=pumpportal
+PUMPPORTAL_LIVE_DISCOVERY_ENABLED=true
+PUMPPORTAL_SUBSCRIBE_NEW_TOKEN=true
+PUMPPORTAL_SUBSCRIBE_MIGRATION=true
+MANAGED_STREAM_ENABLED=false
+LASERSTREAM_ENABLED=false
+YELLOWSTONE_ENABLED=false
+ALLOW_MOCK_DATA=false
+MOCK_FEED_ENABLED=false
+```
+
+Opt-in launch trade tracking:
+
+```bash
+PUMPPORTAL_DATA_API_KEY=...
+PUMPPORTAL_DATA_WALLET_PUBLIC_KEY=<PUBLIC_FUNDING_ADDRESS>
+SOLANA_RPC_HTTP=<RPC_HTTP_URL>
+PUMPPORTAL_LAUNCH_TRACKING_ENABLED=true
+PUMPPORTAL_LAUNCH_TRACKING_ACK_METERED=true
+PUMPPORTAL_LAUNCH_TRACKING_MODE=manual
+PUMPPORTAL_LAUNCH_TRACKING_MAX_CONCURRENT=3
+PUMPPORTAL_LAUNCH_TRACKING_MAX_EVENTS_PER_SESSION=1000
+PUMPPORTAL_LAUNCH_TRACKING_MAX_SESSION_COST_SOL=0.001
+```
+
+Launch scanner endpoints:
+
+- `GET /launch/status`
+- `GET /launch/cards`
+- `GET /launch/candidates`
+- `GET /launch/candidates/:mint`
+- `GET /launch/scores`
+- `GET /launch/tracked`
+- `POST /launch/evaluate`
+- `POST /launch/track`
+- `DELETE /launch/track/:mint`
+- `GET /launch/cost`
+
+CLI helpers:
+
+```bash
+pnpm --filter @axi/api launch:status
+pnpm --filter @axi/api launch:cost -- --tokens-per-hour 500 --avg-events-per-token 20
+pnpm --filter @axi/api launch:simulate -- --fixture strong-ripper
+```
 
 Signal, identity, and risk data can be missing, unresolved, incomplete,
 normalized from PumpPortal payloads, normalized from read-only Solana
@@ -389,8 +456,10 @@ Current persistence tables include `feed_events`, `signals`, `risk_snapshots`,
 `candidate_decisions`, `chain_verifications`, `chain_transaction_events`,
 `chain_trade_events`, `market_observations`, `watch_plans`, `watch_actions`,
 `pumpportal_token_trade_events`, `live_feed_events`,
-`actual_data_subscriptions`, `actual_data_sessions`, `token_identities`,
-`token_metadata_fetches`, `lightning_trade_plans`,
+`actual_data_subscriptions`, `actual_data_sessions`, `launch_candidates`,
+`launch_trade_samples`, `launch_score_snapshots`, `launch_tracking_events`,
+`launch_tracking_sessions`, `token_identities`, `token_metadata_fetches`,
+`lightning_trade_plans`,
 `pumpportal_wallet_status_snapshots`, `paper_orders`, and `paper_positions`.
 
 Clear local paper data with:
@@ -679,15 +748,17 @@ pnpm live:tokens
 ```
 
 This launches the API and dashboard with `DATA_FEED_MODE=live`,
-`DATA_FEED=pumpportal`, PumpPortal `subscribeNewToken` and
-`subscribeMigration` enabled, runtime mock data disabled, paper auto-ordering
-disabled, and metered token trades disabled.
+`DATA_FEED=pumpportal`, `AXI_RUNTIME_MODE=pumpportal_first`, PumpPortal
+`subscribeNewToken` and `subscribeMigration` enabled, runtime mock data
+disabled, paper auto-ordering disabled, and metered token trades disabled.
 
 Manual API launch:
 
 ```bash
 DATA_FEED_MODE=live \
 DATA_FEED=pumpportal \
+AXI_RUNTIME_MODE=pumpportal_first \
+PUMPPORTAL_LIVE_DISCOVERY_ENABLED=true \
 PUMPPORTAL_SUBSCRIBE_NEW_TOKEN=true \
 PUMPPORTAL_SUBSCRIBE_MIGRATION=true \
 ALLOW_MOCK_DATA=false \
@@ -698,6 +769,9 @@ pnpm --filter @axi/api dev
 This uses PumpPortal new-token and migration streams. It does not use metered
 token trades, does not trade, does not sign, does not require a wallet, does not
 use Axiom, and does not show mock tokens in the LIVE TOKENS panel.
+Launch candidates appear immediately from discovery events; price-action fields
+remain explicitly marked unavailable until selected metered token trades are
+enabled.
 
 Probe the same non-metered live token streams without starting the API:
 
@@ -749,23 +823,24 @@ card endpoint does not include historical mock/replay rows.
 
 Dashboard tabs:
 
-- LIVE: high-density live-token cards, sort/filter/search controls, inline audit
-  expansion.
+- LIVE: high-density PumpPortal launch scanner cards, launch score/phase,
+  sort/filter/search controls, and inline audit expansion.
 - SIGNALS: read-only strategy status plus signal explanation and raw signal
   rows.
 - METRICS: rolling windows, velocity, acceleration, sample counts, and metric
   debug values.
 - RISK: risk levels, hard rejects, authority flags, holder concentration, and
   risk reasons.
-- DATA: feed, live feed, wallet readiness, Lightning dry-run readiness, actual
-  data, market data, chain, and token identity health.
+- DATA: PumpPortal launch tracking status, budget, tracked mints, feed/live
+  feed state, wallet readiness, managed stream status as secondary future
+  infrastructure, market data, chain, and token identity health.
 - STORAGE / DEBUG: persisted counts, live feed rows, and verification/debug
   rows.
 
-The LIVE tab can sort by newest, score, volume velocity, 10-second volume, or
-risk. It can filter all/watch/qualified/rejected cards, filter to real data
-only, and search by symbol, name, or mint. It never shows buy/sell buttons,
-wallet controls, signing controls, or live execution controls.
+The LIVE tab can sort by launch score, newest, score, volume velocity,
+10-second volume, or risk. It can filter all/watch/qualified/rejected cards,
+filter to real data only, and search by symbol, name, or mint. It never shows
+buy/sell buttons, wallet controls, signing controls, or live execution controls.
 
 Displayed calculations include first and second derivatives for volume, price,
 and buyers when usable rolling trade samples exist. Holder derivatives are shown
@@ -941,6 +1016,34 @@ curl -X POST http://localhost:8787/live/trade-tracking/track \
   -d '{"mint":"<MINT>","reason":"manual"}'
 ```
 
+Launch tracking is the PumpPortal-first scanner path for selected new launches.
+It uses the same guarded token-trade stream but has its own acknowledgement,
+cost cap, concurrent-mint cap, initial/extended windows, and score thresholds:
+
+```bash
+DATA_FEED_MODE=live \
+DATA_FEED=pumpportal \
+AXI_RUNTIME_MODE=pumpportal_first \
+PUMPPORTAL_DATA_API_KEY=... \
+PUMPPORTAL_DATA_WALLET_PUBLIC_KEY=<PUBLIC_FUNDING_ADDRESS> \
+SOLANA_RPC_HTTP=<RPC_HTTP_URL> \
+PUMPPORTAL_LAUNCH_TRACKING_ENABLED=true \
+PUMPPORTAL_LAUNCH_TRACKING_ACK_METERED=true \
+PUMPPORTAL_LAUNCH_TRACKING_MODE=manual \
+PUMPPORTAL_LAUNCH_TRACKING_MAX_CONCURRENT=3 \
+PUMPPORTAL_LAUNCH_TRACKING_MAX_EVENTS_PER_SESSION=1000 \
+PUMPPORTAL_LAUNCH_TRACKING_MAX_SESSION_COST_SOL=0.001 \
+pnpm local:restart
+```
+
+Track one selected launch mint after the server is running:
+
+```bash
+curl -X POST http://localhost:8787/launch/track \
+  -H 'content-type: application/json' \
+  -d '{"mint":"<MINT>","reason":"manual"}'
+```
+
 ### PumpPortal Data Wallet / Billing
 
 PumpPortal metered data streams such as `subscribeTokenTrade` require a
@@ -1110,6 +1213,16 @@ Endpoints:
 - `GET /live/tokens`
 - `GET /live/tokens/:mint`
 - `GET /live/events`
+- `GET /launch/status`
+- `GET /launch/cards`
+- `GET /launch/candidates`
+- `GET /launch/candidates/:mint`
+- `GET /launch/scores`
+- `GET /launch/tracked`
+- `POST /launch/evaluate`
+- `POST /launch/track`
+- `DELETE /launch/track/:mint`
+- `GET /launch/cost`
 - `GET /indexer/status`
 - `GET /indexer/events/recent`
 - `GET /indexer/live-state`
@@ -1198,11 +1311,20 @@ historical mock/replay rows from SQLite.
 
 `GET /ui/live-token-cards` composes one normalized live-token card view model
 per current-session live token. It joins only safe in-memory/paper-mode state:
-live tokens, identity summaries, rolling metrics, candidate decisions, risk
-snapshots, actual-data summaries, market observations, and chain verification
-summaries. Cards include a data-completeness model, trade-tracking state, latest
-trade time, trade count, and optional enrichment fields. Unknown data stays
-`null`; the dashboard renders it as `--`.
+live tokens, PumpPortal launch momentum snapshots, identity summaries, rolling
+metrics, candidate decisions, risk snapshots, actual-data summaries, market
+observations, and chain verification summaries. Cards include a
+data-completeness model, launch phase/score/windows, trade-tracking state,
+latest trade time, trade count, and optional enrichment fields. Unknown data
+stays `null`; the dashboard renders it as `--`.
+
+`GET /launch/status` reports PumpPortal-first discovery and launch-tracking
+gates. `GET /launch/cards`, `/launch/candidates`, and `/launch/scores` expose
+current-session launch scanner state. `POST /launch/track` and
+`DELETE /launch/track/:mint` manage selected metered token-trade tracking only
+after all launch tracking, actual-data, API-key, data-wallet, and budget gates
+pass. `GET /launch/cost` estimates metered tracking cost from token/hour and
+events/token assumptions.
 
 `GET /strategy/status` exposes read-only paper strategy thresholds, scoring
 weights, formula notes, and safety gates. It is for visibility and tuning only;
@@ -1458,6 +1580,8 @@ docker compose --profile indexer up -d
 - `@axi/live-state`: current-session in-memory live token state from normalized
   indexer events.
 - `@axi/timeseries`: pure indexer-side trade OHLCV and rolling derivatives.
+- `@axi/launch-momentum`: pure PumpPortal launch-window metrics, derivatives,
+  scoring, reason codes, and simulation fixtures.
 - `@axi/stream-core`: provider-agnostic managed Solana stream contracts,
   masking helpers, disabled provider, and not-implemented provider.
 - `@axi/stream-mock`: deterministic mock managed stream provider backed by
@@ -1536,12 +1660,15 @@ docker compose --profile indexer up -d
   LaserStream real connection boundary, readiness endpoint, CLI preflight,
   short-run connect command, provider-specific Pump.fun profiles, and dashboard
   real-stream status fields.
+- `dev/pumpportal-first-launch-scanner` contains the PumpPortal-first launch
+  scanner, pure launch momentum package, launch storage tables, launch API/CLI,
+  and dashboard launch-card status fields.
 
 Direct Solana RPC verification and watched-address transaction ingestion exist,
 and local market-data normalization and watch orchestration exist, but they are
 read-only and disabled or conservative by default. This project still has no
 wallet UI, no private-key loading, no live trading, no Solana transaction
 signing, no transaction sending, no real risk-data provider, no DEX-specific
-decoding, no full-market indexing, no Geyser/gRPC streaming, no account-trade
-streams, no PumpPortal trading API usage, no Axiom private API usage, and no
-Axiom scraping.
+decoding, no full-market indexing, no active/default Geyser or gRPC runtime, no
+account-trade streams, no PumpPortal trading API usage, no Axiom private API
+usage, and no Axiom scraping.

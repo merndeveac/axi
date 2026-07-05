@@ -23,6 +23,7 @@
       "@axi/chain-events": ["packages/chain-events/src/index.ts"],
       "@axi/event-bus": ["packages/event-bus/src/index.ts"],
       "@axi/indexer-core": ["packages/indexer-core/src/index.ts"],
+      "@axi/launch-momentum": ["packages/launch-momentum/src/index.ts"],
       "@axi/live-state": ["packages/live-state/src/index.ts"],
       "@axi/managed-stream-adapter": [
         "packages/managed-stream-adapter/src/index.ts"

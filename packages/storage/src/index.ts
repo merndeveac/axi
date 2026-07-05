@@ -135,6 +135,11 @@ export type StorageStats = {
   databasePath: string;
   feedEventCount: number;
   liveFeedEventCount: number;
+  launchCandidateCount: number;
+  launchScoreSnapshotCount: number;
+  launchTradeSampleCount: number;
+  launchTrackingEventCount: number;
+  launchTrackingSessionCount: number;
   signalCount: number;
   chainVerificationCount: number;
   chainTransactionEventCount: number;
@@ -364,6 +369,129 @@ export type StoredActualDataSession = Omit<
   createdAt: string;
   startedAt: string | null;
   stoppedAt: string | null;
+};
+
+export type LaunchCandidateInput = {
+  mint: string;
+  source: string;
+  eventType: string;
+  name?: string | null;
+  symbol?: string | null;
+  title?: string | null;
+  status: string;
+  reasonCodes: string[];
+  payload: unknown;
+  discoveredAt?: string;
+  latestEventAt?: string;
+  createdAt?: string;
+};
+
+export type StoredLaunchCandidate = Omit<
+  LaunchCandidateInput,
+  "createdAt" | "discoveredAt" | "latestEventAt"
+> & {
+  id: number;
+  createdAt: string;
+  discoveredAt: string;
+  latestEventAt: string;
+  name: string | null;
+  symbol: string | null;
+  title: string | null;
+};
+
+export type LaunchTradeSampleInput = {
+  mint: string;
+  signature?: string | null;
+  side: "buy" | "sell" | "unknown";
+  trader?: string | null;
+  priceSol?: number | null;
+  volumeSol?: number | null;
+  tokenAmount?: number | null;
+  confidence: string;
+  usableForMetrics: boolean;
+  reasonCodes: string[];
+  payload: unknown;
+  createdAt?: string;
+};
+
+export type StoredLaunchTradeSample = Omit<
+  LaunchTradeSampleInput,
+  "createdAt"
+> & {
+  id: number;
+  createdAt: string;
+  signature: string | null;
+  trader: string | null;
+  priceSol: number | null;
+  volumeSol: number | null;
+  tokenAmount: number | null;
+};
+
+export type LaunchScoreSnapshotInput = {
+  mint: string;
+  score: number;
+  label: string;
+  phase: string;
+  tradeSampleCount: number;
+  priceSol?: number | null;
+  volumeSol: number;
+  reasonCodes: string[];
+  payload: unknown;
+  evaluatedAt?: string;
+  createdAt?: string;
+};
+
+export type StoredLaunchScoreSnapshot = Omit<
+  LaunchScoreSnapshotInput,
+  "createdAt" | "evaluatedAt"
+> & {
+  id: number;
+  createdAt: string;
+  evaluatedAt: string;
+  priceSol: number | null;
+};
+
+export type LaunchTrackingEventInput = {
+  mint: string;
+  action: string;
+  status: string;
+  reason: string;
+  reasonCodes: string[];
+  payload: unknown;
+  createdAt?: string;
+};
+
+export type StoredLaunchTrackingEvent = Omit<
+  LaunchTrackingEventInput,
+  "createdAt"
+> & {
+  id: number;
+  createdAt: string;
+};
+
+export type LaunchTrackingSessionInput = {
+  provider: string;
+  status: string;
+  trackedTokenCount: number;
+  totalEventCount: number;
+  estimatedCostSol?: number | null;
+  budgetLimitSol: number;
+  reasonCodes: string[];
+  payload: unknown;
+  startedAt?: string | null;
+  stoppedAt?: string | null;
+  createdAt?: string;
+};
+
+export type StoredLaunchTrackingSession = Omit<
+  LaunchTrackingSessionInput,
+  "createdAt" | "startedAt" | "stoppedAt" | "estimatedCostSol"
+> & {
+  id: number;
+  createdAt: string;
+  startedAt: string | null;
+  stoppedAt: string | null;
+  estimatedCostSol: number | null;
 };
 
 export type StoredTokenIdentity = TokenIdentity & {
@@ -611,6 +739,79 @@ type ActualDataSessionRow = {
   stopped_at: string | null;
   reason_codes_json: string;
   payload_json: string;
+  created_at: string;
+};
+
+type LaunchCandidateRow = {
+  id: number;
+  mint: string;
+  source: string;
+  event_type: string;
+  name: string | null;
+  symbol: string | null;
+  title: string | null;
+  status: string;
+  reason_codes_json: string;
+  payload_json: string;
+  discovered_at: string;
+  latest_event_at: string;
+  created_at: string;
+};
+
+type LaunchTradeSampleRow = {
+  id: number;
+  mint: string;
+  signature: string | null;
+  side: "buy" | "sell" | "unknown";
+  trader: string | null;
+  price_sol: number | null;
+  volume_sol: number | null;
+  token_amount: number | null;
+  confidence: string;
+  usable_for_metrics: number;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
+type LaunchScoreSnapshotRow = {
+  id: number;
+  mint: string;
+  score: number;
+  label: string;
+  phase: string;
+  trade_sample_count: number;
+  price_sol: number | null;
+  volume_sol: number;
+  reason_codes_json: string;
+  payload_json: string;
+  evaluated_at: string;
+  created_at: string;
+};
+
+type LaunchTrackingEventRow = {
+  id: number;
+  mint: string;
+  action: string;
+  status: string;
+  reason: string;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
+type LaunchTrackingSessionRow = {
+  id: number;
+  provider: string;
+  status: string;
+  tracked_token_count: number;
+  total_event_count: number;
+  estimated_cost_sol: number | null;
+  budget_limit_sol: number;
+  reason_codes_json: string;
+  payload_json: string;
+  started_at: string | null;
+  stopped_at: string | null;
   created_at: string;
 };
 
@@ -896,6 +1097,74 @@ const actualDataSessionInputSchema = z.object({
   stoppedAt: z.string().datetime().nullable().optional(),
   reasonCodes: z.array(z.string().min(1)),
   payload: z.unknown(),
+  createdAt: z.string().datetime().optional()
+});
+
+const launchCandidateInputSchema = z.object({
+  mint: z.string().min(1),
+  source: z.string().min(1),
+  eventType: z.string().min(1),
+  name: z.string().min(1).nullable().optional(),
+  symbol: z.string().min(1).nullable().optional(),
+  title: z.string().min(1).nullable().optional(),
+  status: z.string().min(1),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown(),
+  discoveredAt: z.string().datetime().optional(),
+  latestEventAt: z.string().datetime().optional(),
+  createdAt: z.string().datetime().optional()
+});
+
+const launchTradeSampleInputSchema = z.object({
+  mint: z.string().min(1),
+  signature: z.string().min(1).nullable().optional(),
+  side: z.enum(["buy", "sell", "unknown"]),
+  trader: z.string().min(1).nullable().optional(),
+  priceSol: z.number().nonnegative().nullable().optional(),
+  volumeSol: z.number().nonnegative().nullable().optional(),
+  tokenAmount: z.number().nonnegative().nullable().optional(),
+  confidence: z.string().min(1),
+  usableForMetrics: z.boolean(),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown(),
+  createdAt: z.string().datetime().optional()
+});
+
+const launchScoreSnapshotInputSchema = z.object({
+  mint: z.string().min(1),
+  score: z.number().min(0).max(100),
+  label: z.string().min(1),
+  phase: z.string().min(1),
+  tradeSampleCount: z.number().int().nonnegative(),
+  priceSol: z.number().nonnegative().nullable().optional(),
+  volumeSol: z.number().nonnegative(),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown(),
+  evaluatedAt: z.string().datetime().optional(),
+  createdAt: z.string().datetime().optional()
+});
+
+const launchTrackingEventInputSchema = z.object({
+  mint: z.string().min(1),
+  action: z.string().min(1),
+  status: z.string().min(1),
+  reason: z.string().min(1),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown(),
+  createdAt: z.string().datetime().optional()
+});
+
+const launchTrackingSessionInputSchema = z.object({
+  provider: z.string().min(1),
+  status: z.string().min(1),
+  trackedTokenCount: z.number().int().nonnegative(),
+  totalEventCount: z.number().int().nonnegative(),
+  estimatedCostSol: z.number().nonnegative().nullable().optional(),
+  budgetLimitSol: z.number().nonnegative(),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown(),
+  startedAt: z.string().datetime().nullable().optional(),
+  stoppedAt: z.string().datetime().nullable().optional(),
   createdAt: z.string().datetime().optional()
 });
 
@@ -2213,6 +2482,381 @@ export function listActualDataSessionsForReplay(
   return rows.map(mapActualDataSessionRow);
 }
 
+export function saveLaunchCandidate(
+  candidate: LaunchCandidateInput
+): StoredLaunchCandidate {
+  const parsed = launchCandidateInputSchema.parse(candidate);
+  const now = new Date().toISOString();
+  const discoveredAt = parsed.discoveredAt ?? parsed.createdAt ?? now;
+  const latestEventAt = parsed.latestEventAt ?? discoveredAt;
+  const createdAt = parsed.createdAt ?? now;
+  const db = getDb();
+
+  db.prepare(
+    `insert into launch_candidates (
+      mint,
+      source,
+      event_type,
+      name,
+      symbol,
+      title,
+      status,
+      reason_codes_json,
+      payload_json,
+      discovered_at,
+      latest_event_at,
+      created_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    on conflict(mint) do update set
+      source = excluded.source,
+      event_type = excluded.event_type,
+      name = excluded.name,
+      symbol = excluded.symbol,
+      title = excluded.title,
+      status = excluded.status,
+      reason_codes_json = excluded.reason_codes_json,
+      payload_json = excluded.payload_json,
+      latest_event_at = excluded.latest_event_at`
+  ).run(
+    parsed.mint,
+    parsed.source,
+    parsed.eventType,
+    parsed.name ?? null,
+    parsed.symbol ?? null,
+    parsed.title ?? null,
+    parsed.status,
+    stringifyJson(parsed.reasonCodes),
+    stringifyJson(parsed.payload),
+    discoveredAt,
+    latestEventAt,
+    createdAt
+  );
+
+  const row = db
+    .prepare("select * from launch_candidates where mint = ?")
+    .get(parsed.mint) as LaunchCandidateRow | undefined;
+
+  if (!row) {
+    throw new Error(`Failed to save launch candidate for ${parsed.mint}`);
+  }
+
+  return mapLaunchCandidateRow(row);
+}
+
+export function listLaunchCandidates(limit = 50): StoredLaunchCandidate[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from launch_candidates
+       order by datetime(latest_event_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as LaunchCandidateRow[];
+
+  return rows.map(mapLaunchCandidateRow);
+}
+
+export function getLaunchCandidate(
+  mint: string
+): StoredLaunchCandidate | null {
+  const row = getDb()
+    .prepare("select * from launch_candidates where mint = ?")
+    .get(mint) as LaunchCandidateRow | undefined;
+
+  return row ? mapLaunchCandidateRow(row) : null;
+}
+
+export function saveLaunchTradeSample(
+  sample: LaunchTradeSampleInput
+): StoredLaunchTradeSample {
+  const parsed = launchTradeSampleInputSchema.parse(sample);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const db = getDb();
+  const result = db
+    .prepare(
+      `insert into launch_trade_samples (
+        mint,
+        signature,
+        side,
+        trader,
+        price_sol,
+        volume_sol,
+        token_amount,
+        confidence,
+        usable_for_metrics,
+        reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.mint,
+      parsed.signature ?? null,
+      parsed.side,
+      parsed.trader ?? null,
+      parsed.priceSol ?? null,
+      parsed.volumeSol ?? null,
+      parsed.tokenAmount ?? null,
+      parsed.confidence,
+      parsed.usableForMetrics ? 1 : 0,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(parsed.payload),
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    mint: parsed.mint,
+    signature: parsed.signature ?? null,
+    side: parsed.side,
+    trader: parsed.trader ?? null,
+    priceSol: parsed.priceSol ?? null,
+    volumeSol: parsed.volumeSol ?? null,
+    tokenAmount: parsed.tokenAmount ?? null,
+    confidence: parsed.confidence,
+    usableForMetrics: parsed.usableForMetrics,
+    reasonCodes: parsed.reasonCodes,
+    payload: parsed.payload,
+    createdAt
+  };
+}
+
+export function listLaunchTradeSamplesByMint(
+  mint: string,
+  limit = 250
+): StoredLaunchTradeSample[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from launch_trade_samples
+       where mint = ?
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(mint, parsedLimit) as LaunchTradeSampleRow[];
+
+  return rows.map(mapLaunchTradeSampleRow);
+}
+
+export function saveLaunchScoreSnapshot(
+  snapshot: LaunchScoreSnapshotInput
+): StoredLaunchScoreSnapshot {
+  const parsed = launchScoreSnapshotInputSchema.parse(snapshot);
+  const evaluatedAt =
+    parsed.evaluatedAt ?? parsed.createdAt ?? new Date().toISOString();
+  const createdAt = parsed.createdAt ?? evaluatedAt;
+  const db = getDb();
+  const result = db
+    .prepare(
+      `insert into launch_score_snapshots (
+        mint,
+        score,
+        label,
+        phase,
+        trade_sample_count,
+        price_sol,
+        volume_sol,
+        reason_codes_json,
+        payload_json,
+        evaluated_at,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.mint,
+      parsed.score,
+      parsed.label,
+      parsed.phase,
+      parsed.tradeSampleCount,
+      parsed.priceSol ?? null,
+      parsed.volumeSol,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(parsed.payload),
+      evaluatedAt,
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    mint: parsed.mint,
+    score: parsed.score,
+    label: parsed.label,
+    phase: parsed.phase,
+    tradeSampleCount: parsed.tradeSampleCount,
+    priceSol: parsed.priceSol ?? null,
+    volumeSol: parsed.volumeSol,
+    reasonCodes: parsed.reasonCodes,
+    payload: parsed.payload,
+    evaluatedAt,
+    createdAt
+  };
+}
+
+export function listLaunchScoreSnapshots(
+  limit = 50
+): StoredLaunchScoreSnapshot[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from launch_score_snapshots
+       order by score desc, datetime(evaluated_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as LaunchScoreSnapshotRow[];
+
+  return rows.map(mapLaunchScoreSnapshotRow);
+}
+
+export function listLaunchScoreSnapshotsByMint(
+  mint: string,
+  limit = 50
+): StoredLaunchScoreSnapshot[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from launch_score_snapshots
+       where mint = ?
+       order by datetime(evaluated_at) desc, id desc
+       limit ?`
+    )
+    .all(mint, parsedLimit) as LaunchScoreSnapshotRow[];
+
+  return rows.map(mapLaunchScoreSnapshotRow);
+}
+
+export function saveLaunchTrackingEvent(
+  event: LaunchTrackingEventInput
+): StoredLaunchTrackingEvent {
+  const parsed = launchTrackingEventInputSchema.parse(event);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const db = getDb();
+  const result = db
+    .prepare(
+      `insert into launch_tracking_events (
+        mint,
+        action,
+        status,
+        reason,
+        reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.mint,
+      parsed.action,
+      parsed.status,
+      parsed.reason,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(parsed.payload),
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    mint: parsed.mint,
+    action: parsed.action,
+    status: parsed.status,
+    reason: parsed.reason,
+    reasonCodes: parsed.reasonCodes,
+    payload: parsed.payload,
+    createdAt
+  };
+}
+
+export function listLaunchTrackingEvents(
+  limit = 50
+): StoredLaunchTrackingEvent[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from launch_tracking_events
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as LaunchTrackingEventRow[];
+
+  return rows.map(mapLaunchTrackingEventRow);
+}
+
+export function saveLaunchTrackingSession(
+  session: LaunchTrackingSessionInput
+): StoredLaunchTrackingSession {
+  const parsed = launchTrackingSessionInputSchema.parse(session);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const db = getDb();
+  const result = db
+    .prepare(
+      `insert into launch_tracking_sessions (
+        provider,
+        status,
+        tracked_token_count,
+        total_event_count,
+        estimated_cost_sol,
+        budget_limit_sol,
+        reason_codes_json,
+        payload_json,
+        started_at,
+        stopped_at,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.provider,
+      parsed.status,
+      parsed.trackedTokenCount,
+      parsed.totalEventCount,
+      parsed.estimatedCostSol ?? null,
+      parsed.budgetLimitSol,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(parsed.payload),
+      parsed.startedAt ?? null,
+      parsed.stoppedAt ?? null,
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    provider: parsed.provider,
+    status: parsed.status,
+    trackedTokenCount: parsed.trackedTokenCount,
+    totalEventCount: parsed.totalEventCount,
+    estimatedCostSol: parsed.estimatedCostSol ?? null,
+    budgetLimitSol: parsed.budgetLimitSol,
+    reasonCodes: parsed.reasonCodes,
+    payload: parsed.payload,
+    startedAt: parsed.startedAt ?? null,
+    stoppedAt: parsed.stoppedAt ?? null,
+    createdAt
+  };
+}
+
+export function listLaunchTrackingSessions(
+  limit = 50
+): StoredLaunchTrackingSession[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from launch_tracking_sessions
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as LaunchTrackingSessionRow[];
+
+  return rows.map(mapLaunchTrackingSessionRow);
+}
+
 export function saveTokenIdentity(
   identity: TokenIdentity
 ): StoredTokenIdentity {
@@ -3091,6 +3735,11 @@ export function getStorageStats(): StorageStats {
     databasePath: getStoragePath(),
     feedEventCount: countRows(db, "feed_events"),
     liveFeedEventCount: countRows(db, "live_feed_events"),
+    launchCandidateCount: countRows(db, "launch_candidates"),
+    launchScoreSnapshotCount: countRows(db, "launch_score_snapshots"),
+    launchTradeSampleCount: countRows(db, "launch_trade_samples"),
+    launchTrackingEventCount: countRows(db, "launch_tracking_events"),
+    launchTrackingSessionCount: countRows(db, "launch_tracking_sessions"),
     signalCount: countRows(db, "signals"),
     chainVerificationCount: countRows(db, "chain_verifications"),
     chainTransactionEventCount: countRows(db, "chain_transaction_events"),
@@ -3645,6 +4294,118 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(10, "pumpportal_lightning_readiness", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 11)) {
+    db.exec(`
+      create table if not exists launch_candidates (
+        id integer primary key autoincrement,
+        mint text not null unique,
+        source text not null,
+        event_type text not null,
+        name text,
+        symbol text,
+        title text,
+        status text not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        discovered_at text not null,
+        latest_event_at text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_launch_candidates_latest_event_at
+        on launch_candidates(latest_event_at);
+
+      create index if not exists idx_launch_candidates_status
+        on launch_candidates(status);
+
+      create table if not exists launch_trade_samples (
+        id integer primary key autoincrement,
+        mint text not null,
+        signature text,
+        side text not null,
+        trader text,
+        price_sol real,
+        volume_sol real,
+        token_amount real,
+        confidence text not null,
+        usable_for_metrics integer not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_launch_trade_samples_created_at
+        on launch_trade_samples(created_at);
+
+      create index if not exists idx_launch_trade_samples_mint
+        on launch_trade_samples(mint);
+
+      create table if not exists launch_score_snapshots (
+        id integer primary key autoincrement,
+        mint text not null,
+        score real not null,
+        label text not null,
+        phase text not null,
+        trade_sample_count integer not null,
+        price_sol real,
+        volume_sol real not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        evaluated_at text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_launch_score_snapshots_evaluated_at
+        on launch_score_snapshots(evaluated_at);
+
+      create index if not exists idx_launch_score_snapshots_mint
+        on launch_score_snapshots(mint);
+
+      create index if not exists idx_launch_score_snapshots_score
+        on launch_score_snapshots(score);
+
+      create table if not exists launch_tracking_events (
+        id integer primary key autoincrement,
+        mint text not null,
+        action text not null,
+        status text not null,
+        reason text not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_launch_tracking_events_created_at
+        on launch_tracking_events(created_at);
+
+      create index if not exists idx_launch_tracking_events_mint
+        on launch_tracking_events(mint);
+
+      create table if not exists launch_tracking_sessions (
+        id integer primary key autoincrement,
+        provider text not null,
+        status text not null,
+        tracked_token_count integer not null,
+        total_event_count integer not null,
+        estimated_cost_sol real,
+        budget_limit_sol real not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        started_at text,
+        stopped_at text,
+        created_at text not null
+      );
+
+      create index if not exists idx_launch_tracking_sessions_created_at
+        on launch_tracking_sessions(created_at);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(11, "launch_scanner", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -4019,6 +4780,97 @@ function mapActualDataSessionRow(
     stoppedAt: row.stopped_at,
     reasonCodes: JSON.parse(row.reason_codes_json) as string[],
     payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at
+  };
+}
+
+function mapLaunchCandidateRow(row: LaunchCandidateRow): StoredLaunchCandidate {
+  return {
+    id: row.id,
+    mint: row.mint,
+    source: row.source,
+    eventType: row.event_type,
+    name: row.name,
+    symbol: row.symbol,
+    title: row.title,
+    status: row.status,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
+    discoveredAt: row.discovered_at,
+    latestEventAt: row.latest_event_at,
+    createdAt: row.created_at
+  };
+}
+
+function mapLaunchTradeSampleRow(
+  row: LaunchTradeSampleRow
+): StoredLaunchTradeSample {
+  return {
+    id: row.id,
+    mint: row.mint,
+    signature: row.signature,
+    side: row.side,
+    trader: row.trader,
+    priceSol: row.price_sol,
+    volumeSol: row.volume_sol,
+    tokenAmount: row.token_amount,
+    confidence: row.confidence,
+    usableForMetrics: Boolean(row.usable_for_metrics),
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at
+  };
+}
+
+function mapLaunchScoreSnapshotRow(
+  row: LaunchScoreSnapshotRow
+): StoredLaunchScoreSnapshot {
+  return {
+    id: row.id,
+    mint: row.mint,
+    score: row.score,
+    label: row.label,
+    phase: row.phase,
+    tradeSampleCount: row.trade_sample_count,
+    priceSol: row.price_sol,
+    volumeSol: row.volume_sol,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
+    evaluatedAt: row.evaluated_at,
+    createdAt: row.created_at
+  };
+}
+
+function mapLaunchTrackingEventRow(
+  row: LaunchTrackingEventRow
+): StoredLaunchTrackingEvent {
+  return {
+    id: row.id,
+    mint: row.mint,
+    action: row.action,
+    status: row.status,
+    reason: row.reason,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at
+  };
+}
+
+function mapLaunchTrackingSessionRow(
+  row: LaunchTrackingSessionRow
+): StoredLaunchTrackingSession {
+  return {
+    id: row.id,
+    provider: row.provider,
+    status: row.status,
+    trackedTokenCount: row.tracked_token_count,
+    totalEventCount: row.total_event_count,
+    estimatedCostSol: row.estimated_cost_sol,
+    budgetLimitSol: row.budget_limit_sol,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
+    startedAt: row.started_at,
+    stoppedAt: row.stopped_at,
     createdAt: row.created_at
   };
 }

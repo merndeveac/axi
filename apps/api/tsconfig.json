@@ -13,6 +13,7 @@
     { "path": "../../packages/chain-events" },
     { "path": "../../packages/event-bus" },
     { "path": "../../packages/indexer-core" },
+    { "path": "../../packages/launch-momentum" },
     { "path": "../../packages/live-state" },
     { "path": "../../packages/managed-stream-adapter" },
     { "path": "../../packages/managed-stream-clients" },

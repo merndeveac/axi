@@ -39,10 +39,14 @@ await assertPortIsFree({
 
 const liveEnv = {
   ...process.env,
+  AXI_RUNTIME_MODE: "pumpportal_first",
   DATA_FEED_MODE: "live",
   DATA_FEED: "pumpportal",
+  PUMPPORTAL_LIVE_DISCOVERY_ENABLED: "true",
   PUMPPORTAL_SUBSCRIBE_NEW_TOKEN: "true",
   PUMPPORTAL_SUBSCRIBE_MIGRATION: "true",
+  PUMPPORTAL_LAUNCH_TRACKING_ENABLED: "false",
+  PUMPPORTAL_LAUNCH_TRACKING_ACK_METERED: "false",
   PUMPPORTAL_TOKEN_TRADES_ENABLED: "false",
   PUMPPORTAL_TOKEN_TRADES_ACK_METERED: "false",
   ALLOW_MOCK_DATA: "false",

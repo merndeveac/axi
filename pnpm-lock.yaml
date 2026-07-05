@@ -71,6 +71,9 @@ importers:
       '@axi/indexer-core':
         specifier: workspace:*
         version: link:../../packages/indexer-core
+      '@axi/launch-momentum':
+        specifier: workspace:*
+        version: link:../../packages/launch-momentum
       '@axi/live-state':
         specifier: workspace:*
         version: link:../../packages/live-state
@@ -224,6 +227,8 @@ importers:
       zod:
         specifier: ^3.25.0
         version: 3.25.76
+
+  packages/launch-momentum: {}
 
   packages/live-state:
     dependencies:
