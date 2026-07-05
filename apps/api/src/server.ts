@@ -4,7 +4,10 @@ import type {
   MockFeedProviderOptions,
   PumpPortalFeedProviderOptions
 } from "@axi/data-feeds";
-import { createActualDataConfig, parseManualMints } from "./actual-data-service";
+import {
+  createActualDataConfig,
+  parseManualMints
+} from "./actual-data-service";
 import { createTokenIdentityConfig } from "./token-identity-service";
 
 const config = loadApiConfig();
@@ -32,17 +35,17 @@ const options: ApiServerOptions = {
     maxWatchedAddresses: config.CHAIN_EVENTS_MAX_WATCHED_ADDRESSES,
     marketData: {
       allowSolUsdConversion: config.MARKET_DATA_ALLOW_SOL_USD_CONVERSION,
-      allowUsdFromStableQuotes:
-        config.MARKET_DATA_ALLOW_USD_FROM_STABLE_QUOTES,
+      allowUsdFromStableQuotes: config.MARKET_DATA_ALLOW_USD_FROM_STABLE_QUOTES,
       enabled: config.MARKET_DATA_ENABLED,
-      minConfidenceForMetrics:
-        config.MARKET_DATA_MIN_CONFIDENCE_FOR_METRICS,
+      minConfidenceForMetrics: config.MARKET_DATA_MIN_CONFIDENCE_FOR_METRICS,
       solUsdPrice: config.MARKET_DATA_SOL_USD_PRICE ?? null
     },
     onChainVerified: config.CHAIN_EVENTS_ON_CHAIN_VERIFIED,
     onNewCandidate: config.CHAIN_EVENTS_ON_NEW_CANDIDATE,
     requestTimeoutMs: config.CHAIN_EVENTS_REQUEST_TIMEOUT_MS,
-    watchedAddresses: parseWatchedAddresses(config.CHAIN_EVENTS_WATCHED_ADDRESSES)
+    watchedAddresses: parseWatchedAddresses(
+      config.CHAIN_EVENTS_WATCHED_ADDRESSES
+    )
   },
   chainVerifier: {
     cacheTtlMs: config.CHAIN_VERIFIER_CACHE_TTL_MS,
@@ -55,6 +58,7 @@ const options: ApiServerOptions = {
     requestTimeoutMs: config.CHAIN_VERIFIER_REQUEST_TIMEOUT_MS
   },
   dataFeed: config.DATA_FEED,
+  dataFeedMode: config.DATA_FEED_MODE,
   host: config.API_HOST,
   logLevel: config.LOG_LEVEL,
   mockFeed,
@@ -71,19 +75,14 @@ const options: ApiServerOptions = {
     autoSubscribeOnQualified:
       config.PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE_ON_QUALIFIED,
     enabled: config.PUMPPORTAL_TOKEN_TRADES_ENABLED,
-    manualMints: parseManualMints(
-      config.PUMPPORTAL_TOKEN_TRADES_MANUAL_MINTS
-    ),
+    manualMints: parseManualMints(config.PUMPPORTAL_TOKEN_TRADES_MANUAL_MINTS),
     maxEventsPerMint: config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_MINT,
-    maxEventsPerSession:
-      config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION,
-    maxSubscribedTokens:
-      config.PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS,
+    maxEventsPerSession: config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION,
+    maxSubscribedTokens: config.PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS,
     minScoreToAutoSubscribe:
       config.PUMPPORTAL_TOKEN_TRADES_MIN_SCORE_TO_AUTO_SUBSCRIBE,
     requireApiKey: config.PUMPPORTAL_TOKEN_TRADES_REQUIRE_API_KEY,
-    unsubscribeAfterMs:
-      config.PUMPPORTAL_TOKEN_TRADES_UNSUBSCRIBE_AFTER_MS
+    unsubscribeAfterMs: config.PUMPPORTAL_TOKEN_TRADES_UNSUBSCRIBE_AFTER_MS
   }),
   allowMockData: config.ALLOW_MOCK_DATA,
   failIfNoRealData: config.FAIL_IF_NO_REAL_DATA,
@@ -98,8 +97,7 @@ const options: ApiServerOptions = {
 options.tokenIdentity = createTokenIdentityConfig({
   solanaMetadataEnabled: config.TOKEN_IDENTITY_SOLANA_METADATA_ENABLED,
   solanaMetadataOnDemand: config.TOKEN_IDENTITY_SOLANA_METADATA_ON_DEMAND,
-  solanaMetadataOnNewToken:
-    config.TOKEN_IDENTITY_SOLANA_METADATA_ON_NEW_TOKEN,
+  solanaMetadataOnNewToken: config.TOKEN_IDENTITY_SOLANA_METADATA_ON_NEW_TOKEN,
   offchainFetchEnabled: config.TOKEN_IDENTITY_OFFCHAIN_FETCH_ENABLED,
   offchainTimeoutMs: config.TOKEN_IDENTITY_OFFCHAIN_TIMEOUT_MS,
   offchainCacheTtlMs: config.TOKEN_IDENTITY_OFFCHAIN_CACHE_TTL_MS,
@@ -113,11 +111,9 @@ options.watchOrchestrator = {
   verifyOnMigration: config.WATCH_ORCHESTRATOR_VERIFY_ON_MIGRATION,
   watchOnNewToken: config.WATCH_ORCHESTRATOR_WATCH_ON_NEW_TOKEN,
   watchOnMigration: config.WATCH_ORCHESTRATOR_WATCH_ON_MIGRATION,
-  maxTargetsPerCandidate:
-    config.WATCH_ORCHESTRATOR_MAX_TARGETS_PER_CANDIDATE,
+  maxTargetsPerCandidate: config.WATCH_ORCHESTRATOR_MAX_TARGETS_PER_CANDIDATE,
   allowMintWatch: config.WATCH_ORCHESTRATOR_ALLOW_MINT_WATCH,
-  allowBondingCurveWatch:
-    config.WATCH_ORCHESTRATOR_ALLOW_BONDING_CURVE_WATCH,
+  allowBondingCurveWatch: config.WATCH_ORCHESTRATOR_ALLOW_BONDING_CURVE_WATCH,
   allowPoolWatch: config.WATCH_ORCHESTRATOR_ALLOW_POOL_WATCH,
   allowProgramWatch: config.WATCH_ORCHESTRATOR_ALLOW_PROGRAM_WATCH,
   allowWalletWatch: config.WATCH_ORCHESTRATOR_ALLOW_WALLET_WATCH,
@@ -178,6 +174,7 @@ process.once("SIGTERM", () => {
 server.app.log.info(
   {
     mode: config.BOT_MODE,
+    dataFeedMode: config.DATA_FEED_MODE,
     feedProvider: server.feed.name,
     paperAutoOrder: config.PAPER_AUTO_ORDER,
     port: config.API_PORT,

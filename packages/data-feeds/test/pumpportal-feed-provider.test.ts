@@ -13,7 +13,10 @@ class FakeWebSocket implements WebSocketLike {
   static instances: FakeWebSocket[] = [];
 
   readonly sent: string[] = [];
-  private readonly handlers = new Map<string, Array<(...args: unknown[]) => void>>();
+  private readonly handlers = new Map<
+    string,
+    Array<(...args: unknown[]) => void>
+  >();
 
   constructor(readonly url: string) {
     FakeWebSocket.instances.push(this);
@@ -55,6 +58,7 @@ describe("PumpPortalFeedProvider", () => {
     expect(url).toContain("api-key=super-secret-key");
     expect(maskPumpPortalUrl(url)).not.toContain("super-secret-key");
     expect(maskPumpPortalUrl(url)).toContain("api-key=***");
+    expect(buildPumpPortalWsUrl()).not.toContain("api-key=");
   });
 
   it("sends subscribeNewToken on open when enabled", () => {
@@ -180,10 +184,14 @@ describe("PumpPortalFeedProvider", () => {
     }
 
     expect(event.source).toBe("pumpportal");
-    expect(event.candidate.mint).toBe("PumpPortalMint111111111111111111111111111");
+    expect(event.candidate.mint).toBe(
+      "PumpPortalMint111111111111111111111111111"
+    );
     expect(event.candidate.symbol).toBe("PORTAL");
     expect(event.metricsComplete).toBe(false);
     expect(event.creator).toBe("creator111");
+    expect(provider.getStatus().newTokenEventCount).toBe(1);
+    expect(provider.getStatus().tokenTradeEventCount).toBe(0);
     provider.stop();
   });
 
@@ -211,6 +219,7 @@ describe("PumpPortalFeedProvider", () => {
 
     expect(event.bondingCurve).toBe("curve111");
     expect(event.candidate.source).toBe("pumpportal");
+    expect(provider.getStatus().migrationEventCount).toBe(1);
     provider.stop();
   });
 
@@ -300,7 +309,10 @@ describe("PumpPortalFeedProvider", () => {
     const provider = createProvider({ logger });
 
     provider.start((event) => events.push(event));
-    FakeWebSocket.instances[0]?.emit("message", JSON.stringify({ hello: "world" }));
+    FakeWebSocket.instances[0]?.emit(
+      "message",
+      JSON.stringify({ hello: "world" })
+    );
     FakeWebSocket.instances[0]?.emit("message", "{not-json");
 
     expect(events).toEqual([]);
@@ -355,6 +367,27 @@ describe("PumpPortalFeedProvider", () => {
     ]);
 
     expect(sentMethods()).not.toContain("subscribeAccountTrade");
+    provider.stop();
+  });
+
+  it("reports connection status without token-trade subscriptions", () => {
+    const provider = createProvider({
+      subscribeMigration: true,
+      subscribeNewToken: true
+    });
+
+    provider.start(() => undefined);
+    expect(provider.getStatus().connecting).toBe(true);
+    FakeWebSocket.instances[0]?.emit("open");
+
+    const status = provider.getStatus();
+
+    expect(status.connected).toBe(true);
+    expect(status.subscriptions).toEqual([
+      "subscribeNewToken",
+      "subscribeMigration"
+    ]);
+    expect(status.subscriptions).not.toContain("subscribeTokenTrade");
     provider.stop();
   });
 });

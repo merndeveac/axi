@@ -14,9 +14,12 @@ export type FeedSource = "mock" | "pumpportal" | (string & {});
 export type NormalizedFeedMetadata = {
   bondingCurve?: string | undefined;
   creator?: string | undefined;
+  dataSource?: FeedSource | undefined;
+  dataSourceMode?: "mock" | "real" | "replay" | "unknown" | undefined;
   metricsComplete?: boolean;
   raw?: unknown;
   rawSourceEventType?: string | undefined;
+  realData?: boolean | undefined;
   receivedAt?: string | undefined;
   reasonCodes?: string[] | undefined;
   signature?: string | undefined;
@@ -122,6 +125,24 @@ export type PumpPortalTokenTradeStats = {
   perMintEventCounts: Record<string, number>;
   subscribedTokenCount: number;
   totalEventsThisSession: number;
+};
+
+export type PumpPortalConnectionStatus = {
+  connected: boolean;
+  connecting: boolean;
+  disconnected: boolean;
+  lastCloseAt: string | null;
+  lastError: string | null;
+  lastEventAt: string | null;
+  lastMessageAt: string | null;
+  lastOpenAt: string | null;
+  migrationEventCount: number;
+  newTokenEventCount: number;
+  parseErrorCount: number;
+  reasonCodes: string[];
+  reconnectAttempts: number;
+  subscriptions: string[];
+  tokenTradeEventCount: number;
 };
 
 export type PumpPortalTradeSubscriptionResult = {
@@ -242,9 +263,12 @@ export class MockFeedProvider implements TokenFeedProvider {
         ageSeconds: 15 + this.sequence * 4,
         firstSeenAt: timestamp
       },
+      dataSource: "mock",
+      dataSourceMode: "mock",
       metrics,
       metricsComplete: true,
       rawSourceEventType: this.scenario,
+      realData: false,
       receivedAt: timestamp,
       riskFlags,
       source: "mock",
@@ -279,9 +303,12 @@ export class MockFeedProvider implements TokenFeedProvider {
       tokenAmount,
       trader: this.createTrader(side),
       volumeUsd,
+      dataSource: "mock",
+      dataSourceMode: "mock",
       metrics,
       metricsComplete: true,
       rawSourceEventType: this.scenario,
+      realData: false,
       receivedAt: timestamp,
       riskFlags,
       source: "mock",
@@ -505,10 +532,9 @@ export class MockFeedProvider implements TokenFeedProvider {
   }
 
   private createMint(): string {
-    const seedPart = String(Math.abs(hashSeed(this.scenario)) % 10_000).padStart(
-      4,
-      "0"
-    );
+    const seedPart = String(
+      Math.abs(hashSeed(this.scenario)) % 10_000
+    ).padStart(4, "0");
 
     return `MockMint${seedPart}${String(this.sequence).padStart(4, "0")}111111111111111111111111`;
   }
@@ -545,6 +571,17 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
   private readonly tokenTradeSubscriptions = new Set<string>();
   private socketOpen = false;
   private tokenTradeBudgetReached = false;
+  private connecting = false;
+  private lastCloseAt: string | null = null;
+  private lastError: string | null = null;
+  private lastEventAt: string | null = null;
+  private lastMessageAt: string | null = null;
+  private lastOpenAt: string | null = null;
+  private migrationEventCount = 0;
+  private newTokenEventCount = 0;
+  private parseErrorCount = 0;
+  private reconnectAttempts = 0;
+  private tokenTradeEventCount = 0;
 
   constructor(options: PumpPortalFeedProviderOptions = {}) {
     this.apiKey = options.apiKey;
@@ -591,6 +628,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     }
 
     this.socketOpen = false;
+    this.connecting = false;
     this.socket?.close();
     this.socket = undefined;
   }
@@ -614,7 +652,9 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
         continue;
       }
 
-      if (this.tokenTradeSubscriptions.size >= this.maxTokenTradeSubscriptions) {
+      if (
+        this.tokenTradeSubscriptions.size >= this.maxTokenTradeSubscriptions
+      ) {
         result.rejected.push(mint);
         result.reasonCodes.push("PUMPPORTAL_TRADE_MAX_TOKENS_REACHED");
         continue;
@@ -669,10 +709,51 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       maxSubscribedTokens: this.maxTokenTradeSubscriptions,
       perMintEventCounts: Object.fromEntries(this.tokenTradeEventCounts),
       subscribedTokenCount: this.tokenTradeSubscriptions.size,
-      totalEventsThisSession: Array.from(this.tokenTradeEventCounts.values()).reduce(
-        (total, count) => total + count,
-        0
-      )
+      totalEventsThisSession: Array.from(
+        this.tokenTradeEventCounts.values()
+      ).reduce((total, count) => total + count, 0)
+    };
+  }
+
+  getStatus(): PumpPortalConnectionStatus {
+    const reasonCodes: string[] = [];
+
+    if (this.socketOpen) {
+      reasonCodes.push("LIVE_FEED_CONNECTED");
+    } else if (this.connecting) {
+      reasonCodes.push("LIVE_FEED_CONNECTING");
+    } else {
+      reasonCodes.push("LIVE_FEED_DISCONNECTED");
+    }
+
+    if (!this.lastEventAt) {
+      reasonCodes.push("LIVE_FEED_NO_EVENTS_YET");
+    }
+
+    if (this.lastError) {
+      reasonCodes.push("LIVE_FEED_ERROR");
+
+      if (!this.apiKey && looksLikeApiKeyRequirement(this.lastError)) {
+        reasonCodes.push("PUMPPORTAL_API_KEY_REQUIRED_BY_PROVIDER");
+      }
+    }
+
+    return {
+      connected: this.socketOpen,
+      connecting: this.connecting,
+      disconnected: !this.socketOpen && !this.connecting,
+      lastCloseAt: this.lastCloseAt,
+      lastError: this.lastError,
+      lastEventAt: this.lastEventAt,
+      lastMessageAt: this.lastMessageAt,
+      lastOpenAt: this.lastOpenAt,
+      migrationEventCount: this.migrationEventCount,
+      newTokenEventCount: this.newTokenEventCount,
+      parseErrorCount: this.parseErrorCount,
+      reasonCodes: uniqueReasonCodes(reasonCodes),
+      reconnectAttempts: this.reconnectAttempts,
+      subscriptions: this.getConfiguredSubscriptions(),
+      tokenTradeEventCount: this.tokenTradeEventCount
     };
   }
 
@@ -683,12 +764,16 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
 
     const socket = new this.webSocketConstructor(this.wsUrl);
     this.socket = socket;
+    this.connecting = true;
     this.logger.info?.("PumpPortal websocket connecting", {
       url: maskPumpPortalUrl(this.wsUrl)
     });
 
     socket.on("open", () => {
       this.socketOpen = true;
+      this.connecting = false;
+      this.lastOpenAt = this.now().toISOString();
+      this.lastError = null;
       this.reconnectDelayMs = this.reconnectInitialDelayMs;
       this.sendSubscriptions(socket);
     });
@@ -698,14 +783,17 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     });
 
     socket.on("error", (error) => {
+      this.lastError = error instanceof Error ? error.message : String(error);
       this.logger.warn?.("PumpPortal websocket error", {
-        error: error instanceof Error ? error.message : String(error)
+        error: this.lastError
       });
       this.scheduleReconnect();
     });
 
     socket.on("close", () => {
       this.socketOpen = false;
+      this.connecting = false;
+      this.lastCloseAt = this.now().toISOString();
       this.logger.debug?.("PumpPortal websocket closed");
       this.scheduleReconnect();
     });
@@ -741,6 +829,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
   }
 
   private handleMessage(data: unknown): void {
+    this.lastMessageAt = this.now().toISOString();
     const payload = this.parsePayload(data);
 
     if (!payload) {
@@ -758,9 +847,14 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     }
 
     this.emitted += 1;
+    this.lastEventAt = event.timestamp;
 
     if (isPumpPortalTokenTradeEvent(event)) {
       this.recordTokenTradeEvent(event);
+    } else if (event.rawSourceEventType === "migration") {
+      this.migrationEventCount += 1;
+    } else if (event.type === "token_created") {
+      this.newTokenEventCount += 1;
     }
 
     this.handler?.(event);
@@ -807,7 +901,8 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       0
     );
     const reachedMintBudget = nextCount >= this.maxTokenTradeEventsPerMint;
-    const reachedSessionBudget = totalEvents >= this.maxTokenTradeEventsPerSession;
+    const reachedSessionBudget =
+      totalEvents >= this.maxTokenTradeEventsPerSession;
 
     if (reachedMintBudget) {
       this.unsubscribeTokenTrades([event.mint]);
@@ -834,8 +929,10 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       this.logger.debug?.("Skipping non-object PumpPortal payload");
       return null;
     } catch (error) {
+      this.parseErrorCount += 1;
+      this.lastError = error instanceof Error ? error.message : String(error);
       this.logger.warn?.("Failed to parse PumpPortal payload", {
-        error: error instanceof Error ? error.message : String(error)
+        error: this.lastError
       });
       return null;
     }
@@ -919,10 +1016,13 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
         firstSeenAt: timestamp
       },
       creator,
+      dataSource: "pumpportal",
+      dataSourceMode: "real",
       metrics: createIncompleteMetrics(),
       metricsComplete: false,
       raw: payload,
       rawSourceEventType,
+      realData: true,
       receivedAt,
       riskFlags: {
         ...safeRiskFlags,
@@ -940,6 +1040,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     }
 
     const delayMs = this.reconnectDelayMs;
+    this.reconnectAttempts += 1;
     this.reconnectDelayMs = Math.min(
       this.reconnectDelayMs * 2,
       this.reconnectMaxDelayMs
@@ -950,12 +1051,32 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       this.connect();
     }, delayMs);
   }
+
+  private getConfiguredSubscriptions(): string[] {
+    const subscriptions: string[] = [];
+
+    if (this.subscribeNewToken) {
+      subscriptions.push("subscribeNewToken");
+    }
+
+    if (this.subscribeMigration) {
+      subscriptions.push("subscribeMigration");
+    }
+
+    if (this.tokenTradeSubscriptions.size > 0) {
+      subscriptions.push("subscribeTokenTrade");
+    }
+
+    return subscriptions;
+  }
 }
 
-export function buildPumpPortalWsUrl(options: {
-  apiKey?: string | undefined;
-  wsUrl?: string | undefined;
-} = {}): string {
+export function buildPumpPortalWsUrl(
+  options: {
+    apiKey?: string | undefined;
+    wsUrl?: string | undefined;
+  } = {}
+): string {
   const url = new URL(options.wsUrl ?? defaultPumpPortalWsUrl);
 
   if (options.apiKey) {
@@ -1051,7 +1172,9 @@ export function normalizePumpPortalTokenTradePayload(
     "contractAddress"
   ]);
   const mint = rawMint ?? "UNKNOWN_MINT";
-  const side = normalizeTradeSide(readString(payload, ["txType", "type", "side"]));
+  const side = normalizeTradeSide(
+    readString(payload, ["txType", "type", "side"])
+  );
   const solAmount = readNumber(payload, ["solAmount", "sol_amount", "sol"]);
   const tokenAmount = readNumber(payload, [
     "tokenAmount",
@@ -1090,7 +1213,9 @@ export function normalizePumpPortalTokenTradePayload(
     volumeSol
   });
   const timestamp =
-    readTimestamp(payload) ?? readTimestampFromReceivedAt(payload) ?? receivedAt;
+    readTimestamp(payload) ??
+    readTimestampFromReceivedAt(payload) ??
+    receivedAt;
   const signature = readString(payload, [
     "signature",
     "txSignature",
@@ -1129,6 +1254,8 @@ export function normalizePumpPortalTokenTradePayload(
     type: "trade",
     mint,
     source: "pumpportal",
+    dataSource: "pumpportal",
+    dataSourceMode: "real",
     token: {
       chain: "solana",
       mint
@@ -1152,6 +1279,7 @@ export function normalizePumpPortalTokenTradePayload(
     metricsComplete: usableForMetrics,
     raw: payload,
     rawSourceEventType: "token_trade",
+    realData: true,
     reasonCodes,
     receivedAt,
     riskFlags: { ...safeRiskFlags },
@@ -1450,7 +1578,9 @@ function createPumpPortalTradeMetrics(input: {
   };
 }
 
-function isPumpPortalTokenTradeEvent(event: FeedEvent): event is TokenTradeEvent {
+function isPumpPortalTokenTradeEvent(
+  event: FeedEvent
+): event is TokenTradeEvent {
   return (
     event.type === "trade" &&
     event.source === "pumpportal" &&
@@ -1460,11 +1590,7 @@ function isPumpPortalTokenTradeEvent(event: FeedEvent): event is TokenTradeEvent
 
 function normalizeMintList(mints: string[]): string[] {
   return Array.from(
-    new Set(
-      mints
-        .map((mint) => mint.trim())
-        .filter((mint) => mint.length > 0)
-    )
+    new Set(mints.map((mint) => mint.trim()).filter((mint) => mint.length > 0))
   );
 }
 
@@ -1491,6 +1617,18 @@ function roundMetric(value: number): number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function looksLikeApiKeyRequirement(message: string): boolean {
+  const normalized = message.toLowerCase();
+
+  return (
+    normalized.includes("key") ||
+    normalized.includes("401") ||
+    normalized.includes("403") ||
+    normalized.includes("unauthorized") ||
+    normalized.includes("forbidden")
+  );
 }
 
 function hashSeed(seed: number | string): number {

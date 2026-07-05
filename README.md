@@ -23,15 +23,18 @@ exists here yet.
 data feeds -> watch orchestration -> metrics -> risk -> candidates -> scoring -> API/WebSocket -> dashboard/overlay
 ```
 
-Default runtime starts in `DATA_FEED=none` mode and does not generate fake
-tokens. If no real source is configured, the API and dashboard stay up and show
-`NO REAL FEED CONFIGURED`.
+Default runtime starts in live token mode with `DATA_FEED_MODE=live` and
+`DATA_FEED=pumpportal`. It connects to PumpPortal new-token and migration
+streams and does not generate fake tokens. If the live feed is offline or no
+events have arrived, the dashboard shows an explicit live-feed waiting/offline
+state instead of silently showing historical mock rows.
 
 `MockFeedProvider` remains available for tests and explicit local demos only.
-It requires `DATA_FEED=mock`, `ALLOW_MOCK_DATA=true`, and
+It requires `DATA_FEED_MODE=mock`, `DATA_FEED=mock`, `ALLOW_MOCK_DATA=true`, and
 `MOCK_FEED_ENABLED=true`. A public PumpPortal feed provider is available behind
-`DATA_FEED=pumpportal` for new-token and migration events, plus opt-in metered
-`subscribeTokenTrade` ingestion for selected mints only.
+`DATA_FEED_MODE=live` / `DATA_FEED=pumpportal` for new-token and migration
+events, plus opt-in metered `subscribeTokenTrade` ingestion for selected mints
+only.
 
 Signal, identity, and risk data can be missing, unresolved, incomplete,
 normalized from PumpPortal payloads, normalized from read-only Solana
@@ -55,9 +58,9 @@ database is local-only and is ignored by git.
 Current persistence tables include `feed_events`, `signals`, `risk_snapshots`,
 `candidate_decisions`, `chain_verifications`, `chain_transaction_events`,
 `chain_trade_events`, `market_observations`, `watch_plans`, `watch_actions`,
-`pumpportal_token_trade_events`, `actual_data_subscriptions`,
-`actual_data_sessions`, `token_identities`, `token_metadata_fetches`,
-`paper_orders`, and `paper_positions`.
+`pumpportal_token_trade_events`, `live_feed_events`,
+`actual_data_subscriptions`, `actual_data_sessions`, `token_identities`,
+`token_metadata_fetches`, `paper_orders`, and `paper_positions`.
 
 Clear local paper data with:
 
@@ -318,9 +321,132 @@ pnpm local:stop
 pnpm local:logs
 ```
 
+Live-token runtime helpers:
+
+```bash
+pnpm live:tokens
+pnpm live:tokens:stop
+pnpm live:tokens:logs
+```
+
 The restart script only stops PIDs recorded in `.tmp/axi-dev-pids.json`. If a
 port is already used by an unknown process, it reports that instead of killing
 unrelated processes.
+
+## Live Tokens
+
+Start the normal live token runtime:
+
+```bash
+pnpm live:tokens
+```
+
+This launches the API and dashboard with `DATA_FEED_MODE=live`,
+`DATA_FEED=pumpportal`, PumpPortal `subscribeNewToken` and
+`subscribeMigration` enabled, runtime mock data disabled, paper auto-ordering
+disabled, and metered token trades disabled.
+
+Manual API launch:
+
+```bash
+DATA_FEED_MODE=live \
+DATA_FEED=pumpportal \
+PUMPPORTAL_SUBSCRIBE_NEW_TOKEN=true \
+PUMPPORTAL_SUBSCRIBE_MIGRATION=true \
+ALLOW_MOCK_DATA=false \
+MOCK_FEED_ENABLED=false \
+pnpm --filter @axi/api dev
+```
+
+This uses PumpPortal new-token and migration streams. It does not use metered
+token trades, does not trade, does not sign, does not require a wallet, does not
+use Axiom, and does not show mock tokens in the LIVE TOKENS panel.
+
+Probe the same non-metered live token streams without starting the API:
+
+```bash
+pnpm --filter @axi/api live:probe -- --limit 10 --timeout 60000
+```
+
+If no live tokens appear, check:
+
+```bash
+curl -s http://localhost:8787/feed/status | jq
+curl -s http://localhost:8787/live/status | jq
+pnpm live:tokens:logs
+```
+
+Dashboard live states are explicit:
+
+```text
+WAITING FOR PUMPPORTAL LIVE TOKENS
+LIVE FEED OFFLINE
+LIVE FEED CONNECTED - NO TOKENS YET
+NO LIVE FEED CONFIGURED
+MOCK MODE EXPLICITLY ENABLED
+```
+
+PumpPortal API keys are optional for this implementation's new-token/migration
+connection path. If PumpPortal rejects a no-key connection, `/feed/status`
+reports the connection error; when the error indicates a key requirement, reason
+codes include `PUMPPORTAL_API_KEY_REQUIRED_BY_PROVIDER`. Do not put real keys in
+source files, tests, commits, README examples, or `.env.example`.
+
+The free new-token and migration streams can populate current-session live
+tokens and launches, with names and symbols when the payload includes them.
+They do not provide full trade volume or velocity by themselves.
+
+If tokens arrive but names, symbols, or metadata are missing, enable read-only
+Solana metadata resolution:
+
+```bash
+DATA_FEED_MODE=live \
+DATA_FEED=pumpportal \
+PUMPPORTAL_API_KEY="$PUMPPORTAL_API_KEY" \
+PUMPPORTAL_SUBSCRIBE_NEW_TOKEN=true \
+PUMPPORTAL_SUBSCRIBE_MIGRATION=true \
+SOLANA_RPC_HTTP="https://api.mainnet-beta.solana.com" \
+TOKEN_IDENTITY_SOLANA_METADATA_ENABLED=true \
+TOKEN_IDENTITY_SOLANA_METADATA_ON_NEW_TOKEN=true \
+TOKEN_IDENTITY_SOLANA_METADATA_ON_DEMAND=true \
+TOKEN_IDENTITY_OFFCHAIN_FETCH_ENABLED=false \
+pnpm --filter @axi/api dev
+```
+
+Actual trade metrics require explicit PumpPortal token-trade subscriptions. The
+token-trade stream is metered, so use the probe first and keep strict limits:
+
+```bash
+export TEST_MINT="PASTE_REAL_MINT_HERE"
+
+PUMPPORTAL_API_KEY="$PUMPPORTAL_API_KEY" \
+pnpm --filter @axi/api actual-data:probe -- \
+  --mint "$TEST_MINT" \
+  --limit 25 \
+  --timeout 30000 \
+  --ack-metered
+```
+
+If that prints token-trade events, run the API with bounded metered ingestion:
+
+```bash
+DATA_FEED_MODE=live \
+DATA_FEED=pumpportal \
+PUMPPORTAL_API_KEY="$PUMPPORTAL_API_KEY" \
+PUMPPORTAL_SUBSCRIBE_NEW_TOKEN=true \
+PUMPPORTAL_SUBSCRIBE_MIGRATION=true \
+PUMPPORTAL_TOKEN_TRADES_ENABLED=true \
+PUMPPORTAL_TOKEN_TRADES_ACK_METERED=true \
+PUMPPORTAL_TOKEN_TRADES_MANUAL_MINTS="$TEST_MINT" \
+PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS=1 \
+PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION=200 \
+PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_MINT=200 \
+PUMPPORTAL_TOKEN_TRADES_UNSUBSCRIBE_AFTER_MS=120000 \
+SOLANA_RPC_HTTP="https://api.mainnet-beta.solana.com" \
+TOKEN_IDENTITY_SOLANA_METADATA_ENABLED=true \
+TOKEN_IDENTITY_SOLANA_METADATA_ON_DEMAND=true \
+pnpm --filter @axi/api dev
+```
 
 ## Run The API
 
@@ -330,9 +456,9 @@ pnpm --filter @axi/api dev
 
 The API defaults to `http://localhost:8787`.
 
-By default, `DATA_FEED=none` is used and no fake/mock runtime tokens are
-generated. The API and dashboard stay running and report `NO REAL FEED
-CONFIGURED` until a real feed is configured or mock mode is explicitly enabled.
+By default, `DATA_FEED_MODE=live` and `DATA_FEED=pumpportal` are used. No
+fake/mock runtime tokens are generated. If you want no feed, set
+`DATA_FEED_MODE=none`.
 
 Paper auto-ordering is disabled by default:
 
@@ -343,6 +469,7 @@ PAPER_AUTO_ORDER=false pnpm --filter @axi/api dev
 Mock runtime data requires an explicit three-part opt-in:
 
 ```bash
+DATA_FEED_MODE=mock \
 DATA_FEED=mock \
 ALLOW_MOCK_DATA=true \
 MOCK_FEED_ENABLED=true \
@@ -356,10 +483,10 @@ seed and scenario produce the same mock event sequence, which is useful for
 repeatable paper-mode tests. Mock runtime data is not enabled by seed or
 scenario variables alone.
 
-Public PumpPortal paper-feed mode can be started explicitly:
+Public PumpPortal live-token mode is the default and can be started explicitly:
 
 ```bash
-DATA_FEED=pumpportal PUMPPORTAL_API_KEY=... pnpm --filter @axi/api dev
+DATA_FEED_MODE=live DATA_FEED=pumpportal pnpm --filter @axi/api dev
 ```
 
 PumpPortal support uses one WebSocket connection and subscribes by default only
@@ -383,6 +510,7 @@ update SOL-denominated rolling metrics.
 Actual PumpPortal token trade ingestion is disabled by default and remains
 read-only, observation-only, and paper-only. It requires:
 
+- `DATA_FEED_MODE=live`
 - `DATA_FEED=pumpportal`
 - `PUMPPORTAL_API_KEY=...`
 - `PUMPPORTAL_TOKEN_TRADES_ENABLED=true`
@@ -395,12 +523,16 @@ handling, signing, transaction sending, and live trading are not implemented.
 Safe manual run:
 
 ```bash
+DATA_FEED_MODE=live \
 DATA_FEED=pumpportal \
 PUMPPORTAL_API_KEY=... \
 PUMPPORTAL_TOKEN_TRADES_ENABLED=true \
 PUMPPORTAL_TOKEN_TRADES_ACK_METERED=true \
 PUMPPORTAL_TOKEN_TRADES_MANUAL_MINTS=<MINT> \
-PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION=1000 \
+PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS=1 \
+PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION=200 \
+PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_MINT=200 \
+PUMPPORTAL_TOKEN_TRADES_UNSUBSCRIBE_AFTER_MS=120000 \
 pnpm local:restart
 ```
 
@@ -419,6 +551,12 @@ pnpm --filter @axi/api actual-data:status
 Endpoints:
 
 - `GET /health`
+- `GET /feed/status`
+- `GET /feed/events/live`
+- `GET /live/status`
+- `GET /live/tokens`
+- `GET /live/tokens/:mint`
+- `GET /live/events`
 - `GET /signals`
 - `GET /signals/recent`
 - `GET /candidates`
@@ -468,6 +606,12 @@ Endpoints:
 
 `GET /signals` returns the current in-memory signal cache. `GET
 /signals/recent` returns recent persisted signals from SQLite.
+
+`GET /feed/status` reports live feed mode, provider connection state,
+subscriptions, reconnect counters, last event/message timestamps, parse errors,
+and reason codes. `GET /feed/events/live`, `GET /live/events`, and
+`GET /live/tokens` are current-session live views only; they do not include
+historical mock/replay rows from SQLite.
 
 `GET /metrics` returns current in-memory rolling metrics for tracked mints.
 `GET /metrics/:mint` returns one metrics snapshot or `404` when that mint is not
@@ -612,8 +756,8 @@ trading, or persistence:
 
 ```bash
 pnpm --filter @axi/api feed:probe -- --provider mock --limit 5
-DATA_FEED=pumpportal PUMPPORTAL_API_KEY=... pnpm --filter @axi/api feed:probe -- --limit 10
-DATA_FEED=pumpportal pnpm --filter @axi/api feed:probe -- --new-token true --migration false --timeout 30000
+pnpm --filter @axi/api live:probe -- --limit 10 --timeout 60000
+DATA_FEED_MODE=live DATA_FEED=pumpportal pnpm --filter @axi/api feed:probe -- --limit 20 --timeout 60000 --new-token true --migration true
 ```
 
 Probe actual PumpPortal token trades for explicit mints only. This requires an
@@ -659,7 +803,7 @@ does not attach to token cards yet.
 
 `docker-compose.yml` includes optional Postgres and Redis services for later
 development. They are behind the `infra` profile and are not required to run the
-current mock API or dashboard.
+current API or dashboard.
 
 ```bash
 docker compose --profile infra up -d
@@ -714,6 +858,9 @@ docker compose --profile infra up -d
   ingestion for selected mints.
 - `dev/real-token-identity-normalization` contains no-mock default runtime data
   gates and token identity normalization.
+- `dev/live-token-feed-default` contains live PumpPortal token-feed defaults,
+  current-session live token views, feed status, live launch scripts, and the
+  dashboard LIVE TOKENS panel.
 
 Direct Solana RPC verification and watched-address transaction ingestion exist,
 and local market-data normalization and watch orchestration exist, but they are

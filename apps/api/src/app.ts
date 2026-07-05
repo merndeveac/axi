@@ -43,6 +43,7 @@ import {
   getStorageStats,
   initStorage,
   listChainVerifications,
+  saveLiveFeedEvent,
   listPaperOrders,
   listPaperPositions,
   listRecentSignals,
@@ -74,7 +75,10 @@ import {
   type ChainEventsService,
   type ChainEventsServiceOptions
 } from "./chain-events-service";
-import type { WatchedAddressInput, WatchedAddressKind } from "@axi/chain-events";
+import type {
+  WatchedAddressInput,
+  WatchedAddressKind
+} from "@axi/chain-events";
 import {
   createWatchOrchestrationService,
   createWatchPlanSummary,
@@ -95,6 +99,11 @@ import {
   type TokenIdentityService,
   type TokenIdentityServiceConfig
 } from "./token-identity-service";
+import {
+  createLiveTokenService,
+  type LiveFeedMode,
+  type LiveTokenService
+} from "./live-token-service";
 
 const logLevelSchema = z.enum([
   "fatal",
@@ -109,7 +118,8 @@ const logLevelSchema = z.enum([
 export const apiConfigSchema = z.object({
   NODE_ENV: z.string().default("development"),
   BOT_MODE: BotModeSchema.default("paper"),
-  DATA_FEED: z.enum(["none", "mock", "pumpportal"]).default("none"),
+  DATA_FEED_MODE: z.enum(["live", "none", "mock", "replay"]).default("live"),
+  DATA_FEED: z.enum(["none", "mock", "pumpportal"]).default("pumpportal"),
   ALLOW_MOCK_DATA: z.preprocess(parseBooleanEnv, z.boolean()).default(false),
   MOCK_FEED_ENABLED: z.preprocess(parseBooleanEnv, z.boolean()).default(false),
   MOCK_FEED_REQUIRE_EXPLICIT_ENABLE: z
@@ -123,13 +133,23 @@ export const apiConfigSchema = z.object({
   CHAIN_VERIFIER_ENABLED: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(false),
-  SOLANA_RPC_HTTP: z
-    .preprocess((value) => (value === "" ? undefined : value), z.string().url().optional()),
+  SOLANA_RPC_HTTP: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().url().optional()
+  ),
   SOLANA_RPC_COMMITMENT: z
     .enum(["processed", "confirmed", "finalized"])
     .default("confirmed"),
-  CHAIN_VERIFIER_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
-  CHAIN_VERIFIER_CACHE_TTL_MS: z.coerce.number().int().nonnegative().default(60000),
+  CHAIN_VERIFIER_REQUEST_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(10000),
+  CHAIN_VERIFIER_CACHE_TTL_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(60000),
   CHAIN_VERIFIER_MAX_CONCURRENT: z.coerce.number().int().positive().default(2),
   CHAIN_VERIFIER_ON_NEW_TOKEN: z
     .preprocess(parseBooleanEnv, z.boolean())
@@ -143,29 +163,47 @@ export const apiConfigSchema = z.object({
   CHAIN_EVENTS_ENABLED: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(false),
-  SOLANA_RPC_WS: z
-    .preprocess((value) => (value === "" ? undefined : value), z.string().url().optional()),
-  CHAIN_EVENTS_WATCHED_ADDRESSES: z
-    .preprocess((value) => (value === "" ? undefined : value), z.string().optional()),
-  CHAIN_EVENTS_MAX_WATCHED_ADDRESSES: z.coerce.number().int().positive().default(25),
+  SOLANA_RPC_WS: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().url().optional()
+  ),
+  CHAIN_EVENTS_WATCHED_ADDRESSES: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().optional()
+  ),
+  CHAIN_EVENTS_MAX_WATCHED_ADDRESSES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(25),
   CHAIN_EVENTS_BACKFILL_ON_START: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(false),
-  CHAIN_EVENTS_BACKFILL_LIMIT_PER_ADDRESS: z.coerce.number().int().positive().default(25),
+  CHAIN_EVENTS_BACKFILL_LIMIT_PER_ADDRESS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(25),
   CHAIN_EVENTS_FETCH_TRANSACTION_ON_LOG: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(true),
-  CHAIN_EVENTS_MAX_CONCURRENT_FETCHES: z.coerce.number().int().positive().default(4),
-  CHAIN_EVENTS_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
+  CHAIN_EVENTS_MAX_CONCURRENT_FETCHES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(4),
+  CHAIN_EVENTS_REQUEST_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(10000),
   CHAIN_EVENTS_ON_NEW_CANDIDATE: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(false),
   CHAIN_EVENTS_ON_CHAIN_VERIFIED: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(false),
-  MARKET_DATA_ENABLED: z
-    .preprocess(parseBooleanEnv, z.boolean())
-    .default(true),
+  MARKET_DATA_ENABLED: z.preprocess(parseBooleanEnv, z.boolean()).default(true),
   MARKET_DATA_MIN_CONFIDENCE_FOR_METRICS: z
     .enum(["low", "medium", "high"])
     .default("medium"),
@@ -221,8 +259,10 @@ export const apiConfigSchema = z.object({
   API_PORT: z.coerce.number().int().positive().default(8787),
   SIGNAL_INTERVAL_MS: z.coerce.number().int().min(0).default(2000),
   STORAGE_DATABASE_PATH: z.string().min(1).optional(),
-  MOCK_FEED_SEED: z
-    .preprocess((value) => (value === "" ? undefined : value), z.coerce.number().int().optional()),
+  MOCK_FEED_SEED: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.coerce.number().int().optional()
+  ),
   MOCK_FEED_SCENARIO: z
     .enum(["normal", "momentum", "rug", "flat"])
     .default("normal"),
@@ -230,10 +270,14 @@ export const apiConfigSchema = z.object({
     (value) => (value === "" ? undefined : value),
     z.coerce.number().int().positive().optional()
   ),
-  PUMPPORTAL_WS_URL: z
-    .preprocess((value) => (value === "" ? undefined : value), z.string().url().optional()),
-  PUMPPORTAL_API_KEY: z
-    .preprocess((value) => (value === "" ? undefined : value), z.string().min(1).optional()),
+  PUMPPORTAL_WS_URL: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().url().optional()
+  ),
+  PUMPPORTAL_API_KEY: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional()
+  ),
   PUMPPORTAL_SUBSCRIBE_NEW_TOKEN: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(true),
@@ -246,8 +290,10 @@ export const apiConfigSchema = z.object({
   PUMPPORTAL_TOKEN_TRADES_ACK_METERED: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(false),
-  PUMPPORTAL_TOKEN_TRADES_MANUAL_MINTS: z
-    .preprocess((value) => (value === "" ? undefined : value), z.string().optional()),
+  PUMPPORTAL_TOKEN_TRADES_MANUAL_MINTS: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().optional()
+  ),
   PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(false),
@@ -311,11 +357,10 @@ export const apiConfigSchema = z.object({
     .int()
     .nonnegative()
     .default(3600000),
-  TOKEN_IDENTITY_IPFS_GATEWAY: z
-    .preprocess(
-      (value) => (value === "" ? undefined : value),
-      z.string().url().default("https://ipfs.io/ipfs/")
-    ),
+  TOKEN_IDENTITY_IPFS_GATEWAY: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().url().default("https://ipfs.io/ipfs/")
+  ),
   TOKEN_IDENTITY_MAX_METADATA_BYTES: z.coerce
     .number()
     .int()
@@ -332,6 +377,7 @@ export type ApiServerOptions = {
   closeStorageOnClose?: boolean;
   chainVerifier?: ChainVerifierOptions;
   allowMockData?: boolean;
+  dataFeedMode?: LiveFeedMode;
   failIfNoRealData?: boolean;
   dataFeed?: "none" | "mock" | "pumpportal";
   feedProvider?: TokenFeedProvider;
@@ -369,6 +415,7 @@ export type ApiServer = {
   chainVerifier: ChainVerifierService;
   watchOrchestration: WatchOrchestrationService;
   actualData: ActualDataService;
+  liveTokens: LiveTokenService;
   tokenIdentity: TokenIdentityService;
 };
 
@@ -384,7 +431,15 @@ const chainVerifyBodySchema = z.object({
 const chainEventsWatchBodySchema = z.object({
   address: z.string().min(1),
   kind: z
-    .enum(["mint", "pool", "bonding_curve", "program", "token_account", "wallet", "unknown"])
+    .enum([
+      "mint",
+      "pool",
+      "bonding_curve",
+      "program",
+      "token_account",
+      "wallet",
+      "unknown"
+    ])
     .default("unknown"),
   mint: z.string().min(1).optional(),
   label: z.string().min(1).optional()
@@ -416,7 +471,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const mode = options.mode ?? "paper";
 
   if (mode === "live") {
-    throw new Error("Live mode is not implemented. Start this service with BOT_MODE=paper.");
+    throw new Error(
+      "Live mode is not implemented. Start this service with BOT_MODE=paper."
+    );
   }
 
   const app = Fastify({
@@ -432,7 +489,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     options.feedProvider ??
     createFeedProvider({
       allowMockData: options.allowMockData ?? false,
-      dataFeed: options.dataFeed ?? "none",
+      dataFeed: options.dataFeed ?? "pumpportal",
+      dataFeedMode: options.dataFeedMode ?? "live",
       mockFeedEnabled: options.mockFeedEnabled ?? false,
       mockFeedRequireExplicitEnable:
         options.mockFeedRequireExplicitEnable ?? true,
@@ -441,10 +499,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       signalIntervalMs: options.signalIntervalMs ?? 2000
     });
 
-  if (
-    (options.failIfNoRealData ?? false) &&
-    feed.name !== "pumpportal"
-  ) {
+  if ((options.failIfNoRealData ?? false) && feed.name !== "pumpportal") {
     throw new Error(
       "No real data feed is configured. Set DATA_FEED=pumpportal or disable FAIL_IF_NO_REAL_DATA."
     );
@@ -467,6 +522,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       : {})
   });
   const paperAutoOrder = options.paperAutoOrder ?? false;
+  const dataFeedMode = options.dataFeedMode ?? "live";
   const storage = options.storageDatabasePath
     ? initStorage({ databasePath: options.storageDatabasePath })
     : initStorage();
@@ -494,6 +550,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       });
     }
   });
+  const liveTokens = createLiveTokenService({
+    mode: dataFeedMode,
+    provider: feed.name
+  });
   const signals = new Map<string, OverlaySignal>();
   const riskSnapshots = new Map<string, RiskSnapshot>();
   const clients = new Set<WebSocket>();
@@ -519,6 +579,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const chainEventsStatus = chainEvents.getStatus();
     const marketStatus = chainEvents.getMarketStatus();
     const watchStatus = watchOrchestration.getStatus();
+    const feedStatus = getFeedStatus();
+    const liveStatus = liveTokens.getStatus();
 
     return {
       chainEvents: chainEventsStatus,
@@ -532,24 +594,41 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       actualData: actualData.getStatus(),
       actualDataSessionCount: stats.actualDataSessionCount,
       actualDataSubscriptionCount: stats.actualDataSubscriptionCount,
-      dataFeed: options.dataFeed ?? "none",
+      dataFeedMode,
+      dataFeed: options.dataFeed ?? "pumpportal",
       dataFeedReasonCodes:
-        feed instanceof NoFeedProvider ? feed.reasonCodes : [],
+        feed instanceof NoFeedProvider
+          ? feed.reasonCodes
+          : feedStatus.reasonCodes,
+      feed: feedStatus,
       feedProvider: feed.name,
       mockFeedEnabled: feed.name === "mock",
       mockFeedBlocked: feed.name === "mock-blocked",
-      realDataConfigured: (options.dataFeed ?? "none") === "pumpportal",
+      mockRuntimeBlocked: feed.name === "mock-blocked",
+      liveFeedExpected: dataFeedMode === "live",
+      liveFeedConnected: feedStatus.connected,
+      liveFeedReady: feedStatus.connected && liveStatus.liveTokenCount > 0,
+      liveFeedLastEventAt: feedStatus.lastEventAt ?? liveStatus.lastEventAt,
+      liveTokenCount: liveStatus.liveTokenCount,
+      historicalMockRowsHidden: true,
+      realDataConfigured: (options.dataFeed ?? "pumpportal") === "pumpportal",
       realDataActive: feed.name === "pumpportal",
       realDataRequired: options.realDataRequired ?? false,
-      noFeedMode: feed.name === "none" || feed.name === "mock-blocked",
+      noFeedMode:
+        dataFeedMode === "none" ||
+        feed.name === "none" ||
+        feed.name === "mock-blocked",
       noRealFeedMessage:
-        feed.name === "none" || feed.name === "mock-blocked"
+        dataFeedMode === "none" ||
+        feed.name === "none" ||
+        feed.name === "mock-blocked"
           ? "NO REAL FEED CONFIGURED"
           : undefined,
       marketData: marketStatus,
       marketDataEnabled: marketStatus.enabled,
       marketDataMinConfidence: marketStatus.minConfidenceForMetrics,
       marketObservationCount: stats.marketObservationCount,
+      liveFeedEventCount: stats.liveFeedEventCount,
       pumpPortalTokenTradeEventCount: stats.pumpPortalTokenTradeEventCount,
       tokenIdentity: tokenIdentity.getStatus(),
       tokenIdentityCount: stats.tokenIdentityCount,
@@ -575,6 +654,39 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   });
 
   app.get("/signals", async () => Array.from(signals.values()));
+
+  app.get("/feed/status", async () => getFeedStatus());
+
+  app.get("/feed/events/live", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return liveTokens.getLiveFeedEvents(query.limit);
+  });
+
+  app.get("/live/status", async () => ({
+    ...liveTokens.getStatus(),
+    feed: getFeedStatus()
+  }));
+
+  app.get("/live/tokens", async () => liveTokens.getLiveTokens());
+
+  app.get("/live/tokens/:mint", async (request, reply) => {
+    const params = mintParamSchema.parse(request.params);
+    const token = liveTokens.getLiveToken(params.mint);
+
+    if (!token) {
+      return reply.code(404).send({
+        error: "not_found",
+        message: `No current-session live token tracked for mint ${params.mint}`
+      });
+    }
+
+    return token;
+  });
+
+  app.get("/live/events", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return liveTokens.getLiveFeedEvents(query.limit);
+  });
 
   app.get("/metrics", async () =>
     metricsEngine.getAllMetrics().map(enrichMetricsWithIdentity)
@@ -723,7 +835,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   app.get("/actual-data/trades", async (request) => {
     const query = limitQuerySchema.parse(request.query);
-    return listPumpPortalTokenTradeEvents(query.limit).map(enrichRowWithIdentity);
+    return listPumpPortalTokenTradeEvents(query.limit).map(
+      enrichRowWithIdentity
+    );
   });
 
   app.get("/actual-data/trades/:mint", async (request) => {
@@ -767,7 +881,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   app.get("/chain/events/status", async () => chainEvents.getStatus());
 
-  app.get("/chain/events/watches", async () => chainEvents.getWatchedAddresses());
+  app.get("/chain/events/watches", async () =>
+    chainEvents.getWatchedAddresses()
+  );
 
   app.post("/chain/events/watch", async (request, reply) => {
     const body = chainEventsWatchBodySchema.parse(request.body);
@@ -851,19 +967,22 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     return chainEvents.getRecentMarketObservations(query.limit);
   });
 
-  app.get("/market/observations/signature/:signature", async (request, reply) => {
-    const params = signatureParamSchema.parse(request.params);
-    const observation = chainEvents.getMarketObservation(params.signature);
+  app.get(
+    "/market/observations/signature/:signature",
+    async (request, reply) => {
+      const params = signatureParamSchema.parse(request.params);
+      const observation = chainEvents.getMarketObservation(params.signature);
 
-    if (!observation) {
-      return reply.code(404).send({
-        error: "not_found",
-        message: `No market observation stored for signature ${params.signature}`
-      });
+      if (!observation) {
+        return reply.code(404).send({
+          error: "not_found",
+          message: `No market observation stored for signature ${params.signature}`
+        });
+      }
+
+      return observation;
     }
-
-    return observation;
-  });
+  );
 
   app.get("/market/observations/:mint", async (request) => {
     const params = mintParamSchema.parse(request.params);
@@ -875,7 +994,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   app.get("/watch/plans", async (request) => {
     const query = limitQuerySchema.parse(request.query);
-    return watchOrchestration.getWatchPlans(query.limit).map(enrichRowWithIdentity);
+    return watchOrchestration
+      .getWatchPlans(query.limit)
+      .map(enrichRowWithIdentity);
   });
 
   app.get("/watch/plans/:mint", async (request, reply) => {
@@ -983,6 +1104,48 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     await chainEvents.stop();
   }
 
+  function getFeedStatus() {
+    const pumpPortalStatus =
+      feed instanceof PumpPortalFeedProvider ? feed.getStatus() : undefined;
+    const noFeedReasonCodes =
+      feed instanceof NoFeedProvider ? feed.reasonCodes : [];
+    const reasonCodes = uniqueReasonCodes([
+      ...(dataFeedMode === "live" ? ["LIVE_FEED_EXPECTED"] : []),
+      ...(dataFeedMode === "none" ? ["NO_FEED_MODE"] : []),
+      ...(feed.name === "mock" ? ["MOCK_EXPLICITLY_ENABLED"] : []),
+      ...(feed.name === "mock-blocked" ? ["MOCK_RUNTIME_BLOCKED"] : []),
+      "HISTORICAL_MOCK_ROWS_HIDDEN",
+      ...(pumpPortalStatus?.reasonCodes ?? noFeedReasonCodes)
+    ]);
+
+    return {
+      mode: dataFeedMode,
+      provider: feed.name,
+      enabled: dataFeedMode === "live" || dataFeedMode === "mock",
+      configured:
+        feed.name === "pumpportal" ||
+        feed.name === "mock" ||
+        dataFeedMode === "none",
+      connected: pumpPortalStatus?.connected ?? false,
+      connecting: pumpPortalStatus?.connecting ?? false,
+      live: dataFeedMode === "live",
+      realData: feed.name === "pumpportal",
+      subscriptions: pumpPortalStatus?.subscriptions ?? [],
+      reconnectAttempts: pumpPortalStatus?.reconnectAttempts ?? 0,
+      lastOpenAt: pumpPortalStatus?.lastOpenAt ?? null,
+      lastCloseAt: pumpPortalStatus?.lastCloseAt ?? null,
+      lastMessageAt: pumpPortalStatus?.lastMessageAt ?? null,
+      lastEventAt: pumpPortalStatus?.lastEventAt ?? null,
+      newTokenEventCount: pumpPortalStatus?.newTokenEventCount ?? 0,
+      migrationEventCount: pumpPortalStatus?.migrationEventCount ?? 0,
+      tokenTradeEventCount: pumpPortalStatus?.tokenTradeEventCount ?? 0,
+      parseErrorCount: pumpPortalStatus?.parseErrorCount ?? 0,
+      lastError: pumpPortalStatus?.lastError ?? null,
+      reasonCodes,
+      paperOnly: true as const
+    };
+  }
+
   function handleFeedEvent(event: FeedEvent): void {
     const actualDataSummary =
       event.type === "trade" && event.source === "pumpportal"
@@ -1069,6 +1232,29 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     });
     candidateEngine.updateScore(candidate.mint, score);
     const decision = candidateEngine.evaluateCandidate(candidate.mint);
+    const liveToken = liveTokens.ingestLiveFeedEvent(event, {
+      candidate,
+      ...(decision ? { decision } : {}),
+      identity: identitySummary,
+      riskSnapshot,
+      score
+    });
+
+    if (liveToken) {
+      saveLiveFeedEvent({
+        sessionId: liveTokens.getStatus().sessionId,
+        provider: "pumpportal",
+        eventType: getLiveFeedEventType(event),
+        mint: liveToken.mint,
+        name: liveToken.name ?? null,
+        symbol: liveToken.symbol ?? null,
+        title: liveToken.title ?? null,
+        realData: true,
+        reasonCodes: liveToken.reasonCodes,
+        payload: event,
+        createdAt: event.timestamp
+      });
+    }
 
     if (!decision) {
       app.log.trace({ mint: candidate.mint }, "Candidate decision unavailable");
@@ -1139,7 +1325,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   ): Promise<unknown> {
     try {
       const record = await chainVerifier.verifyMint(mint);
-      const stored = saveChainVerification(chainVerifier.toStorageInput(record));
+      const stored = saveChainVerification(
+        chainVerifier.toStorageInput(record)
+      );
       applyChainVerificationToCandidate({
         event: undefined,
         record
@@ -1210,7 +1398,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
     const latestMetrics = metricsEngine.getMetrics(options.record.mint);
     const effectiveMetrics = mergeRollingIntoLegacyMetrics(
-      options.event ? getLegacyMetrics(options.event) : fallbackMetricsFromCandidate(candidate),
+      options.event
+        ? getLegacyMetrics(options.event)
+        : fallbackMetricsFromCandidate(candidate),
       latestMetrics
     );
     const riskSnapshot = withChainReasonCodes(
@@ -1288,8 +1478,16 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const signal: OverlaySignal = {
       mint: options.candidate.mint,
       symbol: identity?.symbol ?? options.candidate.symbol ?? "UNKNOWN",
-      ...(identity?.name ? { name: identity.name } : options.candidate.name ? { name: options.candidate.name } : {}),
-      ...(identity?.title ? { title: identity.title } : options.candidate.title ? { title: options.candidate.title } : {}),
+      ...(identity?.name
+        ? { name: identity.name }
+        : options.candidate.name
+          ? { name: options.candidate.name }
+          : {}),
+      ...(identity?.title
+        ? { title: identity.title }
+        : options.candidate.title
+          ? { title: options.candidate.title }
+          : {}),
       ...(identity?.displayName
         ? { displayName: identity.displayName }
         : options.candidate.displayName
@@ -1326,7 +1524,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       insufficientMetrics: options.decision.metricsSummary.insufficientMetrics,
       lifecycleState: options.decision.lifecycleState,
       ...(options.decision.marketObservationSummary
-        ? { marketObservationSummary: options.decision.marketObservationSummary }
+        ? {
+            marketObservationSummary: options.decision.marketObservationSummary
+          }
         : {}),
       ...(options.decision.marketReasonCodes
         ? { marketReasonCodes: options.decision.marketReasonCodes }
@@ -1359,12 +1559,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
     if (options.rollingMetrics) {
       signal.buySellRatio = options.rollingMetrics.buySellRatio;
-      signal.buyerAcceleration = options.rollingMetrics.buyerAccelerationPerSec2;
+      signal.buyerAcceleration =
+        options.rollingMetrics.buyerAccelerationPerSec2;
       signal.netBuyPressure = options.rollingMetrics.netBuyPressure;
       signal.priceVelocity = getEffectivePriceVelocity(options.rollingMetrics);
       signal.rollingMetrics = options.rollingMetrics;
-      signal.volumeAcceleration =
-        getEffectiveVolumeAcceleration(options.rollingMetrics);
+      signal.volumeAcceleration = getEffectiveVolumeAcceleration(
+        options.rollingMetrics
+      );
     }
 
     return signal;
@@ -1496,7 +1698,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         identity?: TokenIdentitySummary;
       }) {
     const actualDataSummary = actualData.getCandidateSummary(candidate.mint);
-    const identity = candidate.identity ?? getTokenIdentitySummary(candidate.mint);
+    const identity =
+      candidate.identity ?? getTokenIdentitySummary(candidate.mint);
 
     return {
       ...candidate,
@@ -1560,6 +1763,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     metrics: metricsEngine,
     risk: riskEngine,
     chainVerifier,
+    liveTokens,
     watchOrchestration,
     startFeed,
     stopFeed,
@@ -1591,17 +1795,27 @@ function createRiskInput(options: {
   const input: RiskInput = {
     mint: options.candidate.mint,
     source,
-    mintAuthorityActive: incompleteRealFeed ? null : riskFlags.mintAuthorityActive,
-    freezeAuthorityActive: incompleteRealFeed ? null : riskFlags.freezeAuthorityActive,
+    mintAuthorityActive: incompleteRealFeed
+      ? null
+      : riskFlags.mintAuthorityActive,
+    freezeAuthorityActive: incompleteRealFeed
+      ? null
+      : riskFlags.freezeAuthorityActive,
     metadataMutable: incompleteRealFeed ? null : riskFlags.mutableMetadata,
     holderCount: incompleteRealFeed ? null : options.metrics.holderCount,
     topHolderPct: incompleteRealFeed ? null : options.metrics.topHolderPercent,
-    top10HolderPct: incompleteRealFeed ? null : options.metrics.top10HolderPercent,
+    top10HolderPct: incompleteRealFeed
+      ? null
+      : options.metrics.top10HolderPercent,
     devHolderPct: incompleteRealFeed ? null : mockDevHolderPct(scenario),
-    insiderHolderPct: incompleteRealFeed ? null : mockInsiderHolderPct(scenario),
+    insiderHolderPct: incompleteRealFeed
+      ? null
+      : mockInsiderHolderPct(scenario),
     devSoldPct: incompleteRealFeed ? null : mockDevSoldPct(scenario),
     devNetFlowUsd: incompleteRealFeed ? null : mockDevNetFlowUsd(scenario),
-    priorLaunchCount: incompleteRealFeed ? null : mockPriorLaunchCount(scenario),
+    priorLaunchCount: incompleteRealFeed
+      ? null
+      : mockPriorLaunchCount(scenario),
     priorRugCount: incompleteRealFeed ? null : mockPriorRugCount(scenario),
     buySellRatio: rolling?.buySellRatio ?? null,
     netBuyPressure: rolling?.netBuyPressure ?? null,
@@ -1616,7 +1830,8 @@ function createRiskInput(options: {
     largestTradeShare: rolling?.largestTradeShare ?? null,
     sampleCount: rolling?.sampleCount ?? null,
     insufficientMetrics:
-      rolling?.insufficientMetrics ?? (options.event?.metricsComplete === false ? true : null),
+      rolling?.insufficientMetrics ??
+      (options.event?.metricsComplete === false ? true : null),
     liquidityUsd: incompleteRealFeed ? null : options.metrics.liquidityUsd,
     marketCapUsd: incompleteRealFeed ? null : options.metrics.marketCapUsd,
     fdvUsd: incompleteRealFeed ? null : options.metrics.marketCapUsd,
@@ -1625,7 +1840,9 @@ function createRiskInput(options: {
       : mockSellSlippagePct(scenario, riskFlags),
     sniperPct: incompleteRealFeed ? null : mockSniperPct(scenario),
     bundlerPct: incompleteRealFeed ? null : mockBundlerPct(scenario),
-    washTradingSuspected: incompleteRealFeed ? null : riskFlags.washTradingSuspected,
+    washTradingSuspected: incompleteRealFeed
+      ? null
+      : riskFlags.washTradingSuspected,
     honeypotSuspected: incompleteRealFeed ? null : riskFlags.honeypotSuspected
   };
 
@@ -1654,7 +1871,9 @@ function createTokenCandidateFromState(state: CandidateState): TokenCandidate {
     firstSeenAt: state.firstSeenAt,
     ...(state.title ? { title: state.title } : {}),
     ...(state.displayName ? { displayName: state.displayName } : {}),
-    ...(state.metadataUri !== undefined ? { metadataUri: state.metadataUri } : {}),
+    ...(state.metadataUri !== undefined
+      ? { metadataUri: state.metadataUri }
+      : {}),
     ...(state.imageUri !== undefined ? { imageUri: state.imageUri } : {}),
     ...(state.description !== undefined
       ? { description: state.description }
@@ -1669,6 +1888,13 @@ function createTokenCandidateFromState(state: CandidateState): TokenCandidate {
 
 function getLegacyMetrics(event: FeedEvent): RollingMetrics {
   return event.metrics;
+}
+
+function getLiveFeedEventType(event: FeedEvent): string {
+  return event.type === "token_created" &&
+    event.rawSourceEventType?.toLowerCase().includes("migr")
+    ? "migration"
+    : "new_token";
 }
 
 function getRiskFlags(event: FeedEvent): RiskFlags {
@@ -1693,14 +1919,13 @@ function withChainReasonCodes(
 ): RiskSnapshot {
   return {
     ...snapshot,
-    reasonCodes: uniqueReasonCodes([
-      ...snapshot.reasonCodes,
-      ...reasonCodes
-    ])
+    reasonCodes: uniqueReasonCodes([...snapshot.reasonCodes, ...reasonCodes])
   };
 }
 
-function fallbackMetricsFromCandidate(candidate: CandidateState): RollingMetrics {
+function fallbackMetricsFromCandidate(
+  candidate: CandidateState
+): RollingMetrics {
   const metrics = candidate.latestMetrics;
 
   if (!metrics) {
@@ -1805,14 +2030,15 @@ function mergeChainRiskPatch(
       patch.freezeAuthorityActive ?? input.freezeAuthorityActive,
     holderCount: patch.holderCount ?? input.holderCount,
     liquidityUsd: patch.liquidityUsd ?? input.liquidityUsd,
-    mintAuthorityActive:
-      patch.mintAuthorityActive ?? input.mintAuthorityActive,
+    mintAuthorityActive: patch.mintAuthorityActive ?? input.mintAuthorityActive,
     top10HolderPct: patch.top10HolderPct ?? input.top10HolderPct,
     topHolderPct: patch.topHolderPct ?? input.topHolderPct
   };
 }
 
-function signalActionFromDecision(decision: CandidateDecision): OverlaySignal["action"] {
+function signalActionFromDecision(
+  decision: CandidateDecision
+): OverlaySignal["action"] {
   if (decision.action === "REJECT") {
     return "HARD_REJECT";
   }
@@ -1827,7 +2053,9 @@ function signalActionFromDecision(decision: CandidateDecision): OverlaySignal["a
   return decision.action;
 }
 
-function getMockScenario(source: string): "normal" | "momentum" | "rug" | "flat" | "unknown" {
+function getMockScenario(
+  source: string
+): "normal" | "momentum" | "rug" | "flat" | "unknown" {
   if (source.includes("momentum")) {
     return "momentum";
   }
@@ -1847,7 +2075,9 @@ function getMockScenario(source: string): "normal" | "momentum" | "rug" | "flat"
   return "unknown";
 }
 
-function mockDevHolderPct(scenario: ReturnType<typeof getMockScenario>): number | null {
+function mockDevHolderPct(
+  scenario: ReturnType<typeof getMockScenario>
+): number | null {
   if (scenario === "unknown" || scenario === "flat") {
     return null;
   }
@@ -1855,7 +2085,9 @@ function mockDevHolderPct(scenario: ReturnType<typeof getMockScenario>): number 
   return scenario === "rug" ? 18 : scenario === "momentum" ? 3 : 6;
 }
 
-function mockInsiderHolderPct(scenario: ReturnType<typeof getMockScenario>): number | null {
+function mockInsiderHolderPct(
+  scenario: ReturnType<typeof getMockScenario>
+): number | null {
   if (scenario === "unknown" || scenario === "flat") {
     return null;
   }
@@ -1863,7 +2095,9 @@ function mockInsiderHolderPct(scenario: ReturnType<typeof getMockScenario>): num
   return scenario === "rug" ? 28 : scenario === "momentum" ? 5 : 9;
 }
 
-function mockDevSoldPct(scenario: ReturnType<typeof getMockScenario>): number | null {
+function mockDevSoldPct(
+  scenario: ReturnType<typeof getMockScenario>
+): number | null {
   if (scenario === "unknown" || scenario === "flat") {
     return null;
   }
@@ -1871,7 +2105,9 @@ function mockDevSoldPct(scenario: ReturnType<typeof getMockScenario>): number | 
   return scenario === "rug" ? 65 : 0;
 }
 
-function mockDevNetFlowUsd(scenario: ReturnType<typeof getMockScenario>): number | null {
+function mockDevNetFlowUsd(
+  scenario: ReturnType<typeof getMockScenario>
+): number | null {
   if (scenario === "unknown" || scenario === "flat") {
     return null;
   }
@@ -1879,7 +2115,9 @@ function mockDevNetFlowUsd(scenario: ReturnType<typeof getMockScenario>): number
   return scenario === "rug" ? -8_000 : 500;
 }
 
-function mockPriorLaunchCount(scenario: ReturnType<typeof getMockScenario>): number | null {
+function mockPriorLaunchCount(
+  scenario: ReturnType<typeof getMockScenario>
+): number | null {
   if (scenario === "unknown" || scenario === "flat") {
     return null;
   }
@@ -1887,7 +2125,9 @@ function mockPriorLaunchCount(scenario: ReturnType<typeof getMockScenario>): num
   return scenario === "rug" ? 8 : 2;
 }
 
-function mockPriorRugCount(scenario: ReturnType<typeof getMockScenario>): number | null {
+function mockPriorRugCount(
+  scenario: ReturnType<typeof getMockScenario>
+): number | null {
   if (scenario === "unknown" || scenario === "flat") {
     return null;
   }
@@ -1910,7 +2150,9 @@ function mockSellSlippagePct(
   return scenario === "momentum" ? 3 : 6;
 }
 
-function mockSniperPct(scenario: ReturnType<typeof getMockScenario>): number | null {
+function mockSniperPct(
+  scenario: ReturnType<typeof getMockScenario>
+): number | null {
   if (scenario === "unknown" || scenario === "flat") {
     return null;
   }
@@ -1918,7 +2160,9 @@ function mockSniperPct(scenario: ReturnType<typeof getMockScenario>): number | n
   return scenario === "rug" ? 30 : scenario === "momentum" ? 4 : 9;
 }
 
-function mockBundlerPct(scenario: ReturnType<typeof getMockScenario>): number | null {
+function mockBundlerPct(
+  scenario: ReturnType<typeof getMockScenario>
+): number | null {
   if (scenario === "unknown" || scenario === "flat") {
     return null;
   }
@@ -1934,7 +2178,7 @@ function getEffectiveVolumeVelocity(
   }
 
   return metrics.usedSolMetricsFallback
-    ? metrics.volumeVelocitySolPerSec ?? 0
+    ? (metrics.volumeVelocitySolPerSec ?? 0)
     : metrics.volumeVelocityUsdPerSec;
 }
 
@@ -1946,7 +2190,7 @@ function getEffectiveVolumeAcceleration(
   }
 
   return metrics.usedSolMetricsFallback
-    ? metrics.volumeAccelerationSolPerSec2 ?? 0
+    ? (metrics.volumeAccelerationSolPerSec2 ?? 0)
     : metrics.volumeAccelerationUsdPerSec2;
 }
 
@@ -1958,7 +2202,7 @@ function getEffectivePriceVelocity(
   }
 
   return metrics.usedSolMetricsFallback
-    ? metrics.priceSolVelocityPctPerSec ?? 0
+    ? (metrics.priceSolVelocityPctPerSec ?? 0)
     : metrics.priceVelocityPctPerSec;
 }
 
@@ -1970,7 +2214,7 @@ function getEffectivePriceAcceleration(
   }
 
   return metrics.usedSolMetricsFallback
-    ? metrics.priceSolAccelerationPctPerSec2 ?? 0
+    ? (metrics.priceSolAccelerationPctPerSec2 ?? 0)
     : metrics.priceAccelerationPctPerSec2;
 }
 
@@ -2007,28 +2251,37 @@ function mergeRollingIntoLegacyMetrics(
       metrics.volumeVelocity,
       rollingMetrics.volumeVelocityUsdPerSec
     ),
-    buyerVelocity: Math.max(metrics.buyerVelocity, rollingMetrics.buyerVelocityPerSec)
+    buyerVelocity: Math.max(
+      metrics.buyerVelocity,
+      rollingMetrics.buyerVelocityPerSec
+    )
   };
 }
 
 function createFeedProvider(options: {
   allowMockData: boolean;
   dataFeed: "none" | "mock" | "pumpportal";
+  dataFeedMode: LiveFeedMode;
   mockFeedEnabled: boolean;
   mockFeedRequireExplicitEnable: boolean;
   mockFeed?: MockFeedProviderOptions | undefined;
   pumpPortal?: PumpPortalFeedProviderOptions | undefined;
   signalIntervalMs: number;
 }): TokenFeedProvider {
-  if (options.dataFeed === "pumpportal") {
+  if (options.dataFeedMode === "live") {
     return new PumpPortalFeedProvider(options.pumpPortal);
   }
 
-  if (options.dataFeed === "none") {
+  if (options.dataFeedMode === "none" || options.dataFeed === "none") {
     return new NoFeedProvider("none", ["NO_REAL_FEED_CONFIGURED"]);
   }
 
+  if (options.dataFeedMode === "replay") {
+    return new NoFeedProvider("none", ["NO_FEED_MODE", "REPLAY_MODE"]);
+  }
+
   if (
+    (options.dataFeedMode === "mock" || options.dataFeed === "mock") &&
     options.mockFeedRequireExplicitEnable &&
     (!options.allowMockData || !options.mockFeedEnabled)
   ) {
@@ -2036,6 +2289,10 @@ function createFeedProvider(options: {
       "MOCK_FEED_BLOCKED_NOT_EXPLICITLY_ALLOWED",
       "NO_REAL_FEED_CONFIGURED"
     ]);
+  }
+
+  if (options.dataFeedMode !== "mock" && options.dataFeed !== "mock") {
+    return new NoFeedProvider("none", ["NO_REAL_FEED_CONFIGURED"]);
   }
 
   return new MockFeedProvider({

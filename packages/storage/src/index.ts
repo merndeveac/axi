@@ -104,7 +104,10 @@ export type PaperOrderInput = {
   createdAt?: string;
 };
 
-export type StoredPaperOrder = Omit<PaperOrderInput, "createdAt" | "signalId"> & {
+export type StoredPaperOrder = Omit<
+  PaperOrderInput,
+  "createdAt" | "signalId"
+> & {
   id: number;
   signalId: number | null;
   createdAt: string;
@@ -131,6 +134,7 @@ export type StoredPaperPosition = PaperPositionInput & {
 export type StorageStats = {
   databasePath: string;
   feedEventCount: number;
+  liveFeedEventCount: number;
   signalCount: number;
   chainVerificationCount: number;
   chainTransactionEventCount: number;
@@ -242,6 +246,28 @@ export type StoredPumpPortalTokenTradeEvent = Omit<
 > & {
   id: number;
   createdAt: string;
+};
+
+export type LiveFeedEventInput = {
+  sessionId: string;
+  provider: string;
+  eventType: string;
+  mint: string;
+  name?: string | null;
+  symbol?: string | null;
+  title?: string | null;
+  realData: boolean;
+  reasonCodes: string[];
+  payload: unknown;
+  createdAt?: string;
+};
+
+export type StoredLiveFeedEvent = Omit<LiveFeedEventInput, "createdAt"> & {
+  id: number;
+  createdAt: string;
+  name: string | null;
+  symbol: string | null;
+  title: string | null;
 };
 
 export type ActualDataSubscriptionInput = {
@@ -495,6 +521,21 @@ type PumpPortalTokenTradeEventRow = {
   created_at: string;
 };
 
+type LiveFeedEventRow = {
+  id: number;
+  session_id: string;
+  provider: string;
+  event_type: string;
+  mint: string;
+  name: string | null;
+  symbol: string | null;
+  title: string | null;
+  real_data: number;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
 type ActualDataSubscriptionRow = {
   id: number;
   mint: string;
@@ -739,6 +780,20 @@ const pumpPortalTokenTradeEventInputSchema = z.object({
   createdAt: z.string().datetime().optional()
 });
 
+const liveFeedEventInputSchema = z.object({
+  sessionId: z.string().min(1),
+  provider: z.string().min(1),
+  eventType: z.string().min(1),
+  mint: z.string().min(1),
+  name: z.string().min(1).nullable().optional(),
+  symbol: z.string().min(1).nullable().optional(),
+  title: z.string().min(1).nullable().optional(),
+  realData: z.boolean(),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown(),
+  createdAt: z.string().datetime().optional()
+});
+
 const actualDataSubscriptionInputSchema = z.object({
   mint: z.string().min(1),
   provider: z.string().min(1),
@@ -865,7 +920,9 @@ const watchTargetSchema = z.object({
 const watchPlanInputSchema = z.object({
   mint: z.string().min(1),
   symbol: z.string().min(1).optional(),
-  source: z.enum(["mock", "pumpportal", "manual", "derived", "unknown"]).optional(),
+  source: z
+    .enum(["mock", "pumpportal", "manual", "derived", "unknown"])
+    .optional(),
   shouldVerifyMint: z.boolean(),
   shouldWatchEvents: z.boolean(),
   watchTargets: z.array(watchTargetSchema),
@@ -1064,9 +1121,7 @@ export function listRiskSnapshots(limit = 50): StoredRiskSnapshot[] {
   return rows.map(mapRiskSnapshotRow);
 }
 
-export function getLatestRiskSnapshot(
-  mint: string
-): StoredRiskSnapshot | null {
+export function getLatestRiskSnapshot(mint: string): StoredRiskSnapshot | null {
   const row = getDb()
     .prepare(
       `select *
@@ -1131,9 +1186,7 @@ export function saveCandidateDecision(
   };
 }
 
-export function listCandidateDecisions(
-  limit = 50
-): StoredCandidateDecision[] {
+export function listCandidateDecisions(limit = 50): StoredCandidateDecision[] {
   const parsedLimit = limitSchema.parse(limit);
   const rows = getDb()
     .prepare(
@@ -1191,9 +1244,7 @@ export function listSignalsForReplay(limit = 50): StoredSignal[] {
   return rows.map(mapSignalRow);
 }
 
-export function listRiskSnapshotsForReplay(
-  limit = 50
-): StoredRiskSnapshot[] {
+export function listRiskSnapshotsForReplay(limit = 50): StoredRiskSnapshot[] {
   const parsedLimit = limitSchema.parse(limit);
   const rows = getDb()
     .prepare(
@@ -1279,9 +1330,7 @@ export function saveChainVerification(
   };
 }
 
-export function listChainVerifications(
-  limit = 50
-): StoredChainVerification[] {
+export function listChainVerifications(limit = 50): StoredChainVerification[] {
   const parsedLimit = limitSchema.parse(limit);
   const rows = getDb()
     .prepare(
@@ -1567,9 +1616,7 @@ export function saveMarketObservation(
   };
 }
 
-export function listMarketObservations(
-  limit = 50
-): StoredMarketObservation[] {
+export function listMarketObservations(limit = 50): StoredMarketObservation[] {
   const parsedLimit = limitSchema.parse(limit);
   const rows = getDb()
     .prepare(
@@ -1770,6 +1817,110 @@ export function getPumpPortalTokenTradeEvent(
     .get(signature) as PumpPortalTokenTradeEventRow | undefined;
 
   return row ? mapPumpPortalTokenTradeEventRow(row) : null;
+}
+
+export function saveLiveFeedEvent(
+  event: LiveFeedEventInput
+): StoredLiveFeedEvent {
+  const parsed = liveFeedEventInputSchema.parse(event);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into live_feed_events (
+        session_id,
+        provider,
+        event_type,
+        mint,
+        name,
+        symbol,
+        title,
+        real_data,
+        reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.sessionId,
+      parsed.provider,
+      parsed.eventType,
+      parsed.mint,
+      parsed.name ?? null,
+      parsed.symbol ?? null,
+      parsed.title ?? null,
+      parsed.realData ? 1 : 0,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(parsed.payload),
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    sessionId: parsed.sessionId,
+    provider: parsed.provider,
+    eventType: parsed.eventType,
+    mint: parsed.mint,
+    name: parsed.name ?? null,
+    symbol: parsed.symbol ?? null,
+    title: parsed.title ?? null,
+    realData: parsed.realData,
+    reasonCodes: parsed.reasonCodes,
+    payload: parsed.payload,
+    createdAt
+  };
+}
+
+export function listLiveFeedEvents(limit = 50): StoredLiveFeedEvent[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from live_feed_events
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as LiveFeedEventRow[];
+
+  return rows.map(mapLiveFeedEventRow);
+}
+
+export function listLiveFeedEventsBySession(
+  sessionId: string,
+  limit = 50
+): StoredLiveFeedEvent[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from live_feed_events
+       where session_id = ?
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(sessionId, parsedLimit) as LiveFeedEventRow[];
+
+  return rows.map(mapLiveFeedEventRow);
+}
+
+export function listLiveFeedEventsByMint(
+  mint: string,
+  limit = 50
+): StoredLiveFeedEvent[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from live_feed_events
+       where mint = ?
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(mint, parsedLimit) as LiveFeedEventRow[];
+
+  return rows.map(mapLiveFeedEventRow);
 }
 
 export function saveActualDataSubscription(
@@ -2399,11 +2550,13 @@ export function listWatchActionsByMint(
   return rows.map(mapWatchActionRow);
 }
 
-export async function* createReplayStream(options: {
-  limit?: number;
-  speed?: number;
-  type?: ReplaySource;
-} = {}): AsyncGenerator<ReplayItem> {
+export async function* createReplayStream(
+  options: {
+    limit?: number;
+    speed?: number;
+    type?: ReplaySource;
+  } = {}
+): AsyncGenerator<ReplayItem> {
   const type = options.type ?? "feed_events";
   const speed = options.speed ?? 0;
   const records = getReplayRecords(type, options.limit);
@@ -2418,7 +2571,10 @@ export async function* createReplayStream(options: {
       Number.isFinite(currentTimestamp) &&
       Number.isFinite(previousTimestamp)
     ) {
-      const waitMs = Math.max(0, (currentTimestamp - previousTimestamp) / speed);
+      const waitMs = Math.max(
+        0,
+        (currentTimestamp - previousTimestamp) / speed
+      );
 
       if (waitMs > 0) {
         await delay(waitMs);
@@ -2655,6 +2811,7 @@ export function getStorageStats(): StorageStats {
   return {
     databasePath: getStoragePath(),
     feedEventCount: countRows(db, "feed_events"),
+    liveFeedEventCount: countRows(db, "live_feed_events"),
     signalCount: countRows(db, "signals"),
     chainVerificationCount: countRows(db, "chain_verifications"),
     chainTransactionEventCount: countRows(db, "chain_transaction_events"),
@@ -3121,6 +3278,39 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(8, "token_identity_normalization", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 9)) {
+    db.exec(`
+      create table if not exists live_feed_events (
+        id integer primary key autoincrement,
+        session_id text not null,
+        provider text not null,
+        event_type text not null,
+        mint text not null,
+        name text,
+        symbol text,
+        title text,
+        real_data integer not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_live_feed_events_created_at
+        on live_feed_events(created_at);
+
+      create index if not exists idx_live_feed_events_session_id
+        on live_feed_events(session_id);
+
+      create index if not exists idx_live_feed_events_mint
+        on live_feed_events(mint);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(9, "live_feed_events", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -3133,8 +3323,7 @@ function hasMigration(db: DatabaseSync, id: number): boolean {
 
 function countRows(db: DatabaseSync, tableName: string): number {
   const row = db.prepare(`select count(*) as count from ${tableName}`).get() as
-    | CountRow
-    | undefined;
+    CountRow | undefined;
 
   return row?.count ?? 0;
 }
@@ -3374,9 +3563,7 @@ function mapChainTransactionEventRow(
   };
 }
 
-function mapChainTradeEventRow(
-  row: ChainTradeEventRow
-): StoredChainTradeEvent {
+function mapChainTradeEventRow(row: ChainTradeEventRow): StoredChainTradeEvent {
   const payload = chainTradeEventInputSchema.parse(
     JSON.parse(row.payload_json)
   ) as NormalizedChainTradeEvent;
@@ -3416,6 +3603,23 @@ function mapPumpPortalTokenTradeEventRow(
     tokenAmount: row.token_amount,
     confidence: row.confidence,
     usableForMetrics: Boolean(row.usable_for_metrics),
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at
+  };
+}
+
+function mapLiveFeedEventRow(row: LiveFeedEventRow): StoredLiveFeedEvent {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    provider: row.provider,
+    eventType: row.event_type,
+    mint: row.mint,
+    name: row.name,
+    symbol: row.symbol,
+    title: row.title,
+    realData: Boolean(row.real_data),
     reasonCodes: JSON.parse(row.reason_codes_json) as string[],
     payload: JSON.parse(row.payload_json),
     createdAt: row.created_at
@@ -3509,12 +3713,12 @@ function mapTokenMetadataFetchRow(
 }
 
 function mapWatchPlanRow(row: WatchPlanRow): StoredWatchPlan {
-  const watchTargets = z.array(watchTargetSchema).parse(
-    JSON.parse(row.watch_targets_json)
-  ) as WatchTarget[];
-  const skippedTargets = z.array(watchTargetSchema).parse(
-    JSON.parse(row.skipped_targets_json)
-  ) as WatchTarget[];
+  const watchTargets = z
+    .array(watchTargetSchema)
+    .parse(JSON.parse(row.watch_targets_json)) as WatchTarget[];
+  const skippedTargets = z
+    .array(watchTargetSchema)
+    .parse(JSON.parse(row.skipped_targets_json)) as WatchTarget[];
   const plan: CandidateWatchPlan = {
     mint: row.mint,
     ...(row.symbol ? { symbol: row.symbol } : {}),
@@ -3578,9 +3782,7 @@ function mapCandidateDecisionRow(
     score: row.score,
     riskLevel: row.risk_level,
     hardReject: Boolean(row.hard_reject),
-    combinedReasonCodes: JSON.parse(
-      row.combined_reason_codes_json
-    ) as string[],
+    combinedReasonCodes: JSON.parse(row.combined_reason_codes_json) as string[],
     payload: CandidateDecisionSchema.parse(JSON.parse(row.payload_json)),
     createdAt: row.created_at
   };

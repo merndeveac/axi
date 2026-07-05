@@ -44,6 +44,7 @@ describe("@axi/api", () => {
       chainEventsEnabled: boolean;
       chainTradeEventCount: number;
       chainTransactionEventCount: number;
+      dataFeedMode: string;
       dataFeed: string;
       feedProvider: string;
       mockFeedEnabled: boolean;
@@ -53,6 +54,7 @@ describe("@axi/api", () => {
       marketDataEnabled: boolean;
       marketDataMinConfidence: string;
       marketObservationCount: number;
+      liveFeedEventCount: number;
       pumpPortalTokenTradeEventCount: number;
       tokenIdentityCount: number;
       tokenIdentityResolvedCount: number;
@@ -83,11 +85,13 @@ describe("@axi/api", () => {
     expect(body.marketDataEnabled).toBe(true);
     expect(body.marketDataMinConfidence).toBe("medium");
     expect(body.marketObservationCount).toBe(0);
+    expect(body.liveFeedEventCount).toBe(0);
     expect(body.pumpPortalTokenTradeEventCount).toBe(0);
     expect(body.watchOrchestratorEnabled).toBe(false);
     expect(body.watchPlanCount).toBe(0);
     expect(body.watchActionCount).toBe(0);
     expect(body.candidateCount).toBeGreaterThan(0);
+    expect(body.dataFeedMode).toBe("mock");
     expect(body.dataFeed).toBe("mock");
     expect(body.feedProvider).toBe("mock");
     expect(body.mockFeedEnabled).toBe(true);
@@ -115,6 +119,7 @@ describe("@axi/api", () => {
     });
     const body = response.json() as {
       feedEventCount: number;
+      liveFeedEventCount: number;
       candidateDecisionCount: number;
       chainVerificationCount: number;
       chainTransactionEventCount: number;
@@ -137,6 +142,7 @@ describe("@axi/api", () => {
 
     expect(response.statusCode).toBe(200);
     expect(body.feedEventCount).toBeGreaterThan(0);
+    expect(body.liveFeedEventCount).toBe(0);
     expect(body.signalCount).toBeGreaterThan(0);
     expect(body.chainVerificationCount).toBe(0);
     expect(body.chainTransactionEventCount).toBe(0);
@@ -157,10 +163,10 @@ describe("@axi/api", () => {
     expect(body.paperPositionCount).toBe(0);
   });
 
-  it("default DATA_FEED does not start mock runtime data", async () => {
+  it("default config is live PumpPortal and does not start mock runtime data", async () => {
     server = createApiServer({
       logLevel: false,
-      startFeed: true,
+      startFeed: false,
       storageDatabasePath: databasePath
     });
 
@@ -169,8 +175,12 @@ describe("@axi/api", () => {
       url: "/health"
     });
     const body = response.json() as {
+      dataFeedMode: string;
       dataFeed: string;
       feedProvider: string;
+      liveFeedConnected: boolean;
+      liveFeedExpected: boolean;
+      liveTokenCount: number;
       mockFeedEnabled: boolean;
       noFeedMode: boolean;
       noRealFeedMessage?: string;
@@ -179,11 +189,15 @@ describe("@axi/api", () => {
     };
 
     expect(response.statusCode).toBe(200);
-    expect(body.dataFeed).toBe("none");
-    expect(body.feedProvider).toBe("none");
+    expect(body.dataFeedMode).toBe("live");
+    expect(body.dataFeed).toBe("pumpportal");
+    expect(body.feedProvider).toBe("pumpportal");
+    expect(body.liveFeedExpected).toBe(true);
+    expect(body.liveFeedConnected).toBe(false);
+    expect(body.liveTokenCount).toBe(0);
     expect(body.mockFeedEnabled).toBe(false);
-    expect(body.noFeedMode).toBe(true);
-    expect(body.noRealFeedMessage).toBe("NO REAL FEED CONFIGURED");
+    expect(body.noFeedMode).toBe(false);
+    expect(body.noRealFeedMessage).toBeUndefined();
     expect(body.candidateCount).toBe(0);
     expect(body.trackedTokenCount).toBe(0);
   });
@@ -191,6 +205,7 @@ describe("@axi/api", () => {
   it("DATA_FEED=mock without ALLOW_MOCK_DATA=true is blocked", async () => {
     server = createApiServer({
       dataFeed: "mock",
+      dataFeedMode: "mock",
       logLevel: false,
       mockFeedEnabled: true,
       startFeed: true,
@@ -526,6 +541,62 @@ describe("@axi/api", () => {
 
     expect(response.statusCode).toBe(200);
     expect(body).toEqual([]);
+  });
+
+  it("GET /feed/status reports live defaults", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/feed/status"
+    });
+    const body = response.json() as {
+      mode: string;
+      provider: string;
+      connected: boolean;
+      live: boolean;
+      reasonCodes: string[];
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.mode).toBe("live");
+    expect(body.provider).toBe("pumpportal");
+    expect(body.connected).toBe(false);
+    expect(body.live).toBe(true);
+    expect(body.reasonCodes).toContain("LIVE_FEED_EXPECTED");
+    expect(body.reasonCodes).toContain("HISTORICAL_MOCK_ROWS_HIDDEN");
+  });
+
+  it("GET /live/status and /live/tokens start empty for current session", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const statusResponse = await server.app.inject({
+      method: "GET",
+      url: "/live/status"
+    });
+    const tokensResponse = await server.app.inject({
+      method: "GET",
+      url: "/live/tokens"
+    });
+    const status = statusResponse.json() as {
+      liveTokenCount: number;
+      historicalMockRowsHidden: boolean;
+    };
+    const tokens = tokensResponse.json() as unknown[];
+
+    expect(statusResponse.statusCode).toBe(200);
+    expect(tokensResponse.statusCode).toBe(200);
+    expect(status.liveTokenCount).toBe(0);
+    expect(status.historicalMockRowsHidden).toBe(true);
+    expect(tokens).toEqual([]);
   });
 
   it("GET /tokens/status works", async () => {
@@ -997,9 +1068,57 @@ describe("@axi/api", () => {
       title: string;
     }>;
 
-    expect(tokens.some((token) => token.title === "PORTAL - Portal Token")).toBe(
-      true
-    );
+    expect(
+      tokens.some((token) => token.title === "PORTAL - Portal Token")
+    ).toBe(true);
+
+    const liveTokensResponse = await server.app.inject({
+      method: "GET",
+      url: "/live/tokens"
+    });
+    const liveTokens = liveTokensResponse.json() as Array<{
+      displayName: string;
+      eventTypes: string[];
+      mint: string;
+      realData: boolean;
+      source: string;
+      sourceMode: string;
+    }>;
+
+    expect(liveTokensResponse.statusCode).toBe(200);
+    expect(liveTokens).toHaveLength(1);
+    expect(liveTokens[0]?.mint).toBe(createPumpPortalEvent().candidate.mint);
+    expect(liveTokens[0]?.realData).toBe(true);
+    expect(liveTokens[0]?.source).toBe("pumpportal");
+    expect(liveTokens[0]?.sourceMode).toBe("real");
+    expect(liveTokens[0]?.eventTypes).toContain("new_token");
+    expect(liveTokens[0]?.displayName).toBe("PORTAL Portal Token");
+
+    const liveEventsResponse = await server.app.inject({
+      method: "GET",
+      url: "/live/events"
+    });
+    const liveEvents = liveEventsResponse.json() as Array<{
+      eventType: string;
+      realData: boolean;
+    }>;
+
+    expect(liveEventsResponse.statusCode).toBe(200);
+    expect(liveEvents[0]?.eventType).toBe("new_token");
+    expect(liveEvents[0]?.realData).toBe(true);
+  });
+
+  it("historical mock runtime rows do not appear in /live/tokens", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/live/tokens"
+    });
+    const body = response.json() as unknown[];
+
+    expect(response.statusCode).toBe(200);
+    expect(body).toEqual([]);
   });
 
   // TODO: Add a WebSocket integration test after the test harness grows a
@@ -1010,6 +1129,7 @@ function createTestServer(): ApiServer {
   return createApiServer({
     allowMockData: true,
     dataFeed: "mock",
+    dataFeedMode: "mock",
     logLevel: false,
     mockFeedEnabled: true,
     mockFeed: {

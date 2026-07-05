@@ -20,6 +20,7 @@ type ApiStatus = "checking" | "connected" | "disconnected";
 type StorageStats = {
   databasePath: string;
   feedEventCount: number;
+  liveFeedEventCount: number;
   signalCount: number;
   chainVerificationCount: number;
   chainTransactionEventCount: number;
@@ -52,13 +53,22 @@ type HealthStatus = {
   chainTradeEventCount: number;
   chainTransactionEventCount: number;
   chainWatchedAddressCount: number;
+  dataFeedMode: string;
   dataFeed: string;
   dataFeedReasonCodes: string[];
+  feed: FeedStatus;
   chainVerificationCount: number;
   chainVerifier: ChainVerifierStatus;
   feedProvider: string;
+  historicalMockRowsHidden: boolean;
+  liveFeedConnected: boolean;
+  liveFeedExpected: boolean;
+  liveFeedLastEventAt: string | null;
+  liveFeedReady: boolean;
+  liveTokenCount: number;
   mockFeedBlocked: boolean;
   mockFeedEnabled: boolean;
+  mockRuntimeBlocked: boolean;
   noFeedMode: boolean;
   noRealFeedMessage?: string;
   realDataActive: boolean;
@@ -66,6 +76,7 @@ type HealthStatus = {
   marketDataEnabled: boolean;
   marketDataMinConfidence: string;
   marketObservationCount: number;
+  liveFeedEventCount: number;
   pumpPortalTokenTradeEventCount: number;
   tokenIdentity: TokenIdentityStatus;
   tokenIdentityCount: number;
@@ -83,6 +94,45 @@ type HealthStatus = {
   status: string;
   trackedTokenCount: number;
   solUsdConfigured: boolean;
+};
+
+type FeedStatus = {
+  mode: string;
+  provider: string;
+  enabled: boolean;
+  configured: boolean;
+  connected: boolean;
+  connecting: boolean;
+  live: boolean;
+  realData: boolean;
+  subscriptions: string[];
+  reconnectAttempts: number;
+  lastOpenAt: string | null;
+  lastCloseAt: string | null;
+  lastMessageAt: string | null;
+  lastEventAt: string | null;
+  newTokenEventCount: number;
+  migrationEventCount: number;
+  tokenTradeEventCount: number;
+  parseErrorCount: number;
+  lastError: string | null;
+  reasonCodes: string[];
+  paperOnly: true;
+};
+
+type LiveStatus = {
+  mode: string;
+  provider: string;
+  sessionId: string;
+  live: boolean;
+  realData: boolean;
+  liveTokenCount: number;
+  liveFeedEventCount: number;
+  lastEventAt: string | null;
+  historicalMockRowsHidden: true;
+  reasonCodes: string[];
+  paperOnly: true;
+  feed: FeedStatus;
 };
 
 type ActualDataStatus = {
@@ -330,6 +380,29 @@ type TokenIdentityRow = TokenIdentitySummary & {
   createdAt?: string;
 };
 
+type LiveTokenRow = {
+  mint: string;
+  name?: string;
+  symbol?: string;
+  title?: string;
+  displayName: string;
+  source: "pumpportal";
+  sourceMode: "real";
+  realData: true;
+  eventTypes: string[];
+  firstSeenAt: string;
+  lastSeenAt: string;
+  latestEventAt: string;
+  latestSignature?: string;
+  rawSource?: string;
+  identityConfidence?: string;
+  candidateState?: string;
+  action?: string;
+  riskLevel?: string;
+  score?: number;
+  reasonCodes: string[];
+};
+
 type ServerMessage =
   | {
       type: "snapshot";
@@ -351,16 +424,23 @@ export function App() {
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
   const [candidates, setCandidates] = useState<CandidateApiRow[]>([]);
   const [healthStatus, setHealthStatus] = useState<HealthStatus | null>(null);
-  const [chainStatus, setChainStatus] = useState<ChainVerifierStatus | null>(null);
+  const [chainStatus, setChainStatus] = useState<ChainVerifierStatus | null>(
+    null
+  );
   const [chainEventsStatus, setChainEventsStatus] =
     useState<ChainEventsStatus | null>(null);
   const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
   const [actualDataStatus, setActualDataStatus] =
     useState<ActualDataStatus | null>(null);
+  const [feedStatus, setFeedStatus] = useState<FeedStatus | null>(null);
+  const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
+  const [liveTokens, setLiveTokens] = useState<LiveTokenRow[]>([]);
   const [actualTrades, setActualTrades] = useState<PumpPortalTradeRow[]>([]);
   const [tokenIdentityStatus, setTokenIdentityStatus] =
     useState<TokenIdentityStatus | null>(null);
-  const [tokenIdentities, setTokenIdentities] = useState<TokenIdentityRow[]>([]);
+  const [tokenIdentities, setTokenIdentities] = useState<TokenIdentityRow[]>(
+    []
+  );
   const [watchStatus, setWatchStatus] = useState<WatchStatus | null>(null);
   const [chainTransactions, setChainTransactions] = useState<
     ChainTransactionRow[]
@@ -438,6 +518,9 @@ export function App() {
           chainResponse,
           chainEventsResponse,
           marketStatusResponse,
+          feedStatusResponse,
+          liveStatusResponse,
+          liveTokensResponse,
           actualDataStatusResponse,
           actualTradesResponse,
           tokenIdentityStatusResponse,
@@ -456,6 +539,9 @@ export function App() {
           fetch(`${apiBaseUrl}/chain/status`),
           fetch(`${apiBaseUrl}/chain/events/status`),
           fetch(`${apiBaseUrl}/market/status`),
+          fetch(`${apiBaseUrl}/feed/status`),
+          fetch(`${apiBaseUrl}/live/status`),
+          fetch(`${apiBaseUrl}/live/tokens`),
           fetch(`${apiBaseUrl}/actual-data/status`),
           fetch(`${apiBaseUrl}/actual-data/trades?limit=10`),
           fetch(`${apiBaseUrl}/tokens/status`),
@@ -476,6 +562,9 @@ export function App() {
           !chainResponse.ok ||
           !chainEventsResponse.ok ||
           !marketStatusResponse.ok ||
+          !feedStatusResponse.ok ||
+          !liveStatusResponse.ok ||
+          !liveTokensResponse.ok ||
           !actualDataStatusResponse.ok ||
           !actualTradesResponse.ok ||
           !tokenIdentityStatusResponse.ok ||
@@ -501,6 +590,10 @@ export function App() {
           (await chainEventsResponse.json()) as ChainEventsStatus;
         const nextMarketStatus =
           (await marketStatusResponse.json()) as MarketStatus;
+        const nextFeedStatus = (await feedStatusResponse.json()) as FeedStatus;
+        const nextLiveStatus = (await liveStatusResponse.json()) as LiveStatus;
+        const nextLiveTokens =
+          (await liveTokensResponse.json()) as LiveTokenRow[];
         const nextActualDataStatus =
           (await actualDataStatusResponse.json()) as ActualDataStatus;
         const nextActualTrades =
@@ -530,6 +623,9 @@ export function App() {
           setChainStatus(nextChainStatus);
           setChainEventsStatus(nextChainEventsStatus);
           setMarketStatus(nextMarketStatus);
+          setFeedStatus(nextFeedStatus);
+          setLiveStatus(nextLiveStatus);
+          setLiveTokens(nextLiveTokens);
           setActualDataStatus(nextActualDataStatus);
           setActualTrades(nextActualTrades);
           setTokenIdentityStatus(nextTokenIdentityStatus);
@@ -571,8 +667,7 @@ export function App() {
     () =>
       [...candidates].sort(
         (left, right) =>
-          (right.latestDecision?.score ?? 0) -
-          (left.latestDecision?.score ?? 0)
+          (right.latestDecision?.score ?? 0) - (left.latestDecision?.score ?? 0)
       ),
     [candidates]
   );
@@ -581,13 +676,16 @@ export function App() {
     (signal) => signal.action === "BUY_READY"
   ).length;
   const hardRejectCount = signals.filter((signal) => signal.hardReject).length;
-  const incompleteMetricCount = signals.filter((signal) =>
-    signal.reasonCodes.includes("INSUFFICIENT_METRICS") ||
-    signal.reasonCodes.includes("INSUFFICIENT_TRADE_METRICS")
+  const incompleteMetricCount = signals.filter(
+    (signal) =>
+      signal.reasonCodes.includes("INSUFFICIENT_METRICS") ||
+      signal.reasonCodes.includes("INSUFFICIENT_TRADE_METRICS")
   ).length;
   const statusMessage = getStatusMessage({
     apiStatus,
     feedProvider: healthStatus?.feedProvider,
+    feedStatus,
+    liveStatus,
     noFeedMode: healthStatus?.noFeedMode,
     noRealFeedMessage: healthStatus?.noRealFeedMessage,
     incompleteMetricCount,
@@ -596,11 +694,19 @@ export function App() {
     storageStats
   });
   const modeLabel = (healthStatus?.mode ?? "paper").toUpperCase();
+  const feedModeLabel = (
+    feedStatus?.mode ??
+    healthStatus?.dataFeedMode ??
+    "unknown"
+  ).toUpperCase();
   const feedLabel = (
+    feedStatus?.provider ??
     healthStatus?.dataFeed ??
     healthStatus?.feedProvider ??
     "unknown"
   ).toUpperCase();
+  const liveConnectionLabel = getLiveConnectionLabel(feedStatus, healthStatus);
+  const liveConnectionTone = getLiveConnectionTone(feedStatus, healthStatus);
   const apiLabel =
     apiStatus === "connected"
       ? "ONLINE"
@@ -626,7 +732,8 @@ export function App() {
         ? "warning"
         : "offline";
   const actualData = actualDataStatus ?? healthStatus?.actualData ?? null;
-  const identityStatus = tokenIdentityStatus ?? healthStatus?.tokenIdentity ?? null;
+  const identityStatus =
+    tokenIdentityStatus ?? healthStatus?.tokenIdentity ?? null;
   const actualDataLabel =
     actualData?.enabled && actualData.compatibleProvider
       ? "REAL/PUMPPORTAL"
@@ -649,15 +756,51 @@ export function App() {
         </div>
         <div className="command-status" aria-label="Runtime status">
           <ConnectionBadge label={modeLabel} tone="online" />
-          <ConnectionBadge label={feedLabel} tone="neutral" />
+          <ConnectionBadge label={`MODE ${feedModeLabel}`} tone="online" />
+          <ConnectionBadge label={`FEED ${feedLabel}`} tone="neutral" />
+          <ConnectionBadge
+            label={liveConnectionLabel}
+            tone={liveConnectionTone}
+          />
+          <ConnectionBadge label="PAPER ONLY" tone="online" />
           <ConnectionBadge label={`API ${apiLabel}`} tone={apiTone} />
-          <ConnectionBadge label={`WS ${websocketLabel}`} tone={websocketTone} />
+          <ConnectionBadge
+            label={`WS ${websocketLabel}`}
+            tone={websocketTone}
+          />
           <span className="last-update">LAST MSG {lastUpdated}</span>
         </div>
       </header>
 
       <section className="status-grid" aria-label="System status">
         <MetricValue label="feed" value={feedLabel} detail="source" />
+        <MetricValue label="feed mode" value={feedModeLabel} detail="runtime" />
+        <MetricValue
+          label="live feed"
+          value={liveConnectionLabel}
+          detail={formatTimestamp(
+            feedStatus?.lastEventAt ?? liveStatus?.lastEventAt
+          )}
+          tone={
+            liveConnectionTone === "online"
+              ? "good"
+              : liveConnectionTone === "warning"
+                ? "warn"
+                : "bad"
+          }
+        />
+        <MetricValue
+          label="live tokens"
+          value={formatCompactNumber(
+            liveStatus?.liveTokenCount ?? liveTokens.length
+          )}
+          detail="current session"
+          tone={
+            (liveStatus?.liveTokenCount ?? liveTokens.length) > 0
+              ? "good"
+              : "neutral"
+          }
+        />
         <MetricValue
           label="real data"
           value={healthStatus?.realDataConfigured ? "[CFG]" : "[NONE]"}
@@ -673,7 +816,11 @@ export function App() {
                 ? "[BLOCKED]"
                 : "[OFF]"
           }
-          detail={healthStatus?.mockFeedBlocked ? "explicit opt-in required" : "runtime"}
+          detail={
+            healthStatus?.mockFeedBlocked
+              ? "explicit opt-in required"
+              : "runtime"
+          }
           tone={
             healthStatus?.mockFeedEnabled
               ? "warn"
@@ -714,7 +861,9 @@ export function App() {
         />
         <MetricValue
           label="candidates"
-          value={formatCompactNumber(healthStatus?.candidateCount ?? candidates.length)}
+          value={formatCompactNumber(
+            healthStatus?.candidateCount ?? candidates.length
+          )}
           detail={`${formatCompactNumber(healthStatus?.trackedTokenCount ?? 0)} tracked`}
         />
         <MetricValue
@@ -724,8 +873,14 @@ export function App() {
         />
         <MetricValue
           label="chain verifier"
-          value={(chainStatus?.status ?? healthStatus?.chainVerifier.status ?? "unknown").toUpperCase()}
-          detail={chainStatus?.rpcHttpUrlConfigured ? "rpc configured" : "rpc unset"}
+          value={(
+            chainStatus?.status ??
+            healthStatus?.chainVerifier.status ??
+            "unknown"
+          ).toUpperCase()}
+          detail={
+            chainStatus?.rpcHttpUrlConfigured ? "rpc configured" : "rpc unset"
+          }
           tone={chainStatus?.enabled ? "good" : "neutral"}
         />
         <MetricValue
@@ -750,13 +905,21 @@ export function App() {
           label="actual trades"
           value={formatCompactNumber(actualData?.totalEventsThisSession ?? 0)}
           detail={`${formatCompactNumber(storageStats?.pumpPortalTokenTradeEventCount ?? 0)} stored`}
-          tone={(actualData?.totalEventsThisSession ?? 0) > 0 ? "good" : "neutral"}
+          tone={
+            (actualData?.totalEventsThisSession ?? 0) > 0 ? "good" : "neutral"
+          }
         />
         <MetricValue
           label="actual subs"
           value={`${actualData?.subscribedTokenCount ?? 0}/${actualData?.maxSubscribedTokens ?? 0}`}
           detail={actualData?.budgetReached ? "budget reached" : "token trades"}
-          tone={actualData?.budgetReached ? "bad" : actualData?.enabled ? "warn" : "neutral"}
+          tone={
+            actualData?.budgetReached
+              ? "bad"
+              : actualData?.enabled
+                ? "warn"
+                : "neutral"
+          }
         />
         <MetricValue
           label="identities"
@@ -767,14 +930,26 @@ export function App() {
         <MetricValue
           label="metadata"
           value={identityStatus?.solanaMetadataEnabled ? "[SOL]" : "[OFF]"}
-          detail={identityStatus?.offchainFetchEnabled ? "offchain on" : "offchain off"}
+          detail={
+            identityStatus?.offchainFetchEnabled
+              ? "offchain on"
+              : "offchain off"
+          }
           tone={identityStatus?.solanaMetadataEnabled ? "warn" : "neutral"}
         />
         <MetricValue
           label="watch orch"
-          value={(watchStatus?.enabled ?? healthStatus?.watchOrchestratorEnabled) ? "[ON]" : "[OFF]"}
+          value={
+            (watchStatus?.enabled ?? healthStatus?.watchOrchestratorEnabled)
+              ? "[ON]"
+              : "[OFF]"
+          }
           detail={`${storageStats?.watchPlanCount ?? watchStatus?.watchPlanCount ?? 0} plans / ${storageStats?.watchActionCount ?? watchStatus?.watchActionCount ?? 0} actions`}
-          tone={(watchStatus?.enabled ?? healthStatus?.watchOrchestratorEnabled) ? "good" : "neutral"}
+          tone={
+            (watchStatus?.enabled ?? healthStatus?.watchOrchestratorEnabled)
+              ? "good"
+              : "neutral"
+          }
         />
         <MetricValue
           label="paper"
@@ -794,7 +969,84 @@ export function App() {
         <span>{statusMessage}</span>
       </section>
 
-      <section className="table-region actual-data-region" aria-label="Actual data status">
+      <section
+        className="table-region live-token-region"
+        aria-label="Live tokens"
+      >
+        <div className="table-heading">
+          <h2>LIVE TOKENS</h2>
+          <span className="table-meta">
+            FEED: {feedLabel} / MODE: {feedModeLabel} / {liveConnectionLabel} /
+            MOCK: {healthStatus?.mockFeedEnabled ? "ENABLED" : "BLOCKED"}
+          </span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Token</th>
+              <th>Symbol</th>
+              <th>Name</th>
+              <th>Mint</th>
+              <th>Event</th>
+              <th>First Seen</th>
+              <th>Last Seen</th>
+              <th>Source</th>
+              <th>Real</th>
+              <th>State</th>
+              <th>Action</th>
+              <th>Risk</th>
+              <th>Score</th>
+              <th>Identity</th>
+              <th>Reasons</th>
+            </tr>
+          </thead>
+          <tbody>
+            {liveTokens.map((token) => (
+              <tr key={token.mint}>
+                <td>
+                  <TokenCell
+                    fallbackName={token.displayName}
+                    fallbackSymbol={token.symbol}
+                    mint={token.mint}
+                  />
+                </td>
+                <td>{token.symbol ?? "UNKNOWN"}</td>
+                <td>{token.name ?? "--"}</td>
+                <td className="mono" title={token.mint}>
+                  {shortMint(token.mint)}
+                </td>
+                <td>{token.eventTypes.join(", ")}</td>
+                <td>{formatTimestamp(token.firstSeenAt)}</td>
+                <td>
+                  {formatTimestamp(token.lastSeenAt ?? token.latestEventAt)}
+                </td>
+                <td>{token.source}</td>
+                <td>{token.realData ? "true" : "false"}</td>
+                <td>{token.candidateState ?? "--"}</td>
+                <td>{token.action ?? "--"}</td>
+                <td>{token.riskLevel ?? "--"}</td>
+                <td>{token.score ?? "--"}</td>
+                <td>{token.identityConfidence ?? "--"}</td>
+                <td>
+                  <ReasonCodes codes={token.reasonCodes} />
+                </td>
+              </tr>
+            ))}
+            {liveTokens.length === 0 ? (
+              <tr>
+                <td colSpan={15} className="empty-state">
+                  {getLiveEmptyState(feedStatus, liveStatus, healthStatus)}
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </section>
+
+      <section
+        className="table-region actual-data-region"
+        aria-label="Actual data status"
+      >
         <div className="table-heading">
           <h2>Actual Data Status</h2>
           <span className="table-meta">PAPER ONLY / OBSERVATION ONLY</span>
@@ -827,11 +1079,17 @@ export function App() {
                 {actualData?.subscribedTokenCount ?? 0}/
                 {actualData?.maxSubscribedTokens ?? 0}
               </td>
-              <td>{formatCompactNumber(actualData?.totalEventsThisSession ?? 0)}</td>
-              <td>{formatCompactNumber(actualData?.maxEventsPerSession ?? 0)}</td>
+              <td>
+                {formatCompactNumber(actualData?.totalEventsThisSession ?? 0)}
+              </td>
+              <td>
+                {formatCompactNumber(actualData?.maxEventsPerSession ?? 0)}
+              </td>
               <td>{formatCompactNumber(actualData?.maxEventsPerMint ?? 0)}</td>
               <td>{actualData?.budgetReached ? "reached" : "open"}</td>
-              <td>{formatNullableNumber(actualData?.estimatedMeteredCostSol)}</td>
+              <td>
+                {formatNullableNumber(actualData?.estimatedMeteredCostSol)}
+              </td>
               <td>
                 <ReasonCodes codes={actualData?.reasonCodes} />
               </td>
@@ -840,7 +1098,10 @@ export function App() {
         </table>
       </section>
 
-      <section className="table-region token-region" aria-label="Token identities">
+      <section
+        className="table-region token-region"
+        aria-label="Token identities"
+      >
         <div className="table-heading">
           <h2>Token Identities</h2>
           <span className="table-meta">
@@ -873,7 +1134,9 @@ export function App() {
                 <td>{identity.confidence}</td>
                 <td>{identity.dataSource}</td>
                 <td className="mono" title={identity.metadataUri ?? ""}>
-                  {identity.metadataUri ? compactUri(identity.metadataUri) : "--"}
+                  {identity.metadataUri
+                    ? compactUri(identity.metadataUri)
+                    : "--"}
                 </td>
                 <td>{identity.imageUri ? "yes" : "no"}</td>
                 <td>{identity.resolved ? "resolved" : "unresolved"}</td>
@@ -891,7 +1154,10 @@ export function App() {
         </table>
       </section>
 
-      <section className="table-region actual-data-region" aria-label="Actual PumpPortal trades">
+      <section
+        className="table-region actual-data-region"
+        aria-label="Actual PumpPortal trades"
+      >
         <div className="table-heading">
           <h2>Actual PumpPortal Trades</h2>
           <span className="table-meta">{actualTrades.length} rows</span>
@@ -947,7 +1213,10 @@ export function App() {
         </table>
       </section>
 
-      <section className="table-region watch-region" aria-label="Watch orchestration plans">
+      <section
+        className="table-region watch-region"
+        aria-label="Watch orchestration plans"
+      >
         <div className="table-heading">
           <h2>Watch Orchestration Plans</h2>
         </div>
@@ -1002,7 +1271,10 @@ export function App() {
         </table>
       </section>
 
-      <section className="table-region watch-region" aria-label="Watch orchestration actions">
+      <section
+        className="table-region watch-region"
+        aria-label="Watch orchestration actions"
+      >
         <div className="table-heading">
           <h2>Watch Orchestration Actions</h2>
         </div>
@@ -1047,7 +1319,10 @@ export function App() {
         </table>
       </section>
 
-      <section className="table-region chain-events-region" aria-label="Chain events">
+      <section
+        className="table-region chain-events-region"
+        aria-label="Chain events"
+      >
         <div className="table-heading">
           <h2>Read-Only Chain Events</h2>
         </div>
@@ -1090,7 +1365,10 @@ export function App() {
         </table>
       </section>
 
-      <section className="table-region chain-events-region" aria-label="Recent chain transactions">
+      <section
+        className="table-region chain-events-region"
+        aria-label="Recent chain transactions"
+      >
         <div className="table-heading">
           <h2>Recent Chain Transactions</h2>
         </div>
@@ -1137,7 +1415,10 @@ export function App() {
         </table>
       </section>
 
-      <section className="table-region chain-events-region" aria-label="Recent chain trades">
+      <section
+        className="table-region chain-events-region"
+        aria-label="Recent chain trades"
+      >
         <div className="table-heading">
           <h2>Recent Chain Trades</h2>
         </div>
@@ -1167,8 +1448,12 @@ export function App() {
                 </td>
                 <td>{event.side}</td>
                 <td>{event.confidence}</td>
-                <td>{event.priceUsd == null ? "--" : formatUsd(event.priceUsd)}</td>
-                <td>{event.volumeUsd == null ? "--" : formatUsd(event.volumeUsd)}</td>
+                <td>
+                  {event.priceUsd == null ? "--" : formatUsd(event.priceUsd)}
+                </td>
+                <td>
+                  {event.volumeUsd == null ? "--" : formatUsd(event.volumeUsd)}
+                </td>
                 <td>{formatNullableNumber(event.tokenAmount)}</td>
                 <td className="mono" title={event.watchedAddress}>
                   {shortMint(event.watchedAddress)}
@@ -1190,7 +1475,10 @@ export function App() {
         </table>
       </section>
 
-      <section className="table-region market-region" aria-label="Market observations">
+      <section
+        className="table-region market-region"
+        aria-label="Market observations"
+      >
         <div className="table-heading">
           <h2>Market Observations</h2>
         </div>
@@ -1311,14 +1599,22 @@ export function App() {
                       mint={candidate.mint}
                     />
                   </td>
-                  <td>{candidate.identity?.symbol ?? candidate.symbol ?? "UNKNOWN"}</td>
+                  <td>
+                    {candidate.identity?.symbol ??
+                      candidate.symbol ??
+                      "UNKNOWN"}
+                  </td>
                   <td>{candidate.identity?.name ?? candidate.name ?? "--"}</td>
                   <td>
                     {candidate.identity
                       ? `${candidate.identity.confidence}/${candidate.identity.resolved ? "resolved" : "unresolved"}`
                       : "unresolved"}
                   </td>
-                  <td>{candidate.identity?.dataSource ?? candidate.source ?? "unknown"}</td>
+                  <td>
+                    {candidate.identity?.dataSource ??
+                      candidate.source ??
+                      "unknown"}
+                  </td>
                   <td>
                     <span className={`state state-${candidate.lifecycleState}`}>
                       {candidate.lifecycleState}
@@ -1343,10 +1639,20 @@ export function App() {
                       {risk?.riskLevel ?? "unknown"}
                     </span>
                   </td>
-                  <td>{decision?.hardReject || risk?.hardReject ? "yes" : "no"}</td>
+                  <td>
+                    {decision?.hardReject || risk?.hardReject ? "yes" : "no"}
+                  </td>
                   <td>{candidate.chainVerificationStatus ?? "not_checked"}</td>
-                  <td>{formatNullableBoolean(candidate.onChainMintAuthorityActive)}</td>
-                  <td>{formatNullableBoolean(candidate.onChainFreezeAuthorityActive)}</td>
+                  <td>
+                    {formatNullableBoolean(
+                      candidate.onChainMintAuthorityActive
+                    )}
+                  </td>
+                  <td>
+                    {formatNullableBoolean(
+                      candidate.onChainFreezeAuthorityActive
+                    )}
+                  </td>
                   <td>{formatPercent(candidate.onChainTopHolderPct)}</td>
                   <td>{formatPercent(candidate.onChainTop10HolderPct)}</td>
                   <td>
@@ -1355,25 +1661,56 @@ export function App() {
                   <td>
                     {candidate.latestWatchPlanSummary?.selectedTargetCount ?? 0}
                   </td>
-                  <td>{formatWatchSummary(candidate.latestWatchPlanSummary)}</td>
+                  <td>
+                    {formatWatchSummary(candidate.latestWatchPlanSummary)}
+                  </td>
                   <td>
                     <ReasonCodes codes={candidate.watchReasonCodes} />
                   </td>
                   <td>{candidate.actualData?.eventCount ?? 0}</td>
                   <td>{candidate.actualData?.subscriptionStatus ?? "none"}</td>
-                  <td>{formatTimestamp(candidate.actualData?.latestRealTradeAt)}</td>
-                  <td>{formatNullableNumber(candidate.actualData?.latestPriceSol)}</td>
-                  <td>{formatNullableNumber(candidate.actualData?.latestVolumeSol)}</td>
+                  <td>
+                    {formatTimestamp(candidate.actualData?.latestRealTradeAt)}
+                  </td>
+                  <td>
+                    {formatNullableNumber(candidate.actualData?.latestPriceSol)}
+                  </td>
+                  <td>
+                    {formatNullableNumber(
+                      candidate.actualData?.latestVolumeSol
+                    )}
+                  </td>
                   <td>
                     <ReasonCodes codes={decision?.combinedReasonCodes} />
                   </td>
-                  <td>{formatUsd(candidate.latestMetrics?.windows["10s"].totalVolumeUsd ?? 0)}</td>
-                  <td>{formatNullableNumber(candidate.latestMetrics?.windows["10s"].totalVolumeSol)}</td>
-                  <td>{candidate.latestMetrics?.usedSolMetricsFallback ? "yes" : "no"}</td>
-                  <td>{formatNumber(effectiveVolumeVelocity(candidate.latestMetrics))}</td>
-                  <td>{formatNumber(candidate.latestMetrics?.buyerVelocityPerSec)}</td>
+                  <td>
+                    {formatUsd(
+                      candidate.latestMetrics?.windows["10s"].totalVolumeUsd ??
+                        0
+                    )}
+                  </td>
+                  <td>
+                    {formatNullableNumber(
+                      candidate.latestMetrics?.windows["10s"].totalVolumeSol
+                    )}
+                  </td>
+                  <td>
+                    {candidate.latestMetrics?.usedSolMetricsFallback
+                      ? "yes"
+                      : "no"}
+                  </td>
+                  <td>
+                    {formatNumber(
+                      effectiveVolumeVelocity(candidate.latestMetrics)
+                    )}
+                  </td>
+                  <td>
+                    {formatNumber(candidate.latestMetrics?.buyerVelocityPerSec)}
+                  </td>
                   <td>{formatNumber(candidate.latestMetrics?.buySellRatio)}</td>
-                  <td>{formatNumber(candidate.latestMetrics?.netBuyPressure)}</td>
+                  <td>
+                    {formatNumber(candidate.latestMetrics?.netBuyPressure)}
+                  </td>
                   <td>
                     <ReasonCodes codes={risk?.reasonCodes} />
                   </td>
@@ -1448,37 +1785,55 @@ export function App() {
                     ? `${signal.identity.confidence}/${signal.identity.resolved ? "resolved" : "unresolved"}`
                     : "unresolved"}
                 </td>
-                <td>{signal.identity?.dataSource ?? signal.feedProvider ?? "unknown"}</td>
+                <td>
+                  {signal.identity?.dataSource ??
+                    signal.feedProvider ??
+                    "unknown"}
+                </td>
                 <td>
                   <span className="score">{signal.score}</span>
                 </td>
                 <td>
-                  <span className={`action action-${signal.action.toLowerCase()}`}>
+                  <span
+                    className={`action action-${signal.action.toLowerCase()}`}
+                  >
                     {signal.action}
                   </span>
                 </td>
                 <td>
-                  <span className={`state state-${signal.lifecycleState ?? "unknown"}`}>
+                  <span
+                    className={`state state-${signal.lifecycleState ?? "unknown"}`}
+                  >
                     {signal.lifecycleState ?? "unknown"}
                   </span>
                 </td>
                 <td>
-                  <span className={`risk-level risk-${signal.riskLevel ?? "unknown"}`}>
+                  <span
+                    className={`risk-level risk-${signal.riskLevel ?? "unknown"}`}
+                  >
                     {signal.riskLevel ?? "unknown"}
                   </span>
                 </td>
                 <td>
                   <ReasonCodes codes={signal.reasonCodes} />
                 </td>
-                <td>{signal.feedProvider ?? healthStatus?.feedProvider ?? "unknown"}</td>
-                <td>{formatSignalDataMode(signal, healthStatus?.feedProvider)}</td>
+                <td>
+                  {signal.feedProvider ??
+                    healthStatus?.feedProvider ??
+                    "unknown"}
+                </td>
+                <td>
+                  {formatSignalDataMode(signal, healthStatus?.feedProvider)}
+                </td>
                 <td>{signal.actualData?.eventCount ?? 0}</td>
                 <td>{signal.insufficientMetrics ? "yes" : "no"}</td>
                 <td>{formatUsd(metricVolume(signal, "1s"))}</td>
                 <td>{formatUsd(metricVolume(signal, "5s"))}</td>
                 <td>{formatUsd(metricVolume(signal, "10s"))}</td>
                 <td>{formatNullableNumber(metricVolumeSol(signal, "10s"))}</td>
-                <td>{signal.rollingMetrics?.usedSolMetricsFallback ? "yes" : "no"}</td>
+                <td>
+                  {signal.rollingMetrics?.usedSolMetricsFallback ? "yes" : "no"}
+                </td>
                 <td>{formatNumber(signal.volumeVelocity)}</td>
                 <td>{formatNumber(signal.volumeAcceleration)}</td>
                 <td>{formatNumber(signal.buyerVelocity)}</td>
@@ -1533,7 +1888,7 @@ function TokenCell({
     identity?.title ??
     (fallbackSymbol && fallbackName
       ? `${fallbackSymbol} - ${fallbackName}`
-      : fallbackName ?? fallbackSymbol ?? shortMint(mint));
+      : (fallbackName ?? fallbackSymbol ?? shortMint(mint)));
   const displayName = identity?.displayName ?? title;
   const unresolved = identity && !identity.resolved;
 
@@ -1585,7 +1940,10 @@ function TargetList({ targets }: { targets: WatchTargetRow[] | undefined }) {
   const remainingCount = targets.length - visibleTargets.length;
 
   return (
-    <span className="target-list" title={targets.map((target) => target.address).join(", ")}>
+    <span
+      className="target-list"
+      title={targets.map((target) => target.address).join(", ")}
+    >
       {visibleTargets.map((target) => (
         <span className="target-code" key={`${target.kind}-${target.address}`}>
           {target.kind}:{shortMint(target.address)}
@@ -1629,6 +1987,60 @@ function formatSignalDataMode(
   const feed = signal.feedProvider ?? fallbackFeed ?? "unknown";
 
   return feed === "mock" ? "MOCK" : "PAPER ONLY";
+}
+
+function getLiveConnectionLabel(
+  feedStatus: FeedStatus | null,
+  healthStatus: HealthStatus | null
+): string {
+  if (feedStatus?.connected || healthStatus?.liveFeedConnected) {
+    return "CONNECTED";
+  }
+
+  if (feedStatus?.connecting) {
+    return "CONNECTING";
+  }
+
+  return "OFFLINE";
+}
+
+function getLiveConnectionTone(
+  feedStatus: FeedStatus | null,
+  healthStatus: HealthStatus | null
+): "online" | "offline" | "warning" | "neutral" {
+  if (feedStatus?.connected || healthStatus?.liveFeedConnected) {
+    return "online";
+  }
+
+  if (feedStatus?.connecting) {
+    return "warning";
+  }
+
+  return "offline";
+}
+
+function getLiveEmptyState(
+  feedStatus: FeedStatus | null,
+  liveStatus: LiveStatus | null,
+  healthStatus: HealthStatus | null
+): string {
+  if (healthStatus?.mockFeedEnabled) {
+    return "MOCK MODE EXPLICITLY ENABLED";
+  }
+
+  if ((feedStatus?.mode ?? healthStatus?.dataFeedMode) === "none") {
+    return "NO LIVE FEED CONFIGURED";
+  }
+
+  if (feedStatus?.connecting) {
+    return "WAITING FOR PUMPPORTAL LIVE TOKENS";
+  }
+
+  if (feedStatus?.connected && (liveStatus?.liveTokenCount ?? 0) === 0) {
+    return "LIVE FEED CONNECTED - NO TOKENS YET";
+  }
+
+  return "LIVE FEED OFFLINE";
 }
 
 function formatNumber(value: number | undefined): string {
@@ -1690,7 +2102,9 @@ function getStatusMessage(options: {
   apiStatus: ApiStatus;
   candidateCount: number;
   feedProvider: string | undefined;
+  feedStatus: FeedStatus | null;
   incompleteMetricCount: number;
+  liveStatus: LiveStatus | null;
   noFeedMode: boolean | undefined;
   noRealFeedMessage: string | undefined;
   signalCount: number;
@@ -1708,6 +2122,21 @@ function getStatusMessage(options: {
     return options.noRealFeedMessage ?? "NO REAL FEED CONFIGURED";
   }
 
+  if (
+    options.feedStatus?.connected &&
+    options.liveStatus?.liveTokenCount === 0
+  ) {
+    return "Live feed connected, waiting for live tokens";
+  }
+
+  if (options.feedStatus?.connecting) {
+    return "Live feed connecting";
+  }
+
+  if (options.feedStatus?.live && !options.feedStatus.connected) {
+    return "LIVE FEED OFFLINE";
+  }
+
   if (options.storageStats?.feedEventCount === 0) {
     return "API connected, no feed events yet";
   }
@@ -1723,7 +2152,10 @@ function getStatusMessage(options: {
     return "PumpPortal feed connected with insufficient metrics for scoring";
   }
 
-  if (options.signalCount === 0 && (options.storageStats?.signalCount ?? 0) > 0) {
+  if (
+    options.signalCount === 0 &&
+    (options.storageStats?.signalCount ?? 0) > 0
+  ) {
     return "Persisted paper data exists, waiting for live signals";
   }
 

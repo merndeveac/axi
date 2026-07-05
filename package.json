@@ -12,6 +12,9 @@
     "format": "prettier --write .",
     "test": "pnpm -r --if-present test",
     "clean": "pnpm -r --if-present clean",
+    "live:tokens": "node scripts/dev/start-live-tokens.mjs",
+    "live:tokens:stop": "pnpm local:stop",
+    "live:tokens:logs": "pnpm local:logs",
     "local:stop": "node scripts/dev/stop-local.mjs",
     "local:restart": "node scripts/dev/restart-local.mjs",
     "local:logs": "node scripts/dev/show-local-logs.mjs"

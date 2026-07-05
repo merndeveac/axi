@@ -8,7 +8,11 @@ import type {
   NormalizedChainTradeEvent
 } from "@axi/chain-events";
 import type { MarketObservation } from "@axi/market-data";
-import type { CandidateDecision, OverlaySignal, RiskSnapshot } from "@axi/shared";
+import type {
+  CandidateDecision,
+  OverlaySignal,
+  RiskSnapshot
+} from "@axi/shared";
 import { normalizePumpPortalIdentity } from "@axi/token-identity";
 import {
   closeStorage,
@@ -23,6 +27,9 @@ import {
   getMarketObservation,
   getLatestRiskSnapshot,
   getLatestWatchPlan,
+  listLiveFeedEvents,
+  listLiveFeedEventsByMint,
+  listLiveFeedEventsBySession,
   getStorageStats,
   initStorage,
   listCandidateDecisionsForReplay,
@@ -65,6 +72,7 @@ import {
   saveChainTradeEvent,
   saveChainTransactionEvent,
   saveFeedEvent,
+  saveLiveFeedEvent,
   saveMarketObservation,
   saveActualDataSession,
   saveActualDataSubscription,
@@ -103,6 +111,7 @@ describe("@axi/storage", () => {
     expect(handle.databasePath).toBe(databasePath);
     expect(stats.databasePath).toBe(databasePath);
     expect(stats.signalCount).toBe(0);
+    expect(stats.liveFeedEventCount).toBe(0);
     expect(stats.chainVerificationCount).toBe(0);
     expect(stats.chainTransactionEventCount).toBe(0);
     expect(stats.chainTradeEventCount).toBe(0);
@@ -262,7 +271,8 @@ describe("@axi/storage", () => {
     saveMarketObservation(createMarketObservation());
     saveMarketObservation({
       ...createMarketObservation(),
-      signature: "OtherSignature111111111111111111111111111111111111111111111111111",
+      signature:
+        "OtherSignature111111111111111111111111111111111111111111111111111",
       mint: "OtherMint111111111111111111111111111111111"
     });
 
@@ -361,6 +371,24 @@ describe("@axi/storage", () => {
     expect(listed[0]?.priceSol).toBeNull();
     expect(listed[0]?.volumeSol).toBeNull();
     expect(listed[0]?.usableForMetrics).toBe(false);
+  });
+
+  it("live feed event can be saved and listed", () => {
+    initStorage({ databasePath });
+    const saved = saveLiveFeedEvent(createLiveFeedEvent());
+    const listed = listLiveFeedEvents(10);
+    const bySession = listLiveFeedEventsBySession("test-session", 10);
+    const byMint = listLiveFeedEventsByMint(mint, 10);
+
+    expect(saved.id).toBeGreaterThan(0);
+    expect(listed).toHaveLength(1);
+    expect(bySession).toHaveLength(1);
+    expect(byMint).toHaveLength(1);
+    expect(listed[0]?.sessionId).toBe("test-session");
+    expect(listed[0]?.provider).toBe("pumpportal");
+    expect(listed[0]?.eventType).toBe("new_token");
+    expect(listed[0]?.realData).toBe(true);
+    expect(listed[0]?.reasonCodes).toContain("LIVE_FEED_EVENT");
   });
 
   it("actual data subscription can be saved and listed", () => {
@@ -508,6 +536,7 @@ describe("@axi/storage", () => {
     saveWatchPlan(createWatchPlanFixture());
     saveWatchAction(createWatchActionFixture());
     saveFeedEvent(createFeedEvent());
+    saveLiveFeedEvent(createLiveFeedEvent());
     saveRiskSnapshot(createRiskSnapshot());
     saveCandidateDecision(createCandidateDecision());
     const signal = saveSignal(createSignal());
@@ -535,6 +564,7 @@ describe("@axi/storage", () => {
     const stats = getStorageStats();
 
     expect(stats.feedEventCount).toBe(1);
+    expect(stats.liveFeedEventCount).toBe(1);
     expect(stats.signalCount).toBe(1);
     expect(stats.chainVerificationCount).toBe(1);
     expect(stats.chainTransactionEventCount).toBe(1);
@@ -580,7 +610,9 @@ describe("@axi/storage", () => {
     );
     const actualDataSession = saveActualDataSession(createActualDataSession());
     const tokenIdentity = saveTokenIdentity(createTokenIdentity());
-    const tokenMetadataFetch = saveTokenMetadataFetch(createTokenMetadataFetch());
+    const tokenMetadataFetch = saveTokenMetadataFetch(
+      createTokenMetadataFetch()
+    );
     const watchPlan = saveWatchPlan(createWatchPlanFixture());
     const watchAction = saveWatchAction(createWatchActionFixture());
     const riskSnapshots = listRiskSnapshotsForReplay(10);
@@ -966,6 +998,26 @@ function createPumpPortalTradeEvent() {
   };
 }
 
+function createLiveFeedEvent() {
+  return {
+    sessionId: "test-session",
+    provider: "pumpportal",
+    eventType: "new_token",
+    mint,
+    name: "Mock Token",
+    symbol: "MOCK",
+    title: "MOCK - Mock Token",
+    realData: true,
+    reasonCodes: ["LIVE_FEED_EVENT", "REAL_FEED_NEW_TOKEN_EVENT"],
+    payload: {
+      type: "token_created",
+      source: "pumpportal",
+      mint
+    },
+    createdAt: "2026-01-01T00:00:06.750Z"
+  };
+}
+
 function createActualDataSubscription() {
   return {
     mint,
@@ -1098,7 +1150,11 @@ function createCandidateDecision(): CandidateDecision {
     hardReject: false,
     riskReasonCodes: ["BASELINE_RISK"],
     scoreReasonCodes: ["STRONG_MOMENTUM"],
-    combinedReasonCodes: ["PAPER_BUY_READY", "BASELINE_RISK", "STRONG_MOMENTUM"],
+    combinedReasonCodes: [
+      "PAPER_BUY_READY",
+      "BASELINE_RISK",
+      "STRONG_MOMENTUM"
+    ],
     metricsSummary: {
       sampleCount: 12,
       insufficientMetrics: false,
