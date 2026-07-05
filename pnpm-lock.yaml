@@ -71,6 +71,9 @@ importers:
       '@axi/metrics':
         specifier: workspace:*
         version: link:../../packages/metrics
+      '@axi/pumpportal-lightning':
+        specifier: workspace:*
+        version: link:../../packages/pumpportal-lightning
       '@axi/risk':
         specifier: workspace:*
         version: link:../../packages/risk
@@ -164,6 +167,8 @@ importers:
       '@axi/shared':
         specifier: workspace:*
         version: link:../shared
+
+  packages/pumpportal-lightning: {}
 
   packages/risk:
     dependencies:

@@ -5,9 +5,10 @@ import {
 } from "./pumpportal-data-wallet-service";
 
 const config = loadApiConfig();
+const dataApiKey = config.PUMPPORTAL_DATA_API_KEY ?? config.PUMPPORTAL_API_KEY;
 const dataWallet = createPumpPortalDataWalletService({
   config: createPumpPortalDataWalletConfig({
-    apiKeyConfigured: config.PUMPPORTAL_API_KEY !== undefined,
+    apiKeyConfigured: dataApiKey !== undefined,
     balanceRefreshMs: config.PUMPPORTAL_DATA_WALLET_BALANCE_REFRESH_MS,
     commitment: config.SOLANA_RPC_COMMITMENT,
     criticalBalanceSol: config.PUMPPORTAL_DATA_WALLET_CRITICAL_BALANCE_SOL,

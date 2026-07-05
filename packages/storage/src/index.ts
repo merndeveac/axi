@@ -149,11 +149,60 @@ export type StorageStats = {
   tokenMetadataFetchCount: number;
   watchPlanCount: number;
   watchActionCount: number;
+  lightningTradePlanCount: number;
+  pumpPortalWalletStatusSnapshotCount: number;
   riskSnapshotCount: number;
   candidateDecisionCount: number;
   paperOrderCount: number;
   paperPositionCount: number;
   lastSignalAt: string | null;
+};
+
+export type LightningTradePlanStorageInput = {
+  planId: string;
+  mint: string;
+  action: "buy" | "sell";
+  amountSol: number;
+  mode: string;
+  blocked: boolean;
+  blockers: string[];
+  warnings: string[];
+  request: unknown;
+  payload: unknown;
+  createdAt?: string;
+};
+
+export type StoredLightningTradePlan = Omit<
+  LightningTradePlanStorageInput,
+  "createdAt"
+> & {
+  id: number;
+  createdAt: string;
+};
+
+export type PumpPortalWalletStatusSnapshotInput = {
+  dataWalletPublicKey?: string | null;
+  tradingWalletPublicKey?: string | null;
+  sameWallet: boolean;
+  dataWalletBalanceSol?: number | null;
+  tradingWalletBalanceSol?: number | null;
+  dataWalletStatus: string;
+  tradingWalletStatus: string;
+  reasonCodes: string[];
+  payload: unknown;
+  createdAt?: string;
+};
+
+export type StoredPumpPortalWalletStatusSnapshot = Omit<
+  PumpPortalWalletStatusSnapshotInput,
+  "createdAt"
+> & {
+  id: number;
+  createdAt: string;
+  dataWalletPublicKey: string | null;
+  tradingWalletPublicKey: string | null;
+  dataWalletBalanceSol: number | null;
+  tradingWalletBalanceSol: number | null;
 };
 
 export type StoredRiskSnapshot = {
@@ -630,6 +679,35 @@ type WatchActionRow = {
   created_at: string;
 };
 
+type LightningTradePlanRow = {
+  id: number;
+  plan_id: string;
+  mint: string;
+  action: "buy" | "sell";
+  amount_sol: number;
+  mode: string;
+  blocked: number;
+  blockers_json: string;
+  warnings_json: string;
+  request_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
+type PumpPortalWalletStatusSnapshotRow = {
+  id: number;
+  data_wallet_public_key: string | null;
+  trading_wallet_public_key: string | null;
+  same_wallet: number;
+  data_wallet_balance_sol: number | null;
+  trading_wallet_balance_sol: number | null;
+  data_wallet_status: string;
+  trading_wallet_status: string;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
 type CountRow = {
   count: number;
 };
@@ -946,6 +1024,33 @@ const watchActionInputSchema = z.object({
     "unknown"
   ]),
   status: z.string().min(1),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown(),
+  createdAt: z.string().datetime().optional()
+});
+
+const lightningTradePlanInputSchema = z.object({
+  planId: z.string().min(1),
+  mint: z.string().min(1),
+  action: z.enum(["buy", "sell"]),
+  amountSol: z.number().nonnegative(),
+  mode: z.string().min(1),
+  blocked: z.boolean(),
+  blockers: z.array(z.string().min(1)),
+  warnings: z.array(z.string().min(1)),
+  request: z.unknown(),
+  payload: z.unknown(),
+  createdAt: z.string().datetime().optional()
+});
+
+const pumpPortalWalletStatusSnapshotInputSchema = z.object({
+  dataWalletPublicKey: z.string().min(1).nullable().optional(),
+  tradingWalletPublicKey: z.string().min(1).nullable().optional(),
+  sameWallet: z.boolean(),
+  dataWalletBalanceSol: z.number().nonnegative().nullable().optional(),
+  tradingWalletBalanceSol: z.number().nonnegative().nullable().optional(),
+  dataWalletStatus: z.string().min(1),
+  tradingWalletStatus: z.string().min(1),
   reasonCodes: z.array(z.string().min(1)),
   payload: z.unknown(),
   createdAt: z.string().datetime().optional()
@@ -2550,6 +2655,180 @@ export function listWatchActionsByMint(
   return rows.map(mapWatchActionRow);
 }
 
+export function saveLightningTradePlan(
+  plan: LightningTradePlanStorageInput
+): StoredLightningTradePlan {
+  const parsed = lightningTradePlanInputSchema.parse(plan);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const request = sanitizeStoragePayload(parsed.request);
+  const payload = sanitizeStoragePayload(parsed.payload);
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into lightning_trade_plans (
+        plan_id,
+        mint,
+        action,
+        amount_sol,
+        mode,
+        blocked,
+        blockers_json,
+        warnings_json,
+        request_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.planId,
+      parsed.mint,
+      parsed.action,
+      parsed.amountSol,
+      parsed.mode,
+      parsed.blocked ? 1 : 0,
+      stringifyJson(parsed.blockers),
+      stringifyJson(parsed.warnings),
+      stringifyJson(request),
+      stringifyJson(payload),
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    planId: parsed.planId,
+    mint: parsed.mint,
+    action: parsed.action,
+    amountSol: parsed.amountSol,
+    mode: parsed.mode,
+    blocked: parsed.blocked,
+    blockers: parsed.blockers,
+    warnings: parsed.warnings,
+    request,
+    payload,
+    createdAt
+  };
+}
+
+export function listLightningTradePlans(
+  limit = 50
+): StoredLightningTradePlan[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from lightning_trade_plans
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as LightningTradePlanRow[];
+
+  return rows.map(mapLightningTradePlanRow);
+}
+
+export function listLightningTradePlansByMint(
+  mint: string,
+  limit = 50
+): StoredLightningTradePlan[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from lightning_trade_plans
+       where mint = ?
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(mint, parsedLimit) as LightningTradePlanRow[];
+
+  return rows.map(mapLightningTradePlanRow);
+}
+
+export function getLightningTradePlan(
+  planId: string
+): StoredLightningTradePlan | null {
+  const row = getDb()
+    .prepare(
+      `select *
+       from lightning_trade_plans
+       where plan_id = ?
+       order by datetime(created_at) desc, id desc
+       limit 1`
+    )
+    .get(planId) as LightningTradePlanRow | undefined;
+
+  return row ? mapLightningTradePlanRow(row) : null;
+}
+
+export function savePumpPortalWalletStatusSnapshot(
+  snapshot: PumpPortalWalletStatusSnapshotInput
+): StoredPumpPortalWalletStatusSnapshot {
+  const parsed = pumpPortalWalletStatusSnapshotInputSchema.parse(snapshot);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const payload = sanitizeStoragePayload(parsed.payload);
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into pumpportal_wallet_status_snapshots (
+        data_wallet_public_key,
+        trading_wallet_public_key,
+        same_wallet,
+        data_wallet_balance_sol,
+        trading_wallet_balance_sol,
+        data_wallet_status,
+        trading_wallet_status,
+        reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.dataWalletPublicKey ?? null,
+      parsed.tradingWalletPublicKey ?? null,
+      parsed.sameWallet ? 1 : 0,
+      parsed.dataWalletBalanceSol ?? null,
+      parsed.tradingWalletBalanceSol ?? null,
+      parsed.dataWalletStatus,
+      parsed.tradingWalletStatus,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(payload),
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    dataWalletPublicKey: parsed.dataWalletPublicKey ?? null,
+    tradingWalletPublicKey: parsed.tradingWalletPublicKey ?? null,
+    sameWallet: parsed.sameWallet,
+    dataWalletBalanceSol: parsed.dataWalletBalanceSol ?? null,
+    tradingWalletBalanceSol: parsed.tradingWalletBalanceSol ?? null,
+    dataWalletStatus: parsed.dataWalletStatus,
+    tradingWalletStatus: parsed.tradingWalletStatus,
+    reasonCodes: parsed.reasonCodes,
+    payload,
+    createdAt
+  };
+}
+
+export function listPumpPortalWalletStatusSnapshots(
+  limit = 50
+): StoredPumpPortalWalletStatusSnapshot[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from pumpportal_wallet_status_snapshots
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as PumpPortalWalletStatusSnapshotRow[];
+
+  return rows.map(mapPumpPortalWalletStatusSnapshotRow);
+}
+
 export async function* createReplayStream(
   options: {
     limit?: number;
@@ -2829,6 +3108,11 @@ export function getStorageStats(): StorageStats {
     tokenMetadataFetchCount: countRows(db, "token_metadata_fetches"),
     watchPlanCount: countRows(db, "watch_plans"),
     watchActionCount: countRows(db, "watch_actions"),
+    lightningTradePlanCount: countRows(db, "lightning_trade_plans"),
+    pumpPortalWalletStatusSnapshotCount: countRows(
+      db,
+      "pumpportal_wallet_status_snapshots"
+    ),
     riskSnapshotCount: countRows(db, "risk_snapshots"),
     candidateDecisionCount: countRows(db, "candidate_decisions"),
     paperOrderCount: countRows(db, "paper_orders"),
@@ -3311,6 +3595,56 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(9, "live_feed_events", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 10)) {
+    db.exec(`
+      create table if not exists lightning_trade_plans (
+        id integer primary key autoincrement,
+        plan_id text not null,
+        mint text not null,
+        action text not null,
+        amount_sol real not null,
+        mode text not null,
+        blocked integer not null,
+        blockers_json text not null,
+        warnings_json text not null,
+        request_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_lightning_trade_plans_created_at
+        on lightning_trade_plans(created_at);
+
+      create index if not exists idx_lightning_trade_plans_plan_id
+        on lightning_trade_plans(plan_id);
+
+      create index if not exists idx_lightning_trade_plans_mint
+        on lightning_trade_plans(mint);
+
+      create table if not exists pumpportal_wallet_status_snapshots (
+        id integer primary key autoincrement,
+        data_wallet_public_key text,
+        trading_wallet_public_key text,
+        same_wallet integer not null,
+        data_wallet_balance_sol real,
+        trading_wallet_balance_sol real,
+        data_wallet_status text not null,
+        trading_wallet_status text not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_pumpportal_wallet_status_snapshots_created_at
+        on pumpportal_wallet_status_snapshots(created_at);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(10, "pumpportal_lightning_readiness", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -3418,6 +3752,32 @@ function getFeedEventTimestamp(event: FeedEvent): string {
 
 function stringifyJson(value: unknown): string {
   return JSON.stringify(value);
+}
+
+function sanitizeStoragePayload(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeStoragePayload(item));
+  }
+
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const sanitized: Record<string, unknown> = {};
+
+  for (const [key, entry] of Object.entries(value)) {
+    sanitized[key] = isSecretStorageKey(key)
+      ? "[redacted]"
+      : sanitizeStoragePayload(entry);
+  }
+
+  return sanitized;
+}
+
+function isSecretStorageKey(key: string): boolean {
+  return /(api[_-]?key|private[_-]?key|seed|secret|mnemonic|keypair)/i.test(
+    key
+  );
 }
 
 function tokenIdentityValues(
@@ -3751,6 +4111,43 @@ function mapWatchActionRow(row: WatchActionRow): StoredWatchAction {
     address: row.address,
     addressKind: row.address_kind,
     status: row.status,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at
+  };
+}
+
+function mapLightningTradePlanRow(
+  row: LightningTradePlanRow
+): StoredLightningTradePlan {
+  return {
+    id: row.id,
+    planId: row.plan_id,
+    mint: row.mint,
+    action: row.action,
+    amountSol: row.amount_sol,
+    mode: row.mode,
+    blocked: Boolean(row.blocked),
+    blockers: JSON.parse(row.blockers_json) as string[],
+    warnings: JSON.parse(row.warnings_json) as string[],
+    request: JSON.parse(row.request_json),
+    payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at
+  };
+}
+
+function mapPumpPortalWalletStatusSnapshotRow(
+  row: PumpPortalWalletStatusSnapshotRow
+): StoredPumpPortalWalletStatusSnapshot {
+  return {
+    id: row.id,
+    dataWalletPublicKey: row.data_wallet_public_key,
+    tradingWalletPublicKey: row.trading_wallet_public_key,
+    sameWallet: Boolean(row.same_wallet),
+    dataWalletBalanceSol: row.data_wallet_balance_sol,
+    tradingWalletBalanceSol: row.trading_wallet_balance_sol,
+    dataWalletStatus: row.data_wallet_status,
+    tradingWalletStatus: row.trading_wallet_status,
     reasonCodes: JSON.parse(row.reason_codes_json) as string[],
     payload: JSON.parse(row.payload_json),
     createdAt: row.created_at

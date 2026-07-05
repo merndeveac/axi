@@ -679,6 +679,10 @@ dd {
   overflow-wrap: anywhere;
 }
 
+.data-wallet-address-row .mono {
+  white-space: normal;
+}
+
 .data-wallet-address-row button {
   flex: 0 0 auto;
   min-width: 120px;
@@ -686,6 +690,70 @@ dd {
 
 .data-wallet-warnings {
   border-bottom: 1px solid var(--line-dim);
+}
+
+.lightning-panel {
+  background: var(--panel-2);
+}
+
+.wallet-readiness-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1px;
+  border-top: 1px solid var(--line-dim);
+  background: var(--line-dim);
+}
+
+.wallet-readiness-block,
+.plan-result {
+  min-width: 0;
+  background: var(--panel);
+}
+
+.inline-warning {
+  border-top: 1px solid rgba(214, 168, 79, 0.48);
+  border-bottom: 1px solid rgba(214, 168, 79, 0.48);
+  background: rgba(214, 168, 79, 0.08);
+  color: var(--amber);
+  padding: 8px 10px;
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.planner-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 160px 130px;
+  gap: 1px;
+  border-top: 1px solid var(--line-dim);
+  background: var(--line-dim);
+}
+
+.planner-form label {
+  display: grid;
+  gap: 6px;
+  background: var(--panel);
+  padding: 8px;
+}
+
+.planner-form label span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.planner-form input,
+.planner-form button {
+  width: 100%;
+}
+
+.planner-form button {
+  min-height: 100%;
+}
+
+.plan-result {
+  border-top: 1px solid var(--line-dim);
 }
 
 .debug-grid {
@@ -862,6 +930,10 @@ tr:last-child td {
     grid-template-columns: 1fr 1fr;
   }
 
+  .planner-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .token-grid,
   .token-audit,
   .strategy-status {
@@ -881,6 +953,7 @@ tr:last-child td {
   }
 
   .live-controls,
+  .planner-form,
   .token-grid {
     grid-template-columns: 1fr;
   }

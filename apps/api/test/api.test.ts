@@ -136,6 +136,8 @@ describe("@axi/api", () => {
       tokenMetadataFetchCount: number;
       watchPlanCount: number;
       watchActionCount: number;
+      lightningTradePlanCount: number;
+      pumpPortalWalletStatusSnapshotCount: number;
       paperOrderCount: number;
       paperPositionCount: number;
       riskSnapshotCount: number;
@@ -159,6 +161,8 @@ describe("@axi/api", () => {
     expect(body.tokenMetadataFetchCount).toBe(0);
     expect(body.watchPlanCount).toBe(0);
     expect(body.watchActionCount).toBe(0);
+    expect(body.lightningTradePlanCount).toBe(0);
+    expect(body.pumpPortalWalletStatusSnapshotCount).toBe(0);
     expect(body.riskSnapshotCount).toBeGreaterThan(0);
     expect(body.candidateDecisionCount).toBeGreaterThan(0);
     expect(body.paperOrderCount).toBe(0);
@@ -693,6 +697,348 @@ describe("@axi/api", () => {
     expect(body.instructions).toContain("metered data streams");
     expect(body.warnings.join(" ")).toContain("private key");
     expect(serialized).not.toContain("api-key-value");
+  });
+
+  it("GET /pumpportal/wallets/status returns data and trading readiness without secrets", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/pumpportal/wallets/status"
+    });
+    const body = response.json() as {
+      dataWallet: {
+        apiKeyConfigured: boolean;
+        publicKey: string | null;
+      };
+      tradingWallet: {
+        apiKeyConfigured: boolean;
+        publicKey: string | null;
+      };
+      paperOnly: boolean;
+      secretFieldsExposed: boolean;
+      tradingDisabled: boolean;
+      reasonCodes: string[];
+    };
+    const serialized = JSON.stringify(body).toLowerCase();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.dataWallet.apiKeyConfigured).toBe(false);
+    expect(body.tradingWallet.apiKeyConfigured).toBe(false);
+    expect(body.dataWallet.publicKey).toBeNull();
+    expect(body.tradingWallet.publicKey).toBeNull();
+    expect(body.paperOnly).toBe(true);
+    expect(body.tradingDisabled).toBe(true);
+    expect(body.secretFieldsExposed).toBe(false);
+    expect(body.reasonCodes).toContain("LIGHTNING_API_KEY_MISSING");
+    expect(serialized).not.toContain("api-key-value");
+    expect(serialized).not.toContain("privatekey");
+  });
+
+  it("GET /pumpportal/wallets/status flags invalid trading public keys", async () => {
+    server = createApiServer({
+      logLevel: false,
+      pumpPortalWallets: {
+        dataWallet: {
+          role: "data",
+          apiKeyConfigured: true,
+          publicKey: "So11111111111111111111111111111111111111112"
+        },
+        tradingWallet: {
+          role: "trading",
+          apiKeyConfigured: true,
+          publicKey: "INVALID_PUBLIC_KEY"
+        }
+      },
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/pumpportal/wallets/status"
+    });
+    const body = response.json() as {
+      tradingWallet: {
+        publicKeyValid: boolean;
+        reasonCodes: string[];
+      };
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.tradingWallet.publicKeyValid).toBe(false);
+    expect(body.tradingWallet.reasonCodes).toContain(
+      "LIGHTNING_PUBLIC_KEY_INVALID"
+    );
+  });
+
+  it("POST /pumpportal/wallets/refresh returns mocked balances and stores a snapshot", async () => {
+    server = createLightningTestServer({
+      tradingWalletBalanceSol: 0.05
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/pumpportal/wallets/refresh"
+    });
+    const body = response.json() as {
+      dataWallet: {
+        balanceSol: number | null;
+      };
+      tradingWallet: {
+        balanceSol: number | null;
+        balanceStatus: string;
+      };
+      snapshotSaved: boolean;
+    };
+    const statsResponse = await server.app.inject({
+      method: "GET",
+      url: "/storage/stats"
+    });
+    const stats = statsResponse.json() as {
+      pumpPortalWalletStatusSnapshotCount: number;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.dataWallet.balanceSol).toBe(0.05);
+    expect(body.tradingWallet.balanceSol).toBe(0.05);
+    expect(body.tradingWallet.balanceStatus).toBe("ok");
+    expect(body.snapshotSaved).toBe(true);
+    expect(stats.pumpPortalWalletStatusSnapshotCount).toBe(1);
+  });
+
+  it("GET /pumpportal/wallets/funding returns only public instructions", async () => {
+    server = createLightningTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/pumpportal/wallets/funding"
+    });
+    const body = response.json() as {
+      dataWallet: {
+        publicKey: string | null;
+      };
+      tradingWallet: {
+        publicKey: string | null;
+      };
+      warnings: string[];
+      secretFieldsExposed: boolean;
+    };
+    const serialized = JSON.stringify(body).toLowerCase();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.dataWallet.publicKey).toBe(
+      "So11111111111111111111111111111111111111112"
+    );
+    expect(body.tradingWallet.publicKey).toBe(
+      "So11111111111111111111111111111111111111112"
+    );
+    expect(body.warnings.join(" ")).toContain("private keys");
+    expect(body.secretFieldsExposed).toBe(false);
+    expect(serialized).not.toContain("api-key-value");
+  });
+
+  it("GET /execution/lightning/status is live-disabled by default", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/execution/lightning/status"
+    });
+    const body = response.json() as {
+      liveTradingAllowed: boolean;
+      manualArmRequired: boolean;
+      manualArmed: boolean;
+      paperOnly: boolean;
+      tradingDisabled: boolean;
+      reasonCodes: string[];
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.liveTradingAllowed).toBe(false);
+    expect(body.manualArmRequired).toBe(true);
+    expect(body.manualArmed).toBe(false);
+    expect(body.paperOnly).toBe(true);
+    expect(body.tradingDisabled).toBe(true);
+    expect(body.reasonCodes).toContain("LIGHTNING_LIVE_TRADING_DISABLED");
+  });
+
+  it("POST /execution/lightning/plan-buy creates and stores a plan without execution", async () => {
+    server = createLightningTestServer();
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/execution/lightning/plan-buy",
+      payload: {
+        mint: "So11111111111111111111111111111111111111112",
+        amountSol: 0.001,
+        reason: "manual_test"
+      }
+    });
+    const body = response.json() as {
+      request: {
+        action: string;
+        amount: number;
+      };
+      blocked: boolean;
+      blockers: string[];
+      noTransactionSent: boolean;
+      paperOnly: boolean;
+      tradingDisabled: boolean;
+    };
+    const statsResponse = await server.app.inject({
+      method: "GET",
+      url: "/storage/stats"
+    });
+    const stats = statsResponse.json() as {
+      lightningTradePlanCount: number;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.request.action).toBe("buy");
+    expect(body.request.amount).toBe(0.001);
+    expect(body.blocked).toBe(true);
+    expect(body.blockers).toContain("LIGHTNING_LIVE_TRADING_DISABLED");
+    expect(body.noTransactionSent).toBe(true);
+    expect(body.paperOnly).toBe(true);
+    expect(body.tradingDisabled).toBe(true);
+    expect(stats.lightningTradePlanCount).toBe(1);
+  });
+
+  it("POST /execution/lightning/plan-buy blocks amounts above the max", async () => {
+    server = createLightningTestServer();
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/execution/lightning/plan-buy",
+      payload: {
+        mint: "So11111111111111111111111111111111111111112",
+        amountSol: 0.02,
+        reason: "manual_test"
+      }
+    });
+    const body = response.json() as {
+      blockers: string[];
+      safetyChecks: Array<{ code: string; passed: boolean }>;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.blockers).toContain("LIGHTNING_AMOUNT_EXCEEDS_MAX_BUY");
+    expect(body.safetyChecks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "LIGHTNING_ENDPOINT_NOT_CALLED",
+          passed: true
+        })
+      ])
+    );
+  });
+
+  it("POST /execution/lightning/plan-buy blocks hard-rejected candidates", async () => {
+    server = createLightningTestServer();
+    const event = createPumpPortalEvent();
+    server.emitFeedEvent({
+      ...event,
+      candidate: {
+        ...event.candidate,
+        id: {
+          chain: "solana",
+          mint: "So11111111111111111111111111111111111111112"
+        },
+        mint: "So11111111111111111111111111111111111111112"
+      },
+      riskFlags: {
+        ...event.riskFlags,
+        mintAuthorityActive: true
+      }
+    });
+    const hardReject = server.risk.evaluateRisk({
+      mint: "So11111111111111111111111111111111111111112",
+      source: "manual",
+      mintAuthorityActive: true,
+      freezeAuthorityActive: null,
+      metadataMutable: null,
+      holderCount: null,
+      topHolderPct: null,
+      top10HolderPct: null,
+      devHolderPct: null,
+      insiderHolderPct: null,
+      devSoldPct: null,
+      devNetFlowUsd: null,
+      priorLaunchCount: null,
+      priorRugCount: null,
+      buySellRatio: null,
+      netBuyPressure: null,
+      uniqueBuyers: null,
+      uniqueSellers: null,
+      volumeVelocity: null,
+      volumeAcceleration: null,
+      buyerVelocity: null,
+      buyerAcceleration: null,
+      priceVelocity: null,
+      priceAcceleration: null,
+      largestTradeShare: null,
+      sampleCount: null,
+      insufficientMetrics: null,
+      liquidityUsd: null,
+      marketCapUsd: null,
+      fdvUsd: null,
+      estimatedSellSlippagePct: null,
+      sniperPct: null,
+      bundlerPct: null,
+      washTradingSuspected: null,
+      honeypotSuspected: null
+    });
+    server.candidates.updateRisk(
+      "So11111111111111111111111111111111111111112",
+      hardReject
+    );
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/execution/lightning/plan-buy",
+      payload: {
+        mint: "So11111111111111111111111111111111111111112",
+        amountSol: 0.001,
+        reason: "manual_test"
+      }
+    });
+    const body = response.json() as {
+      blockers: string[];
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.blockers).toContain("LIGHTNING_HARD_REJECT_BLOCKED");
+    expect(body.blockers).toContain("LIGHTNING_RISK_BLOCKED");
+  });
+
+  it("POST /execution/lightning/execute hard-refuses without execution", async () => {
+    server = createLightningTestServer();
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/execution/lightning/execute",
+      payload: {
+        mint: "So11111111111111111111111111111111111111112",
+        amountSol: 0.001
+      }
+    });
+    const body = response.json() as {
+      error: string;
+      noTransactionSent: boolean;
+      refusal: {
+        endpointCalled: boolean;
+        executed: boolean;
+        reasonCodes: string[];
+      };
+    };
+
+    expect(response.statusCode).toBe(409);
+    expect(body.error).toBe("LIGHTNING_LIVE_TRADING_DISABLED");
+    expect(body.noTransactionSent).toBe(true);
+    expect(body.refusal.executed).toBe(false);
+    expect(body.refusal.endpointCalled).toBe(false);
+    expect(body.refusal.reasonCodes).toContain("LIGHTNING_ENDPOINT_NOT_CALLED");
   });
 
   it("GET /live/trade-tracking/status is disabled by default", async () => {
@@ -1597,6 +1943,55 @@ function createActualDataTestServer(options: {
             rpcHttpUrl: "http://localhost:8899",
             solanaClient: createDataWalletSolanaClient(
               options.dataWalletBalanceSol
+            )
+          }
+        : {})
+    },
+    startFeed: false,
+    storageDatabasePath: databasePath
+  });
+}
+
+function createLightningTestServer(
+  options: {
+    tradingWalletBalanceSol?: number;
+  } = {}
+): ApiServer {
+  return createApiServer({
+    dataFeed: "pumpportal",
+    lightning: {
+      enabled: true,
+      liveTradingAllowed: false,
+      manualArmRequired: true,
+      manualArmed: false,
+      limits: {
+        maxBuySol: 0.005,
+        maxDailySol: 0.02,
+        maxOpenPositions: 1,
+        maxSlippagePct: 10,
+        priorityFeeSol: 0.00005,
+        pool: "auto",
+        skipPreflight: false,
+        jitoOnly: false
+      }
+    },
+    logLevel: false,
+    pumpPortalWallets: {
+      dataWallet: {
+        role: "data",
+        apiKeyConfigured: true,
+        publicKey: "So11111111111111111111111111111111111111112"
+      },
+      tradingWallet: {
+        role: "trading",
+        apiKeyConfigured: true,
+        publicKey: "So11111111111111111111111111111111111111112"
+      },
+      ...(options.tradingWalletBalanceSol !== undefined
+        ? {
+            rpcHttpUrl: "http://localhost:8899",
+            solanaClient: createDataWalletSolanaClient(
+              options.tradingWalletBalanceSol
             )
           }
         : {})

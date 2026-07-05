@@ -11,6 +11,16 @@ import {
 import { createTokenIdentityConfig } from "./token-identity-service";
 
 const config = loadApiConfig();
+const dataApiKey = config.PUMPPORTAL_DATA_API_KEY ?? config.PUMPPORTAL_API_KEY;
+const samePumpPortalWallet =
+  config.PUMPPORTAL_USE_SAME_WALLET_FOR_DATA_AND_TRADING;
+const tradingApiKey = samePumpPortalWallet
+  ? (config.PUMPPORTAL_TRADING_API_KEY ?? dataApiKey)
+  : config.PUMPPORTAL_TRADING_API_KEY;
+const tradingWalletPublicKey = samePumpPortalWallet
+  ? (config.PUMPPORTAL_TRADING_WALLET_PUBLIC_KEY ??
+    config.PUMPPORTAL_DATA_WALLET_PUBLIC_KEY)
+  : config.PUMPPORTAL_TRADING_WALLET_PUBLIC_KEY;
 const liveTradeTrackingEnabled = config.LIVE_TRADE_TRACKING_ENABLED;
 const effectiveTokenTradeMaxSubscribedTokens = liveTradeTrackingEnabled
   ? Math.min(
@@ -90,7 +100,7 @@ const options: ApiServerOptions = {
   paperAutoOrder: config.PAPER_AUTO_ORDER,
   actualData: createActualDataConfig({
     acknowledgedMetered: effectiveActualDataAcknowledged,
-    apiKeyConfigured: config.PUMPPORTAL_API_KEY !== undefined,
+    apiKeyConfigured: dataApiKey !== undefined,
     autoSubscribe: config.PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE,
     autoSubscribeOnMigration:
       config.PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE_ON_MIGRATION,
@@ -136,7 +146,7 @@ const options: ApiServerOptions = {
     onNewToken: config.LIVE_CARD_ENRICHMENT_ON_NEW_TOKEN
   },
   pumpPortalDataWallet: {
-    apiKeyConfigured: config.PUMPPORTAL_API_KEY !== undefined,
+    apiKeyConfigured: dataApiKey !== undefined,
     balanceRefreshMs: config.PUMPPORTAL_DATA_WALLET_BALANCE_REFRESH_MS,
     commitment: config.SOLANA_RPC_COMMITMENT,
     criticalBalanceSol: config.PUMPPORTAL_DATA_WALLET_CRITICAL_BALANCE_SOL,
@@ -147,6 +157,44 @@ const options: ApiServerOptions = {
     rpcHttpUrl: config.SOLANA_RPC_HTTP,
     targetBalanceSol: config.PUMPPORTAL_DATA_WALLET_TARGET_BALANCE_SOL,
     warnBalanceSol: config.PUMPPORTAL_DATA_WALLET_WARN_BALANCE_SOL
+  },
+  pumpPortalWallets: {
+    balanceRefreshMs: config.PUMPPORTAL_WALLET_BALANCE_REFRESH_MS,
+    commitment: config.SOLANA_RPC_COMMITMENT,
+    criticalBalanceSol: config.PUMPPORTAL_WALLET_MIN_BALANCE_SOL,
+    dataWallet: {
+      role: "data",
+      apiKeyConfigured: dataApiKey !== undefined,
+      publicKey: config.PUMPPORTAL_DATA_WALLET_PUBLIC_KEY
+    },
+    minBalanceSol: config.PUMPPORTAL_WALLET_MIN_BALANCE_SOL,
+    requestTimeoutMs: config.CHAIN_VERIFIER_REQUEST_TIMEOUT_MS,
+    rpcHttpUrl: config.SOLANA_RPC_HTTP,
+    sameWalletAllowed: samePumpPortalWallet,
+    targetBalanceSol: config.PUMPPORTAL_WALLET_TARGET_BALANCE_SOL,
+    tradingWallet: {
+      role: "trading",
+      apiKeyConfigured: tradingApiKey !== undefined,
+      publicKey: tradingWalletPublicKey
+    },
+    warnBalanceSol: config.PUMPPORTAL_WALLET_WARN_BALANCE_SOL
+  },
+  lightning: {
+    enabled: config.PUMPPORTAL_LIGHTNING_READINESS_ENABLED,
+    liveTradingAllowed: config.PUMPPORTAL_LIGHTNING_ALLOW_LIVE_TRADING,
+    manualArmRequired: config.PUMPPORTAL_LIGHTNING_REQUIRE_MANUAL_ARM,
+    manualArmed: config.PUMPPORTAL_LIGHTNING_MANUAL_ARMED,
+    baseUrl: config.PUMPPORTAL_LIGHTNING_BASE_URL,
+    limits: {
+      maxBuySol: config.PUMPPORTAL_LIGHTNING_MAX_BUY_SOL,
+      maxDailySol: config.PUMPPORTAL_LIGHTNING_MAX_DAILY_SOL,
+      maxOpenPositions: config.PUMPPORTAL_LIGHTNING_MAX_OPEN_POSITIONS,
+      maxSlippagePct: config.PUMPPORTAL_LIGHTNING_MAX_SLIPPAGE_PCT,
+      priorityFeeSol: config.PUMPPORTAL_LIGHTNING_PRIORITY_FEE_SOL,
+      pool: config.PUMPPORTAL_LIGHTNING_POOL,
+      skipPreflight: config.PUMPPORTAL_LIGHTNING_SKIP_PREFLIGHT,
+      jitoOnly: config.PUMPPORTAL_LIGHTNING_JITO_ONLY
+    }
   },
   allowMockData: config.ALLOW_MOCK_DATA,
   failIfNoRealData: config.FAIL_IF_NO_REAL_DATA,
@@ -212,8 +260,8 @@ if (config.SOLANA_RPC_WS !== undefined && options.chainEvents) {
   options.chainEvents.rpcWsUrl = config.SOLANA_RPC_WS;
 }
 
-if (config.PUMPPORTAL_API_KEY !== undefined) {
-  pumpPortal.apiKey = config.PUMPPORTAL_API_KEY;
+if (dataApiKey !== undefined) {
+  pumpPortal.apiKey = dataApiKey;
 }
 
 if (config.PUMPPORTAL_WS_URL !== undefined) {
@@ -248,6 +296,8 @@ server.app.log.info(
     chainVerifier: server.chainVerifier.getStatus(),
     actualData: server.actualData.getStatus(),
     dataWallet: server.pumpPortalDataWallet.getStatus(),
+    pumpPortalWallets: server.pumpPortalWallets.getStatus(),
+    lightningReadiness: server.lightningReadiness.getStatus(),
     liveTradeTracking: config.LIVE_TRADE_TRACKING_ENABLED,
     liveCardEnrichment: config.LIVE_CARD_ENRICHMENT_ENABLED,
     tokenIdentity: server.tokenIdentity.getStatus(),

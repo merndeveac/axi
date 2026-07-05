@@ -10,9 +10,10 @@ import {
 } from "./pumpportal-data-wallet-service";
 
 const config = loadApiConfig();
+const dataApiKey = config.PUMPPORTAL_DATA_API_KEY ?? config.PUMPPORTAL_API_KEY;
 const pumpPortalDataWallet = createPumpPortalDataWalletService({
   config: createPumpPortalDataWalletConfig({
-    apiKeyConfigured: config.PUMPPORTAL_API_KEY !== undefined,
+    apiKeyConfigured: dataApiKey !== undefined,
     balanceRefreshMs: config.PUMPPORTAL_DATA_WALLET_BALANCE_REFRESH_MS,
     commitment: config.SOLANA_RPC_COMMITMENT,
     criticalBalanceSol: config.PUMPPORTAL_DATA_WALLET_CRITICAL_BALANCE_SOL,
@@ -30,7 +31,7 @@ await pumpPortalDataWallet.refreshBalance({ force: true });
 const actualData = createActualDataService({
   config: createActualDataConfig({
     acknowledgedMetered: config.PUMPPORTAL_TOKEN_TRADES_ACK_METERED,
-    apiKeyConfigured: config.PUMPPORTAL_API_KEY !== undefined,
+    apiKeyConfigured: dataApiKey !== undefined,
     autoSubscribe: config.PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE,
     autoSubscribeOnMigration:
       config.PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE_ON_MIGRATION,

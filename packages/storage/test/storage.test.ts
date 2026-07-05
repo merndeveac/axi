@@ -27,9 +27,13 @@ import {
   getMarketObservation,
   getLatestRiskSnapshot,
   getLatestWatchPlan,
+  getLightningTradePlan,
   listLiveFeedEvents,
   listLiveFeedEventsByMint,
   listLiveFeedEventsBySession,
+  listLightningTradePlans,
+  listLightningTradePlansByMint,
+  listPumpPortalWalletStatusSnapshots,
   getStorageStats,
   initStorage,
   listCandidateDecisionsForReplay,
@@ -73,10 +77,12 @@ import {
   saveChainTransactionEvent,
   saveFeedEvent,
   saveLiveFeedEvent,
+  saveLightningTradePlan,
   saveMarketObservation,
   saveActualDataSession,
   saveActualDataSubscription,
   savePaperOrder,
+  savePumpPortalWalletStatusSnapshot,
   savePumpPortalTokenTradeEvent,
   saveRiskSnapshot,
   saveSignal,
@@ -118,6 +124,8 @@ describe("@axi/storage", () => {
     expect(stats.marketObservationCount).toBe(0);
     expect(stats.watchPlanCount).toBe(0);
     expect(stats.watchActionCount).toBe(0);
+    expect(stats.lightningTradePlanCount).toBe(0);
+    expect(stats.pumpPortalWalletStatusSnapshotCount).toBe(0);
     expect(stats.riskSnapshotCount).toBe(0);
     expect(stats.candidateDecisionCount).toBe(0);
   });
@@ -522,6 +530,87 @@ describe("@axi/storage", () => {
     expect(listed[0]?.mint).toBe(mint);
   });
 
+  it("lightning trade plans can be saved, listed, and fetched by plan id", () => {
+    initStorage({ databasePath });
+    const saved = saveLightningTradePlan({
+      planId: "plan-1",
+      mint,
+      action: "buy",
+      amountSol: 0.001,
+      mode: "dry_run",
+      blocked: false,
+      blockers: [],
+      warnings: ["LIGHTNING_LIVE_TRADING_DISABLED"],
+      request: {
+        action: "buy",
+        mint,
+        amount: 0.001,
+        apiKey: "api-key-value"
+      },
+      payload: {
+        privateKey: "private-key-value",
+        note: "dry run"
+      },
+      createdAt: "2026-01-01T00:00:09.000Z"
+    });
+    saveLightningTradePlan({
+      planId: "plan-2",
+      mint: "So11111111111111111111111111111111111111112",
+      action: "buy",
+      amountSol: 0.002,
+      mode: "dry_run",
+      blocked: true,
+      blockers: ["LIGHTNING_AMOUNT_EXCEEDS_MAX_BUY"],
+      warnings: [],
+      request: {},
+      payload: {},
+      createdAt: "2026-01-01T00:00:10.000Z"
+    });
+
+    const listed = listLightningTradePlans(10);
+    const byMint = listLightningTradePlansByMint(mint, 10);
+    const fetched = getLightningTradePlan("plan-1");
+    const serialized = JSON.stringify(fetched).toLowerCase();
+
+    expect(saved.id).toBeGreaterThan(0);
+    expect(listed).toHaveLength(2);
+    expect(byMint).toHaveLength(1);
+    expect(fetched?.planId).toBe("plan-1");
+    expect(serialized).not.toContain("api-key-value");
+    expect(serialized).not.toContain("private-key-value");
+    expect(serialized).toContain("[redacted]");
+  });
+
+  it("pumpportal wallet status snapshots can be saved and listed without secrets", () => {
+    initStorage({ databasePath });
+    const saved = savePumpPortalWalletStatusSnapshot({
+      dataWalletPublicKey: "So11111111111111111111111111111111111111112",
+      tradingWalletPublicKey: "11111111111111111111111111111111",
+      sameWallet: false,
+      dataWalletBalanceSol: 0.05,
+      tradingWalletBalanceSol: 0.03,
+      dataWalletStatus: "ok",
+      tradingWalletStatus: "low",
+      reasonCodes: ["LIGHTNING_LIVE_TRADING_DISABLED"],
+      payload: {
+        apiKey: "api-key-value",
+        privateKey: "private-key-value",
+        publicOnly: true
+      },
+      createdAt: "2026-01-01T00:00:11.000Z"
+    });
+
+    const listed = listPumpPortalWalletStatusSnapshots(10);
+    const serialized = JSON.stringify(listed).toLowerCase();
+
+    expect(saved.id).toBeGreaterThan(0);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.sameWallet).toBe(false);
+    expect(listed[0]?.dataWalletBalanceSol).toBe(0.05);
+    expect(serialized).not.toContain("api-key-value");
+    expect(serialized).not.toContain("private-key-value");
+  });
+
   it("storage stats return counts", () => {
     initStorage({ databasePath });
     saveChainVerification(createChainVerification());
@@ -535,6 +624,29 @@ describe("@axi/storage", () => {
     saveTokenMetadataFetch(createTokenMetadataFetch());
     saveWatchPlan(createWatchPlanFixture());
     saveWatchAction(createWatchActionFixture());
+    saveLightningTradePlan({
+      planId: "stats-plan",
+      mint,
+      action: "buy",
+      amountSol: 0.001,
+      mode: "dry_run",
+      blocked: false,
+      blockers: [],
+      warnings: [],
+      request: {},
+      payload: {}
+    });
+    savePumpPortalWalletStatusSnapshot({
+      dataWalletPublicKey: "So11111111111111111111111111111111111111112",
+      tradingWalletPublicKey: "11111111111111111111111111111111",
+      sameWallet: false,
+      dataWalletBalanceSol: 0.05,
+      tradingWalletBalanceSol: 0.03,
+      dataWalletStatus: "ok",
+      tradingWalletStatus: "low",
+      reasonCodes: ["LIGHTNING_LIVE_TRADING_DISABLED"],
+      payload: {}
+    });
     saveFeedEvent(createFeedEvent());
     saveLiveFeedEvent(createLiveFeedEvent());
     saveRiskSnapshot(createRiskSnapshot());
@@ -579,6 +691,8 @@ describe("@axi/storage", () => {
     expect(stats.tokenMetadataFetchCount).toBe(1);
     expect(stats.watchPlanCount).toBe(1);
     expect(stats.watchActionCount).toBe(1);
+    expect(stats.lightningTradePlanCount).toBe(1);
+    expect(stats.pumpPortalWalletStatusSnapshotCount).toBe(1);
     expect(stats.riskSnapshotCount).toBe(1);
     expect(stats.candidateDecisionCount).toBe(1);
     expect(stats.paperOrderCount).toBe(1);

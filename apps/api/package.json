@@ -20,6 +20,9 @@
     "actual-data:status": "tsx --conditions=development src/actual-data-status.ts",
     "actual-data:probe": "tsx --conditions=development src/actual-data-probe.ts",
     "pumpportal:data-wallet:status": "tsx --conditions=development src/pumpportal-data-wallet-status.ts",
+    "pumpportal:wallets:status": "tsx --conditions=development src/pumpportal-wallets-status.ts",
+    "lightning:status": "tsx --conditions=development src/lightning-status.ts",
+    "lightning:plan-buy": "tsx --conditions=development src/lightning-plan-buy.ts",
     "tokens:resolve": "tsx --conditions=development src/tokens-resolve.ts",
     "tokens:normalize": "tsx --conditions=development src/tokens-normalize.ts",
     "clean": "rm -rf dist"
@@ -31,6 +34,7 @@
     "@axi/execution": "workspace:*",
     "@axi/market-data": "workspace:*",
     "@axi/metrics": "workspace:*",
+    "@axi/pumpportal-lightning": "workspace:*",
     "@axi/risk": "workspace:*",
     "@axi/scoring": "workspace:*",
     "@axi/shared": "workspace:*",

@@ -22,6 +22,7 @@ import {
 } from "@axi/metrics";
 import { createRiskEngine, type RiskEngine, type RiskInput } from "@axi/risk";
 import { scoreCandidate } from "@axi/scoring";
+import type { LightningTradePlan } from "@axi/pumpportal-lightning";
 import {
   BotModeSchema,
   type BotMode,
@@ -53,6 +54,7 @@ import {
   initStorage,
   listChainVerifications,
   saveLiveFeedEvent,
+  saveLightningTradePlan,
   listPaperOrders,
   listPaperPositions,
   listRecentSignals,
@@ -60,6 +62,7 @@ import {
   saveChainVerification,
   saveFeedEvent,
   savePaperOrder,
+  savePumpPortalWalletStatusSnapshot,
   saveRiskSnapshot,
   saveSignal,
   listActualDataSubscriptions,
@@ -121,6 +124,19 @@ import {
   type PumpPortalDataWalletService,
   type PumpPortalDataWalletServiceOptions
 } from "./pumpportal-data-wallet-service";
+import {
+  createPumpPortalWalletsConfig,
+  createPumpPortalWalletsService,
+  type PumpPortalWalletsConfig,
+  type PumpPortalWalletsService,
+  type PumpPortalWalletsServiceOptions
+} from "./pumpportal-wallets-service";
+import {
+  createLightningReadinessConfig,
+  createLightningReadinessService,
+  type LightningReadinessConfig,
+  type LightningReadinessService
+} from "./lightning-readiness-service";
 
 const logLevelSchema = z.enum([
   "fatal",
@@ -360,10 +376,86 @@ export const apiConfigSchema = z.object({
     (value) => (value === "" ? undefined : value),
     z.string().min(1).optional()
   ),
+  PUMPPORTAL_DATA_API_KEY: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional()
+  ),
   PUMPPORTAL_DATA_WALLET_PUBLIC_KEY: z.preprocess(
     (value) => (value === "" ? undefined : value),
     z.string().min(1).optional()
   ),
+  PUMPPORTAL_TRADING_API_KEY: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional()
+  ),
+  PUMPPORTAL_TRADING_WALLET_PUBLIC_KEY: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional()
+  ),
+  PUMPPORTAL_USE_SAME_WALLET_FOR_DATA_AND_TRADING: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  PUMPPORTAL_LIGHTNING_READINESS_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  PUMPPORTAL_LIGHTNING_ALLOW_LIVE_TRADING: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  PUMPPORTAL_LIGHTNING_REQUIRE_MANUAL_ARM: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  PUMPPORTAL_LIGHTNING_MANUAL_ARMED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  PUMPPORTAL_LIGHTNING_BASE_URL: z
+    .string()
+    .url()
+    .default("https://pumpportal.fun/api/trade"),
+  PUMPPORTAL_LIGHTNING_MAX_BUY_SOL: z.coerce
+    .number()
+    .positive()
+    .default(0.005),
+  PUMPPORTAL_LIGHTNING_MAX_DAILY_SOL: z.coerce
+    .number()
+    .positive()
+    .default(0.02),
+  PUMPPORTAL_LIGHTNING_MAX_OPEN_POSITIONS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(1),
+  PUMPPORTAL_LIGHTNING_MAX_SLIPPAGE_PCT: z.coerce
+    .number()
+    .positive()
+    .default(10),
+  PUMPPORTAL_LIGHTNING_PRIORITY_FEE_SOL: z.coerce
+    .number()
+    .nonnegative()
+    .default(0.00005),
+  PUMPPORTAL_LIGHTNING_POOL: z.string().min(1).default("auto"),
+  PUMPPORTAL_LIGHTNING_SKIP_PREFLIGHT: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  PUMPPORTAL_LIGHTNING_JITO_ONLY: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  PUMPPORTAL_WALLET_MIN_BALANCE_SOL: z.coerce
+    .number()
+    .nonnegative()
+    .default(0.02),
+  PUMPPORTAL_WALLET_WARN_BALANCE_SOL: z.coerce
+    .number()
+    .nonnegative()
+    .default(0.03),
+  PUMPPORTAL_WALLET_TARGET_BALANCE_SOL: z.coerce
+    .number()
+    .nonnegative()
+    .default(0.05),
+  PUMPPORTAL_WALLET_BALANCE_REFRESH_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(15000),
   PUMPPORTAL_DATA_WALLET_MIN_BALANCE_SOL: z.coerce
     .number()
     .nonnegative()
@@ -604,6 +696,9 @@ export type ApiServerOptions = {
   liveCardEnrichment?: Partial<LiveCardEnrichmentConfig>;
   pumpPortalDataWallet?: Partial<PumpPortalDataWalletConfig> &
     Pick<PumpPortalDataWalletServiceOptions, "solanaClient">;
+  pumpPortalWallets?: Partial<PumpPortalWalletsConfig> &
+    Pick<PumpPortalWalletsServiceOptions, "solanaClient">;
+  lightning?: Partial<LightningReadinessConfig>;
   realDataRequired?: boolean;
   signalIntervalMs?: number;
   startFeed?: boolean;
@@ -629,6 +724,8 @@ export type ApiServer = {
   watchOrchestration: WatchOrchestrationService;
   actualData: ActualDataService;
   pumpPortalDataWallet: PumpPortalDataWalletService;
+  pumpPortalWallets: PumpPortalWalletsService;
+  lightningReadiness: LightningReadinessService;
   liveTokens: LiveTokenService;
   tokenIdentity: TokenIdentityService;
 };
@@ -676,6 +773,11 @@ const actualDataSubscribeBodySchema = z.object({
 const liveTradeTrackingBodySchema = z.object({
   mint: z.string().min(1),
   reason: z.string().min(1).default("manual_live_card")
+});
+const lightningPlanBodySchema = z.object({
+  mint: z.string().min(1),
+  amountSol: z.coerce.number().positive(),
+  reason: z.string().min(1).default("manual_test")
 });
 const tokenResolveBodySchema = z.object({
   mint: z.string().min(1)
@@ -739,6 +841,13 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       ? { solanaClient: pumpPortalDataWalletOptions.solanaClient }
       : {})
   });
+  const pumpPortalWalletsOptions = options.pumpPortalWallets ?? {};
+  const pumpPortalWallets = createPumpPortalWalletsService({
+    config: createPumpPortalWalletsConfig(pumpPortalWalletsOptions),
+    ...(pumpPortalWalletsOptions.solanaClient
+      ? { solanaClient: pumpPortalWalletsOptions.solanaClient }
+      : {})
+  });
   const actualData = createActualDataService({
     config: options.actualData ?? createActualDataConfig(),
     dataWalletReadiness: () => pumpPortalDataWallet.getActualDataReadiness(),
@@ -790,6 +899,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   });
   const signals = new Map<string, OverlaySignal>();
   const riskSnapshots = new Map<string, RiskSnapshot>();
+  const lightningReadiness = createLightningReadinessService({
+    config: createLightningReadinessConfig(options.lightning),
+    wallets: pumpPortalWallets,
+    getCandidate: (mint) => candidateEngine.getCandidate(mint),
+    getRiskSnapshot: (mint) => riskSnapshots.get(mint)
+  });
   const clients = new Set<WebSocket>();
   const wss = new WebSocketServer({ noServer: true });
   const maxSignalCacheSize = 100;
@@ -816,6 +931,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const feedStatus = getFeedStatus();
     const liveStatus = liveTokens.getStatus();
     const dataWalletStatus = await pumpPortalDataWallet.refreshBalance();
+    const pumpPortalWalletsStatus = await pumpPortalWallets.refreshBalances();
 
     return {
       chainEvents: chainEventsStatus,
@@ -830,6 +946,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       actualDataSessionCount: stats.actualDataSessionCount,
       actualDataSubscriptionCount: stats.actualDataSubscriptionCount,
       dataWallet: dataWalletStatus,
+      pumpPortalWallets: pumpPortalWalletsStatus,
+      lightningReadiness: lightningReadiness.getStatus(),
       liveTradeTracking: getLiveTradeTrackingStatus(),
       liveCardEnrichment: getLiveCardEnrichmentStatus(),
       dataFeedMode,
@@ -885,6 +1003,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       candidateCount: candidateEngine.getAllCandidates().length,
       paperAutoOrder,
       paperOnly: true,
+      tradingDisabled: true,
       solUsdConfigured: marketStatus.solUsdConfigured,
       trackedTokenCount: metricsEngine.getAllMetrics().length,
       uptimeSeconds: Math.round(process.uptime())
@@ -1106,6 +1225,77 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   app.get("/pumpportal/data-wallet/funding", async () =>
     pumpPortalDataWallet.getFundingInstructions()
   );
+
+  app.get("/pumpportal/wallets/status", async () =>
+    pumpPortalWallets.refreshBalances()
+  );
+
+  app.post("/pumpportal/wallets/refresh", async () => {
+    const status = await pumpPortalWallets.refreshBalances({ force: true });
+    const snapshot = savePumpPortalWalletStatusSnapshot(
+      pumpPortalWallets.toStorageSnapshot()
+    );
+
+    return {
+      ...status,
+      snapshotSaved: true,
+      snapshotId: snapshot.id
+    };
+  });
+
+  app.get("/pumpportal/wallets/funding", async () =>
+    pumpPortalWallets.getFundingInstructions()
+  );
+
+  app.get("/execution/lightning/status", async () => {
+    await pumpPortalWallets.refreshBalances();
+    return lightningReadiness.getStatus();
+  });
+
+  app.post("/execution/lightning/plan-buy", async (request) => {
+    const body = lightningPlanBodySchema.parse(request.body);
+    await pumpPortalWallets.refreshBalances();
+    const plan = lightningReadiness.createBuyPlan(body);
+    saveLightningPlan(plan);
+
+    return {
+      ...plan,
+      reason: body.reason,
+      noTransactionSent: true,
+      paperOnly: true,
+      tradingDisabled: true
+    };
+  });
+
+  app.post("/execution/lightning/plan-sell", async (request) => {
+    const body = lightningPlanBodySchema.parse(request.body);
+    await pumpPortalWallets.refreshBalances();
+    const plan = lightningReadiness.createSellPlan(body);
+    saveLightningPlan(plan);
+
+    return {
+      ...plan,
+      reason: body.reason,
+      noTransactionSent: true,
+      paperOnly: true,
+      tradingDisabled: true
+    };
+  });
+
+  app.post("/execution/lightning/execute", async (_request, reply) => {
+    const refusal = await lightningReadiness.refuseExecution();
+
+    return reply.code(409).send({
+      error: "LIGHTNING_LIVE_TRADING_DISABLED",
+      message:
+        "PumpPortal Lightning execution is disabled. This build only creates dry-run plans.",
+      refusal,
+      readiness: lightningReadiness.getStatus(),
+      noTransactionSent: true,
+      paperOnly: true,
+      tradingDisabled: true
+    });
+  });
 
   app.get("/live/trade-tracking/status", async () =>
     {
@@ -3004,6 +3194,27 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     }
   }
 
+  function saveLightningPlan(plan: LightningTradePlan): void {
+    saveLightningTradePlan({
+      planId: plan.id,
+      mint: plan.mint,
+      action: plan.request.action,
+      amountSol: plan.amountSol,
+      mode: plan.mode,
+      blocked: plan.blocked,
+      blockers: plan.blockers,
+      warnings: plan.warnings,
+      request: plan.request,
+      payload: {
+        ...plan,
+        noTransactionSent: true,
+        paperOnly: true,
+        tradingDisabled: true
+      },
+      createdAt: plan.createdAt
+    });
+  }
+
   if (options.startFeed) {
     startFeed();
   }
@@ -3019,6 +3230,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     getSignals: () => Array.from(signals.values()),
     metrics: metricsEngine,
     pumpPortalDataWallet,
+    pumpPortalWallets,
+    lightningReadiness,
     risk: riskEngine,
     chainVerifier,
     liveTokens,

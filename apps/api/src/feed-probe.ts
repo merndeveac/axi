@@ -52,14 +52,16 @@ function createProbeProvider(args: ProbeArgs): TokenFeedProvider {
   const providerName = args.provider ?? config.DATA_FEED;
 
   if (providerName === "pumpportal") {
+    const configuredApiKey =
+      config.PUMPPORTAL_DATA_API_KEY ?? config.PUMPPORTAL_API_KEY;
     const options: PumpPortalFeedProviderOptions = {
       maxEvents: args.limit,
       subscribeMigration: args.migration ?? config.PUMPPORTAL_SUBSCRIBE_MIGRATION,
       subscribeNewToken: args.newToken ?? config.PUMPPORTAL_SUBSCRIBE_NEW_TOKEN
     };
 
-    if (config.PUMPPORTAL_API_KEY !== undefined) {
-      options.apiKey = config.PUMPPORTAL_API_KEY;
+    if (configuredApiKey !== undefined) {
+      options.apiKey = configuredApiKey;
     }
 
     if (config.PUMPPORTAL_WS_URL !== undefined) {

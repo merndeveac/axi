@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type FormEvent,
+  type ReactNode
+} from "react";
 import type {
   LiveTokenCardViewModel,
   OverlaySignal,
@@ -48,6 +54,8 @@ type StorageStats = {
   tokenMetadataFetchCount: number;
   watchPlanCount: number;
   watchActionCount: number;
+  lightningTradePlanCount: number;
+  pumpPortalWalletStatusSnapshotCount: number;
   riskSnapshotCount: number;
   candidateDecisionCount: number;
   paperOrderCount: number;
@@ -144,6 +152,108 @@ type PumpPortalDataWalletStatus = {
   paperOnly: true;
   dataOnly: true;
   tradingDisabled: true;
+};
+
+type PumpPortalWalletSummary = {
+  role: "data" | "trading";
+  configured: boolean;
+  apiKeyConfigured: boolean;
+  publicKeyConfigured: boolean;
+  publicKey: string | null;
+  shortPublicKey: string | null;
+  publicKeyValid: boolean;
+  balanceSol: number | null;
+  balanceLamports: number | null;
+  balanceStatus: string;
+  minBalanceSol: number;
+  warnBalanceSol: number;
+  criticalBalanceSol: number;
+  targetBalanceSol: number;
+  lastBalanceCheckAt: string | null;
+  lastError: string | null;
+  reasonCodes: string[];
+};
+
+type PumpPortalWalletsStatus = {
+  dataWallet: PumpPortalWalletSummary;
+  tradingWallet: PumpPortalWalletSummary;
+  sameWallet: boolean;
+  sameWalletWarning: string | null;
+  solanaRpcConfigured: boolean;
+  paperOnly: true;
+  tradingDisabled: true;
+  secretFieldsExposed: false;
+  reasonCodes: string[];
+};
+
+type LightningStatus = {
+  readiness: {
+    enabled: boolean;
+    liveTradingAllowed: boolean;
+    manualArmRequired: boolean;
+    manualArmed: boolean;
+    dataWalletReady: boolean;
+    tradingWalletReady: boolean;
+    apiKeyConfigured: boolean;
+    publicKeyConfigured: boolean;
+    balanceSol: number | null;
+    reasonCodes: string[];
+  };
+  limits: {
+    maxBuySol: number;
+    maxDailySol: number;
+    maxOpenPositions: number;
+    maxSlippagePct: number;
+    priorityFeeSol: number;
+    pool: string;
+    skipPreflight: boolean;
+    jitoOnly: boolean;
+  };
+  liveTradingAllowed: boolean;
+  manualArmRequired: boolean;
+  manualArmed: boolean;
+  maxBuySol: number;
+  maxDailySol: number;
+  maxOpenPositions: number;
+  pool: string;
+  slippage: number;
+  priorityFee: number;
+  reasonCodes: string[];
+  paperOnly: true;
+  tradingDisabled: true;
+};
+
+type LightningTradePlan = {
+  id: string;
+  mode: string;
+  request: {
+    action: string;
+    mint: string;
+    amount: number;
+    denominatedInSol: boolean;
+    slippage: number;
+    priorityFee: number;
+    pool: string;
+    skipPreflight: boolean;
+    jitoOnly: boolean;
+  };
+  mint: string;
+  amountSol: number;
+  maxBuySol: number;
+  estimatedRisk: string;
+  safetyChecks: Array<{
+    code: string;
+    passed: boolean;
+    severity: string;
+    message: string;
+  }>;
+  blocked: boolean;
+  blockers: string[];
+  warnings: string[];
+  createdAt: string;
+  noTransactionSent?: boolean;
+  paperOnly?: true;
+  tradingDisabled?: true;
 };
 
 type LiveTradeTrackingStatus = {
@@ -342,6 +452,10 @@ export function App() {
     useState<ActualDataStatus | null>(null);
   const [dataWalletStatus, setDataWalletStatus] =
     useState<PumpPortalDataWalletStatus | null>(null);
+  const [pumpPortalWalletsStatus, setPumpPortalWalletsStatus] =
+    useState<PumpPortalWalletsStatus | null>(null);
+  const [lightningStatus, setLightningStatus] =
+    useState<LightningStatus | null>(null);
   const [liveTradeTrackingStatus, setLiveTradeTrackingStatus] =
     useState<LiveTradeTrackingStatus | null>(null);
   const [liveCardEnrichmentStatus, setLiveCardEnrichmentStatus] =
@@ -450,6 +564,8 @@ export function App() {
           nextRiskRows,
           nextActualDataStatus,
           nextDataWalletStatus,
+          nextPumpPortalWalletsStatus,
+          nextLightningStatus,
           nextLiveTradeTrackingStatus,
           nextActualTrades,
           nextLiveCardEnrichmentStatus,
@@ -474,6 +590,8 @@ export function App() {
           fetchJson<PumpPortalDataWalletStatus>(
             "/pumpportal/data-wallet/status"
           ),
+          fetchJson<PumpPortalWalletsStatus>("/pumpportal/wallets/status"),
+          fetchJson<LightningStatus>("/execution/lightning/status"),
           fetchJson<LiveTradeTrackingStatus>("/live/trade-tracking/status"),
           fetchJson<PumpPortalTradeRow[]>("/actual-data/trades?limit=10"),
           fetchJson<LiveCardEnrichmentStatus>("/enrichment/status"),
@@ -499,6 +617,8 @@ export function App() {
           setRiskRows(nextRiskRows);
           setActualDataStatus(nextActualDataStatus);
           setDataWalletStatus(nextDataWalletStatus);
+          setPumpPortalWalletsStatus(nextPumpPortalWalletsStatus);
+          setLightningStatus(nextLightningStatus);
           setLiveTradeTrackingStatus(nextLiveTradeTrackingStatus);
           setActualTrades(nextActualTrades);
           setLiveCardEnrichmentStatus(nextLiveCardEnrichmentStatus);
@@ -721,12 +841,14 @@ export function App() {
           actualTrades={actualTrades}
           chainStatus={chainStatus}
           dataWalletStatus={dataWalletStatus}
+          lightningStatus={lightningStatus}
           feedStatus={feedStatus}
           liveCardEnrichmentStatus={liveCardEnrichmentStatus}
           liveStatus={liveStatus}
           liveTradeTrackingStatus={liveTradeTrackingStatus}
           marketObservations={marketObservations}
           marketStatus={marketStatus}
+          pumpPortalWalletsStatus={pumpPortalWalletsStatus}
           tokenIdentities={tokenIdentities}
           tokenIdentityStatus={tokenIdentityStatus}
         />
@@ -1345,12 +1467,14 @@ function DataTab({
   actualTrades,
   chainStatus,
   dataWalletStatus,
+  lightningStatus,
   feedStatus,
   liveCardEnrichmentStatus,
   liveStatus,
   liveTradeTrackingStatus,
   marketObservations,
   marketStatus,
+  pumpPortalWalletsStatus,
   tokenIdentities,
   tokenIdentityStatus
 }: {
@@ -1358,12 +1482,14 @@ function DataTab({
   actualTrades: PumpPortalTradeRow[];
   chainStatus: ChainStatus | null;
   dataWalletStatus: PumpPortalDataWalletStatus | null;
+  lightningStatus: LightningStatus | null;
   feedStatus: FeedStatus | null;
   liveCardEnrichmentStatus: LiveCardEnrichmentStatus | null;
   liveStatus: LiveStatus | null;
   liveTradeTrackingStatus: LiveTradeTrackingStatus | null;
   marketObservations: MarketObservationRow[];
   marketStatus: MarketStatus | null;
+  pumpPortalWalletsStatus: PumpPortalWalletsStatus | null;
   tokenIdentities: TokenIdentityRow[];
   tokenIdentityStatus: TokenIdentityStatus | null;
 }) {
@@ -1444,6 +1570,10 @@ function DataTab({
         actualDataStatus={actualDataStatus}
         dataWalletStatus={dataWalletStatus}
         liveTradeTrackingStatus={liveTradeTrackingStatus}
+      />
+      <PumpPortalWalletsLightningPanel
+        lightningStatus={lightningStatus}
+        pumpPortalWalletsStatus={pumpPortalWalletsStatus}
       />
       <ReasonBlock
         title="Trade Tracking Reasons"
@@ -1634,6 +1764,240 @@ function DataWalletPanel({
         title="Data Wallet Reasons"
         codes={dataWalletStatus?.reasonCodes}
       />
+    </div>
+  );
+}
+
+function PumpPortalWalletsLightningPanel({
+  lightningStatus,
+  pumpPortalWalletsStatus
+}: {
+  lightningStatus: LightningStatus | null;
+  pumpPortalWalletsStatus: PumpPortalWalletsStatus | null;
+}) {
+  const [mint, setMint] = useState("");
+  const [amountSol, setAmountSol] = useState("0.001");
+  const [plan, setPlan] = useState<LightningTradePlan | null>(null);
+  const [planError, setPlanError] = useState<string | null>(null);
+
+  const submitPlan = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setPlanError(null);
+
+    try {
+      const nextPlan = await postJson<LightningTradePlan>(
+        "/execution/lightning/plan-buy",
+        {
+          mint,
+          amountSol: Number(amountSol),
+          reason: "dashboard_plan_only"
+        }
+      );
+      setPlan(nextPlan);
+    } catch (error) {
+      setPlanError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  return (
+    <div className="data-wallet-panel lightning-panel">
+      <div className="table-heading">
+        <h3>PUMPPORTAL WALLETS / LIGHTNING READINESS</h3>
+        <span className="table-meta">NO TRANSACTION SENT / PLANNING ONLY</span>
+      </div>
+      <div className="status-grid secondary-grid">
+        <MetricValue
+          label="live trading"
+          value={lightningStatus?.liveTradingAllowed ? "ON" : "DISABLED"}
+          detail="execution gate"
+          tone={lightningStatus?.liveTradingAllowed ? "bad" : "good"}
+        />
+        <MetricValue
+          label="manual arm"
+          value={lightningStatus?.manualArmed ? "ARMED" : "NOT ARMED"}
+          detail={
+            lightningStatus?.manualArmRequired ? "required" : "not required"
+          }
+          tone={lightningStatus?.manualArmed ? "warn" : "good"}
+        />
+        <MetricValue
+          label="max buy"
+          value={formatSol(lightningStatus?.maxBuySol)}
+          detail={`${formatSol(lightningStatus?.maxDailySol)} daily`}
+        />
+        <MetricValue
+          label="slippage cap"
+          value={`${lightningStatus?.slippage ?? "--"}%`}
+          detail={`${formatSol(lightningStatus?.priorityFee)} priority`}
+        />
+        <MetricValue
+          label="pool"
+          value={lightningStatus?.pool ?? "--"}
+          detail={`${lightningStatus?.maxOpenPositions ?? 0} max open`}
+        />
+        <MetricValue
+          label="same wallet"
+          value={pumpPortalWalletsStatus?.sameWallet ? "YES" : "NO"}
+          detail="separate preferred"
+          tone={pumpPortalWalletsStatus?.sameWallet ? "warn" : "good"}
+        />
+      </div>
+      <div className="wallet-readiness-grid">
+        <WalletReadinessBlock
+          purpose="metered data streams"
+          title="DATA WALLET"
+          wallet={pumpPortalWalletsStatus?.dataWallet ?? null}
+        />
+        <WalletReadinessBlock
+          purpose="future Lightning execution"
+          title="TRADING WALLET"
+          wallet={pumpPortalWalletsStatus?.tradingWallet ?? null}
+        />
+      </div>
+      {pumpPortalWalletsStatus?.sameWalletWarning ? (
+        <div className="inline-warning">
+          {pumpPortalWalletsStatus.sameWalletWarning}
+        </div>
+      ) : null}
+      <div className="signal-risk-strip data-wallet-warnings">
+        <span>NO TRANSACTION SENT</span>
+        <span>PLAN ONLY</span>
+        <span>NO EXECUTE BUTTON</span>
+        <span>NO PRIVATE KEY FIELD</span>
+        <span>NO API KEY FIELD</span>
+        <span>FUND SMALL AMOUNTS ONLY</span>
+      </div>
+      <form className="planner-form" onSubmit={submitPlan}>
+        <label>
+          <span>Mint</span>
+          <input
+            onChange={(event) => setMint(event.target.value)}
+            placeholder="token mint"
+            value={mint}
+          />
+        </label>
+        <label>
+          <span>Amount SOL</span>
+          <input
+            min="0"
+            onChange={(event) => setAmountSol(event.target.value)}
+            step="0.0001"
+            type="number"
+            value={amountSol}
+          />
+        </label>
+        <button type="submit">PLAN ONLY</button>
+      </form>
+      {planError ? <div className="inline-warning">{planError}</div> : null}
+      {plan ? (
+        <div className="plan-result">
+          <div className="table-heading">
+            <h3>DRY-RUN PLAN</h3>
+            <span className="table-meta">NO TRANSACTION SENT</span>
+          </div>
+          <div className="status-grid secondary-grid">
+            <MetricValue
+              label="mode"
+              value={plan.mode.toUpperCase()}
+              detail={plan.id}
+              tone={plan.blocked ? "warn" : "good"}
+            />
+            <MetricValue
+              label="blocked"
+              value={plan.blocked ? "YES" : "NO"}
+              detail={plan.estimatedRisk}
+              tone={plan.blocked ? "bad" : "good"}
+            />
+            <MetricValue
+              label="amount"
+              value={formatSol(plan.amountSol)}
+              detail={`${formatSol(plan.maxBuySol)} max`}
+            />
+            <MetricValue
+              label="request"
+              value={plan.request.action.toUpperCase()}
+              detail={`${plan.request.pool} pool`}
+            />
+          </div>
+          <div className="data-wallet-address-row">
+            <span className="mono">
+              {plan.request.mint} / {formatSol(plan.request.amount)} /{" "}
+              {plan.request.slippage}% slippage
+            </span>
+          </div>
+          <ReasonBlock title="Plan Blockers" codes={plan.blockers} />
+          <ReasonBlock title="Plan Warnings" codes={plan.warnings} />
+          <ReasonBlock
+            title="Plan Safety Checks"
+            codes={plan.safetyChecks.map((check) => check.code)}
+          />
+        </div>
+      ) : null}
+      <ReasonBlock
+        title="Wallet Reasons"
+        codes={pumpPortalWalletsStatus?.reasonCodes}
+      />
+      <ReasonBlock
+        title="Lightning Reasons"
+        codes={lightningStatus?.reasonCodes}
+      />
+    </div>
+  );
+}
+
+function WalletReadinessBlock({
+  purpose,
+  title,
+  wallet
+}: {
+  purpose: string;
+  title: string;
+  wallet: PumpPortalWalletSummary | null;
+}) {
+  const publicKey = wallet?.publicKey ?? null;
+
+  return (
+    <div className="wallet-readiness-block">
+      <div className="table-heading">
+        <h3>{title}</h3>
+        <span className="table-meta">{purpose}</span>
+      </div>
+      <div className="status-grid secondary-grid">
+        <MetricValue
+          label="status"
+          value={(wallet?.balanceStatus ?? "unknown").toUpperCase()}
+          detail={wallet?.configured ? "configured" : "not ready"}
+          tone={getDataWalletTone(wallet?.balanceStatus)}
+        />
+        <MetricValue
+          label="api key"
+          value={wallet?.apiKeyConfigured ? "YES" : "NO"}
+          detail="backend only"
+          tone={wallet?.apiKeyConfigured ? "good" : "bad"}
+        />
+        <MetricValue
+          label="balance"
+          value={formatSol(wallet?.balanceSol)}
+          detail={`${formatSol(wallet?.minBalanceSol)} minimum`}
+          tone={getDataWalletTone(wallet?.balanceStatus)}
+        />
+        <MetricValue
+          label="address"
+          value={wallet?.shortPublicKey ?? "--"}
+          detail={wallet?.publicKeyValid ? "valid" : "missing/invalid"}
+        />
+      </div>
+      <div className="data-wallet-address-row">
+        <span className="mono">{publicKey ?? `${title} public key missing`}</span>
+        <button
+          disabled={!publicKey}
+          onClick={() => copyPublicKey(publicKey)}
+          type="button"
+        >
+          COPY ADDRESS
+        </button>
+      </div>
+      <ReasonBlock title={`${title} Reasons`} codes={wallet?.reasonCodes} />
     </div>
   );
 }
@@ -2072,6 +2436,22 @@ async function fetchJson<T>(path: string): Promise<T> {
 
   if (!response.ok) {
     throw new Error(`GET ${path} failed with ${response.status}`);
+  }
+
+  return (await response.json()) as T;
+}
+
+async function postJson<T>(path: string, payload: unknown): Promise<T> {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    body: JSON.stringify(payload),
+    headers: {
+      "content-type": "application/json"
+    },
+    method: "POST"
+  });
+
+  if (!response.ok) {
+    throw new Error(`POST ${path} failed with ${response.status}`);
   }
 
   return (await response.json()) as T;

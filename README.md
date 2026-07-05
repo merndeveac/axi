@@ -60,7 +60,8 @@ Current persistence tables include `feed_events`, `signals`, `risk_snapshots`,
 `chain_trade_events`, `market_observations`, `watch_plans`, `watch_actions`,
 `pumpportal_token_trade_events`, `live_feed_events`,
 `actual_data_subscriptions`, `actual_data_sessions`, `token_identities`,
-`token_metadata_fetches`, `paper_orders`, and `paper_positions`.
+`token_metadata_fetches`, `lightning_trade_plans`,
+`pumpportal_wallet_status_snapshots`, `paper_orders`, and `paper_positions`.
 
 Clear local paper data with:
 
@@ -426,8 +427,8 @@ Dashboard tabs:
   debug values.
 - RISK: risk levels, hard rejects, authority flags, holder concentration, and
   risk reasons.
-- DATA: feed, live feed, actual data, market data, chain, and token identity
-  health.
+- DATA: feed, live feed, wallet readiness, Lightning dry-run readiness, actual
+  data, market data, chain, and token identity health.
 - STORAGE / DEBUG: persisted counts, live feed rows, and verification/debug
   rows.
 
@@ -447,7 +448,7 @@ Solana metadata resolution:
 ```bash
 DATA_FEED_MODE=live \
 DATA_FEED=pumpportal \
-PUMPPORTAL_API_KEY="$PUMPPORTAL_API_KEY" \
+PUMPPORTAL_DATA_API_KEY="$PUMPPORTAL_DATA_API_KEY" \
 PUMPPORTAL_SUBSCRIBE_NEW_TOKEN=true \
 PUMPPORTAL_SUBSCRIBE_MIGRATION=true \
 SOLANA_RPC_HTTP="https://api.mainnet-beta.solana.com" \
@@ -464,7 +465,7 @@ token-trade stream is metered, so use the probe first and keep strict limits:
 ```bash
 export TEST_MINT="PASTE_REAL_MINT_HERE"
 
-PUMPPORTAL_API_KEY="$PUMPPORTAL_API_KEY" \
+PUMPPORTAL_DATA_API_KEY="$PUMPPORTAL_DATA_API_KEY" \
 pnpm --filter @axi/api actual-data:probe -- \
   --mint "$TEST_MINT" \
   --limit 25 \
@@ -477,7 +478,7 @@ If that prints token-trade events, run the API with bounded metered ingestion:
 ```bash
 DATA_FEED_MODE=live \
 DATA_FEED=pumpportal \
-PUMPPORTAL_API_KEY="$PUMPPORTAL_API_KEY" \
+PUMPPORTAL_DATA_API_KEY="$PUMPPORTAL_DATA_API_KEY" \
 PUMPPORTAL_SUBSCRIBE_NEW_TOKEN=true \
 PUMPPORTAL_SUBSCRIBE_MIGRATION=true \
 PUMPPORTAL_TOKEN_TRADES_ENABLED=true \
@@ -557,7 +558,7 @@ read-only, observation-only, and paper-only. It requires:
 
 - `DATA_FEED_MODE=live`
 - `DATA_FEED=pumpportal`
-- `PUMPPORTAL_API_KEY=...`
+- `PUMPPORTAL_DATA_API_KEY=...` or legacy `PUMPPORTAL_API_KEY=...`
 - `PUMPPORTAL_TOKEN_TRADES_ENABLED=true`
 - `PUMPPORTAL_TOKEN_TRADES_ACK_METERED=true`
 
@@ -570,7 +571,7 @@ Safe manual run:
 ```bash
 DATA_FEED_MODE=live \
 DATA_FEED=pumpportal \
-PUMPPORTAL_API_KEY=... \
+PUMPPORTAL_DATA_API_KEY=... \
 PUMPPORTAL_TOKEN_TRADES_ENABLED=true \
 PUMPPORTAL_TOKEN_TRADES_ACK_METERED=true \
 PUMPPORTAL_TOKEN_TRADES_MANUAL_MINTS=<MINT> \
@@ -589,7 +590,7 @@ acknowledgement:
 ```bash
 DATA_FEED_MODE=live \
 DATA_FEED=pumpportal \
-PUMPPORTAL_API_KEY=... \
+PUMPPORTAL_DATA_API_KEY=... \
 PUMPPORTAL_TOKEN_TRADES_ENABLED=true \
 PUMPPORTAL_TOKEN_TRADES_ACK_METERED=true \
 LIVE_TRADE_TRACKING_ENABLED=true \
@@ -637,7 +638,7 @@ Manual setup:
 
 ```bash
 PUMPPORTAL_DATA_WALLET_PUBLIC_KEY=<PUBLIC_FUNDING_ADDRESS>
-PUMPPORTAL_API_KEY=<PUMPPORTAL_API_KEY>
+PUMPPORTAL_DATA_API_KEY=<PUMPPORTAL_DATA_API_KEY>
 SOLANA_RPC_HTTP=<RPC_HTTP_URL>
 PUMPPORTAL_DATA_WALLET_MIN_BALANCE_SOL=0.02
 PUMPPORTAL_DATA_WALLET_TARGET_BALANCE_SOL=0.05
@@ -665,6 +666,81 @@ The optional PumpPortal create-wallet helper is intentionally not implemented
 in AXI. Manual setup keeps generated hot-wallet private keys outside the app and
 outside the repo.
 
+### PumpPortal Lightning Readiness
+
+PumpPortal Lightning is for future trade execution, not live data ingestion.
+Live price action comes from free new-token/migration streams and opt-in
+metered token-trade streams. AXI does not call the PumpPortal Lightning trade
+endpoint yet, does not call the PumpPortal Local Transaction API, does not sign
+transactions, and does not execute live trades.
+
+Lightning readiness is limited to public wallet/balance visibility and dry-run
+trade planning. A dry-run plan builds the request shape and safety checks but
+always reports `NO TRANSACTION SENT`.
+
+Recommended setup:
+
+1. Use one PumpPortal wallet/API key for metered data streams.
+2. Use a separate PumpPortal wallet/API key for future Lightning execution.
+3. Treat both API keys as hot-wallet credentials.
+4. Store private keys yourself outside AXI.
+5. Keep balances tiny, especially if one wallet is shared.
+
+`.env.local` values:
+
+```bash
+PUMPPORTAL_DATA_WALLET_PUBLIC_KEY=<DATA_PUBLIC_FUNDING_ADDRESS>
+PUMPPORTAL_DATA_API_KEY=<PUMPPORTAL_DATA_API_KEY>
+PUMPPORTAL_TRADING_WALLET_PUBLIC_KEY=<TRADING_PUBLIC_FUNDING_ADDRESS>
+PUMPPORTAL_TRADING_API_KEY=<PUMPPORTAL_TRADING_API_KEY>
+PUMPPORTAL_USE_SAME_WALLET_FOR_DATA_AND_TRADING=false
+SOLANA_RPC_HTTP=<RPC_HTTP_URL>
+PUMPPORTAL_LIGHTNING_READINESS_ENABLED=true
+PUMPPORTAL_LIGHTNING_ALLOW_LIVE_TRADING=false
+PUMPPORTAL_LIGHTNING_REQUIRE_MANUAL_ARM=true
+PUMPPORTAL_LIGHTNING_MANUAL_ARMED=false
+PUMPPORTAL_LIGHTNING_MAX_BUY_SOL=0.005
+PUMPPORTAL_LIGHTNING_MAX_DAILY_SOL=0.02
+PUMPPORTAL_LIGHTNING_MAX_SLIPPAGE_PCT=10
+PUMPPORTAL_LIGHTNING_PRIORITY_FEE_SOL=0.00005
+PUMPPORTAL_LIGHTNING_POOL=auto
+PUMPPORTAL_WALLET_MIN_BALANCE_SOL=0.02
+PUMPPORTAL_WALLET_WARN_BALANCE_SOL=0.03
+PUMPPORTAL_WALLET_TARGET_BALANCE_SOL=0.05
+```
+
+If `PUMPPORTAL_USE_SAME_WALLET_FOR_DATA_AND_TRADING=true`, AXI can reuse the
+data wallet/key for readiness checks, but the dashboard and APIs show a strong
+same-hot-wallet warning. Separate wallets are preferred.
+
+Lightning readiness endpoints:
+
+```bash
+curl http://localhost:8787/pumpportal/wallets/status
+curl -X POST http://localhost:8787/pumpportal/wallets/refresh
+curl http://localhost:8787/pumpportal/wallets/funding
+curl http://localhost:8787/execution/lightning/status
+curl -X POST http://localhost:8787/execution/lightning/plan-buy \
+  -H 'content-type: application/json' \
+  -d '{"mint":"<MINT>","amountSol":0.001,"reason":"manual_test"}'
+```
+
+`POST /execution/lightning/execute` exists only as a hard refusal. It returns a
+conflict response with `LIGHTNING_LIVE_TRADING_DISABLED` and never calls
+PumpPortal.
+
+CLI helpers:
+
+```bash
+pnpm --filter @axi/api pumpportal:wallets:status
+pnpm --filter @axi/api lightning:status
+pnpm --filter @axi/api lightning:plan-buy -- --mint <MINT> --amount-sol 0.001
+```
+
+The optional PumpPortal create-Lightning-wallet helper is intentionally skipped.
+Manual wallet creation keeps hot-wallet private keys outside AXI and outside the
+repo.
+
 Optional live-card enrichment and chain verification are also disabled by
 default. They only add read-only display data when explicitly enabled:
 
@@ -686,7 +762,7 @@ curl -X POST http://localhost:8787/chain/verify \
 Probe token trades without starting the API server or persisting data:
 
 ```bash
-PUMPPORTAL_API_KEY=... pnpm --filter @axi/api actual-data:probe -- --mint <MINT> --limit 25 --ack-metered
+PUMPPORTAL_DATA_API_KEY=... pnpm --filter @axi/api actual-data:probe -- --mint <MINT> --limit 25 --ack-metered
 ```
 
 Show env-derived actual-data status without connecting:
@@ -730,6 +806,13 @@ Endpoints:
 - `GET /pumpportal/data-wallet/status`
 - `POST /pumpportal/data-wallet/refresh`
 - `GET /pumpportal/data-wallet/funding`
+- `GET /pumpportal/wallets/status`
+- `POST /pumpportal/wallets/refresh`
+- `GET /pumpportal/wallets/funding`
+- `GET /execution/lightning/status`
+- `POST /execution/lightning/plan-buy`
+- `POST /execution/lightning/plan-sell`
+- `POST /execution/lightning/execute`
 - `GET /live/trade-tracking/status`
 - `POST /live/trade-tracking/track`
 - `DELETE /live/trade-tracking/track/:mint`
@@ -814,6 +897,20 @@ events remaining, threshold status, and reason codes. Responses never include
 the PumpPortal API key or any private key. `GET
 /pumpportal/data-wallet/funding` returns user-facing funding instructions for
 the public address only.
+
+`GET /pumpportal/wallets/status` reports separate data-wallet and trading-wallet
+readiness using only public addresses, API-key configured booleans, read-only
+SOL balances, status labels, and reason codes. `POST /pumpportal/wallets/refresh`
+performs read-only balance refreshes and stores a public-only wallet status
+snapshot. `GET /pumpportal/wallets/funding` returns public funding instructions
+and hot-wallet warnings. Responses never include API keys or private keys.
+
+`GET /execution/lightning/status` reports Lightning readiness, caps, manual-arm
+state, live-trading disabled state, and reason codes. `POST
+/execution/lightning/plan-buy` and `POST /execution/lightning/plan-sell` build
+dry-run plans only and persist them to `lightning_trade_plans`. `POST
+/execution/lightning/execute` hard-refuses with
+`LIGHTNING_LIVE_TRADING_DISABLED`; no PumpPortal trade endpoint is called.
 
 `GET /live/trade-tracking/status` reports the card-focused trade-tracking gates,
 selected mint caps, session budgets, and tracked mints. `POST
@@ -957,7 +1054,7 @@ Probe actual PumpPortal token trades for explicit mints only. This requires an
 API key and explicit metered acknowledgement:
 
 ```bash
-PUMPPORTAL_API_KEY=... pnpm --filter @axi/api actual-data:probe -- --mint <MINT> --limit 25 --ack-metered
+PUMPPORTAL_DATA_API_KEY=... pnpm --filter @axi/api actual-data:probe -- --mint <MINT> --limit 25 --ack-metered
 pnpm --filter @axi/api actual-data:status
 ```
 
@@ -1018,6 +1115,8 @@ docker compose --profile infra up -d
   confidence helpers.
 - `@axi/execution`: in-memory paper execution only.
 - `@axi/metrics`: local rolling-window metrics for paper-mode signal features.
+- `@axi/pumpportal-lightning`: pure PumpPortal Lightning request construction,
+  safety validation, disabled execution client, and dry-run plan models.
 - `@axi/risk`: pure local risk/scam-filter snapshots and reason codes.
 - `@axi/candidates`: pure local candidate lifecycle decisions.
 - `@axi/solana-chain`: optional read-only Solana RPC verification helpers.
@@ -1063,6 +1162,10 @@ docker compose --profile infra up -d
 - `dev/live-token-intelligence-ui` contains the live-token intelligence card
   endpoint, read-only strategy status endpoint, tabbed dashboard, card audit
   view, and formatter tests.
+- `dev/pumpportal-data-wallet-readiness` contains PumpPortal data-wallet
+  readiness for metered data billing.
+- `dev/pumpportal-lightning-readiness` contains PumpPortal wallet readiness,
+  Lightning status, and dry-run planning with live execution disabled.
 
 Direct Solana RPC verification and watched-address transaction ingestion exist,
 and local market-data normalization and watch orchestration exist, but they are

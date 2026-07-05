@@ -16,6 +16,8 @@ type ProbeArgs = {
 
 const config = loadApiConfig();
 const args = parseArgs(process.argv.slice(2));
+const configuredApiKey =
+  config.PUMPPORTAL_DATA_API_KEY ?? config.PUMPPORTAL_API_KEY;
 
 if (!args.ackMetered) {
   throw new Error("--ack-metered is required because subscribeTokenTrade is metered");
@@ -27,11 +29,11 @@ for (const mint of args.mints) {
   }
 }
 
-const apiKey = args.apiKey ?? config.PUMPPORTAL_API_KEY;
+const apiKey = args.apiKey ?? configuredApiKey;
 
 if (!apiKey) {
   throw new Error(
-    "PUMPPORTAL_API_KEY or --api-key is required for actual-data probe"
+    "PUMPPORTAL_DATA_API_KEY, PUMPPORTAL_API_KEY, or --api-key is required for actual-data probe"
   );
 }
 

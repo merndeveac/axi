@@ -8,8 +8,10 @@ type LiveProbeArgs = {
 
 const config = loadApiConfig();
 const args = parseArgs(process.argv.slice(2));
+const configuredApiKey =
+  config.PUMPPORTAL_DATA_API_KEY ?? config.PUMPPORTAL_API_KEY;
 const provider = new PumpPortalFeedProvider({
-  ...(config.PUMPPORTAL_API_KEY ? { apiKey: config.PUMPPORTAL_API_KEY } : {}),
+  ...(configuredApiKey ? { apiKey: configuredApiKey } : {}),
   maxEvents: args.limit,
   subscribeMigration: true,
   subscribeNewToken: true,
@@ -21,7 +23,7 @@ let settled = false;
 console.error(
   JSON.stringify({
     provider: "pumpportal",
-    apiKeyConfigured: config.PUMPPORTAL_API_KEY !== undefined,
+    apiKeyConfigured: configuredApiKey !== undefined,
     meteredTokenTrades: false,
     subscriptions: ["subscribeNewToken", "subscribeMigration"],
     paperOnly: true
