@@ -80,6 +80,9 @@ importers:
       '@axi/metrics':
         specifier: workspace:*
         version: link:../../packages/metrics
+      '@axi/pumpfun-decoder':
+        specifier: workspace:*
+        version: link:../../packages/pumpfun-decoder
       '@axi/pumpportal-lightning':
         specifier: workspace:*
         version: link:../../packages/pumpportal-lightning
@@ -146,6 +149,9 @@ importers:
       '@axi/live-state':
         specifier: workspace:*
         version: link:../../packages/live-state
+      '@axi/pumpfun-decoder':
+        specifier: workspace:*
+        version: link:../../packages/pumpfun-decoder
       '@axi/timeseries':
         specifier: workspace:*
         version: link:../../packages/timeseries
@@ -215,6 +221,12 @@ importers:
       '@axi/shared':
         specifier: workspace:*
         version: link:../shared
+
+  packages/pumpfun-decoder:
+    dependencies:
+      '@axi/indexer-core':
+        specifier: workspace:*
+        version: link:../indexer-core
 
   packages/pumpportal-lightning: {}
 

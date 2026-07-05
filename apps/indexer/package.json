@@ -9,12 +9,15 @@
     "typecheck": "tsc -b tsconfig.json && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "smoke": "tsx --conditions=development src/main.ts smoke",
+    "smoke:pumpfun": "tsx --conditions=development src/main.ts smoke:pumpfun",
+    "decode:pumpfun": "tsx --conditions=development src/main.ts decode:pumpfun",
     "clean": "rm -rf dist"
   },
   "dependencies": {
     "@axi/event-bus": "workspace:*",
     "@axi/indexer-core": "workspace:*",
     "@axi/live-state": "workspace:*",
+    "@axi/pumpfun-decoder": "workspace:*",
     "@axi/timeseries": "workspace:*",
     "zod": "^3.25.0"
   }

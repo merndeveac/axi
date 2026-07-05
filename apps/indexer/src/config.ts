@@ -2,10 +2,16 @@ import { z } from "zod";
 
 export const indexerConfigSchema = z.object({
   INDEXER_ENABLED: z.preprocess(parseBooleanEnv, z.boolean()).default(false),
-  INDEXER_SOURCE: z.enum(["mock", "pumpportal", "future_geyser"]).default("mock"),
+  INDEXER_SOURCE: z
+    .enum(["mock", "pumpportal", "pumpfun-fixtures", "future_geyser"])
+    .default("mock"),
   INDEXER_MODE: z.enum(["local", "paper", "replay"]).default("local"),
   INDEXER_LOG_LEVEL: z.enum(["silent", "error", "warn", "info", "debug"]).default("info"),
   INDEXER_RECENT_EVENT_LIMIT: z.coerce.number().int().positive().default(1000),
+  INDEXER_FIXTURE_DIR: z
+    .string()
+    .min(1)
+    .default("packages/pumpfun-decoder/fixtures"),
   GEYSER_GRPC_URL: z.preprocess(emptyStringToUndefined, z.string().url().optional()),
   GEYSER_GRPC_TOKEN: z.preprocess(emptyStringToUndefined, z.string().min(1).optional()),
   GEYSER_ENABLED: z.preprocess(parseBooleanEnv, z.boolean()).default(false)

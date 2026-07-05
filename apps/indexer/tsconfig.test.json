@@ -9,6 +9,9 @@
       "@axi/event-bus": ["../../packages/event-bus/dist/index.d.ts"],
       "@axi/indexer-core": ["../../packages/indexer-core/dist/index.d.ts"],
       "@axi/live-state": ["../../packages/live-state/dist/index.d.ts"],
+      "@axi/pumpfun-decoder": [
+        "../../packages/pumpfun-decoder/dist/index.d.ts"
+      ],
       "@axi/timeseries": ["../../packages/timeseries/dist/index.d.ts"]
     }
   },

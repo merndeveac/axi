@@ -20,6 +20,7 @@
     { "path": "../../packages/execution" },
     { "path": "../../packages/market-data" },
     { "path": "../../packages/metrics" },
+    { "path": "../../packages/pumpfun-decoder" },
     { "path": "../../packages/pumpportal-lightning" },
     { "path": "../../packages/risk" },
     { "path": "../../packages/solana-chain" },

@@ -12,6 +12,7 @@
     { "path": "../../packages/event-bus" },
     { "path": "../../packages/indexer-core" },
     { "path": "../../packages/live-state" },
+    { "path": "../../packages/pumpfun-decoder" },
     { "path": "../../packages/timeseries" }
   ]
 }

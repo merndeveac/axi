@@ -1,0 +1,42 @@
+{
+  "signature": "pumpfun_fixture_failed_sig",
+  "slot": 1005,
+  "blockTime": 1767225630,
+  "transaction": {
+    "message": {
+      "accountKeys": [
+        "FixtureBuyer1111111111111111111111111111111",
+        "FixturePumpMint11111111111111111111111111111",
+        "PumpFunFixtureProgram1111111111111111111111"
+      ],
+      "instructions": [
+        {
+          "programId": "PumpFunFixtureProgram1111111111111111111111",
+          "parsed": {
+            "type": "buy",
+            "info": {
+              "mint": "FixturePumpMint11111111111111111111111111111",
+              "solAmount": 1,
+              "tokenAmount": 0
+            }
+          }
+        }
+      ]
+    }
+  },
+  "meta": {
+    "err": {
+      "InstructionError": [0, "Custom"]
+    },
+    "logMessages": [
+      "Program PumpFunFixtureProgram1111111111111111111111 invoke [1]",
+      "Program log: pumpfun fixture",
+      "Program log: Instruction: Buy",
+      "Program failed: custom program error"
+    ],
+    "preBalances": [5000000000, 0, 1],
+    "postBalances": [5000000000, 0, 1],
+    "preTokenBalances": [],
+    "postTokenBalances": []
+  }
+}

@@ -17,6 +17,9 @@
       "@axi/execution": ["../../packages/execution/dist/index.d.ts"],
       "@axi/market-data": ["../../packages/market-data/dist/index.d.ts"],
       "@axi/metrics": ["../../packages/metrics/dist/index.d.ts"],
+      "@axi/pumpfun-decoder": [
+        "../../packages/pumpfun-decoder/dist/index.d.ts"
+      ],
       "@axi/pumpportal-lightning": [
         "../../packages/pumpportal-lightning/dist/index.d.ts"
       ],

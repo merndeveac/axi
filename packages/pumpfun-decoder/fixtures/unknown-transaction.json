@@ -1,0 +1,35 @@
+{
+  "signature": "unknown_fixture_sig",
+  "slot": 1006,
+  "blockTime": 1767225640,
+  "transaction": {
+    "message": {
+      "accountKeys": [
+        "UnknownSigner111111111111111111111111111111",
+        "OtherProgram1111111111111111111111111111111"
+      ],
+      "instructions": [
+        {
+          "programId": "OtherProgram1111111111111111111111111111111",
+          "parsed": {
+            "type": "noop",
+            "info": {
+              "memo": "not a pumpfun transaction"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "meta": {
+    "err": null,
+    "logMessages": [
+      "Program OtherProgram1111111111111111111111111111111 invoke [1]",
+      "Program log: unrelated local fixture"
+    ],
+    "preBalances": [1000000000, 1],
+    "postBalances": [1000000000, 1],
+    "preTokenBalances": [],
+    "postTokenBalances": []
+  }
+}

@@ -1251,6 +1251,120 @@ describe("@axi/api", () => {
     expect(body.reasonCodes).toContain("NO_GEYSER_CONNECTION");
   });
 
+  it("GET /indexer/decoders reports local Pump.fun decoder availability", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/indexer/decoders"
+    });
+    const body = response.json() as {
+      pumpfun: { available: boolean; fixtures: string[] };
+      geyser: { status: string };
+      paperOnly: boolean;
+      tradingDisabled: boolean;
+      networkDisabled: boolean;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.pumpfun.available).toBe(true);
+    expect(body.pumpfun.fixtures).toContain("buy-trade.json");
+    expect(body.geyser.status).toBe("not_implemented");
+    expect(body.paperOnly).toBe(true);
+    expect(body.tradingDisabled).toBe(true);
+    expect(body.networkDisabled).toBe(true);
+  });
+
+  it("POST /indexer/decoders/pumpfun/decode returns unknown for unknown payloads", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/indexer/decoders/pumpfun/decode",
+      payload: {
+        transaction: {
+          signature: "api_unknown_fixture_sig",
+          meta: {
+            err: null,
+            logMessages: ["Program log: unrelated local debug payload"]
+          }
+        }
+      }
+    });
+    const body = response.json() as {
+      decodedEvent: { kind: string };
+      normalizedEvent: { type: string };
+      persisted: boolean;
+      tradingDisabled: boolean;
+      networkDisabled: boolean;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.decodedEvent.kind).toBe("unknown");
+    expect(body.normalizedEvent.type).toBe("unknown");
+    expect(body.persisted).toBe(false);
+    expect(body.tradingDisabled).toBe(true);
+    expect(body.networkDisabled).toBe(true);
+  });
+
+  it("POST /indexer/decoders/pumpfun/decode-fixture decodes buy fixtures", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/indexer/decoders/pumpfun/decode-fixture",
+      payload: {
+        fixture: "buy-trade.json"
+      }
+    });
+    const body = response.json() as {
+      normalizedEvent: {
+        type: string;
+        side?: string;
+        priceSol?: number | null;
+        usableForMetrics?: boolean;
+      };
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.normalizedEvent.type).toBe("token_trade");
+    expect(body.normalizedEvent.side).toBe("buy");
+    expect(body.normalizedEvent.priceSol).toBe(0.0005);
+    expect(body.normalizedEvent.usableForMetrics).toBe(true);
+  });
+
+  it("POST /indexer/decoders/pumpfun/decode-fixture blocks path traversal", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/indexer/decoders/pumpfun/decode-fixture",
+      payload: {
+        fixture: "../buy-trade.json"
+      }
+    });
+    const body = response.json() as { error: string };
+
+    expect(response.statusCode).toBe(400);
+    expect(body.error).toBe("invalid_fixture");
+  });
+
   it("ingesting a normalized token_created creates indexer live state", async () => {
     server = createApiServer({
       logLevel: false,

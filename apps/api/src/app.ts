@@ -1,3 +1,4 @@
+import { readFileSync, readdirSync } from "node:fs";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
@@ -20,6 +21,10 @@ import {
   createRollingMetricsEngine,
   type RollingMetricsEngine
 } from "@axi/metrics";
+import {
+  decodePumpfunTransaction,
+  pumpfunEventToIndexerEvent
+} from "@axi/pumpfun-decoder";
 import { createRiskEngine, type RiskEngine, type RiskInput } from "@axi/risk";
 import { scoreCandidate } from "@axi/scoring";
 import type { LightningTradePlan } from "@axi/pumpportal-lightning";
@@ -759,6 +764,12 @@ const limitQuerySchema = z.object({
 const mintParamSchema = z.object({
   mint: z.string().min(32)
 });
+const pumpfunDecodeBodySchema = z.object({
+  transaction: z.unknown()
+});
+const pumpfunFixtureDecodeBodySchema = z.object({
+  fixture: z.string().min(1).max(200)
+});
 const chainVerifyBodySchema = z.object({
   mint: z.string().min(1)
 });
@@ -1054,6 +1065,62 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   }));
 
   app.get("/indexer/status", async () => indexerAdapter.getStatus());
+
+  app.get("/indexer/decoders", async () => ({
+    decoders: [
+      {
+        name: "pumpfun",
+        enabled: true,
+        available: true,
+        source: "local_debug",
+        fixtureCount: getPumpfunFixtureNames().length
+      }
+    ],
+    pumpfun: {
+      enabled: true,
+      available: true,
+      source: "local_debug",
+      fixtures: getPumpfunFixtureNames()
+    },
+    geyser: {
+      enabled: false,
+      implemented: false,
+      status: "not_implemented"
+    },
+    paperOnly: true,
+    tradingDisabled: true,
+    networkDisabled: true,
+    reasonCodes: [
+      "PUMPFUN_DECODER_DEBUG_ONLY",
+      "NO_NETWORK",
+      "NO_PERSIST",
+      "NO_TRADING"
+    ]
+  }));
+
+  app.post("/indexer/decoders/pumpfun/decode", async (request) => {
+    const body = pumpfunDecodeBodySchema.parse(request.body);
+    return decodePumpfunPayloadForDebug(body.transaction);
+  });
+
+  app.post(
+    "/indexer/decoders/pumpfun/decode-fixture",
+    async (request, reply) => {
+      const body = pumpfunFixtureDecodeBodySchema.parse(request.body);
+
+      try {
+        return {
+          fixture: body.fixture,
+          ...decodePumpfunPayloadForDebug(readPumpfunFixtureInput(body.fixture))
+        };
+      } catch (error) {
+        return reply.code(400).send({
+          error: "invalid_fixture",
+          message: error instanceof Error ? error.message : "Invalid fixture"
+        });
+      }
+    }
+  );
 
   app.get("/indexer/events/recent", async (request) => {
     const query = limitQuerySchema.parse(request.query);
@@ -4805,6 +4872,59 @@ function parseBooleanEnv(value: unknown): boolean | undefined {
 
 function uniqueReasonCodes(reasonCodes: string[]): string[] {
   return Array.from(new Set(reasonCodes));
+}
+
+const pumpfunFixtureDirUrl = new URL(
+  "../../../packages/pumpfun-decoder/fixtures/",
+  import.meta.url
+);
+
+function decodePumpfunPayloadForDebug(transaction: unknown): {
+  decodedEvent: ReturnType<typeof decodePumpfunTransaction>;
+  normalizedEvent: ReturnType<typeof pumpfunEventToIndexerEvent>;
+  persisted: false;
+  paperOnly: true;
+  tradingDisabled: true;
+  networkDisabled: true;
+} {
+  const decodedEvent = decodePumpfunTransaction(transaction);
+
+  return {
+    decodedEvent,
+    normalizedEvent: pumpfunEventToIndexerEvent(decodedEvent),
+    persisted: false,
+    paperOnly: true,
+    tradingDisabled: true,
+    networkDisabled: true
+  };
+}
+
+function getPumpfunFixtureNames(): string[] {
+  return readdirSync(pumpfunFixtureDirUrl)
+    .filter((entry) => entry.endsWith(".json"))
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function readPumpfunFixtureInput(fixtureName: string): unknown {
+  const normalized = fixtureName.trim();
+
+  if (
+    normalized.length === 0 ||
+    normalized.includes("/") ||
+    normalized.includes("\\") ||
+    normalized.includes("..") ||
+    !normalized.endsWith(".json")
+  ) {
+    throw new Error("Fixture must be the name of a local JSON fixture file");
+  }
+
+  if (!getPumpfunFixtureNames().includes(normalized)) {
+    throw new Error(`Unknown Pump.fun fixture: ${normalized}`);
+  }
+
+  return JSON.parse(
+    readFileSync(new URL(normalized, pumpfunFixtureDirUrl), "utf8")
+  ) as unknown;
 }
 
 export async function startApiServer(

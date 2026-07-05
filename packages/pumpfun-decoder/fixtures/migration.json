@@ -1,0 +1,42 @@
+{
+  "signature": "pumpfun_fixture_migration_sig",
+  "slot": 1004,
+  "blockTime": 1767225620,
+  "transaction": {
+    "message": {
+      "accountKeys": [
+        "FixturePumpMint11111111111111111111111111111",
+        "FixtureBondingCurve111111111111111111111111",
+        "FixtureMigratedPool1111111111111111111111111",
+        "PumpFunFixtureProgram1111111111111111111111"
+      ],
+      "instructions": [
+        {
+          "programId": "PumpFunFixtureProgram1111111111111111111111",
+          "parsed": {
+            "type": "migrate",
+            "info": {
+              "mint": "FixturePumpMint11111111111111111111111111111",
+              "bondingCurve": "FixtureBondingCurve111111111111111111111111",
+              "pool": "FixtureMigratedPool1111111111111111111111111",
+              "migrationSource": "pumpfun"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "meta": {
+    "err": null,
+    "logMessages": [
+      "Program PumpFunFixtureProgram1111111111111111111111 invoke [1]",
+      "Program log: pumpfun fixture",
+      "Program log: Instruction: Migrate",
+      "Program log: mint=FixturePumpMint11111111111111111111111111111 bondingCurve=FixtureBondingCurve111111111111111111111111 pool=FixtureMigratedPool1111111111111111111111111 migrationSource=pumpfun"
+    ],
+    "preBalances": [0, 2100000000, 0, 1],
+    "postBalances": [0, 0, 2100000000, 1],
+    "preTokenBalances": [],
+    "postTokenBalances": []
+  }
+}

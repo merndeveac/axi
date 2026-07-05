@@ -1,0 +1,49 @@
+{
+  "signature": "pumpfun_fixture_token_created_sig",
+  "slot": 1001,
+  "blockTime": 1767225600,
+  "transaction": {
+    "message": {
+      "accountKeys": [
+        "FixtureCreator111111111111111111111111111111",
+        "FixturePumpMint11111111111111111111111111111",
+        "FixtureBondingCurve111111111111111111111111",
+        "FixtureAssocBondingCurve1111111111111111111",
+        "PumpFunFixtureProgram1111111111111111111111"
+      ],
+      "instructions": [
+        {
+          "programId": "PumpFunFixtureProgram1111111111111111111111",
+          "parsed": {
+            "type": "create",
+            "info": {
+              "mint": "FixturePumpMint11111111111111111111111111111",
+              "name": "Fixture Token",
+              "symbol": "FIX",
+              "uri": "https://example.invalid/fixture-token.json",
+              "creator": "FixtureCreator111111111111111111111111111111",
+              "bondingCurve": "FixtureBondingCurve111111111111111111111111",
+              "associatedBondingCurve": "FixtureAssocBondingCurve1111111111111111111",
+              "initialBuySol": 1.25,
+              "marketCapSol": 42
+            }
+          }
+        }
+      ]
+    }
+  },
+  "meta": {
+    "err": null,
+    "logMessages": [
+      "Program PumpFunFixtureProgram1111111111111111111111 invoke [1]",
+      "Program log: pumpfun fixture",
+      "Program log: Instruction: Create",
+      "Program log: mint=FixturePumpMint11111111111111111111111111111 name=\"Fixture Token\" symbol=FIX uri=https://example.invalid/fixture-token.json",
+      "Program log: creator=FixtureCreator111111111111111111111111111111 bondingCurve=FixtureBondingCurve111111111111111111111111 associatedBondingCurve=FixtureAssocBondingCurve1111111111111111111 initialBuySol=1.25 marketCapSol=42"
+    ],
+    "preBalances": [5000000000, 0, 0, 0, 1],
+    "postBalances": [3750000000, 0, 1250000000, 0, 1],
+    "preTokenBalances": [],
+    "postTokenBalances": []
+  }
+}

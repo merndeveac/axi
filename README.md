@@ -86,7 +86,51 @@ Indexer app commands:
 ```bash
 pnpm --filter @axi/indexer dev
 pnpm --filter @axi/indexer smoke
+pnpm --filter @axi/indexer smoke:pumpfun
+pnpm --filter @axi/indexer decode:pumpfun -- --file packages/pumpfun-decoder/fixtures/buy-trade.json
 ```
+
+## Pump.fun Decoder Fixtures
+
+Branch `dev/pumpfun-decoder-fixtures` adds `@axi/pumpfun-decoder`, a pure local
+TypeScript decoder package with synthetic Pump.fun-shaped fixtures. It accepts
+parsed Solana transaction-like payloads, extracts local logs, instruction hints,
+accounts, SOL/token balance deltas, and emits normalized indexer events for
+token creation, trades, migrations, and unknown/failed transactions.
+
+The fixtures live in `packages/pumpfun-decoder/fixtures`. They are synthetic
+test inputs, not secrets, not live trading data, and not definitive Pump.fun
+documentation. The decoder does not connect to Geyser, Yellowstone,
+LaserStream, Solana RPC, PumpPortal, wallets, or trading APIs.
+
+Run the local fixture smoke:
+
+```bash
+pnpm --filter @axi/indexer smoke:pumpfun
+```
+
+Decode one fixture to normalized indexer JSON:
+
+```bash
+pnpm --filter @axi/indexer decode:pumpfun -- --file packages/pumpfun-decoder/fixtures/buy-trade.json
+```
+
+Inspect local decoder availability from the API:
+
+```bash
+curl http://localhost:8787/indexer/decoders
+```
+
+Decode a known local fixture through the API debug endpoint:
+
+```bash
+curl -X POST http://localhost:8787/indexer/decoders/pumpfun/decode-fixture \
+  -H 'content-type: application/json' \
+  -d '{"fixture":"buy-trade.json"}'
+```
+
+These API decoder endpoints are debug-only. They do not persist events, make
+network calls, sign transactions, or trade.
 
 Future indexer infrastructure can be started for local development with:
 
@@ -96,13 +140,13 @@ docker compose --profile indexer up -d
 
 Roadmap:
 
-1. Connect a managed Yellowstone/LaserStream source.
-2. Add Pump.fun decoder fixtures.
-3. Decode Pump.fun token creation, trades, and migrations.
-4. Write raw trades to ClickHouse.
-5. Write live state to Redis.
-6. Switch dashboard cards to indexer-backed live state.
-7. Add Raydium, Meteora, and Orca decoders.
+1. Replace synthetic fixtures with verified public transaction fixtures.
+2. Add IDL-aware Pump.fun instruction/event parsing.
+3. Connect managed Yellowstone/LaserStream stream.
+4. Feed decoded live transactions into event bus/live-state.
+5. Add ClickHouse raw tick writes.
+6. Add Redis live-state fanout.
+7. Add Raydium/Meteora/Orca decoders.
 
 ## Local Persistence
 

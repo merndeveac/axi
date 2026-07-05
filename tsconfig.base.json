@@ -25,6 +25,7 @@
       "@axi/indexer-core": ["packages/indexer-core/src/index.ts"],
       "@axi/live-state": ["packages/live-state/src/index.ts"],
       "@axi/market-data": ["packages/market-data/src/index.ts"],
+      "@axi/pumpfun-decoder": ["packages/pumpfun-decoder/src/index.ts"],
       "@axi/pumpportal-lightning": [
         "packages/pumpportal-lightning/src/index.ts"
       ],

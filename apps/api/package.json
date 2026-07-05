@@ -37,6 +37,7 @@
     "@axi/live-state": "workspace:*",
     "@axi/market-data": "workspace:*",
     "@axi/metrics": "workspace:*",
+    "@axi/pumpfun-decoder": "workspace:*",
     "@axi/pumpportal-lightning": "workspace:*",
     "@axi/risk": "workspace:*",
     "@axi/scoring": "workspace:*",
