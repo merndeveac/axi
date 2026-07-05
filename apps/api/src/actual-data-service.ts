@@ -30,6 +30,22 @@ export type ActualDataServiceConfig = {
   unsubscribeAfterMs: number;
 };
 
+export type ActualDataDataWalletBalanceStatus =
+  | "unknown"
+  | "missing_config"
+  | "critical"
+  | "low"
+  | "ok";
+
+export type ActualDataDataWalletReadiness = {
+  configured: boolean;
+  balanceSol: number | null;
+  balanceStatus: ActualDataDataWalletBalanceStatus;
+  estimatedEventsRemaining: number | null;
+  reasonCodes: string[];
+  subscriptionBlockers: string[];
+};
+
 export type ActualDataStatus = {
   acknowledgedMetered: boolean;
   apiKeyConfigured: boolean;
@@ -39,6 +55,11 @@ export type ActualDataStatus = {
   autoSubscribeOnQualified: boolean;
   budgetReached: boolean;
   compatibleProvider: boolean;
+  dataWalletBalanceSol: number | null;
+  dataWalletBalanceStatus: ActualDataDataWalletBalanceStatus;
+  dataWalletConfigured: boolean;
+  dataWalletEstimatedEventsRemaining: number | null;
+  dataWalletReasonCodes: string[];
   enabled: boolean;
   estimatedMeteredCostSol: number | null;
   manualMintCount: number;
@@ -83,6 +104,7 @@ export type ActualDataSubscriptionState = {
 
 export type ActualDataServiceOptions = {
   config: ActualDataServiceConfig;
+  dataWalletReadiness?: () => ActualDataDataWalletReadiness;
   providerName: string;
   pumpPortalProvider?: PumpPortalFeedProvider;
 };
@@ -111,6 +133,9 @@ export class ActualDataService {
     ActualDataCandidateSummary
   >();
   private readonly config: ActualDataServiceConfig;
+  private readonly dataWalletReadiness:
+    | (() => ActualDataDataWalletReadiness)
+    | undefined;
   private readonly perMintEventCounts = new Map<string, number>();
   private readonly providerName: string;
   private readonly pumpPortalProvider: PumpPortalFeedProvider | undefined;
@@ -123,6 +148,7 @@ export class ActualDataService {
 
   constructor(options: ActualDataServiceOptions) {
     this.config = options.config;
+    this.dataWalletReadiness = options.dataWalletReadiness;
     this.providerName = options.providerName;
     this.pumpPortalProvider = options.pumpPortalProvider;
   }
@@ -300,8 +326,10 @@ export class ActualDataService {
 
   getStatus(): ActualDataStatus {
     const providerStats = this.pumpPortalProvider?.getPumpPortalTradeStats();
+    const dataWallet = this.getDataWalletReadiness();
     const reasonCodes = uniqueReasonCodes([
       ...this.getSubscriptionBlockers(),
+      ...dataWallet.reasonCodes,
       ...(this.config.enabled ? [] : ["ACTUAL_DATA_DISABLED"]),
       "OBSERVATION_ONLY",
       "PAPER_ONLY"
@@ -316,6 +344,11 @@ export class ActualDataService {
       autoSubscribeOnQualified: this.config.autoSubscribeOnQualified,
       budgetReached: this.budgetReached || providerStats?.budgetReached === true,
       compatibleProvider: this.isCompatibleProvider(),
+      dataWalletBalanceSol: dataWallet.balanceSol,
+      dataWalletBalanceStatus: dataWallet.balanceStatus,
+      dataWalletConfigured: dataWallet.configured,
+      dataWalletEstimatedEventsRemaining: dataWallet.estimatedEventsRemaining,
+      dataWalletReasonCodes: dataWallet.reasonCodes,
       enabled: this.config.enabled,
       estimatedMeteredCostSol: null,
       manualMintCount: this.config.manualMints.length,
@@ -473,6 +506,8 @@ export class ActualDataService {
       reasonCodes.push("PUMPPORTAL_API_KEY_MISSING");
     }
 
+    reasonCodes.push(...this.getDataWalletReadiness().subscriptionBlockers);
+
     if (this.budgetReached) {
       reasonCodes.push("PUMPPORTAL_TRADE_BUDGET_REACHED");
     }
@@ -488,6 +523,19 @@ export class ActualDataService {
 
   private isCompatibleProvider(): boolean {
     return this.providerName === "pumpportal";
+  }
+
+  private getDataWalletReadiness(): ActualDataDataWalletReadiness {
+    return (
+      this.dataWalletReadiness?.() ?? {
+        balanceSol: null,
+        balanceStatus: "unknown",
+        configured: false,
+        estimatedEventsRemaining: null,
+        reasonCodes: [],
+        subscriptionBlockers: []
+      }
+    );
   }
 
   private persistSubscription(state: ActualDataSubscriptionState) {

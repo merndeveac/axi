@@ -103,6 +103,11 @@ type ActualDataStatus = {
   autoSubscribeOnQualified: boolean;
   budgetReached: boolean;
   compatibleProvider: boolean;
+  dataWalletBalanceSol: number | null;
+  dataWalletBalanceStatus: string;
+  dataWalletConfigured: boolean;
+  dataWalletEstimatedEventsRemaining: number | null;
+  dataWalletReasonCodes: string[];
   enabled: boolean;
   estimatedMeteredCostSol: number | null;
   manualMintCount: number;
@@ -114,6 +119,31 @@ type ActualDataStatus = {
   reasonCodes: string[];
   subscribedTokenCount: number;
   totalEventsThisSession: number;
+};
+
+type PumpPortalDataWalletStatus = {
+  configured: boolean;
+  apiKeyConfigured: boolean;
+  publicKeyConfigured: boolean;
+  publicKey: string | null;
+  shortPublicKey: string | null;
+  publicKeyValid: boolean;
+  solanaRpcConfigured: boolean;
+  balanceSol: number | null;
+  balanceLamports: number | null;
+  minBalanceSol: number;
+  warnBalanceSol: number;
+  criticalBalanceSol: number;
+  targetBalanceSol: number;
+  balanceStatus: string;
+  estimatedEventsRemaining: number | null;
+  estimatedCostPer10000EventsSol: number;
+  lastBalanceCheckAt: string | null;
+  lastError: string | null;
+  reasonCodes: string[];
+  paperOnly: true;
+  dataOnly: true;
+  tradingDisabled: true;
 };
 
 type LiveTradeTrackingStatus = {
@@ -310,6 +340,8 @@ export function App() {
   );
   const [actualDataStatus, setActualDataStatus] =
     useState<ActualDataStatus | null>(null);
+  const [dataWalletStatus, setDataWalletStatus] =
+    useState<PumpPortalDataWalletStatus | null>(null);
   const [liveTradeTrackingStatus, setLiveTradeTrackingStatus] =
     useState<LiveTradeTrackingStatus | null>(null);
   const [liveCardEnrichmentStatus, setLiveCardEnrichmentStatus] =
@@ -417,6 +449,7 @@ export function App() {
           nextMetrics,
           nextRiskRows,
           nextActualDataStatus,
+          nextDataWalletStatus,
           nextLiveTradeTrackingStatus,
           nextActualTrades,
           nextLiveCardEnrichmentStatus,
@@ -438,6 +471,9 @@ export function App() {
           fetchJson<MetricsRow[]>("/metrics"),
           fetchJson<RiskSnapshot[]>("/risk"),
           fetchJson<ActualDataStatus>("/actual-data/status"),
+          fetchJson<PumpPortalDataWalletStatus>(
+            "/pumpportal/data-wallet/status"
+          ),
           fetchJson<LiveTradeTrackingStatus>("/live/trade-tracking/status"),
           fetchJson<PumpPortalTradeRow[]>("/actual-data/trades?limit=10"),
           fetchJson<LiveCardEnrichmentStatus>("/enrichment/status"),
@@ -462,6 +498,7 @@ export function App() {
           setMetrics(nextMetrics);
           setRiskRows(nextRiskRows);
           setActualDataStatus(nextActualDataStatus);
+          setDataWalletStatus(nextDataWalletStatus);
           setLiveTradeTrackingStatus(nextLiveTradeTrackingStatus);
           setActualTrades(nextActualTrades);
           setLiveCardEnrichmentStatus(nextLiveCardEnrichmentStatus);
@@ -609,6 +646,12 @@ export function App() {
           }
         />
         <MetricValue
+          label="data wallet"
+          value={(dataWalletStatus?.balanceStatus ?? "unknown").toUpperCase()}
+          detail={dataWalletStatus?.shortPublicKey ?? "funding address"}
+          tone={getDataWalletTone(dataWalletStatus?.balanceStatus)}
+        />
+        <MetricValue
           label="unavailable"
           value={formatCompactNumber(unavailableFieldCount)}
           detail="shown as --"
@@ -677,6 +720,7 @@ export function App() {
           actualDataStatus={actualDataStatus}
           actualTrades={actualTrades}
           chainStatus={chainStatus}
+          dataWalletStatus={dataWalletStatus}
           feedStatus={feedStatus}
           liveCardEnrichmentStatus={liveCardEnrichmentStatus}
           liveStatus={liveStatus}
@@ -1300,6 +1344,7 @@ function DataTab({
   actualDataStatus,
   actualTrades,
   chainStatus,
+  dataWalletStatus,
   feedStatus,
   liveCardEnrichmentStatus,
   liveStatus,
@@ -1312,6 +1357,7 @@ function DataTab({
   actualDataStatus: ActualDataStatus | null;
   actualTrades: PumpPortalTradeRow[];
   chainStatus: ChainStatus | null;
+  dataWalletStatus: PumpPortalDataWalletStatus | null;
   feedStatus: FeedStatus | null;
   liveCardEnrichmentStatus: LiveCardEnrichmentStatus | null;
   liveStatus: LiveStatus | null;
@@ -1350,6 +1396,16 @@ function DataTab({
           tone={actualDataStatus?.enabled ? "warn" : "neutral"}
         />
         <MetricValue
+          label="data wallet"
+          value={(dataWalletStatus?.balanceStatus ?? "unknown").toUpperCase()}
+          detail={
+            dataWalletStatus?.publicKeyConfigured
+              ? (dataWalletStatus.shortPublicKey ?? "--")
+              : "public key missing"
+          }
+          tone={getDataWalletTone(dataWalletStatus?.balanceStatus)}
+        />
+        <MetricValue
           label="trade tracking"
           value={liveTradeTrackingStatus?.enabled ? "ON" : "OFF"}
           detail={`${liveTradeTrackingStatus?.subscribedTokenCount ?? 0}/${
@@ -1383,6 +1439,11 @@ function DataTab({
       <ReasonBlock
         title="Actual Data Reasons"
         codes={actualDataStatus?.reasonCodes}
+      />
+      <DataWalletPanel
+        actualDataStatus={actualDataStatus}
+        dataWalletStatus={dataWalletStatus}
+        liveTradeTrackingStatus={liveTradeTrackingStatus}
       />
       <ReasonBlock
         title="Trade Tracking Reasons"
@@ -1455,6 +1516,125 @@ function DataTab({
         title="MARKET OBSERVATIONS"
       />
     </section>
+  );
+}
+
+function DataWalletPanel({
+  actualDataStatus,
+  dataWalletStatus,
+  liveTradeTrackingStatus
+}: {
+  actualDataStatus: ActualDataStatus | null;
+  dataWalletStatus: PumpPortalDataWalletStatus | null;
+  liveTradeTrackingStatus: LiveTradeTrackingStatus | null;
+}) {
+  const publicKey = dataWalletStatus?.publicKey ?? null;
+
+  return (
+    <div className="data-wallet-panel">
+      <div className="table-heading">
+        <h3>DATA WALLET / PUMPPORTAL METERED DATA</h3>
+        <span className="table-meta">DATA ONLY / PAPER ONLY</span>
+      </div>
+      <div className="status-grid secondary-grid">
+        <MetricValue
+          label="status"
+          value={(dataWalletStatus?.balanceStatus ?? "unknown").toUpperCase()}
+          detail="billing readiness"
+          tone={getDataWalletTone(dataWalletStatus?.balanceStatus)}
+        />
+        <MetricValue
+          label="funding address"
+          value={dataWalletStatus?.shortPublicKey ?? "--"}
+          detail={
+            dataWalletStatus?.publicKeyConfigured
+              ? "public key"
+              : "missing"
+          }
+        />
+        <MetricValue
+          label="balance"
+          value={formatSol(dataWalletStatus?.balanceSol)}
+          detail={`${formatSol(dataWalletStatus?.minBalanceSol)} minimum`}
+          tone={getDataWalletTone(dataWalletStatus?.balanceStatus)}
+        />
+        <MetricValue
+          label="target"
+          value={formatSol(dataWalletStatus?.targetBalanceSol)}
+          detail={`${formatSol(dataWalletStatus?.warnBalanceSol)} warn`}
+        />
+        <MetricValue
+          label="events left"
+          value={formatCompactNumber(
+            dataWalletStatus?.estimatedEventsRemaining
+          )}
+          detail={`${formatSol(
+            dataWalletStatus?.estimatedCostPer10000EventsSol
+          )} / 10k events`}
+        />
+        <MetricValue
+          label="api key"
+          value={dataWalletStatus?.apiKeyConfigured ? "YES" : "NO"}
+          detail="backend only"
+          tone={dataWalletStatus?.apiKeyConfigured ? "good" : "bad"}
+        />
+        <MetricValue
+          label="rpc balance"
+          value={dataWalletStatus?.solanaRpcConfigured ? "YES" : "NO"}
+          detail={formatTimeAgo(dataWalletStatus?.lastBalanceCheckAt)}
+          tone={dataWalletStatus?.solanaRpcConfigured ? "good" : "warn"}
+        />
+        <MetricValue
+          label="trades"
+          value={liveTradeTrackingStatus?.enabled ? "ON" : "OFF"}
+          detail={
+            actualDataStatus?.acknowledgedMetered ? "acknowledged" : "not acked"
+          }
+        />
+        <MetricValue
+          label="subscribed"
+          value={formatCompactNumber(
+            liveTradeTrackingStatus?.subscribedTokenCount
+          )}
+          detail={`${formatCompactNumber(
+            liveTradeTrackingStatus?.totalEventsThisSession
+          )} session events`}
+        />
+        <MetricValue
+          label="budget"
+          value={formatCompactNumber(
+            liveTradeTrackingStatus?.maxEventsPerSession
+          )}
+          detail={
+            liveTradeTrackingStatus?.budgetReached
+              ? "budget reached"
+              : "session cap"
+          }
+          tone={liveTradeTrackingStatus?.budgetReached ? "bad" : "neutral"}
+        />
+      </div>
+      <div className="data-wallet-address-row">
+        <span className="mono">{publicKey ?? "PUMPPORTAL_DATA_WALLET_PUBLIC_KEY missing"}</span>
+        <button
+          disabled={!publicKey}
+          onClick={() => copyPublicKey(publicKey)}
+          type="button"
+        >
+          COPY ADDRESS
+        </button>
+      </div>
+      <div className="signal-risk-strip data-wallet-warnings">
+        <span>DATA ONLY</span>
+        <span>PAPER ONLY</span>
+        <span>NO TRADING ENDPOINTS</span>
+        <span>NO PRIVATE KEY STORED</span>
+        <span>FUND SMALL AMOUNTS ONLY</span>
+      </div>
+      <ReasonBlock
+        title="Data Wallet Reasons"
+        codes={dataWalletStatus?.reasonCodes}
+      />
+    </div>
   );
 }
 
@@ -1838,6 +2018,32 @@ function getTradeTrackingBadgeClass(value: string): string {
   }
 
   return "terminal-badge-neutral";
+}
+
+function getDataWalletTone(
+  balanceStatus: string | null | undefined
+): "good" | "bad" | "warn" | "neutral" {
+  if (balanceStatus === "ok") {
+    return "good";
+  }
+
+  if (balanceStatus === "critical" || balanceStatus === "missing_config") {
+    return "bad";
+  }
+
+  if (balanceStatus === "low" || balanceStatus === "unknown") {
+    return "warn";
+  }
+
+  return "neutral";
+}
+
+function copyPublicKey(publicKey: string | null): void {
+  if (!publicKey || !navigator.clipboard) {
+    return;
+  }
+
+  void navigator.clipboard.writeText(publicKey);
 }
 
 function formatBool(value: boolean | null | undefined): string {

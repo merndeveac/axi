@@ -135,6 +135,19 @@ const options: ApiServerOptions = {
     maxMintsPerMinute: config.LIVE_CARD_ENRICHMENT_MAX_MINTS_PER_MINUTE,
     onNewToken: config.LIVE_CARD_ENRICHMENT_ON_NEW_TOKEN
   },
+  pumpPortalDataWallet: {
+    apiKeyConfigured: config.PUMPPORTAL_API_KEY !== undefined,
+    balanceRefreshMs: config.PUMPPORTAL_DATA_WALLET_BALANCE_REFRESH_MS,
+    commitment: config.SOLANA_RPC_COMMITMENT,
+    criticalBalanceSol: config.PUMPPORTAL_DATA_WALLET_CRITICAL_BALANCE_SOL,
+    eventCostSolPer10000: config.PUMPPORTAL_DATA_EVENT_COST_SOL_PER_10000,
+    minBalanceSol: config.PUMPPORTAL_DATA_WALLET_MIN_BALANCE_SOL,
+    publicKey: config.PUMPPORTAL_DATA_WALLET_PUBLIC_KEY,
+    requestTimeoutMs: config.CHAIN_VERIFIER_REQUEST_TIMEOUT_MS,
+    rpcHttpUrl: config.SOLANA_RPC_HTTP,
+    targetBalanceSol: config.PUMPPORTAL_DATA_WALLET_TARGET_BALANCE_SOL,
+    warnBalanceSol: config.PUMPPORTAL_DATA_WALLET_WARN_BALANCE_SOL
+  },
   allowMockData: config.ALLOW_MOCK_DATA,
   failIfNoRealData: config.FAIL_IF_NO_REAL_DATA,
   mockFeedEnabled: config.MOCK_FEED_ENABLED,
@@ -234,6 +247,7 @@ server.app.log.info(
     watchOrchestrator: server.watchOrchestration.getStatus(),
     chainVerifier: server.chainVerifier.getStatus(),
     actualData: server.actualData.getStatus(),
+    dataWallet: server.pumpPortalDataWallet.getStatus(),
     liveTradeTracking: config.LIVE_TRADE_TRACKING_ENABLED,
     liveCardEnrichment: config.LIVE_CARD_ENRICHMENT_ENABLED,
     tokenIdentity: server.tokenIdentity.getStatus(),

@@ -610,6 +610,61 @@ curl -X POST http://localhost:8787/live/trade-tracking/track \
   -d '{"mint":"<MINT>","reason":"manual"}'
 ```
 
+### PumpPortal Data Wallet / Billing
+
+PumpPortal metered data streams such as `subscribeTokenTrade` require a
+PumpPortal API key linked to a wallet with SOL for data-message billing. This is
+not an AXI trading wallet. AXI does not load private keys, store private keys,
+sign transactions, send transactions, call PumpPortal trading APIs, or create
+live orders. The API key stays backend-only and should be treated as sensitive;
+the dashboard may show only whether it is configured.
+
+Only fund small amounts. PumpPortal token/account trade streams require at
+least `0.02 SOL` of data-billing balance, and metered websocket messages are
+modeled at `0.01 SOL / 10,000 events`. New-token and migration streams do not
+require this metered data-wallet funding.
+
+Manual setup:
+
+1. Create a PumpPortal wallet/API key on PumpPortal.
+2. Save the private key yourself outside AXI.
+3. Add only the public key and API key to `.env.local`.
+4. Fund the public key with a small amount of SOL.
+5. Start the app.
+6. Check `/pumpportal/data-wallet/status`.
+
+`.env.local` values:
+
+```bash
+PUMPPORTAL_DATA_WALLET_PUBLIC_KEY=<PUBLIC_FUNDING_ADDRESS>
+PUMPPORTAL_API_KEY=<PUMPPORTAL_API_KEY>
+SOLANA_RPC_HTTP=<RPC_HTTP_URL>
+PUMPPORTAL_DATA_WALLET_MIN_BALANCE_SOL=0.02
+PUMPPORTAL_DATA_WALLET_TARGET_BALANCE_SOL=0.05
+PUMPPORTAL_DATA_EVENT_COST_SOL_PER_10000=0.01
+```
+
+The public funding address is safe to display in the dashboard. The API key is
+never returned by the API and never shown in the frontend.
+
+Data-wallet endpoints:
+
+```bash
+curl http://localhost:8787/pumpportal/data-wallet/status
+curl -X POST http://localhost:8787/pumpportal/data-wallet/refresh
+curl http://localhost:8787/pumpportal/data-wallet/funding
+```
+
+CLI status helper:
+
+```bash
+pnpm --filter @axi/api pumpportal:data-wallet:status
+```
+
+The optional PumpPortal create-wallet helper is intentionally not implemented
+in AXI. Manual setup keeps generated hot-wallet private keys outside the app and
+outside the repo.
+
 Optional live-card enrichment and chain verification are also disabled by
 default. They only add read-only display data when explicitly enabled:
 
@@ -672,6 +727,9 @@ Endpoints:
 - `DELETE /actual-data/subscribe/:mint`
 - `GET /actual-data/trades`
 - `GET /actual-data/trades/:mint`
+- `GET /pumpportal/data-wallet/status`
+- `POST /pumpportal/data-wallet/refresh`
+- `GET /pumpportal/data-wallet/funding`
 - `GET /live/trade-tracking/status`
 - `POST /live/trade-tracking/track`
 - `DELETE /live/trade-tracking/track/:mint`
@@ -744,9 +802,18 @@ enabled.
 
 `GET /actual-data/status` reports the actual-data safety gates, provider
 compatibility, metered acknowledgement, API-key configured boolean, subscription
-counts, event budgets, and `paperOnly: true`. `POST /actual-data/subscribe`
-accepts `{ "mint": "...", "reason": "manual" }` and subscribes read-only to
-PumpPortal token trades only when all gates pass.
+counts, event budgets, PumpPortal data-wallet readiness, and `paperOnly: true`.
+`POST /actual-data/subscribe` accepts `{ "mint": "...", "reason": "manual" }`
+and subscribes read-only to PumpPortal token trades only when all gates pass.
+Missing RPC balance checks are shown as unverified warnings; a verified balance
+below the configured minimum blocks metered token-trade subscriptions.
+
+`GET /pumpportal/data-wallet/status` reports safe billing-wallet readiness:
+public funding address, SOL balance when RPC is configured, estimated metered
+events remaining, threshold status, and reason codes. Responses never include
+the PumpPortal API key or any private key. `GET
+/pumpportal/data-wallet/funding` returns user-facing funding instructions for
+the public address only.
 
 `GET /live/trade-tracking/status` reports the card-focused trade-tracking gates,
 selected mint caps, session budgets, and tracked mints. `POST
@@ -910,8 +977,11 @@ The dashboard uses a terminal-style dark UI with PAPER mode kept visible in the
 top status bar. It is organized into LIVE, SIGNALS, METRICS, RISK, DATA, and
 STORAGE / DEBUG tabs. The LIVE tab is the default and renders token
 intelligence cards backed by `/ui/live-token-cards`. Unknown/unavailable values
-render as `--` with reason-code audit visibility. It has no wallet controls,
-buy/sell buttons, or live-trading controls.
+render as `--` with reason-code audit visibility. The DATA tab includes a
+PumpPortal metered data-wallet panel showing the public funding address,
+read-only balance, budget estimates, and safety warnings. It has no wallet
+signing controls, buy/sell buttons, withdrawal/import actions, or live-trading
+controls.
 
 ## Chrome Extension Skeleton
 

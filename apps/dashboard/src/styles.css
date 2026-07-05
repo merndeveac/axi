@@ -652,6 +652,42 @@ dd {
   text-transform: uppercase;
 }
 
+.data-wallet-panel {
+  border: 1px solid var(--line-dim);
+  background: var(--panel);
+  margin-bottom: 10px;
+}
+
+.data-wallet-panel .status-grid {
+  margin: 0;
+  border-right: 0;
+  border-left: 0;
+}
+
+.data-wallet-address-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid var(--line-dim);
+  border-bottom: 1px solid var(--line-dim);
+  padding: 8px 10px;
+}
+
+.data-wallet-address-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.data-wallet-address-row button {
+  flex: 0 0 auto;
+  min-width: 120px;
+}
+
+.data-wallet-warnings {
+  border-bottom: 1px solid var(--line-dim);
+}
+
 .debug-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));

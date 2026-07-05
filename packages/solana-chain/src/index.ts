@@ -28,6 +28,7 @@ export type NormalizedRpcError = {
 };
 
 export type SolanaRpcClient = {
+  getBalance: (publicKey: PublicKey, commitment?: Commitment) => Promise<number>;
   getParsedAccountInfo: (
     publicKey: PublicKey,
     commitment?: Commitment
@@ -179,6 +180,14 @@ export type SolanaTokenMetadata = {
   error?: NormalizedRpcError;
 };
 
+export type SolanaBalanceInfo = {
+  publicKey: string;
+  balanceLamports: number | null;
+  balanceSol: number | null;
+  inspectedAt: string;
+  error?: NormalizedRpcError;
+};
+
 const defaultCommitment: Commitment = "confirmed";
 const defaultRequestTimeoutMs = 10_000;
 const defaultMaxRetries = 2;
@@ -207,6 +216,43 @@ export class SolanaChainClient {
         options.rpcHttpUrl,
         this.commitment
       ) as unknown as SolanaRpcClient);
+  }
+
+  async getSolBalance(publicKey: string): Promise<SolanaBalanceInfo> {
+    const inspectedAt = new Date().toISOString();
+    const parsedPublicKey = parsePublicKey(publicKey);
+
+    if (!parsedPublicKey) {
+      return {
+        publicKey,
+        balanceLamports: null,
+        balanceSol: null,
+        inspectedAt,
+        error: invalidAddressError(publicKey)
+      };
+    }
+
+    const result = await this.callRpc(
+      () => this.rpcClient.getBalance(parsedPublicKey, this.commitment),
+      "getBalance"
+    );
+
+    if (!result.ok) {
+      return {
+        publicKey,
+        balanceLamports: null,
+        balanceSol: null,
+        inspectedAt,
+        error: result.error
+      };
+    }
+
+    return {
+      publicKey,
+      balanceLamports: result.value,
+      balanceSol: result.value / 1_000_000_000,
+      inspectedAt
+    };
   }
 
   async inspectMint(mint: string): Promise<MintInspection> {
@@ -819,6 +865,13 @@ export async function resolveTokenIdentityFromSolana(
   options: SolanaChainClientOptions
 ): Promise<TokenIdentity> {
   return createSolanaChainClient(options).resolveTokenIdentityFromSolana(mint);
+}
+
+export async function getSolBalance(
+  publicKey: string,
+  options: SolanaChainClientOptions
+): Promise<SolanaBalanceInfo> {
+  return createSolanaChainClient(options).getSolBalance(publicKey);
 }
 
 export function getTokenMetadataPda(mint: string): string | null {

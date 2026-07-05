@@ -4,8 +4,29 @@ import {
   createActualDataService,
   parseManualMints
 } from "./actual-data-service";
+import {
+  createPumpPortalDataWalletConfig,
+  createPumpPortalDataWalletService
+} from "./pumpportal-data-wallet-service";
 
 const config = loadApiConfig();
+const pumpPortalDataWallet = createPumpPortalDataWalletService({
+  config: createPumpPortalDataWalletConfig({
+    apiKeyConfigured: config.PUMPPORTAL_API_KEY !== undefined,
+    balanceRefreshMs: config.PUMPPORTAL_DATA_WALLET_BALANCE_REFRESH_MS,
+    commitment: config.SOLANA_RPC_COMMITMENT,
+    criticalBalanceSol: config.PUMPPORTAL_DATA_WALLET_CRITICAL_BALANCE_SOL,
+    eventCostSolPer10000: config.PUMPPORTAL_DATA_EVENT_COST_SOL_PER_10000,
+    minBalanceSol: config.PUMPPORTAL_DATA_WALLET_MIN_BALANCE_SOL,
+    publicKey: config.PUMPPORTAL_DATA_WALLET_PUBLIC_KEY,
+    requestTimeoutMs: config.CHAIN_VERIFIER_REQUEST_TIMEOUT_MS,
+    rpcHttpUrl: config.SOLANA_RPC_HTTP,
+    targetBalanceSol: config.PUMPPORTAL_DATA_WALLET_TARGET_BALANCE_SOL,
+    warnBalanceSol: config.PUMPPORTAL_DATA_WALLET_WARN_BALANCE_SOL
+  })
+});
+await pumpPortalDataWallet.refreshBalance({ force: true });
+
 const actualData = createActualDataService({
   config: createActualDataConfig({
     acknowledgedMetered: config.PUMPPORTAL_TOKEN_TRADES_ACK_METERED,
@@ -32,6 +53,7 @@ const actualData = createActualDataService({
     unsubscribeAfterMs:
       config.PUMPPORTAL_TOKEN_TRADES_UNSUBSCRIBE_AFTER_MS
   }),
+  dataWalletReadiness: () => pumpPortalDataWallet.getActualDataReadiness(),
   providerName: config.DATA_FEED
 });
 

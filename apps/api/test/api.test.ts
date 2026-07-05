@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { TokenCreatedEvent, TokenTradeEvent } from "@axi/data-feeds";
+import type { SolanaChainClient } from "@axi/solana-chain";
 import type { LiveTokenCardViewModel, StrategyStatus } from "@axi/shared";
 import type { ApiServer } from "../src/app";
 import { createApiServer } from "../src/app";
@@ -434,6 +435,8 @@ describe("@axi/api", () => {
     const body = response.json() as {
       enabled: boolean;
       acknowledgedMetered: boolean;
+      dataWalletBalanceStatus: string;
+      dataWalletReasonCodes: string[];
       paperOnly: boolean;
       reasonCodes: string[];
     };
@@ -441,6 +444,10 @@ describe("@axi/api", () => {
     expect(response.statusCode).toBe(200);
     expect(body.enabled).toBe(false);
     expect(body.acknowledgedMetered).toBe(false);
+    expect(body.dataWalletBalanceStatus).toBe("missing_config");
+    expect(body.dataWalletReasonCodes).toContain(
+      "DATA_WALLET_PUBLIC_KEY_MISSING"
+    );
     expect(body.paperOnly).toBe(true);
     expect(body.reasonCodes).toContain("ACTUAL_DATA_DISABLED");
   });
@@ -531,6 +538,39 @@ describe("@axi/api", () => {
     expect(body.error).toBe("INVALID_MINT");
   });
 
+  it("POST /actual-data/subscribe rejects verified insufficient data-wallet balance", async () => {
+    server = createActualDataTestServer({
+      acknowledgedMetered: true,
+      dataWalletBalanceSol: 0.005,
+      enabled: true
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/actual-data/subscribe",
+      payload: {
+        mint: "So11111111111111111111111111111111111111112",
+        reason: "manual"
+      }
+    });
+    const body = response.json() as {
+      actualData: {
+        dataWalletBalanceSol: number | null;
+        dataWalletBalanceStatus: string;
+        dataWalletReasonCodes: string[];
+      };
+      error: string;
+    };
+
+    expect(response.statusCode).toBe(409);
+    expect(body.error).toBe("DATA_WALLET_FUNDS_REQUIRED_FOR_METERED_STREAM");
+    expect(body.actualData.dataWalletBalanceSol).toBe(0.005);
+    expect(body.actualData.dataWalletBalanceStatus).toBe("critical");
+    expect(body.actualData.dataWalletReasonCodes).toContain(
+      "DATA_WALLET_BALANCE_CRITICAL"
+    );
+  });
+
   it("GET /actual-data/trades returns an array", async () => {
     server = createTestServer();
 
@@ -542,6 +582,117 @@ describe("@axi/api", () => {
 
     expect(response.statusCode).toBe(200);
     expect(body).toEqual([]);
+  });
+
+  it("GET /pumpportal/data-wallet/status works with no config and no secrets", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/pumpportal/data-wallet/status"
+    });
+    const body = response.json() as {
+      apiKeyConfigured: boolean;
+      balanceStatus: string;
+      paperOnly: boolean;
+      publicKey: string | null;
+      reasonCodes: string[];
+    };
+    const serialized = JSON.stringify(body).toLowerCase();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.apiKeyConfigured).toBe(false);
+    expect(body.publicKey).toBeNull();
+    expect(body.balanceStatus).toBe("missing_config");
+    expect(body.paperOnly).toBe(true);
+    expect(body.reasonCodes).toContain("DATA_WALLET_PUBLIC_KEY_MISSING");
+    expect(serialized).not.toContain("privatekey");
+    expect(serialized).not.toContain("api-key-value");
+  });
+
+  it("GET /pumpportal/data-wallet/status flags invalid public keys", async () => {
+    server = createApiServer({
+      logLevel: false,
+      pumpPortalDataWallet: {
+        apiKeyConfigured: true,
+        publicKey: "INVALID_PUBLIC_KEY"
+      },
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/pumpportal/data-wallet/status"
+    });
+    const body = response.json() as {
+      publicKeyValid: boolean;
+      reasonCodes: string[];
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.publicKeyValid).toBe(false);
+    expect(body.reasonCodes).toContain("DATA_WALLET_PUBLIC_KEY_INVALID");
+  });
+
+  it("POST /pumpportal/data-wallet/refresh returns mocked read-only balance", async () => {
+    server = createApiServer({
+      logLevel: false,
+      pumpPortalDataWallet: {
+        apiKeyConfigured: true,
+        publicKey: "So11111111111111111111111111111111111111112",
+        rpcHttpUrl: "http://localhost:8899",
+        solanaClient: createDataWalletSolanaClient(0.05)
+      },
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/pumpportal/data-wallet/refresh"
+    });
+    const body = response.json() as {
+      balanceSol: number;
+      balanceStatus: string;
+      estimatedEventsRemaining: number;
+      reasonCodes: string[];
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.balanceSol).toBe(0.05);
+    expect(body.balanceStatus).toBe("ok");
+    expect(body.estimatedEventsRemaining).toBe(50_000);
+    expect(body.reasonCodes).toContain("DATA_WALLET_BALANCE_OK");
+  });
+
+  it("GET /pumpportal/data-wallet/funding returns public funding instructions only", async () => {
+    server = createApiServer({
+      logLevel: false,
+      pumpPortalDataWallet: {
+        apiKeyConfigured: true,
+        publicKey: "So11111111111111111111111111111111111111112"
+      },
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/pumpportal/data-wallet/funding"
+    });
+    const body = response.json() as {
+      publicKey: string;
+      instructions: string;
+      warnings: string[];
+    };
+    const serialized = JSON.stringify(body).toLowerCase();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.publicKey).toBe("So11111111111111111111111111111111111111112");
+    expect(body.instructions).toContain("metered data streams");
+    expect(body.warnings.join(" ")).toContain("private key");
+    expect(serialized).not.toContain("api-key-value");
   });
 
   it("GET /live/trade-tracking/status is disabled by default", async () => {
@@ -1404,6 +1555,7 @@ function createTestServer(): ApiServer {
 
 function createActualDataTestServer(options: {
   acknowledgedMetered: boolean;
+  dataWalletBalanceSol?: number;
   enabled: boolean;
   liveTradeTrackingAcknowledged?: boolean;
   liveTradeTrackingEnabled?: boolean;
@@ -1437,9 +1589,32 @@ function createActualDataTestServer(options: {
       subscribeNewToken: false,
       wsUrl: "wss://example.test/pumpportal"
     },
+    pumpPortalDataWallet: {
+      apiKeyConfigured: true,
+      publicKey: "So11111111111111111111111111111111111111112",
+      ...(options.dataWalletBalanceSol !== undefined
+        ? {
+            rpcHttpUrl: "http://localhost:8899",
+            solanaClient: createDataWalletSolanaClient(
+              options.dataWalletBalanceSol
+            )
+          }
+        : {})
+    },
     startFeed: false,
     storageDatabasePath: databasePath
   });
+}
+
+function createDataWalletSolanaClient(balanceSol: number) {
+  return {
+    getSolBalance: async (publicKey: string) => ({
+      publicKey,
+      balanceLamports: Math.round(balanceSol * 1_000_000_000),
+      balanceSol,
+      inspectedAt: "2026-01-01T00:00:00.000Z"
+    })
+  } as unknown as SolanaChainClient;
 }
 
 function createPumpPortalEvent(): TokenCreatedEvent {

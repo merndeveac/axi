@@ -114,6 +114,13 @@ import {
   type LiveToken,
   type LiveTokenService
 } from "./live-token-service";
+import {
+  createPumpPortalDataWalletConfig,
+  createPumpPortalDataWalletService,
+  type PumpPortalDataWalletConfig,
+  type PumpPortalDataWalletService,
+  type PumpPortalDataWalletServiceOptions
+} from "./pumpportal-data-wallet-service";
 
 const logLevelSchema = z.enum([
   "fatal",
@@ -353,6 +360,35 @@ export const apiConfigSchema = z.object({
     (value) => (value === "" ? undefined : value),
     z.string().min(1).optional()
   ),
+  PUMPPORTAL_DATA_WALLET_PUBLIC_KEY: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional()
+  ),
+  PUMPPORTAL_DATA_WALLET_MIN_BALANCE_SOL: z.coerce
+    .number()
+    .nonnegative()
+    .default(0.02),
+  PUMPPORTAL_DATA_WALLET_TARGET_BALANCE_SOL: z.coerce
+    .number()
+    .nonnegative()
+    .default(0.05),
+  PUMPPORTAL_DATA_EVENT_COST_SOL_PER_10000: z.coerce
+    .number()
+    .positive()
+    .default(0.01),
+  PUMPPORTAL_DATA_WALLET_BALANCE_REFRESH_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(15000),
+  PUMPPORTAL_DATA_WALLET_WARN_BALANCE_SOL: z.coerce
+    .number()
+    .nonnegative()
+    .default(0.03),
+  PUMPPORTAL_DATA_WALLET_CRITICAL_BALANCE_SOL: z.coerce
+    .number()
+    .nonnegative()
+    .default(0.02),
   PUMPPORTAL_SUBSCRIBE_NEW_TOKEN: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(true),
@@ -566,6 +602,8 @@ export type ApiServerOptions = {
   actualData?: ActualDataServiceConfig;
   liveTradeTracking?: Partial<LiveTradeTrackingConfig>;
   liveCardEnrichment?: Partial<LiveCardEnrichmentConfig>;
+  pumpPortalDataWallet?: Partial<PumpPortalDataWalletConfig> &
+    Pick<PumpPortalDataWalletServiceOptions, "solanaClient">;
   realDataRequired?: boolean;
   signalIntervalMs?: number;
   startFeed?: boolean;
@@ -590,6 +628,7 @@ export type ApiServer = {
   chainVerifier: ChainVerifierService;
   watchOrchestration: WatchOrchestrationService;
   actualData: ActualDataService;
+  pumpPortalDataWallet: PumpPortalDataWalletService;
   liveTokens: LiveTokenService;
   tokenIdentity: TokenIdentityService;
 };
@@ -693,8 +732,16 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     ...options.chainEvents,
     onSafeFeedEvent: handleFeedEvent
   });
+  const pumpPortalDataWalletOptions = options.pumpPortalDataWallet ?? {};
+  const pumpPortalDataWallet = createPumpPortalDataWalletService({
+    config: createPumpPortalDataWalletConfig(pumpPortalDataWalletOptions),
+    ...(pumpPortalDataWalletOptions.solanaClient
+      ? { solanaClient: pumpPortalDataWalletOptions.solanaClient }
+      : {})
+  });
   const actualData = createActualDataService({
     config: options.actualData ?? createActualDataConfig(),
+    dataWalletReadiness: () => pumpPortalDataWallet.getActualDataReadiness(),
     providerName: feed.name,
     ...(feed instanceof PumpPortalFeedProvider
       ? { pumpPortalProvider: feed }
@@ -768,6 +815,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const watchStatus = watchOrchestration.getStatus();
     const feedStatus = getFeedStatus();
     const liveStatus = liveTokens.getStatus();
+    const dataWalletStatus = await pumpPortalDataWallet.refreshBalance();
 
     return {
       chainEvents: chainEventsStatus,
@@ -781,6 +829,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       actualData: actualData.getStatus(),
       actualDataSessionCount: stats.actualDataSessionCount,
       actualDataSubscriptionCount: stats.actualDataSubscriptionCount,
+      dataWallet: dataWalletStatus,
       liveTradeTracking: getLiveTradeTrackingStatus(),
       liveCardEnrichment: getLiveCardEnrichmentStatus(),
       dataFeedMode,
@@ -986,10 +1035,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     }
   });
 
-  app.get("/actual-data/status", async () => actualData.getStatus());
+  app.get("/actual-data/status", async () => {
+    await pumpPortalDataWallet.refreshBalance();
+    return actualData.getStatus();
+  });
 
   app.get("/actual-data/subscriptions", async (request) => {
     const query = limitQuerySchema.parse(request.query);
+    await pumpPortalDataWallet.refreshBalance();
 
     return {
       current: actualData.getSubscriptions(),
@@ -1000,6 +1053,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   app.post("/actual-data/subscribe", async (request, reply) => {
     const body = actualDataSubscribeBodySchema.parse(request.body);
+    await pumpPortalDataWallet.refreshBalance();
 
     try {
       return actualData.subscribeMint(body.mint, body.reason);
@@ -1041,12 +1095,28 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     );
   });
 
+  app.get("/pumpportal/data-wallet/status", async () =>
+    pumpPortalDataWallet.refreshBalance()
+  );
+
+  app.post("/pumpportal/data-wallet/refresh", async () =>
+    pumpPortalDataWallet.refreshBalance({ force: true })
+  );
+
+  app.get("/pumpportal/data-wallet/funding", async () =>
+    pumpPortalDataWallet.getFundingInstructions()
+  );
+
   app.get("/live/trade-tracking/status", async () =>
-    getLiveTradeTrackingStatus()
+    {
+      await pumpPortalDataWallet.refreshBalance();
+      return getLiveTradeTrackingStatus();
+    }
   );
 
   app.post("/live/trade-tracking/track", async (request, reply) => {
     const body = liveTradeTrackingBodySchema.parse(request.body);
+    await pumpPortalDataWallet.refreshBalance();
 
     try {
       return trackLiveMint(body.mint, body.reason);
@@ -2948,6 +3018,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     feed,
     getSignals: () => Array.from(signals.values()),
     metrics: metricsEngine,
+    pumpPortalDataWallet,
     risk: riskEngine,
     chainVerifier,
     liveTokens,

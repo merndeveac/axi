@@ -61,6 +61,36 @@ describe("@axi/solana-chain", () => {
     expect(result.uiAmount).toBe(1000);
   });
 
+  it("reads SOL balance without exposing signing behavior", async () => {
+    const rpcClient = createRpcClient({
+      balanceLamports: 25_000_000
+    });
+    const client = new SolanaChainClient({
+      rpcClient,
+      rpcHttpUrl: "http://localhost:8899"
+    });
+
+    const result = await client.getSolBalance(mint);
+
+    expect(result.balanceLamports).toBe(25_000_000);
+    expect(result.balanceSol).toBe(0.025);
+    expect(rpcClient.getBalance).toHaveBeenCalledOnce();
+  });
+
+  it("returns invalid-address balance errors without RPC", async () => {
+    const rpcClient = createRpcClient();
+    const client = new SolanaChainClient({
+      rpcClient,
+      rpcHttpUrl: "http://localhost:8899"
+    });
+
+    const result = await client.getSolBalance("INVALID_ADDRESS");
+
+    expect(result.balanceSol).toBeNull();
+    expect(result.error?.code).toBe("INVALID_SOLANA_ADDRESS");
+    expect(rpcClient.getBalance).not.toHaveBeenCalled();
+  });
+
   it("computes holder concentration from largest accounts", async () => {
     const client = new SolanaChainClient({
       rpcClient: createRpcClient({
@@ -179,6 +209,7 @@ describe("@axi/solana-chain", () => {
 });
 
 function createRpcClient(options: {
+  balanceLamports?: number;
   freezeAuthority?: string | null;
   largestAccounts?: Array<{
     amount: string;
@@ -194,6 +225,7 @@ function createRpcClient(options: {
   const supplyAmount = options.supplyAmount ?? "1000000000";
 
   return {
+    getBalance: vi.fn(async () => options.balanceLamports ?? 0),
     getParsedAccountInfo: vi.fn(async (publicKey: PublicKey) => {
       if (
         options.metadataAccountData &&
