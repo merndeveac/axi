@@ -1293,9 +1293,13 @@ describe("@axi/api", () => {
     const body = response.json() as {
       managedStreamEnabled: boolean;
       provider: string;
+      clientKind: string;
+      clientStatus: { connectionState: string; authMasked: string | null };
+      providerStatus: { connectionState: string };
       connectionState: string;
       endpointMasked: string | null;
       authTokenMasked: string | null;
+      subscriptionSummary: { transactionsEnabled: boolean };
       yellowstoneStatus: { connectionState: string };
       paperOnly: boolean;
       tradingDisabled: boolean;
@@ -1306,15 +1310,127 @@ describe("@axi/api", () => {
     expect(response.statusCode).toBe(200);
     expect(body.managedStreamEnabled).toBe(false);
     expect(body.provider).toBe("yellowstone");
+    expect(body.clientKind).toBe("yellowstone");
+    expect(body.clientStatus.connectionState).toBe("disabled");
+    expect(body.providerStatus.connectionState).toBe("disabled");
     expect(body.connectionState).toBe("disabled");
     expect(body.endpointMasked).toContain("token=****");
     expect(body.authTokenMasked).toBe("configured:16");
+    expect(body.subscriptionSummary.transactionsEnabled).toBe(true);
     expect(serialized).not.toContain("super-secret");
     expect(serialized).not.toContain("not-a-real-token");
     expect(body.yellowstoneStatus.connectionState).toBe("not_implemented");
     expect(body.paperOnly).toBe(true);
     expect(body.tradingDisabled).toBe(true);
     expect(body.reasonCodes).toContain("STREAM_NO_NETWORK_IN_TESTS");
+  });
+
+  it("GET /indexer/stream/config returns sanitized managed stream config", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath,
+      indexer: {
+        managedStream: {
+          enabled: true,
+          provider: "laserstream",
+          endpoint: "https://laserstream.example.invalid?api_key=super-secret",
+          apiKey: "not-a-real-key"
+        }
+      }
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/indexer/stream/config"
+    });
+    const body = response.json() as {
+      provider: string;
+      clientKind: string;
+      configured: boolean;
+      authConfigured: boolean;
+      endpointMasked: string | null;
+      authTokenMasked: string | null;
+      reasonCodes: string[];
+    };
+    const serialized = JSON.stringify(body);
+
+    expect(response.statusCode).toBe(200);
+    expect(body.provider).toBe("laserstream");
+    expect(body.clientKind).toBe("laserstream");
+    expect(body.configured).toBe(true);
+    expect(body.authConfigured).toBe(true);
+    expect(body.endpointMasked).toContain("api_key=****");
+    expect(body.authTokenMasked).toBe("configured:14");
+    expect(body.reasonCodes).toContain("MANAGED_STREAM_CLIENT_SKELETON");
+    expect(serialized).not.toContain("super-secret");
+    expect(serialized).not.toContain("not-a-real-key");
+  });
+
+  it("POST /indexer/stream/build-subscription builds safe previews", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath,
+      indexer: {
+        managedStream: {
+          provider: "yellowstone",
+          endpoint: "https://yellowstone.example.invalid?token=super-secret",
+          authToken: "not-a-real-token"
+        }
+      }
+    });
+
+    const yellowstoneResponse = await server.app.inject({
+      method: "POST",
+      url: "/indexer/stream/build-subscription",
+      payload: {
+        provider: "yellowstone",
+        profile: "pumpfun_program_transactions",
+        includeProgram: ["FakeProgram111111111111111111111111111111111"],
+        requiredAccount: ["FakeRequired1111111111111111111111111111111"]
+      }
+    });
+    const laserstreamResponse = await server.app.inject({
+      method: "POST",
+      url: "/indexer/stream/build-subscription",
+      payload: {
+        provider: "laserstream",
+        commitment: "processed",
+        config: {
+          transactionAccountInclude: [
+            "FakeLaserProgram111111111111111111111111111"
+          ],
+          transactionAccountRequired: [
+            "FakeLaserRequired1111111111111111111111111"
+          ]
+        }
+      }
+    });
+    const yellowstone = yellowstoneResponse.json() as {
+      provider: string;
+      request: { provider: string };
+      subscriptionSummary: { transactionAccountIncludeCount: number };
+      reasonCodes: string[];
+    };
+    const laserstream = laserstreamResponse.json() as {
+      provider: string;
+      request: { provider: string };
+      subscriptionSummary: { commitment: string };
+    };
+    const serialized = JSON.stringify({ yellowstone, laserstream });
+
+    expect(yellowstoneResponse.statusCode).toBe(200);
+    expect(yellowstone.provider).toBe("yellowstone");
+    expect(yellowstone.request.provider).toBe("yellowstone");
+    expect(yellowstone.subscriptionSummary.transactionAccountIncludeCount).toBe(1);
+    expect(yellowstone.reasonCodes).toContain("STREAM_PROFILE_BUILT");
+    expect(laserstreamResponse.statusCode).toBe(200);
+    expect(laserstream.provider).toBe("laserstream");
+    expect(laserstream.request.provider).toBe("laserstream");
+    expect(laserstream.subscriptionSummary.commitment).toBe("processed");
+    expect(serialized).not.toContain("super-secret");
+    expect(serialized).not.toContain("not-a-real-token");
   });
 
   it("POST /indexer/stream/mock/publish-fixture updates stream, live-state, and timeseries", async () => {

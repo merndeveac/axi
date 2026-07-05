@@ -13,6 +13,7 @@
     { "path": "../../packages/indexer-core" },
     { "path": "../../packages/live-state" },
     { "path": "../../packages/managed-stream-adapter" },
+    { "path": "../../packages/managed-stream-clients" },
     { "path": "../../packages/pumpfun-decoder" },
     { "path": "../../packages/stream-core" },
     { "path": "../../packages/stream-mock" },

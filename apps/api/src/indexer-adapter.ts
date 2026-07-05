@@ -12,6 +12,18 @@ import {
   type SanitizedStreamEnvelope
 } from "@axi/managed-stream-adapter";
 import {
+  buildLaserStreamSubscriptionRequest,
+  buildManagedStreamSubscriptionProfile,
+  buildYellowstoneSubscriptionRequest,
+  createManagedStreamClient,
+  createManagedStreamSubscriptionSummary,
+  managedStreamClientReasonCodes,
+  type ManagedStreamClientKind,
+  type ManagedStreamClientStatus,
+  type ManagedStreamSubscriptionProfileName,
+  type ManagedStreamSubscriptionSummary
+} from "@axi/managed-stream-clients";
+import {
   createLiveTokenStateStore,
   type LiveTokenState,
   type LiveTokenStateStore
@@ -20,7 +32,6 @@ import { loadPumpfunFixture } from "@axi/pumpfun-decoder";
 import { createMockTransactionEnvelopeFromFixture } from "@axi/stream-mock";
 import {
   createDefaultSubscriptionConfig,
-  maskAuthToken,
   maskStreamEndpoint,
   streamReasonCodes,
   type ManagedStreamCommitment,
@@ -43,8 +54,10 @@ export type ManagedStreamAdapterConfig = {
   commitment?: ManagedStreamCommitment;
   endpoint?: string | undefined;
   authToken?: string | undefined;
+  apiKey?: string | undefined;
   maxReconnectAttempts?: number;
   reconnectBackoffMs?: number;
+  transactionsEnabled?: boolean;
   transactionAccountInclude?: string[];
   transactionAccountExclude?: string[];
   transactionAccountRequired?: string[];
@@ -58,34 +71,46 @@ export type ManagedStreamAdapterConfig = {
   laserstreamAuthToken?: string | undefined;
 };
 
+export type ManagedStreamPreviewProvider = "yellowstone" | "laserstream" | "mock";
+
+export type ManagedStreamProviderStatusPreview = {
+  provider: ManagedStreamProviderKind;
+  enabled: boolean;
+  configured: boolean;
+  authConfigured: boolean;
+  connectionState: string;
+  commitment: ManagedStreamCommitment;
+  subscribed: boolean;
+  subscriptions: ManagedStreamSubscriptionConfig | null;
+  receivedCount: number;
+  transactionCount: number;
+  accountCount: number;
+  errorCount: number;
+  lastMessageAt: string | null;
+  lastError: string | null;
+  reasonCodes: string[];
+};
+
 export type ManagedStreamApiStatus = {
   managedStreamEnabled: boolean;
   provider: ManagedStreamProviderKind;
+  clientKind: ManagedStreamClientKind;
+  clientStatus: ManagedStreamClientStatus;
+  providerStatus: ManagedStreamProviderStatusPreview;
   connectionState: string;
   configured: boolean;
   authConfigured: boolean;
   endpointMasked: string | null;
   authTokenMasked: string | null;
   subscriptionConfig: ManagedStreamSubscriptionConfig;
+  subscriptionSummary: ManagedStreamSubscriptionSummary;
   receivedCount: number;
   transactionCount: number;
   errorCount: number;
   lastMessageAt: string | null;
   reasonCodes: string[];
-  yellowstoneStatus: {
-    enabled: boolean;
-    configured: boolean;
-    connectionState: "not_implemented";
-    endpointMasked: string | null;
-    authConfigured: boolean;
-  };
-  laserstreamStatus: {
-    enabled: boolean;
-    configured: boolean;
-    connectionState: "not_implemented";
-    endpointMasked: string | null;
-    authConfigured: boolean;
-  };
+  yellowstoneStatus: ManagedStreamClientStatus;
+  laserstreamStatus: ManagedStreamClientStatus;
   paperOnly: true;
   tradingDisabled: true;
 };
@@ -96,8 +121,10 @@ type NormalizedManagedStreamConfig = {
   commitment: ManagedStreamCommitment;
   endpoint: string | undefined;
   authToken: string | undefined;
+  apiKey: string | undefined;
   maxReconnectAttempts: number;
   reconnectBackoffMs: number;
+  transactionsEnabled: boolean;
   transactionAccountInclude: string[];
   transactionAccountExclude: string[];
   transactionAccountRequired: string[];
@@ -109,6 +136,54 @@ type NormalizedManagedStreamConfig = {
   laserstreamEnabled: boolean;
   laserstreamEndpoint: string | undefined;
   laserstreamAuthToken: string | undefined;
+};
+
+export type ManagedStreamConfigPreview = {
+  enabled: boolean;
+  provider: ManagedStreamProviderKind;
+  clientKind: ManagedStreamClientKind;
+  clientStatus: ManagedStreamClientStatus;
+  configured: boolean;
+  authConfigured: boolean;
+  endpointMasked: string | null;
+  authTokenMasked: string | null;
+  commitment: ManagedStreamCommitment;
+  subscriptionSummary: ManagedStreamSubscriptionSummary;
+  yellowstoneStatus: ManagedStreamClientStatus;
+  laserstreamStatus: ManagedStreamClientStatus;
+  paperOnly: true;
+  tradingDisabled: true;
+  reasonCodes: string[];
+};
+
+export type ManagedStreamBuildSubscriptionRequest = {
+  provider?: ManagedStreamPreviewProvider | undefined;
+  profile?: ManagedStreamSubscriptionProfileName | undefined;
+  commitment?: ManagedStreamCommitment | undefined;
+  includeProgram?: string[] | undefined;
+  requiredAccount?: string[] | undefined;
+  config?: {
+    transactionAccountInclude?: string[] | undefined;
+    transactionAccountRequired?: string[] | undefined;
+    transactionAccountExclude?: string[] | undefined;
+    includeVotes?: boolean | undefined;
+    includeFailed?: boolean | undefined;
+    transactionsEnabled?: boolean | undefined;
+  } | undefined;
+};
+
+export type ManagedStreamSubscriptionPreview = {
+  provider: ManagedStreamPreviewProvider;
+  profile: ManagedStreamSubscriptionProfileName | null;
+  request: Record<string, unknown>;
+  subscriptionConfig: ManagedStreamSubscriptionConfig;
+  subscriptionSummary: ManagedStreamSubscriptionSummary;
+  endpointMasked: string | null;
+  authConfigured: boolean;
+  paperOnly: true;
+  tradingDisabled: true;
+  networkDisabled: true;
+  reasonCodes: string[];
 };
 
 export type IndexerAdapterStatus = {
@@ -144,6 +219,10 @@ export type IndexerAdapter = {
   getRecentStreamEnvelopes: (limit?: number) => SanitizedStreamEnvelope[];
   getStatus: () => IndexerAdapterStatus;
   getStreamStatus: () => ManagedStreamApiStatus;
+  getStreamConfig: () => ManagedStreamConfigPreview;
+  buildStreamSubscriptionPreview: (
+    request?: ManagedStreamBuildSubscriptionRequest
+  ) => ManagedStreamSubscriptionPreview;
   getTimeseries: (mint: string) => {
     mint: string;
     windows: ReturnType<TradeTimeseries["getWindows"]>;
@@ -250,6 +329,9 @@ export function createIndexerAdapter(
       ]
     }),
     getStreamStatus: () => createManagedStreamApiStatus(streamConfig, streamAdapter),
+    getStreamConfig: () => createManagedStreamConfigPreview(streamConfig),
+    buildStreamSubscriptionPreview: (request = {}) =>
+      buildManagedStreamSubscriptionPreview(streamConfig, request),
     getTimeseries: (mint) => ({
       mint,
       windows: timeseries.getWindows(mint),
@@ -267,8 +349,10 @@ function normalizeManagedStreamConfig(
     commitment: input.commitment ?? "confirmed",
     endpoint: input.endpoint,
     authToken: input.authToken,
+    apiKey: input.apiKey,
     maxReconnectAttempts: input.maxReconnectAttempts ?? 10,
     reconnectBackoffMs: input.reconnectBackoffMs ?? 1000,
+    transactionsEnabled: input.transactionsEnabled ?? true,
     transactionAccountInclude: input.transactionAccountInclude ?? [],
     transactionAccountExclude: input.transactionAccountExclude ?? [],
     transactionAccountRequired: input.transactionAccountRequired ?? [],
@@ -288,55 +372,213 @@ function createManagedStreamApiStatus(
   adapter: ManagedStreamAdapter
 ): ManagedStreamApiStatus {
   const adapterStatus = adapter.getAdapterStatus();
-  const endpoint = resolveManagedStreamEndpoint(config);
-  const authToken = resolveManagedStreamAuthToken(config);
   const subscriptionConfig = createManagedStreamSubscriptionConfig(config);
-  const placeholder =
-    config.provider === "yellowstone" ||
-    config.provider === "laserstream" ||
-    config.provider === "geyser";
+  const clientStatus = createClientStatus(config, subscriptionConfig);
 
   return {
     managedStreamEnabled: config.enabled,
     provider: config.provider,
-    connectionState: config.enabled
-      ? placeholder
-        ? "not_implemented"
-        : "configured"
-      : "disabled",
-    configured: endpoint !== undefined || config.provider === "mock",
-    authConfigured: authToken !== undefined,
-    endpointMasked: maskStreamEndpoint(endpoint),
-    authTokenMasked: maskAuthToken(authToken),
+    clientKind: clientStatus.kind,
+    clientStatus,
+    providerStatus: createProviderStatusPreview(
+      config,
+      subscriptionConfig,
+      clientStatus
+    ),
+    connectionState: clientStatus.connectionState,
+    configured: clientStatus.configured,
+    authConfigured: clientStatus.authConfigured,
+    endpointMasked: clientStatus.endpointMasked,
+    authTokenMasked: clientStatus.authMasked,
     subscriptionConfig: sanitizeSubscriptionConfig(subscriptionConfig),
+    subscriptionSummary: createManagedStreamSubscriptionSummary(subscriptionConfig),
     receivedCount: adapterStatus.envelopesReceived,
     transactionCount: adapterStatus.eventsProduced,
     errorCount: adapterStatus.decodeErrors,
     lastMessageAt: adapterStatus.lastEnvelopeAt,
-    reasonCodes: [
+    reasonCodes: uniqueStrings([
       "MANAGED_STREAM_FOUNDATION",
+      "MANAGED_STREAM_CLIENT_SKELETON",
       streamReasonCodes.noNetworkInTests,
       ...(config.enabled ? [] : [streamReasonCodes.providerDisabled]),
       ...(config.provider === "mock" ? [streamReasonCodes.providerMock] : []),
-      ...(placeholder ? [streamReasonCodes.notImplemented] : []),
+      ...clientStatus.reasonCodes,
       "NO_TRADING"
-    ],
-    yellowstoneStatus: {
-      enabled: config.yellowstoneEnabled,
-      configured: config.yellowstoneEndpoint !== undefined,
-      connectionState: "not_implemented",
-      endpointMasked: maskStreamEndpoint(config.yellowstoneEndpoint),
-      authConfigured: config.yellowstoneAuthToken !== undefined
-    },
-    laserstreamStatus: {
-      enabled: config.laserstreamEnabled,
-      configured: config.laserstreamEndpoint !== undefined,
-      connectionState: "not_implemented",
-      endpointMasked: maskStreamEndpoint(config.laserstreamEndpoint),
-      authConfigured: config.laserstreamAuthToken !== undefined
-    },
+    ]),
+    yellowstoneStatus: createYellowstoneStatus(config),
+    laserstreamStatus: createLaserStreamStatus(config),
     paperOnly: true,
     tradingDisabled: true
+  };
+}
+
+function createManagedStreamConfigPreview(
+  config: NormalizedManagedStreamConfig
+): ManagedStreamConfigPreview {
+  const subscriptionConfig = createManagedStreamSubscriptionConfig(config);
+  const clientStatus = createClientStatus(config, subscriptionConfig);
+
+  return {
+    enabled: config.enabled,
+    provider: config.provider,
+    clientKind: clientStatus.kind,
+    clientStatus,
+    configured: clientStatus.configured,
+    authConfigured: clientStatus.authConfigured,
+    endpointMasked: clientStatus.endpointMasked,
+    authTokenMasked: clientStatus.authMasked,
+    commitment: subscriptionConfig.commitment,
+    subscriptionSummary: createManagedStreamSubscriptionSummary(subscriptionConfig),
+    yellowstoneStatus: createYellowstoneStatus(config),
+    laserstreamStatus: createLaserStreamStatus(config),
+    paperOnly: true,
+    tradingDisabled: true,
+    reasonCodes: uniqueStrings([
+      "MANAGED_STREAM_CLIENT_SKELETON",
+      ...clientStatus.reasonCodes,
+      "NO_TRADING"
+    ])
+  };
+}
+
+function buildManagedStreamSubscriptionPreview(
+  config: NormalizedManagedStreamConfig,
+  request: ManagedStreamBuildSubscriptionRequest = {}
+): ManagedStreamSubscriptionPreview {
+  const provider = request.provider ?? providerToPreviewProvider(config.provider);
+  const baseConfig = createManagedStreamSubscriptionConfig(config, {
+    provider,
+    commitment: request.commitment,
+    transactionAccountInclude:
+      request.includeProgram ?? request.config?.transactionAccountInclude,
+    transactionAccountExclude: request.config?.transactionAccountExclude,
+    transactionAccountRequired:
+      request.requiredAccount ?? request.config?.transactionAccountRequired,
+    includeVotes: request.config?.includeVotes,
+    includeFailed: request.config?.includeFailed,
+    transactionsEnabled: request.config?.transactionsEnabled
+  });
+  const profileResult = request.profile
+    ? buildManagedStreamSubscriptionProfile(request.profile, {
+        provider,
+        commitment: request.commitment ?? baseConfig.commitment,
+        programIds:
+          request.includeProgram ?? request.config?.transactionAccountInclude,
+        watchedAddresses:
+          request.requiredAccount ?? request.config?.transactionAccountRequired,
+        baseConfig
+      })
+    : null;
+  const subscriptionConfig = profileResult?.subscriptionConfig ?? baseConfig;
+
+  assertManagedStreamFilterLimits(subscriptionConfig);
+
+  const buildResult =
+    provider === "yellowstone"
+      ? buildYellowstoneSubscriptionRequest(subscriptionConfig)
+      : provider === "laserstream"
+        ? buildLaserStreamSubscriptionRequest(subscriptionConfig)
+        : {
+            request: {
+              provider: "mock",
+              subscription: sanitizeSubscriptionConfig(subscriptionConfig)
+            },
+            subscriptionConfig: sanitizeSubscriptionConfig(subscriptionConfig),
+            subscriptionSummary:
+              createManagedStreamSubscriptionSummary(subscriptionConfig),
+            reasonCodes: [managedStreamClientReasonCodes.subscriptionBuilt]
+          };
+
+  return {
+    provider,
+    profile: request.profile ?? null,
+    request: buildResult.request,
+    subscriptionConfig: buildResult.subscriptionConfig,
+    subscriptionSummary: profileResult?.subscriptionSummary ?? buildResult.subscriptionSummary,
+    endpointMasked: maskStreamEndpoint(resolveManagedStreamEndpoint(config, provider)),
+    authConfigured: resolveManagedStreamAuth(config, provider) !== undefined,
+    paperOnly: true,
+    tradingDisabled: true,
+    networkDisabled: true,
+    reasonCodes: uniqueStrings([
+      ...buildResult.reasonCodes,
+      ...(profileResult?.reasonCodes ?? []),
+      "NO_NETWORK",
+      "NO_TRADING"
+    ])
+  };
+}
+
+function createClientStatus(
+  config: NormalizedManagedStreamConfig,
+  subscriptionConfig: ManagedStreamSubscriptionConfig
+): ManagedStreamClientStatus {
+  return createManagedStreamClient({
+    kind: providerToClientKind(config.provider),
+    enabled: config.enabled,
+    endpoint: resolveManagedStreamEndpoint(config, config.provider),
+    authToken: resolveManagedStreamAuthToken(config, config.provider),
+    apiKey: resolveManagedStreamApiKey(config, config.provider),
+    commitment: config.commitment,
+    subscriptionConfig
+  }).getStatus();
+}
+
+function createYellowstoneStatus(
+  config: NormalizedManagedStreamConfig
+): ManagedStreamClientStatus {
+  const subscriptionConfig = createManagedStreamSubscriptionConfig(config, {
+    provider: "yellowstone"
+  });
+
+  return createManagedStreamClient({
+    kind: "yellowstone",
+    enabled: config.yellowstoneEnabled,
+    endpoint: config.yellowstoneEndpoint,
+    authToken: config.yellowstoneAuthToken,
+    commitment: subscriptionConfig.commitment,
+    subscriptionConfig
+  }).getStatus();
+}
+
+function createLaserStreamStatus(
+  config: NormalizedManagedStreamConfig
+): ManagedStreamClientStatus {
+  const subscriptionConfig = createManagedStreamSubscriptionConfig(config, {
+    provider: "laserstream"
+  });
+
+  return createManagedStreamClient({
+    kind: "laserstream",
+    enabled: config.laserstreamEnabled,
+    endpoint: config.laserstreamEndpoint,
+    apiKey: config.laserstreamAuthToken,
+    commitment: subscriptionConfig.commitment,
+    subscriptionConfig
+  }).getStatus();
+}
+
+function createProviderStatusPreview(
+  config: NormalizedManagedStreamConfig,
+  subscriptionConfig: ManagedStreamSubscriptionConfig,
+  clientStatus: ManagedStreamClientStatus
+): ManagedStreamProviderStatusPreview {
+  return {
+    provider: config.provider,
+    enabled: config.enabled,
+    configured: clientStatus.configured,
+    authConfigured: clientStatus.authConfigured,
+    connectionState: clientStatus.connectionState,
+    commitment: subscriptionConfig.commitment,
+    subscribed: clientStatus.subscribed,
+    subscriptions: sanitizeSubscriptionConfig(subscriptionConfig),
+    receivedCount: clientStatus.receivedCount,
+    transactionCount: clientStatus.transactionCount,
+    accountCount: clientStatus.accountCount,
+    errorCount: clientStatus.errorCount,
+    lastMessageAt: clientStatus.lastMessageAt,
+    lastError: clientStatus.lastError,
+    reasonCodes: clientStatus.reasonCodes
   };
 }
 
@@ -365,21 +607,35 @@ function sanitizeSubscriptionConfig(
 }
 
 function createManagedStreamSubscriptionConfig(
-  config: NormalizedManagedStreamConfig
+  config: NormalizedManagedStreamConfig,
+  overrides: {
+    provider?: ManagedStreamProviderKind | undefined;
+    commitment?: ManagedStreamCommitment | undefined;
+    transactionAccountInclude?: string[] | undefined;
+    transactionAccountExclude?: string[] | undefined;
+    transactionAccountRequired?: string[] | undefined;
+    includeVotes?: boolean | undefined;
+    includeFailed?: boolean | undefined;
+    transactionsEnabled?: boolean | undefined;
+  } = {}
 ): ManagedStreamSubscriptionConfig {
-  const endpoint = resolveManagedStreamEndpoint(config);
+  const provider = overrides.provider ?? config.provider;
+  const endpoint = resolveManagedStreamEndpoint(config, provider);
 
   return createDefaultSubscriptionConfig({
-    provider: config.provider,
-    authConfigured: resolveManagedStreamAuthToken(config) !== undefined,
-    commitment: config.commitment,
+    provider,
+    authConfigured: resolveManagedStreamAuth(config, provider) !== undefined,
+    commitment: overrides.commitment ?? config.commitment,
     transactions: {
-      enabled: true,
-      accountInclude: config.transactionAccountInclude,
-      accountExclude: config.transactionAccountExclude,
-      accountRequired: config.transactionAccountRequired,
-      vote: config.includeVotes,
-      failed: config.includeFailed
+      enabled: overrides.transactionsEnabled ?? config.transactionsEnabled,
+      accountInclude:
+        overrides.transactionAccountInclude ?? config.transactionAccountInclude,
+      accountExclude:
+        overrides.transactionAccountExclude ?? config.transactionAccountExclude,
+      accountRequired:
+        overrides.transactionAccountRequired ?? config.transactionAccountRequired,
+      vote: overrides.includeVotes ?? config.includeVotes,
+      failed: overrides.includeFailed ?? config.includeFailed
     },
     maxReconnectAttempts: config.maxReconnectAttempts,
     reconnectBackoffMs: config.reconnectBackoffMs,
@@ -388,31 +644,110 @@ function createManagedStreamSubscriptionConfig(
 }
 
 function resolveManagedStreamEndpoint(
-  config: NormalizedManagedStreamConfig
+  config: NormalizedManagedStreamConfig,
+  provider: ManagedStreamProviderKind
 ): string | undefined {
-  if (config.provider === "yellowstone" || config.provider === "geyser") {
+  if (provider === "yellowstone" || provider === "geyser") {
     return config.endpoint ?? config.yellowstoneEndpoint;
   }
 
-  if (config.provider === "laserstream") {
+  if (provider === "laserstream") {
     return config.endpoint ?? config.laserstreamEndpoint;
   }
 
   return config.endpoint;
 }
 
-function resolveManagedStreamAuthToken(
-  config: NormalizedManagedStreamConfig
+function resolveManagedStreamAuth(
+  config: NormalizedManagedStreamConfig,
+  provider: ManagedStreamProviderKind
 ): string | undefined {
-  if (config.provider === "yellowstone" || config.provider === "geyser") {
+  return (
+    resolveManagedStreamAuthToken(config, provider) ??
+    resolveManagedStreamApiKey(config, provider)
+  );
+}
+
+function resolveManagedStreamAuthToken(
+  config: NormalizedManagedStreamConfig,
+  provider: ManagedStreamProviderKind
+): string | undefined {
+  if (provider === "yellowstone" || provider === "geyser") {
     return config.authToken ?? config.yellowstoneAuthToken;
   }
 
-  if (config.provider === "laserstream") {
-    return config.authToken ?? config.laserstreamAuthToken;
+  if (provider === "laserstream") {
+    return config.authToken;
   }
 
   return config.authToken;
+}
+
+function resolveManagedStreamApiKey(
+  config: NormalizedManagedStreamConfig,
+  provider: ManagedStreamProviderKind
+): string | undefined {
+  if (provider === "laserstream") {
+    return config.apiKey ?? config.laserstreamAuthToken;
+  }
+
+  return config.apiKey;
+}
+
+function providerToClientKind(
+  provider: ManagedStreamProviderKind
+): ManagedStreamClientKind {
+  if (provider === "yellowstone" || provider === "geyser") {
+    return "yellowstone";
+  }
+
+  if (provider === "laserstream") {
+    return "laserstream";
+  }
+
+  if (provider === "mock") {
+    return "mock";
+  }
+
+  return "disabled";
+}
+
+function providerToPreviewProvider(
+  provider: ManagedStreamProviderKind
+): ManagedStreamPreviewProvider {
+  if (provider === "laserstream") {
+    return "laserstream";
+  }
+
+  if (provider === "mock") {
+    return "mock";
+  }
+
+  return "yellowstone";
+}
+
+function assertManagedStreamFilterLimits(
+  config: ManagedStreamSubscriptionConfig
+): void {
+  const filters = [
+    config.transactions.accountInclude,
+    config.transactions.accountExclude,
+    config.transactions.accountRequired,
+    config.accounts.owners,
+    config.accounts.accounts
+  ];
+
+  for (const values of filters) {
+    if (values.length > 100) {
+      throw new Error("MANAGED_STREAM_FILTER_LIMIT_EXCEEDED");
+    }
+  }
+}
+
+function uniqueStrings(values: readonly unknown[]): string[] {
+  return Array.from(
+    new Set(values.filter((value): value is string => typeof value === "string"))
+  );
 }
 
 export function feedEventToIndexerEvent(

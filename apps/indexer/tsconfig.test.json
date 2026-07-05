@@ -12,6 +12,12 @@
       "@axi/managed-stream-adapter": [
         "../../packages/managed-stream-adapter/dist/index.d.ts"
       ],
+      "@axi/managed-stream-clients": [
+        "../../packages/managed-stream-clients/dist/index.d.ts"
+      ],
+      "@axi/managed-stream-clients/profiles": [
+        "../../packages/managed-stream-clients/dist/profiles.d.ts"
+      ],
       "@axi/pumpfun-decoder": [
         "../../packages/pumpfun-decoder/dist/index.d.ts"
       ],

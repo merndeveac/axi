@@ -81,6 +81,8 @@ Indexer endpoints:
 - `GET /indexer/live-cards`
 - `GET /indexer/timeseries/:mint`
 - `GET /indexer/stream/status`
+- `GET /indexer/stream/config`
+- `POST /indexer/stream/build-subscription`
 - `GET /indexer/stream/recent`
 - `POST /indexer/stream/mock/publish-fixture`
 
@@ -92,6 +94,9 @@ pnpm --filter @axi/indexer smoke
 pnpm --filter @axi/indexer smoke:pumpfun
 pnpm --filter @axi/indexer smoke:managed-stream
 pnpm --filter @axi/indexer stream:status
+pnpm --filter @axi/indexer stream:config
+pnpm --filter @axi/indexer stream:build-subscription -- --provider yellowstone
+pnpm --filter @axi/indexer stream:build-subscription -- --provider laserstream
 pnpm --filter @axi/indexer decode:pumpfun -- --fixture buy-trade.json --summary true --show-evidence true
 pnpm --filter @axi/indexer fetch:pumpfun-fixture -- --signature <SIG> --kind buy_trade --update-manifest true
 ```
@@ -121,11 +126,16 @@ Managed stream commands:
 ```bash
 pnpm --filter @axi/indexer smoke:managed-stream
 pnpm --filter @axi/indexer stream:status
+pnpm --filter @axi/indexer stream:config
+pnpm --filter @axi/indexer stream:build-subscription -- --provider yellowstone
+pnpm --filter @axi/indexer stream:build-subscription -- --provider laserstream --profile minimal_healthcheck
 ```
 
 Managed stream API endpoints:
 
 - `GET /indexer/stream/status`
+- `GET /indexer/stream/config`
+- `POST /indexer/stream/build-subscription`
 - `GET /indexer/stream/recent`
 - `POST /indexer/stream/mock/publish-fixture`
 
@@ -144,6 +154,7 @@ MANAGED_STREAM_ENABLED=false
 MANAGED_STREAM_PROVIDER=mock
 MANAGED_STREAM_ENDPOINT=
 MANAGED_STREAM_AUTH_TOKEN=
+MANAGED_STREAM_API_KEY=
 YELLOWSTONE_GRPC_URL=
 YELLOWSTONE_GRPC_TOKEN=
 LASERSTREAM_GRPC_URL=
@@ -152,13 +163,56 @@ LASERSTREAM_API_KEY=
 
 Roadmap:
 
-1. Add opt-in real managed provider SDK/client.
+1. Add opt-in real provider connection using one provider selected by the user.
 2. Connect to Yellowstone/LaserStream in opt-in dev mode.
 3. Filter for Pump.fun/PumpSwap program transactions.
 4. Route live envelopes through Pump.fun decoder.
 5. Write raw events/ticks to ClickHouse.
 6. Write live token state to Redis.
 7. Switch dashboard cards to indexer-backed live state.
+
+## Managed Stream Client Skeleton
+
+Branch `dev/managed-stream-client-skeleton` adds
+`@axi/managed-stream-clients`, a disabled-by-default client layer for managed
+Solana stream providers. It includes Yellowstone and LaserStream client
+skeletons, sanitized config validation, subscription request preview builders,
+subscription profiles, and an injected mock transport for tests.
+
+This package does not install provider SDKs and does not open network
+connections. `yellowstone` and `laserstream` clients report `not_implemented`
+when enabled without an injected transport. Mock transport tests can exercise
+connect/send/message handling without using a real provider. Endpoints, auth
+tokens, API keys, and URL query secrets are masked in status and config output.
+
+Subscription previews are available without connecting:
+
+```bash
+pnpm --filter @axi/indexer stream:config
+pnpm --filter @axi/indexer stream:build-subscription -- --provider yellowstone --profile pumpfun_program_transactions --include-program FakeProgram111111111111111111111111111111111
+pnpm --filter @axi/indexer stream:build-subscription -- --provider laserstream --profile minimal_healthcheck
+curl http://localhost:8787/indexer/stream/config
+curl -X POST http://localhost:8787/indexer/stream/build-subscription \
+  -H 'content-type: application/json' \
+  -d '{"provider":"yellowstone","profile":"minimal_healthcheck"}'
+```
+
+Supported profiles:
+
+- `pumpfun_program_transactions`
+- `pumpfun_and_pumpswap_transactions`
+- `watched_addresses`
+- `minimal_healthcheck`
+
+Pump.fun and PumpSwap program IDs are not hard-coded here. Supply explicit
+program or watched account IDs when previewing those profiles. Missing IDs are
+reported with `STREAM_PROFILE_PLACEHOLDER` and
+`STREAM_PROFILE_REQUIRES_PROGRAM_IDS`.
+
+The dashboard DATA tab shows the managed stream client kind, enabled/configured
+state, auth configured state, masked endpoint, subscription summary,
+Yellowstone/LaserStream skeleton status, and the explicit label
+`REAL MANAGED STREAM: NOT CONNECTED`.
 
 ## Pump.fun Decoder Fixtures
 
@@ -986,6 +1040,8 @@ Endpoints:
 - `GET /indexer/live-cards`
 - `GET /indexer/timeseries/:mint`
 - `GET /indexer/stream/status`
+- `GET /indexer/stream/config`
+- `POST /indexer/stream/build-subscription`
 - `GET /indexer/stream/recent`
 - `POST /indexer/stream/mock/publish-fixture`
 - `GET /ui/live-token-cards`
@@ -1332,6 +1388,8 @@ docker compose --profile indexer up -d
   local Pump.fun fixtures.
 - `@axi/managed-stream-adapter`: managed stream envelope router into Pump.fun
   decoding, normalized indexer events, event bus, live state, and timeseries.
+- `@axi/managed-stream-clients`: disabled-by-default managed stream client
+  skeletons, subscription previews, profile helpers, and mock transport tests.
 - `@axi/token-identity`: local token identity normalization and source
   confidence helpers.
 - `@axi/execution`: in-memory paper execution only.
@@ -1395,6 +1453,9 @@ docker compose --profile indexer up -d
   stream contracts, the mock stream provider, Yellowstone/LaserStream
   placeholders, stream-to-decoder routing, indexer smoke commands, API stream
   endpoints, and dashboard status fields.
+- `dev/managed-stream-client-skeleton` contains disabled-by-default
+  Yellowstone/LaserStream client skeletons, sanitized config/status endpoints,
+  subscription preview builders, profile helpers, and dashboard client status.
 
 Direct Solana RPC verification and watched-address transaction ingestion exist,
 and local market-data normalization and watch orchestration exist, but they are

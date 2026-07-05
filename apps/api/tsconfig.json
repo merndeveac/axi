@@ -15,6 +15,7 @@
     { "path": "../../packages/indexer-core" },
     { "path": "../../packages/live-state" },
     { "path": "../../packages/managed-stream-adapter" },
+    { "path": "../../packages/managed-stream-clients" },
     { "path": "../../packages/shared" },
     { "path": "../../packages/scoring" },
     { "path": "../../packages/data-feeds" },

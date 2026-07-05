@@ -36,6 +36,7 @@
     "@axi/indexer-core": "workspace:*",
     "@axi/live-state": "workspace:*",
     "@axi/managed-stream-adapter": "workspace:*",
+    "@axi/managed-stream-clients": "workspace:*",
     "@axi/market-data": "workspace:*",
     "@axi/metrics": "workspace:*",
     "@axi/pumpfun-decoder": "workspace:*",

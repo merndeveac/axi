@@ -207,8 +207,10 @@ const options: ApiServerOptions = {
       commitment: config.MANAGED_STREAM_COMMITMENT,
       endpoint: config.MANAGED_STREAM_ENDPOINT,
       authToken: config.MANAGED_STREAM_AUTH_TOKEN,
+      apiKey: config.MANAGED_STREAM_API_KEY,
       maxReconnectAttempts: config.MANAGED_STREAM_MAX_RECONNECT_ATTEMPTS,
       reconnectBackoffMs: config.MANAGED_STREAM_RECONNECT_BACKOFF_MS,
+      transactionsEnabled: config.MANAGED_STREAM_TRANSACTIONS_ENABLED,
       transactionAccountInclude:
         config.MANAGED_STREAM_TRANSACTION_ACCOUNT_INCLUDE,
       transactionAccountExclude:

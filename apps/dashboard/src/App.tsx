@@ -308,9 +308,26 @@ type IndexerStatus = {
   managedStream?: {
     managedStreamEnabled: boolean;
     provider: string;
+    clientKind?: string;
+    clientStatus?: {
+      enabled: boolean;
+      configured: boolean;
+      authConfigured: boolean;
+      connectionState: string;
+      reasonCodes: string[];
+    };
     connectionState: string;
     configured: boolean;
     authConfigured: boolean;
+    endpointMasked?: string | null;
+    subscriptionSummary?: {
+      profile: string | null;
+      transactionsEnabled: boolean;
+      transactionAccountIncludeCount: number;
+      transactionAccountRequiredCount: number;
+      slotsEnabled: boolean;
+      blocksEnabled: boolean;
+    };
     receivedCount: number;
     transactionCount: number;
     errorCount: number;
@@ -1651,6 +1668,17 @@ function DataTab({
           tone={indexerStatus?.streamEnabled ? "warn" : "neutral"}
         />
         <MetricValue
+          label="REAL MANAGED STREAM: NOT CONNECTED"
+          value={
+            (
+              indexerStatus?.managedStream?.clientStatus?.connectionState ??
+              "disabled"
+            ).toUpperCase()
+          }
+          detail={indexerStatus?.managedStream?.clientKind ?? "mock"}
+          tone="neutral"
+        />
+        <MetricValue
           label="stream state"
           value={(indexerStatus?.streamConnectionState ?? "disabled").toUpperCase()}
           detail={`${formatCompactNumber(
@@ -1678,13 +1706,38 @@ function DataTab({
           }
         />
         <MetricValue
+          label="stream endpoint"
+          value={indexerStatus?.managedStream?.endpointMasked ? "MASKED" : "UNSET"}
+          detail={indexerStatus?.managedStream?.endpointMasked ?? "no endpoint"}
+        />
+        <MetricValue
+          label="subscription"
+          value={
+            indexerStatus?.managedStream?.subscriptionSummary?.transactionsEnabled
+              ? "TRANSACTIONS"
+              : "HEALTHCHECK"
+          }
+          detail={`programs ${formatCompactNumber(
+            indexerStatus?.managedStream?.subscriptionSummary
+              ?.transactionAccountIncludeCount
+          )} / required ${formatCompactNumber(
+            indexerStatus?.managedStream?.subscriptionSummary
+              ?.transactionAccountRequiredCount
+          )}`}
+        />
+        <MetricValue
           label="stream last"
           value={formatTimeAgo(indexerStatus?.managedStream?.lastMessageAt)}
           detail={indexerStatus?.managedStream?.connectionState ?? "disabled"}
         />
         <MetricValue
           label="yellowstone"
-          value="NOT IMPLEMENTED"
+          value={
+            indexerStatus?.managedStream?.yellowstoneStatus.connectionState ===
+            "not_implemented"
+              ? "SKELETON"
+              : "DISABLED"
+          }
           detail={
             indexerStatus?.managedStream?.yellowstoneStatus.connectionState ??
             "not_implemented"
@@ -1692,7 +1745,12 @@ function DataTab({
         />
         <MetricValue
           label="laserstream"
-          value="NOT IMPLEMENTED"
+          value={
+            indexerStatus?.managedStream?.laserstreamStatus.connectionState ===
+            "not_implemented"
+              ? "SKELETON"
+              : "DISABLED"
+          }
           detail={
             indexerStatus?.managedStream?.laserstreamStatus.connectionState ??
             "not_implemented"

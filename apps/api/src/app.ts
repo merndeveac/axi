@@ -684,6 +684,10 @@ export const apiConfigSchema = z.object({
     emptyStringToUndefined,
     z.string().min(1).optional()
   ),
+  MANAGED_STREAM_API_KEY: z.preprocess(
+    emptyStringToUndefined,
+    z.string().min(1).optional()
+  ),
   MANAGED_STREAM_MAX_RECONNECT_ATTEMPTS: z.coerce
     .number()
     .int()
@@ -840,6 +844,39 @@ const pumpfunFixtureDecodeBodySchema = z.object({
 });
 const streamMockPublishFixtureBodySchema = z.object({
   fixture: z.string().min(1).max(200)
+});
+const streamBuildSubscriptionBodySchema = z.object({
+  provider: z.enum(["yellowstone", "laserstream", "mock"]).optional(),
+  profile: z
+    .enum([
+      "pumpfun_program_transactions",
+      "pumpfun_and_pumpswap_transactions",
+      "watched_addresses",
+      "minimal_healthcheck"
+    ])
+    .optional(),
+  commitment: z.enum(["processed", "confirmed", "finalized"]).optional(),
+  includeProgram: z.array(z.string().min(1).max(200)).max(100).optional(),
+  requiredAccount: z.array(z.string().min(1).max(200)).max(100).optional(),
+  config: z
+    .object({
+      transactionAccountInclude: z
+        .array(z.string().min(1).max(200))
+        .max(100)
+        .optional(),
+      transactionAccountRequired: z
+        .array(z.string().min(1).max(200))
+        .max(100)
+        .optional(),
+      transactionAccountExclude: z
+        .array(z.string().min(1).max(200))
+        .max(100)
+        .optional(),
+      includeVotes: z.boolean().optional(),
+      includeFailed: z.boolean().optional(),
+      transactionsEnabled: z.boolean().optional()
+    })
+    .optional()
 });
 const chainVerifyBodySchema = z.object({
   mint: z.string().min(1)
@@ -1138,6 +1175,28 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   app.get("/indexer/status", async () => indexerAdapter.getStatus());
 
   app.get("/indexer/stream/status", async () => indexerAdapter.getStreamStatus());
+
+  app.get("/indexer/stream/config", async () => indexerAdapter.getStreamConfig());
+
+  app.post("/indexer/stream/build-subscription", async (request, reply) => {
+    const body = streamBuildSubscriptionBodySchema.parse(request.body ?? {});
+
+    try {
+      return indexerAdapter.buildStreamSubscriptionPreview(body);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === "MANAGED_STREAM_FILTER_LIMIT_EXCEEDED"
+      ) {
+        return reply.code(400).send({
+          error: "managed_stream_filter_limit_exceeded",
+          reasonCodes: ["MANAGED_STREAM_FILTER_LIMIT_EXCEEDED"]
+        });
+      }
+
+      throw error;
+    }
+  });
 
   app.get("/indexer/stream/recent", async (request) => {
     const query = limitQuerySchema.parse(request.query);

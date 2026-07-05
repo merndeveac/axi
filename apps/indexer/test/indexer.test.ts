@@ -13,8 +13,11 @@ import {
   runPumpfunFetchFixtureCli
 } from "../src/pumpfun-fetch-cli";
 import {
+  buildManagedStreamSubscriptionPreview,
   createManagedStreamSource,
-  createManagedStreamStatusFromConfig
+  createManagedStreamStatusFromConfig,
+  runManagedStreamBuildSubscriptionCli,
+  runManagedStreamConfigCli
 } from "../src/sources/managed-stream-source";
 
 describe("@axi/indexer", () => {
@@ -27,6 +30,7 @@ describe("@axi/indexer", () => {
     expect(config.GEYSER_ENABLED).toBe(false);
     expect(config.MANAGED_STREAM_ENABLED).toBe(false);
     expect(config.MANAGED_STREAM_PROVIDER).toBe("mock");
+    expect(config.MANAGED_STREAM_API_KEY).toBeUndefined();
   });
 
   it("mock source emits events", () => {
@@ -180,6 +184,60 @@ describe("@axi/indexer", () => {
     expect(JSON.stringify(yellowstone)).not.toContain("not-a-real-token");
     expect(laserstream.providerStatus.connectionState).toBe("not_implemented");
     expect(JSON.stringify(laserstream)).not.toContain("not-a-real-key");
+  });
+
+  it("managed stream config CLI masks endpoints and auth", () => {
+    const config = loadIndexerConfig({
+      MANAGED_STREAM_ENABLED: "true",
+      MANAGED_STREAM_PROVIDER: "laserstream",
+      MANAGED_STREAM_ENDPOINT: "https://laserstream.example.invalid?api_key=secret",
+      MANAGED_STREAM_API_KEY: "not-a-real-key"
+    });
+    const result = runWithCapturedConsole(() =>
+      runManagedStreamConfigCli(config, [])
+    );
+    const serialized = JSON.stringify(result);
+
+    expect(result.clientKind).toBe("laserstream");
+    expect(result.endpointMasked).toContain("api_key=****");
+    expect(result.authConfigured).toBe(true);
+    expect(serialized).not.toContain("not-a-real-key");
+    expect(serialized).not.toContain("secret");
+  });
+
+  it("managed stream build-subscription previews Yellowstone and LaserStream", () => {
+    const config = loadIndexerConfig({
+      MANAGED_STREAM_PROVIDER: "yellowstone",
+      YELLOWSTONE_GRPC_URL: "https://yellowstone.example.invalid?token=secret",
+      YELLOWSTONE_GRPC_TOKEN: "not-a-real-token"
+    });
+    const yellowstone = runWithCapturedConsole(() =>
+      runManagedStreamBuildSubscriptionCli(config, [
+        "--provider",
+        "yellowstone",
+        "--include-program",
+        "FakeProgram111111111111111111111111111111111",
+        "--required-account",
+        "FakeRequired1111111111111111111111111111111",
+        "--profile",
+        "pumpfun_program_transactions"
+      ])
+    );
+    const laserstream = buildManagedStreamSubscriptionPreview(config, {
+      provider: "laserstream",
+      commitment: "processed",
+      includeProgram: ["FakeLaserProgram111111111111111111111111111"],
+      requiredAccount: ["FakeLaserRequired1111111111111111111111111"]
+    });
+    const serialized = JSON.stringify({ yellowstone, laserstream });
+
+    expect(yellowstone.provider).toBe("yellowstone");
+    expect(yellowstone.subscriptionSummary.transactionAccountIncludeCount).toBe(1);
+    expect(yellowstone.reasonCodes).toContain("STREAM_PROFILE_BUILT");
+    expect(laserstream.provider).toBe("laserstream");
+    expect(laserstream.subscriptionSummary.commitment).toBe("processed");
+    expect(serialized).not.toContain("not-a-real-token");
+    expect(serialized).not.toContain("secret");
   });
 
   it("parses and runs pumpfun decode CLI file mode", () => {

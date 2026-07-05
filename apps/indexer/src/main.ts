@@ -2,7 +2,11 @@ import { createIndexerApp } from "./indexer-app";
 import { loadIndexerConfig } from "./config";
 import { runPumpfunDecodeCli } from "./pumpfun-cli";
 import { runPumpfunFetchFixtureCli } from "./pumpfun-fetch-cli";
-import { createManagedStreamStatusFromConfig } from "./sources/managed-stream-source";
+import {
+  createManagedStreamStatusFromConfig,
+  runManagedStreamBuildSubscriptionCli,
+  runManagedStreamConfigCli
+} from "./sources/managed-stream-source";
 
 const command = process.argv[2] ?? "dev";
 const config = loadIndexerConfig();
@@ -89,6 +93,12 @@ if (command === "smoke") {
       2
     )
   );
+  app.stop();
+} else if (command === "stream:config") {
+  runManagedStreamConfigCli(config, process.argv.slice(3));
+  app.stop();
+} else if (command === "stream:build-subscription") {
+  runManagedStreamBuildSubscriptionCli(config, process.argv.slice(3));
   app.stop();
 } else if (command === "decode:pumpfun") {
   runPumpfunDecodeCli(process.argv.slice(3));

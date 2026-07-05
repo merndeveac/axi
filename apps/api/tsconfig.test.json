@@ -14,6 +14,12 @@
       "@axi/managed-stream-adapter": [
         "../../packages/managed-stream-adapter/dist/index.d.ts"
       ],
+      "@axi/managed-stream-clients": [
+        "../../packages/managed-stream-clients/dist/index.d.ts"
+      ],
+      "@axi/managed-stream-clients/profiles": [
+        "../../packages/managed-stream-clients/dist/profiles.d.ts"
+      ],
       "@axi/shared": ["../../packages/shared/dist/index.d.ts"],
       "@axi/scoring": ["../../packages/scoring/dist/index.d.ts"],
       "@axi/data-feeds": ["../../packages/data-feeds/dist/index.d.ts"],

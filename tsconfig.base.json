@@ -27,6 +27,12 @@
       "@axi/managed-stream-adapter": [
         "packages/managed-stream-adapter/src/index.ts"
       ],
+      "@axi/managed-stream-clients": [
+        "packages/managed-stream-clients/src/index.ts"
+      ],
+      "@axi/managed-stream-clients/profiles": [
+        "packages/managed-stream-clients/src/profiles.ts"
+      ],
       "@axi/market-data": ["packages/market-data/src/index.ts"],
       "@axi/pumpfun-decoder": ["packages/pumpfun-decoder/src/index.ts"],
       "@axi/pumpportal-lightning": [

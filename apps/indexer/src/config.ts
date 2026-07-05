@@ -36,6 +36,10 @@ export const indexerConfigSchema = z.object({
     emptyStringToUndefined,
     z.string().min(1).optional()
   ),
+  MANAGED_STREAM_API_KEY: z.preprocess(
+    emptyStringToUndefined,
+    z.string().min(1).optional()
+  ),
   MANAGED_STREAM_MAX_RECONNECT_ATTEMPTS: z.coerce
     .number()
     .int()

@@ -12,6 +12,8 @@
     "smoke:pumpfun": "tsx --conditions=development src/main.ts smoke:pumpfun",
     "smoke:managed-stream": "tsx --conditions=development src/main.ts smoke:managed-stream",
     "stream:status": "tsx --conditions=development src/main.ts stream:status",
+    "stream:config": "tsx --conditions=development src/main.ts stream:config",
+    "stream:build-subscription": "tsx --conditions=development src/main.ts stream:build-subscription",
     "decode:pumpfun": "tsx --conditions=development src/main.ts decode:pumpfun",
     "fetch:pumpfun-fixture": "tsx --conditions=development src/main.ts fetch:pumpfun-fixture",
     "clean": "rm -rf dist"
@@ -21,6 +23,7 @@
     "@axi/indexer-core": "workspace:*",
     "@axi/live-state": "workspace:*",
     "@axi/managed-stream-adapter": "workspace:*",
+    "@axi/managed-stream-clients": "workspace:*",
     "@axi/pumpfun-decoder": "workspace:*",
     "@axi/stream-core": "workspace:*",
     "@axi/stream-mock": "workspace:*",
