@@ -200,7 +200,30 @@ const options: ApiServerOptions = {
     enabled: config.API_INDEXER_ADAPTER_ENABLED,
     liveStateEnabled: config.API_INDEXER_LIVE_STATE_ENABLED,
     preferLiveStateCards: config.API_INDEXER_PREFER_LIVE_STATE_CARDS,
-    recentEventLimit: config.API_INDEXER_RECENT_EVENT_LIMIT
+    recentEventLimit: config.API_INDEXER_RECENT_EVENT_LIMIT,
+    managedStream: {
+      enabled: config.MANAGED_STREAM_ENABLED,
+      provider: config.MANAGED_STREAM_PROVIDER,
+      commitment: config.MANAGED_STREAM_COMMITMENT,
+      endpoint: config.MANAGED_STREAM_ENDPOINT,
+      authToken: config.MANAGED_STREAM_AUTH_TOKEN,
+      maxReconnectAttempts: config.MANAGED_STREAM_MAX_RECONNECT_ATTEMPTS,
+      reconnectBackoffMs: config.MANAGED_STREAM_RECONNECT_BACKOFF_MS,
+      transactionAccountInclude:
+        config.MANAGED_STREAM_TRANSACTION_ACCOUNT_INCLUDE,
+      transactionAccountExclude:
+        config.MANAGED_STREAM_TRANSACTION_ACCOUNT_EXCLUDE,
+      transactionAccountRequired:
+        config.MANAGED_STREAM_TRANSACTION_ACCOUNT_REQUIRED,
+      includeVotes: config.MANAGED_STREAM_INCLUDE_VOTES,
+      includeFailed: config.MANAGED_STREAM_INCLUDE_FAILED,
+      yellowstoneEnabled: config.YELLOWSTONE_ENABLED,
+      yellowstoneEndpoint: config.YELLOWSTONE_GRPC_URL,
+      yellowstoneAuthToken: config.YELLOWSTONE_GRPC_TOKEN,
+      laserstreamEnabled: config.LASERSTREAM_ENABLED,
+      laserstreamEndpoint: config.LASERSTREAM_GRPC_URL,
+      laserstreamAuthToken: config.LASERSTREAM_API_KEY
+    }
   },
   allowMockData: config.ALLOW_MOCK_DATA,
   failIfNoRealData: config.FAIL_IF_NO_REAL_DATA,

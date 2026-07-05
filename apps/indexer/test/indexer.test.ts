@@ -12,6 +12,10 @@ import {
   parsePumpfunFetchArgs,
   runPumpfunFetchFixtureCli
 } from "../src/pumpfun-fetch-cli";
+import {
+  createManagedStreamSource,
+  createManagedStreamStatusFromConfig
+} from "../src/sources/managed-stream-source";
 
 describe("@axi/indexer", () => {
   it("parses config defaults", () => {
@@ -21,6 +25,8 @@ describe("@axi/indexer", () => {
     expect(config.INDEXER_SOURCE).toBe("mock");
     expect(config.INDEXER_FIXTURE_DIR).toBe("packages/pumpfun-decoder/fixtures");
     expect(config.GEYSER_ENABLED).toBe(false);
+    expect(config.MANAGED_STREAM_ENABLED).toBe(false);
+    expect(config.MANAGED_STREAM_PROVIDER).toBe("mock");
   });
 
   it("mock source emits events", () => {
@@ -121,6 +127,59 @@ describe("@axi/indexer", () => {
     expect(status.pumpfunFixtures?.decodeErrors).toBe(0);
     expect(status.liveState.tokenCount).toBe(1);
     expect(status.liveState.eventsByType.token_migrated).toBe(1);
+  });
+
+  it("managed stream source with mock provider emits Pump.fun fixture events", () => {
+    const config = loadIndexerConfig({
+      MANAGED_STREAM_ENABLED: "true",
+      MANAGED_STREAM_PROVIDER: "mock"
+    });
+    const source = createManagedStreamSource(config);
+    const events: string[] = [];
+
+    source.start((event) => events.push(event.type));
+
+    expect(events).toContain("token_created");
+    expect(events.filter((type) => type === "token_trade")).toHaveLength(2);
+    expect(source.getSummary().providerStatus.provider).toBe("mock");
+    expect(source.getSummary().envelopeCount).toBe(6);
+  });
+
+  it("managed stream smoke mode reports adapter stats", () => {
+    const app = createIndexerApp(loadIndexerConfig({}));
+    const status = app.runManagedStreamSmoke();
+
+    expect(status.source).toBe("managed-stream");
+    expect(status.managedStream?.envelopeCount).toBe(6);
+    expect(status.managedStream?.normalizedEventCount).toBe(6);
+    expect(status.managedStream?.providerStatus.provider).toBe("mock");
+    expect(status.managedStream?.ohlcvBarCount).toBeGreaterThan(0);
+    expect(status.liveState.tokenCount).toBe(1);
+  });
+
+  it("managed stream status reports placeholders for real providers", () => {
+    const yellowstone = createManagedStreamStatusFromConfig(
+      loadIndexerConfig({
+        MANAGED_STREAM_ENABLED: "true",
+        MANAGED_STREAM_PROVIDER: "yellowstone",
+        YELLOWSTONE_GRPC_URL: "https://yellowstone.example.invalid",
+        YELLOWSTONE_GRPC_TOKEN: "not-a-real-token"
+      })
+    );
+    const laserstream = createManagedStreamStatusFromConfig(
+      loadIndexerConfig({
+        MANAGED_STREAM_ENABLED: "true",
+        MANAGED_STREAM_PROVIDER: "laserstream",
+        LASERSTREAM_GRPC_URL: "https://laserstream.example.invalid",
+        LASERSTREAM_API_KEY: "not-a-real-key"
+      })
+    );
+
+    expect(yellowstone.providerStatus.connectionState).toBe("not_implemented");
+    expect(yellowstone.authTokenMasked).toBe("configured:16");
+    expect(JSON.stringify(yellowstone)).not.toContain("not-a-real-token");
+    expect(laserstream.providerStatus.connectionState).toBe("not_implemented");
+    expect(JSON.stringify(laserstream)).not.toContain("not-a-real-key");
   });
 
   it("parses and runs pumpfun decode CLI file mode", () => {

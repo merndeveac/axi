@@ -1237,6 +1237,16 @@ describe("@axi/api", () => {
       enabled: boolean;
       liveStateEnabled: boolean;
       futureGeyser: { status: string };
+      managedStream: {
+        managedStreamEnabled: boolean;
+        provider: string;
+        connectionState: string;
+      };
+      streamProvider: string;
+      streamEnabled: boolean;
+      streamConnectionState: string;
+      streamEnvelopeCount: number;
+      streamEventCount: number;
       paperOnly: boolean;
       tradingDisabled: boolean;
       reasonCodes: string[];
@@ -1246,9 +1256,135 @@ describe("@axi/api", () => {
     expect(body.enabled).toBe(true);
     expect(body.liveStateEnabled).toBe(true);
     expect(body.futureGeyser.status).toBe("not_implemented");
+    expect(body.managedStream.managedStreamEnabled).toBe(false);
+    expect(body.managedStream.provider).toBe("mock");
+    expect(body.streamProvider).toBe("mock");
+    expect(body.streamEnabled).toBe(false);
+    expect(body.streamConnectionState).toBe("disabled");
+    expect(body.streamEnvelopeCount).toBe(0);
+    expect(body.streamEventCount).toBe(0);
     expect(body.paperOnly).toBe(true);
     expect(body.tradingDisabled).toBe(true);
     expect(body.reasonCodes).toContain("NO_GEYSER_CONNECTION");
+    expect(body.reasonCodes).toContain("MANAGED_STREAM_FOUNDATION");
+  });
+
+  it("GET /indexer/stream/status reports disabled safe defaults", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath,
+      indexer: {
+        managedStream: {
+          provider: "yellowstone",
+          endpoint: "https://yellowstone.example.invalid?token=super-secret",
+          authToken: "not-a-real-token",
+          yellowstoneEnabled: true,
+          yellowstoneEndpoint: "https://yellowstone.example.invalid",
+          yellowstoneAuthToken: "not-a-real-token"
+        }
+      }
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/indexer/stream/status"
+    });
+    const body = response.json() as {
+      managedStreamEnabled: boolean;
+      provider: string;
+      connectionState: string;
+      endpointMasked: string | null;
+      authTokenMasked: string | null;
+      yellowstoneStatus: { connectionState: string };
+      paperOnly: boolean;
+      tradingDisabled: boolean;
+      reasonCodes: string[];
+    };
+    const serialized = JSON.stringify(body);
+
+    expect(response.statusCode).toBe(200);
+    expect(body.managedStreamEnabled).toBe(false);
+    expect(body.provider).toBe("yellowstone");
+    expect(body.connectionState).toBe("disabled");
+    expect(body.endpointMasked).toContain("token=****");
+    expect(body.authTokenMasked).toBe("configured:16");
+    expect(serialized).not.toContain("super-secret");
+    expect(serialized).not.toContain("not-a-real-token");
+    expect(body.yellowstoneStatus.connectionState).toBe("not_implemented");
+    expect(body.paperOnly).toBe(true);
+    expect(body.tradingDisabled).toBe(true);
+    expect(body.reasonCodes).toContain("STREAM_NO_NETWORK_IN_TESTS");
+  });
+
+  it("POST /indexer/stream/mock/publish-fixture updates stream, live-state, and timeseries", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath,
+      indexer: {
+        managedStream: {
+          enabled: true,
+          provider: "mock"
+        }
+      }
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/indexer/stream/mock/publish-fixture",
+      payload: {
+        fixture: "buy-trade.json"
+      }
+    });
+    const body = response.json() as {
+      normalizedEvent: { type: string; mint: string; side: string };
+      streamStatus: { receivedCount: number; transactionCount: number };
+      liveState: { tokenCount: number };
+      paperOnly: boolean;
+      tradingDisabled: boolean;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.normalizedEvent.type).toBe("token_trade");
+    expect(body.normalizedEvent.side).toBe("buy");
+    expect(body.streamStatus.receivedCount).toBe(1);
+    expect(body.streamStatus.transactionCount).toBe(1);
+    expect(body.liveState.tokenCount).toBe(1);
+    expect(body.paperOnly).toBe(true);
+    expect(body.tradingDisabled).toBe(true);
+
+    const liveStateResponse = await server.app.inject({
+      method: "GET",
+      url: "/indexer/live-state"
+    });
+    const liveStateBody = liveStateResponse.json() as {
+      stats: { tokenCount: number };
+      tokens: Array<{ mint: string; latestTrade: { side: string } | null }>;
+    };
+    expect(liveStateBody.stats.tokenCount).toBe(1);
+    expect(liveStateBody.tokens[0]?.latestTrade?.side).toBe("buy");
+
+    const timeseriesResponse = await server.app.inject({
+      method: "GET",
+      url: `/indexer/timeseries/${body.normalizedEvent.mint}`
+    });
+    const timeseriesBody = timeseriesResponse.json() as {
+      windows: { "10s": { tradeCount: number; volumeSol: number } };
+    };
+    expect(timeseriesBody.windows["10s"].tradeCount).toBe(1);
+    expect(timeseriesBody.windows["10s"].volumeSol).toBe(1.5);
+
+    const recentResponse = await server.app.inject({
+      method: "GET",
+      url: "/indexer/stream/recent"
+    });
+    const recentBody = recentResponse.json() as Array<{
+      signature: string | null;
+      raw?: unknown;
+    }>;
+    expect(recentBody[0]?.signature).toBe("pumpfun_fixture_buy_trade_sig");
+    expect(recentBody[0]?.raw).toBeUndefined();
   });
 
   it("GET /indexer/decoders reports local Pump.fun decoder availability", async () => {

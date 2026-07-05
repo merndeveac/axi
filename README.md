@@ -80,6 +80,9 @@ Indexer endpoints:
 - `GET /indexer/live-state`
 - `GET /indexer/live-cards`
 - `GET /indexer/timeseries/:mint`
+- `GET /indexer/stream/status`
+- `GET /indexer/stream/recent`
+- `POST /indexer/stream/mock/publish-fixture`
 
 Indexer app commands:
 
@@ -87,9 +90,75 @@ Indexer app commands:
 pnpm --filter @axi/indexer dev
 pnpm --filter @axi/indexer smoke
 pnpm --filter @axi/indexer smoke:pumpfun
+pnpm --filter @axi/indexer smoke:managed-stream
+pnpm --filter @axi/indexer stream:status
 pnpm --filter @axi/indexer decode:pumpfun -- --fixture buy-trade.json --summary true --show-evidence true
 pnpm --filter @axi/indexer fetch:pumpfun-fixture -- --signature <SIG> --kind buy_trade --update-manifest true
 ```
+
+## Managed Stream Adapter Foundation
+
+Branch `dev/managed-stream-adapter-foundation` prepares AXI to connect to
+managed Solana stream providers later. It adds provider-agnostic stream
+contracts, a deterministic mock managed stream provider, and an adapter that can
+route local stream envelopes through the Pump.fun decoder into normalized
+indexer events, the event bus, live state, timeseries, API, and dashboard.
+
+Current providers:
+
+- mock managed stream for local tests and smoke commands
+- Yellowstone/Geyser placeholder status
+- Helius LaserStream placeholder status
+
+The current code does not connect to Yellowstone, LaserStream, Geyser, shreds,
+or any live stream endpoint. No provider credentials are required for tests. The
+mock stream uses local Pump.fun fixtures only. This layer does not live trade,
+sign, send transactions, load wallets, call PumpPortal Lightning execution, call
+PumpPortal Local Transaction APIs, use Axiom private APIs, or scrape Axiom.
+
+Managed stream commands:
+
+```bash
+pnpm --filter @axi/indexer smoke:managed-stream
+pnpm --filter @axi/indexer stream:status
+```
+
+Managed stream API endpoints:
+
+- `GET /indexer/stream/status`
+- `GET /indexer/stream/recent`
+- `POST /indexer/stream/mock/publish-fixture`
+
+Example local mock publish:
+
+```bash
+curl -X POST http://localhost:8787/indexer/stream/mock/publish-fixture \
+  -H 'content-type: application/json' \
+  -d '{"fixture":"buy-trade.json"}'
+```
+
+Managed stream env placeholders:
+
+```text
+MANAGED_STREAM_ENABLED=false
+MANAGED_STREAM_PROVIDER=mock
+MANAGED_STREAM_ENDPOINT=
+MANAGED_STREAM_AUTH_TOKEN=
+YELLOWSTONE_GRPC_URL=
+YELLOWSTONE_GRPC_TOKEN=
+LASERSTREAM_GRPC_URL=
+LASERSTREAM_API_KEY=
+```
+
+Roadmap:
+
+1. Add opt-in real managed provider SDK/client.
+2. Connect to Yellowstone/LaserStream in opt-in dev mode.
+3. Filter for Pump.fun/PumpSwap program transactions.
+4. Route live envelopes through Pump.fun decoder.
+5. Write raw events/ticks to ClickHouse.
+6. Write live token state to Redis.
+7. Switch dashboard cards to indexer-backed live state.
 
 ## Pump.fun Decoder Fixtures
 
@@ -166,7 +235,7 @@ Roadmap:
 1. Add verified public transaction fixtures.
 2. Add verified Pump.fun IDL if available.
 3. Improve IDL-aware instruction/event parsing.
-4. Connect managed Yellowstone/LaserStream stream.
+4. Add opt-in real Yellowstone/LaserStream client behind disabled-by-default config.
 5. Feed live decoded transactions into event bus/live-state.
 6. Write raw ticks to ClickHouse.
 7. Write live state to Redis.
@@ -916,6 +985,9 @@ Endpoints:
 - `GET /indexer/live-state`
 - `GET /indexer/live-cards`
 - `GET /indexer/timeseries/:mint`
+- `GET /indexer/stream/status`
+- `GET /indexer/stream/recent`
+- `POST /indexer/stream/mock/publish-fixture`
 - `GET /ui/live-token-cards`
 - `GET /strategy/status`
 - `GET /signals`
@@ -1254,6 +1326,12 @@ docker compose --profile indexer up -d
 - `@axi/live-state`: current-session in-memory live token state from normalized
   indexer events.
 - `@axi/timeseries`: pure indexer-side trade OHLCV and rolling derivatives.
+- `@axi/stream-core`: provider-agnostic managed Solana stream contracts,
+  masking helpers, disabled provider, and not-implemented provider.
+- `@axi/stream-mock`: deterministic mock managed stream provider backed by
+  local Pump.fun fixtures.
+- `@axi/managed-stream-adapter`: managed stream envelope router into Pump.fun
+  decoding, normalized indexer events, event bus, live state, and timeseries.
 - `@axi/token-identity`: local token identity normalization and source
   confidence helpers.
 - `@axi/execution`: in-memory paper execution only.
@@ -1313,6 +1391,10 @@ docker compose --profile indexer up -d
 - `dev/indexer-foundation` contains normalized indexer events, the in-memory
   event bus, live-state store, timeseries package, mock indexer app, optional
   indexer API endpoints, and the future Docker indexer profile.
+- `dev/managed-stream-adapter-foundation` contains provider-agnostic managed
+  stream contracts, the mock stream provider, Yellowstone/LaserStream
+  placeholders, stream-to-decoder routing, indexer smoke commands, API stream
+  endpoints, and dashboard status fields.
 
 Direct Solana RPC verification and watched-address transaction ingestion exist,
 and local market-data normalization and watch orchestration exist, but they are

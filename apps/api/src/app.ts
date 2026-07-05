@@ -669,6 +669,67 @@ export const apiConfigSchema = z.object({
     .int()
     .positive()
     .default(1000),
+  MANAGED_STREAM_ENABLED: z.preprocess(parseBooleanEnv, z.boolean()).default(false),
+  MANAGED_STREAM_PROVIDER: z
+    .enum(["mock", "yellowstone", "laserstream", "geyser", "unknown"])
+    .default("mock"),
+  MANAGED_STREAM_COMMITMENT: z
+    .enum(["processed", "confirmed", "finalized"])
+    .default("confirmed"),
+  MANAGED_STREAM_ENDPOINT: z.preprocess(
+    emptyStringToUndefined,
+    z.string().url().optional()
+  ),
+  MANAGED_STREAM_AUTH_TOKEN: z.preprocess(
+    emptyStringToUndefined,
+    z.string().min(1).optional()
+  ),
+  MANAGED_STREAM_MAX_RECONNECT_ATTEMPTS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(10),
+  MANAGED_STREAM_RECONNECT_BACKOFF_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(1000),
+  MANAGED_STREAM_TRANSACTIONS_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  MANAGED_STREAM_TRANSACTION_ACCOUNT_INCLUDE: z
+    .preprocess(parseStringListEnv, z.array(z.string()))
+    .default([]),
+  MANAGED_STREAM_TRANSACTION_ACCOUNT_EXCLUDE: z
+    .preprocess(parseStringListEnv, z.array(z.string()))
+    .default([]),
+  MANAGED_STREAM_TRANSACTION_ACCOUNT_REQUIRED: z
+    .preprocess(parseStringListEnv, z.array(z.string()))
+    .default([]),
+  MANAGED_STREAM_INCLUDE_VOTES: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  MANAGED_STREAM_INCLUDE_FAILED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  YELLOWSTONE_GRPC_URL: z.preprocess(
+    emptyStringToUndefined,
+    z.string().url().optional()
+  ),
+  YELLOWSTONE_GRPC_TOKEN: z.preprocess(
+    emptyStringToUndefined,
+    z.string().min(1).optional()
+  ),
+  YELLOWSTONE_ENABLED: z.preprocess(parseBooleanEnv, z.boolean()).default(false),
+  LASERSTREAM_GRPC_URL: z.preprocess(
+    emptyStringToUndefined,
+    z.string().url().optional()
+  ),
+  LASERSTREAM_API_KEY: z.preprocess(
+    emptyStringToUndefined,
+    z.string().min(1).optional()
+  ),
+  LASERSTREAM_ENABLED: z.preprocess(parseBooleanEnv, z.boolean()).default(false),
   LOG_LEVEL: logLevelSchema.default("info")
 });
 
@@ -775,6 +836,9 @@ const pumpfunDecodeBodySchema = z.object({
   transaction: z.unknown()
 });
 const pumpfunFixtureDecodeBodySchema = z.object({
+  fixture: z.string().min(1).max(200)
+});
+const streamMockPublishFixtureBodySchema = z.object({
   fixture: z.string().min(1).max(200)
 });
 const chainVerifyBodySchema = z.object({
@@ -1072,6 +1136,38 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   }));
 
   app.get("/indexer/status", async () => indexerAdapter.getStatus());
+
+  app.get("/indexer/stream/status", async () => indexerAdapter.getStreamStatus());
+
+  app.get("/indexer/stream/recent", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return indexerAdapter.getRecentStreamEnvelopes(query.limit);
+  });
+
+  app.post("/indexer/stream/mock/publish-fixture", async (request, reply) => {
+    const body = streamMockPublishFixtureBodySchema.parse(request.body);
+
+    try {
+      const events = indexerAdapter.publishMockStreamFixture(body.fixture);
+
+      return {
+        fixture: body.fixture,
+        normalizedEvents: events,
+        normalizedEvent: events[0] ?? null,
+        streamStatus: indexerAdapter.getStreamStatus(),
+        liveState: indexerAdapter.getStatus().liveState,
+        paperOnly: true,
+        tradingDisabled: true,
+        networkDisabled: true,
+        reasonCodes: ["STREAM_MOCK_FIXTURE_PUBLISHED", "NO_NETWORK", "NO_TRADING"]
+      };
+    } catch (error) {
+      return reply.code(400).send({
+        error: "invalid_stream_fixture",
+        message: error instanceof Error ? error.message : "Invalid stream fixture"
+      });
+    }
+  });
 
   app.get("/indexer/decoders", async () => ({
     decoders: [
@@ -4953,6 +5049,21 @@ function summarizePumpfunFixtureForDebug(
   transaction: unknown
 ): ReturnType<typeof summarizeTransactionFixture> {
   return summarizeTransactionFixture(transaction);
+}
+
+function emptyStringToUndefined(value: unknown): unknown {
+  return value === "" ? undefined : value;
+}
+
+function parseStringListEnv(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 export async function startApiServer(

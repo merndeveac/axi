@@ -24,11 +24,16 @@
       "@axi/event-bus": ["packages/event-bus/src/index.ts"],
       "@axi/indexer-core": ["packages/indexer-core/src/index.ts"],
       "@axi/live-state": ["packages/live-state/src/index.ts"],
+      "@axi/managed-stream-adapter": [
+        "packages/managed-stream-adapter/src/index.ts"
+      ],
       "@axi/market-data": ["packages/market-data/src/index.ts"],
       "@axi/pumpfun-decoder": ["packages/pumpfun-decoder/src/index.ts"],
       "@axi/pumpportal-lightning": [
         "packages/pumpportal-lightning/src/index.ts"
       ],
+      "@axi/stream-core": ["packages/stream-core/src/index.ts"],
+      "@axi/stream-mock": ["packages/stream-mock/src/index.ts"],
       "@axi/timeseries": ["packages/timeseries/src/index.ts"],
       "@axi/watch-orchestrator": ["packages/watch-orchestrator/src/index.ts"],
       "@axi/shared": ["packages/shared/src/index.ts"],

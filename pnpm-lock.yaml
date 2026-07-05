@@ -74,6 +74,9 @@ importers:
       '@axi/live-state':
         specifier: workspace:*
         version: link:../../packages/live-state
+      '@axi/managed-stream-adapter':
+        specifier: workspace:*
+        version: link:../../packages/managed-stream-adapter
       '@axi/market-data':
         specifier: workspace:*
         version: link:../../packages/market-data
@@ -101,6 +104,12 @@ importers:
       '@axi/storage':
         specifier: workspace:*
         version: link:../../packages/storage
+      '@axi/stream-core':
+        specifier: workspace:*
+        version: link:../../packages/stream-core
+      '@axi/stream-mock':
+        specifier: workspace:*
+        version: link:../../packages/stream-mock
       '@axi/timeseries':
         specifier: workspace:*
         version: link:../../packages/timeseries
@@ -149,9 +158,18 @@ importers:
       '@axi/live-state':
         specifier: workspace:*
         version: link:../../packages/live-state
+      '@axi/managed-stream-adapter':
+        specifier: workspace:*
+        version: link:../../packages/managed-stream-adapter
       '@axi/pumpfun-decoder':
         specifier: workspace:*
         version: link:../../packages/pumpfun-decoder
+      '@axi/stream-core':
+        specifier: workspace:*
+        version: link:../../packages/stream-core
+      '@axi/stream-mock':
+        specifier: workspace:*
+        version: link:../../packages/stream-mock
       '@axi/timeseries':
         specifier: workspace:*
         version: link:../../packages/timeseries
@@ -206,6 +224,30 @@ importers:
       '@axi/indexer-core':
         specifier: workspace:*
         version: link:../indexer-core
+
+  packages/managed-stream-adapter:
+    dependencies:
+      '@axi/event-bus':
+        specifier: workspace:*
+        version: link:../event-bus
+      '@axi/indexer-core':
+        specifier: workspace:*
+        version: link:../indexer-core
+      '@axi/live-state':
+        specifier: workspace:*
+        version: link:../live-state
+      '@axi/pumpfun-decoder':
+        specifier: workspace:*
+        version: link:../pumpfun-decoder
+      '@axi/stream-core':
+        specifier: workspace:*
+        version: link:../stream-core
+      '@axi/stream-mock':
+        specifier: workspace:*
+        version: link:../stream-mock
+      '@axi/timeseries':
+        specifier: workspace:*
+        version: link:../timeseries
 
   packages/market-data:
     dependencies:
@@ -286,6 +328,17 @@ importers:
       zod:
         specifier: ^3.25.0
         version: 3.25.76
+
+  packages/stream-core: {}
+
+  packages/stream-mock:
+    dependencies:
+      '@axi/pumpfun-decoder':
+        specifier: workspace:*
+        version: link:../pumpfun-decoder
+      '@axi/stream-core':
+        specifier: workspace:*
+        version: link:../stream-core
 
   packages/timeseries:
     dependencies:

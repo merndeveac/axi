@@ -305,6 +305,33 @@ type IndexerStatus = {
     implemented: boolean;
     status: string;
   };
+  managedStream?: {
+    managedStreamEnabled: boolean;
+    provider: string;
+    connectionState: string;
+    configured: boolean;
+    authConfigured: boolean;
+    receivedCount: number;
+    transactionCount: number;
+    errorCount: number;
+    lastMessageAt: string | null;
+    reasonCodes: string[];
+    yellowstoneStatus: {
+      enabled: boolean;
+      configured: boolean;
+      connectionState: string;
+    };
+    laserstreamStatus: {
+      enabled: boolean;
+      configured: boolean;
+      connectionState: string;
+    };
+  };
+  streamProvider?: string;
+  streamEnabled?: boolean;
+  streamConnectionState?: string;
+  streamEnvelopeCount?: number;
+  streamEventCount?: number;
   paperOnly: true;
   tradingDisabled: true;
   reasonCodes: string[];
@@ -1617,9 +1644,67 @@ function DataTab({
           detail={indexerStatus?.futureGeyser.status ?? "not_implemented"}
           tone="neutral"
         />
+        <MetricValue
+          label="managed stream"
+          value={indexerStatus?.streamEnabled ? "ON" : "OFF"}
+          detail={indexerStatus?.streamProvider ?? "mock"}
+          tone={indexerStatus?.streamEnabled ? "warn" : "neutral"}
+        />
+        <MetricValue
+          label="stream state"
+          value={(indexerStatus?.streamConnectionState ?? "disabled").toUpperCase()}
+          detail={`${formatCompactNumber(
+            indexerStatus?.streamEnvelopeCount
+          )} envelopes`}
+        />
+        <MetricValue
+          label="stream events"
+          value={formatCompactNumber(indexerStatus?.streamEventCount)}
+          detail={`${formatCompactNumber(
+            indexerStatus?.managedStream?.errorCount
+          )} errors`}
+        />
+        <MetricValue
+          label="stream auth"
+          value={
+            indexerStatus?.managedStream?.configured
+              ? "CONFIGURED"
+              : "UNCONFIGURED"
+          }
+          detail={
+            indexerStatus?.managedStream?.authConfigured
+              ? "auth configured"
+              : "auth unset"
+          }
+        />
+        <MetricValue
+          label="stream last"
+          value={formatTimeAgo(indexerStatus?.managedStream?.lastMessageAt)}
+          detail={indexerStatus?.managedStream?.connectionState ?? "disabled"}
+        />
+        <MetricValue
+          label="yellowstone"
+          value="NOT IMPLEMENTED"
+          detail={
+            indexerStatus?.managedStream?.yellowstoneStatus.connectionState ??
+            "not_implemented"
+          }
+        />
+        <MetricValue
+          label="laserstream"
+          value="NOT IMPLEMENTED"
+          detail={
+            indexerStatus?.managedStream?.laserstreamStatus.connectionState ??
+            "not_implemented"
+          }
+        />
       </div>
       <ReasonBlock title="Feed Reasons" codes={feedStatus?.reasonCodes} />
       <ReasonBlock title="Indexer Reasons" codes={indexerStatus?.reasonCodes} />
+      <ReasonBlock
+        title="Managed Stream Reasons"
+        codes={indexerStatus?.managedStream?.reasonCodes}
+      />
       <ReasonBlock
         title="Actual Data Reasons"
         codes={actualDataStatus?.reasonCodes}

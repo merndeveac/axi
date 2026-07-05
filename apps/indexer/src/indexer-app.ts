@@ -13,6 +13,11 @@ import {
   type PumpfunFixtureSource,
   type PumpfunFixtureSourceSummary
 } from "./sources/pumpfun-fixture-source";
+import {
+  createManagedStreamSource,
+  type ManagedStreamSource,
+  type ManagedStreamSourceSummary
+} from "./sources/managed-stream-source";
 import { getPumpPortalIndexerSourceStatus } from "./sources/pumpportal-indexer-source";
 
 export type IndexerAppStatus = {
@@ -29,6 +34,12 @@ export type IndexerAppStatus = {
   eventBus: ReturnType<ReturnType<typeof createInMemoryEventBus>["getStats"]>;
   liveState: ReturnType<ReturnType<typeof createLiveTokenStateStore>["getStats"]>;
   pumpfunFixtures: PumpfunFixtureSourceSummary | null;
+  managedStream: (ManagedStreamSourceSummary & { ohlcvBarCount: number }) | null;
+  streamProvider: string;
+  streamEnabled: boolean;
+  streamConnectionState: string;
+  streamEnvelopeCount: number;
+  streamEventCount: number;
   pumpPortal: ReturnType<typeof getPumpPortalIndexerSourceStatus>;
   paperOnly: true;
   tradingDisabled: true;
@@ -39,6 +50,7 @@ export type IndexerApp = {
   getRecentEvents: (limit?: number) => NormalizedIndexerEvent[];
   getStatus: () => IndexerAppStatus;
   runPumpfunSmoke: () => IndexerAppStatus;
+  runManagedStreamSmoke: () => IndexerAppStatus;
   runSmoke: () => IndexerAppStatus;
   start: () => IndexerAppStatus;
   stop: () => void;
@@ -100,7 +112,25 @@ export function createIndexerApp(config: IndexerConfig): IndexerApp {
     return start();
   }
 
+  function runManagedStreamSmoke(): IndexerAppStatus {
+    stop();
+    config.INDEXER_ENABLED = true;
+    config.INDEXER_SOURCE = "managed-stream";
+    config.INDEXER_MODE = "replay";
+    config.MANAGED_STREAM_ENABLED = true;
+    config.MANAGED_STREAM_PROVIDER = "mock";
+    return start();
+  }
+
   function getStatus(extraReasonCodes: string[] = []): IndexerAppStatus {
+    const managedStreamSummary =
+      activeSource?.name === "managed-stream"
+        ? {
+            ...activeSource.getSummary(),
+            ohlcvBarCount: computeOhlcvBarCount(liveState, timeseries)
+          }
+        : null;
+
     return {
       enabled: config.INDEXER_ENABLED,
       source: config.INDEXER_SOURCE,
@@ -121,6 +151,14 @@ export function createIndexerApp(config: IndexerConfig): IndexerApp {
               ohlcvBarCount: computeOhlcvBarCount(liveState, timeseries)
             }
           : null,
+      managedStream: managedStreamSummary,
+      streamProvider: config.MANAGED_STREAM_PROVIDER,
+      streamEnabled: config.MANAGED_STREAM_ENABLED,
+      streamConnectionState:
+        managedStreamSummary?.providerStatus.connectionState ??
+        (config.MANAGED_STREAM_ENABLED ? "configured" : "disabled"),
+      streamEnvelopeCount: managedStreamSummary?.envelopeCount ?? 0,
+      streamEventCount: managedStreamSummary?.normalizedEventCount ?? 0,
       pumpPortal: getPumpPortalIndexerSourceStatus(),
       paperOnly: true,
       tradingDisabled: true,
@@ -137,13 +175,14 @@ export function createIndexerApp(config: IndexerConfig): IndexerApp {
     getRecentEvents: (limit) => bus.getRecentEvents(limit),
     getStatus,
     runPumpfunSmoke,
+    runManagedStreamSmoke,
     runSmoke,
     start,
     stop
   };
 }
 
-type IndexerSource = MockIndexerSource | PumpfunFixtureSource;
+type IndexerSource = MockIndexerSource | PumpfunFixtureSource | ManagedStreamSource;
 
 function createSource(config: IndexerConfig): IndexerSource | null {
   if (config.INDEXER_SOURCE === "mock") {
@@ -154,6 +193,10 @@ function createSource(config: IndexerConfig): IndexerSource | null {
     return createPumpfunFixtureSource({
       fixtureDir: config.INDEXER_FIXTURE_DIR
     });
+  }
+
+  if (config.INDEXER_SOURCE === "managed-stream") {
+    return createManagedStreamSource(config);
   }
 
   return null;

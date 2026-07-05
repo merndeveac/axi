@@ -2,6 +2,7 @@ import { createIndexerApp } from "./indexer-app";
 import { loadIndexerConfig } from "./config";
 import { runPumpfunDecodeCli } from "./pumpfun-cli";
 import { runPumpfunFetchFixtureCli } from "./pumpfun-fetch-cli";
+import { createManagedStreamStatusFromConfig } from "./sources/managed-stream-source";
 
 const command = process.argv[2] ?? "dev";
 const config = loadIndexerConfig();
@@ -46,6 +47,43 @@ if (command === "smoke") {
         eventBus: status.eventBus,
         paperOnly: status.paperOnly,
         tradingDisabled: status.tradingDisabled
+      },
+      null,
+      2
+    )
+  );
+  app.stop();
+} else if (command === "smoke:managed-stream") {
+  const status = app.runManagedStreamSmoke();
+  console.log(
+    JSON.stringify(
+      {
+        status: "ok",
+        streamEnvelopeCount: status.managedStream?.envelopeCount ?? 0,
+        normalizedEventCount: status.managedStream?.normalizedEventCount ?? 0,
+        eventsByType: status.managedStream?.eventsByType ?? {},
+        liveTokenCount: status.liveState.tokenCount,
+        timeseries: {
+          ohlcvBarCount: status.managedStream?.ohlcvBarCount ?? 0
+        },
+        unknownEvents: status.managedStream?.unknownEvents ?? 0,
+        decodeErrors: status.managedStream?.decodeErrors ?? 0,
+        providerStatus: status.managedStream?.providerStatus ?? null,
+        adapterStatus: status.managedStream?.adapterStatus ?? null,
+        paperOnly: status.paperOnly,
+        tradingDisabled: status.tradingDisabled
+      },
+      null,
+      2
+    )
+  );
+  app.stop();
+} else if (command === "stream:status") {
+  console.log(
+    JSON.stringify(
+      {
+        status: "ok",
+        managedStream: createManagedStreamStatusFromConfig(config)
       },
       null,
       2

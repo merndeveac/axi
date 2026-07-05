@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../event-bus" },
+    { "path": "../indexer-core" },
+    { "path": "../live-state" },
+    { "path": "../pumpfun-decoder" },
+    { "path": "../stream-core" },
+    { "path": "../stream-mock" },
+    { "path": "../timeseries" }
+  ]
+}
