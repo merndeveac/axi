@@ -42,6 +42,11 @@ import {
   listLaunchTrackingEvents,
   listLaunchTrackingSessions,
   listLaunchTradeSamplesByMint,
+  listMeteredLaunchDataEvents,
+  listMeteredLaunchDataEventsByMint,
+  listMeteredLaunchDataSessions,
+  listMeteredLaunchDataSubscriptions,
+  listMeteredLaunchDataSubscriptionsByMint,
   listPumpPortalWalletStatusSnapshots,
   listExitRules,
   listExitSignals,
@@ -107,6 +112,9 @@ import {
   saveLaunchTrackingSession,
   saveLaunchTradeSample,
   saveMarketObservation,
+  saveMeteredLaunchDataEvent,
+  saveMeteredLaunchDataSession,
+  saveMeteredLaunchDataSubscription,
   saveActualDataSession,
   saveActualDataSubscription,
   savePaperOrder,
@@ -161,6 +169,9 @@ describe("@axi/storage", () => {
     expect(stats.watchActionCount).toBe(0);
     expect(stats.lightningTradePlanCount).toBe(0);
     expect(stats.pumpPortalWalletStatusSnapshotCount).toBe(0);
+    expect(stats.meteredLaunchDataSessionCount).toBe(0);
+    expect(stats.meteredLaunchDataSubscriptionCount).toBe(0);
+    expect(stats.meteredLaunchDataEventCount).toBe(0);
     expect(stats.launchCandidateCount).toBe(0);
     expect(stats.launchTradeSampleCount).toBe(0);
     expect(stats.launchScoreSnapshotCount).toBe(0);
@@ -571,6 +582,37 @@ describe("@axi/storage", () => {
     expect(listed).toHaveLength(1);
     expect(listed[0]?.provider).toBe("pumpportal");
     expect(listed[0]?.budgetEventLimit).toBe(5000);
+  });
+
+  it("metered launch data records can be saved, listed, and counted", () => {
+    initStorage({ databasePath });
+    const session = saveMeteredLaunchDataSession(
+      createMeteredLaunchDataSession()
+    );
+    const subscription = saveMeteredLaunchDataSubscription(
+      createMeteredLaunchDataSubscription()
+    );
+    const event = saveMeteredLaunchDataEvent(createMeteredLaunchDataEvent());
+    const stats = getStorageStats();
+
+    expect(session.id).toBeGreaterThan(0);
+    expect(subscription.id).toBeGreaterThan(0);
+    expect(event.id).toBeGreaterThan(0);
+    expect(listMeteredLaunchDataSessions(10)).toHaveLength(1);
+    expect(listMeteredLaunchDataSubscriptions(10)).toHaveLength(1);
+    expect(listMeteredLaunchDataSubscriptionsByMint(mint, 10)[0]?.status).toBe(
+      "subscribed"
+    );
+    expect(listMeteredLaunchDataEvents(10)).toHaveLength(1);
+    expect(listMeteredLaunchDataEventsByMint(mint, 10)[0]?.signature).toBe(
+      "metered-launch-signature-1"
+    );
+    expect(stats.meteredLaunchDataSessionCount).toBe(1);
+    expect(stats.meteredLaunchDataSubscriptionCount).toBe(1);
+    expect(stats.meteredLaunchDataEventCount).toBe(1);
+    expect(JSON.stringify(event.payload).toLowerCase()).not.toContain(
+      "secret-api-key"
+    );
   });
 
   it("token identity can be saved, listed, and fetched by mint", () => {
@@ -1009,6 +1051,9 @@ describe("@axi/storage", () => {
     savePumpPortalTokenTradeEvent(createPumpPortalTradeEvent());
     saveActualDataSubscription(createActualDataSubscription());
     saveActualDataSession(createActualDataSession());
+    saveMeteredLaunchDataSession(createMeteredLaunchDataSession());
+    saveMeteredLaunchDataSubscription(createMeteredLaunchDataSubscription());
+    saveMeteredLaunchDataEvent(createMeteredLaunchDataEvent());
     saveTokenIdentity(createTokenIdentity());
     saveTokenMetadataFetch(createTokenMetadataFetch());
     saveWatchPlan(createWatchPlanFixture());
@@ -1190,6 +1235,9 @@ describe("@axi/storage", () => {
     expect(stats.pumpPortalTokenTradeEventCount).toBe(1);
     expect(stats.actualDataSubscriptionCount).toBe(1);
     expect(stats.actualDataSessionCount).toBe(1);
+    expect(stats.meteredLaunchDataSessionCount).toBe(1);
+    expect(stats.meteredLaunchDataSubscriptionCount).toBe(1);
+    expect(stats.meteredLaunchDataEventCount).toBe(1);
     expect(stats.tokenIdentityCount).toBe(1);
     expect(stats.tokenIdentityResolvedCount).toBe(1);
     expect(stats.tokenIdentityUnresolvedCount).toBe(0);
@@ -1681,6 +1729,65 @@ function createActualDataSession() {
       status: "running"
     },
     createdAt: "2026-01-01T00:00:06.000Z"
+  };
+}
+
+function createMeteredLaunchDataSession() {
+  return {
+    status: "running",
+    mode: "newest",
+    trackedMintCount: 1,
+    totalEvents: 2,
+    estimatedCostSol: 0.000002,
+    budgetReached: false,
+    reasonCodes: [
+      "METERED_LAUNCH_DATA_READY",
+      "METERED_LAUNCH_DATA_ONLY_NO_TRADING"
+    ],
+    payload: {
+      status: "running"
+    },
+    startedAt: "2026-01-01T00:00:07.000Z",
+    stoppedAt: null,
+    createdAt: "2026-01-01T00:00:07.000Z"
+  };
+}
+
+function createMeteredLaunchDataSubscription() {
+  return {
+    mint,
+    status: "subscribed",
+    reason: "manual",
+    eventCount: 2,
+    estimatedCostSol: 0.000002,
+    subscribedAt: "2026-01-01T00:00:07.000Z",
+    unsubscribedAt: null,
+    reasonCodes: ["METERED_LAUNCH_DATA_TRACKING_STARTED"],
+    payload: {
+      mint,
+      status: "tracking"
+    },
+    createdAt: "2026-01-01T00:00:07.000Z"
+  };
+}
+
+function createMeteredLaunchDataEvent() {
+  return {
+    mint,
+    signature: "metered-launch-signature-1",
+    side: "buy" as const,
+    trader: "11111111111111111111111111111111",
+    priceSol: 0.02,
+    volumeSol: 1.5,
+    tokenAmount: 75,
+    usableForMetrics: true,
+    reasonCodes: ["METERED_LAUNCH_DATA_TOKEN_TRADE"],
+    payload: {
+      apiKey: "secret-api-key",
+      mint,
+      type: "trade"
+    },
+    createdAt: "2026-01-01T00:00:07.500Z"
   };
 }
 

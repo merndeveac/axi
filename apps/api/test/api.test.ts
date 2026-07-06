@@ -1820,6 +1820,132 @@ describe("@axi/api", () => {
     expect(body.paperOnly).toBe(true);
   });
 
+  it("GET /metered-launch-data/status is disabled by default", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/metered-launch-data/status"
+    });
+    const body = response.json() as {
+      enabled: boolean;
+      ready: boolean;
+      reasonCodes: string[];
+      tradingDisabled: boolean;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.enabled).toBe(false);
+    expect(body.ready).toBe(false);
+    expect(body.reasonCodes).toContain("METERED_LAUNCH_DATA_DISABLED");
+    expect(body.tradingDisabled).toBe(true);
+  });
+
+  it("POST /metered-launch-data/track blocks without ACK", async () => {
+    server = createMeteredLaunchDataTestServer({
+      acknowledgedCost: false,
+      enabled: true
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/metered-launch-data/track",
+      payload: {
+        mint: "So11111111111111111111111111111111111111112",
+        reason: "test"
+      }
+    });
+    const body = response.json() as {
+      error: string;
+      status: {
+        acknowledgedCost: boolean;
+        reasonCodes: string[];
+      };
+    };
+
+    expect(response.statusCode).toBe(409);
+    expect(body.error).toBe("METERED_LAUNCH_DATA_ACK_MISSING");
+    expect(body.status.acknowledgedCost).toBe(false);
+    expect(body.status.reasonCodes).toContain("METERED_LAUNCH_DATA_ACK_MISSING");
+  });
+
+  it("POST /metered-launch-data/track accepts mocked gates", async () => {
+    server = createMeteredLaunchDataTestServer({
+      acknowledgedCost: true,
+      enabled: true
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/metered-launch-data/track",
+      payload: {
+        mint: "So11111111111111111111111111111111111111112",
+        reason: "test"
+      }
+    });
+    const body = response.json() as {
+      tracking: {
+        status: string;
+      };
+      status: {
+        trackedMintCount: number;
+      };
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.tracking.status).toBe("tracking");
+    expect(body.status.trackedMintCount).toBe(1);
+  });
+
+  it("token trades update metered launch data on live cards", async () => {
+    server = createMeteredLaunchDataTestServer({
+      acknowledgedCost: true,
+      enabled: true
+    });
+    const trackedMint = "So11111111111111111111111111111111111111112";
+    const baseEvent = createPumpPortalEvent();
+    const event: TokenCreatedEvent = {
+      ...baseEvent,
+      candidate: {
+        ...baseEvent.candidate,
+        id: {
+          chain: "solana",
+          mint: trackedMint
+        },
+        mint: trackedMint
+      }
+    };
+
+    server.emitFeedEvent(event);
+    const trackResponse = await server.app.inject({
+      method: "POST",
+      url: "/metered-launch-data/track",
+      payload: {
+        mint: event.candidate.mint,
+        reason: "test"
+      }
+    });
+    server.emitFeedEvent(createPumpPortalTradeEvent(event.candidate.mint));
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/ui/live-token-cards"
+    });
+    const cards = response.json() as LiveTokenCardViewModel[];
+    const card = cards.find((item) => item.mint === event.candidate.mint);
+
+    expect(trackResponse.statusCode).toBe(200);
+    expect(response.statusCode).toBe(200);
+    expect(card?.meteredLaunchDataState).toBe("tracking");
+    expect(card?.priceActionSource).toBe("PumpPortal subscribeTokenTrade");
+    expect(card?.realTradeEventCount).toBe(1);
+    expect(card?.realPriceActionReady).toBe(true);
+  });
+
   it("GET /live/status and /live/tokens start empty for current session", async () => {
     server = createApiServer({
       logLevel: false,
@@ -3155,6 +3281,60 @@ function createActualDataTestServer(options: {
       maxTokenTradeSubscriptions: 3,
       subscribeMigration: false,
       subscribeNewToken: false,
+      wsUrl: "wss://example.test/pumpportal"
+    },
+    pumpPortalDataWallet: {
+      apiKeyConfigured: true,
+      publicKey: "So11111111111111111111111111111111111111112",
+      ...(options.dataWalletBalanceSol !== undefined
+        ? {
+            rpcHttpUrl: "http://localhost:8899",
+            solanaClient: createDataWalletSolanaClient(
+              options.dataWalletBalanceSol
+            )
+          }
+        : {})
+    },
+    startFeed: false,
+    storageDatabasePath: databasePath
+  });
+}
+
+function createMeteredLaunchDataTestServer(options: {
+  acknowledgedCost: boolean;
+  dataWalletBalanceSol?: number;
+  enabled: boolean;
+}): ApiServer {
+  return createApiServer({
+    actualData: createActualDataConfig({
+      acknowledgedMetered: options.acknowledgedCost,
+      apiKeyConfigured: true,
+      enabled: options.enabled,
+      maxEventsPerMint: 250,
+      maxEventsPerSession: 1000,
+      maxSubscribedTokens: 3,
+      requireApiKey: true,
+      unsubscribeAfterMs: 0
+    }),
+    dataFeed: "pumpportal",
+    logLevel: false,
+    meteredLaunchData: {
+      acknowledgedCost: options.acknowledgedCost,
+      apiKeyConfigured: true,
+      dataWalletPublicKeyConfigured: true,
+      enabled: options.enabled,
+      maxConcurrentMints: 3,
+      maxEventsPerMint: 250,
+      maxEventsPerSession: 1000,
+      maxSessionCostSol: 0.001
+    },
+    pumpPortal: {
+      apiKey: "test-api-key",
+      maxTokenTradeEventsPerMint: 250,
+      maxTokenTradeEventsPerSession: 1000,
+      maxTokenTradeSubscriptions: 3,
+      subscribeMigration: false,
+      subscribeNewToken: true,
       wsUrl: "wss://example.test/pumpportal"
     },
     pumpPortalDataWallet: {

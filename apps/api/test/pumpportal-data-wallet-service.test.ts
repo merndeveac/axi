@@ -19,6 +19,7 @@ describe("PumpPortalDataWalletService", () => {
     expect(status.publicKeyConfigured).toBe(false);
     expect(status.balanceStatus).toBe("missing_config");
     expect(status.reasonCodes).toContain("DATA_WALLET_PUBLIC_KEY_MISSING");
+    expect(status.reasonCodes).toContain("PUMPPORTAL_DATA_API_KEY_MISSING");
     expect(status.reasonCodes).toContain("PUMPPORTAL_API_KEY_MISSING");
     expect(serialized).not.toContain("privatekey");
     expect(serialized).not.toContain("api-key-value");

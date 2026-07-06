@@ -9,6 +9,7 @@ import {
   parseManualMints
 } from "./actual-data-service";
 import { createLaunchScannerConfig } from "./launch-scanner-service";
+import { createMeteredLaunchDataConfig } from "./metered-launch-data-service";
 import { createTokenIdentityConfig } from "./token-identity-service";
 
 const config = loadApiConfig();
@@ -24,57 +25,54 @@ const tradingWalletPublicKey = samePumpPortalWallet
   : config.PUMPPORTAL_TRADING_WALLET_PUBLIC_KEY;
 const liveTradeTrackingEnabled = config.LIVE_TRADE_TRACKING_ENABLED;
 const launchTrackingEnabled = config.PUMPPORTAL_LAUNCH_TRACKING_ENABLED;
-const effectiveTokenTradeMaxSubscribedTokens = liveTradeTrackingEnabled
-  ? Math.min(
-      config.PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS,
-      config.LIVE_TRADE_TRACKING_MAX_MINTS,
-      launchTrackingEnabled
-        ? config.PUMPPORTAL_LAUNCH_TRACKING_MAX_CONCURRENT
-        : config.PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS
-    )
-  : launchTrackingEnabled
-    ? Math.min(
-        config.PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS,
-        config.PUMPPORTAL_LAUNCH_TRACKING_MAX_CONCURRENT
-      )
-    : config.PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS;
-const effectiveTokenTradeMaxEventsPerSession = liveTradeTrackingEnabled
-  ? Math.min(
-      config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION,
-      config.LIVE_TRADE_TRACKING_MAX_EVENTS_PER_SESSION,
-      launchTrackingEnabled
-        ? config.PUMPPORTAL_LAUNCH_TRACKING_MAX_EVENTS_PER_SESSION
-        : config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION
-    )
-  : launchTrackingEnabled
-    ? Math.min(
-        config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION,
-        config.PUMPPORTAL_LAUNCH_TRACKING_MAX_EVENTS_PER_SESSION
-      )
-    : config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION;
-const effectiveTokenTradeMaxEventsPerMint = liveTradeTrackingEnabled
-  ? Math.min(
-      config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_MINT,
-      config.LIVE_TRADE_TRACKING_MAX_EVENTS_PER_MINT,
-      launchTrackingEnabled
-        ? config.PUMPPORTAL_LAUNCH_TRACKING_MAX_EVENTS_PER_TOKEN
-        : config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_MINT
-    )
-  : launchTrackingEnabled
-    ? Math.min(
-        config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_MINT,
-        config.PUMPPORTAL_LAUNCH_TRACKING_MAX_EVENTS_PER_TOKEN
-      )
-    : config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_MINT;
+const meteredLaunchDataEnabled = config.METERED_LAUNCH_DATA_ENABLED;
+const effectiveTokenTradeMaxSubscribedTokens = Math.min(
+  config.PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS,
+  liveTradeTrackingEnabled
+    ? config.LIVE_TRADE_TRACKING_MAX_MINTS
+    : config.PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS,
+  launchTrackingEnabled
+    ? config.PUMPPORTAL_LAUNCH_TRACKING_MAX_CONCURRENT
+    : config.PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS,
+  meteredLaunchDataEnabled
+    ? config.METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS
+    : config.PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS
+);
+const effectiveTokenTradeMaxEventsPerSession = Math.min(
+  config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION,
+  liveTradeTrackingEnabled
+    ? config.LIVE_TRADE_TRACKING_MAX_EVENTS_PER_SESSION
+    : config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION,
+  launchTrackingEnabled
+    ? config.PUMPPORTAL_LAUNCH_TRACKING_MAX_EVENTS_PER_SESSION
+    : config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION,
+  meteredLaunchDataEnabled
+    ? config.METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION
+    : config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_SESSION
+);
+const effectiveTokenTradeMaxEventsPerMint = Math.min(
+  config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_MINT,
+  liveTradeTrackingEnabled
+    ? config.LIVE_TRADE_TRACKING_MAX_EVENTS_PER_MINT
+    : config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_MINT,
+  launchTrackingEnabled
+    ? config.PUMPPORTAL_LAUNCH_TRACKING_MAX_EVENTS_PER_TOKEN
+    : config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_MINT,
+  meteredLaunchDataEnabled
+    ? config.METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT
+    : config.PUMPPORTAL_TOKEN_TRADES_MAX_EVENTS_PER_MINT
+);
 const effectiveActualDataEnabled =
   config.PUMPPORTAL_TOKEN_TRADES_ENABLED ||
   liveTradeTrackingEnabled ||
-  launchTrackingEnabled;
+  launchTrackingEnabled ||
+  meteredLaunchDataEnabled;
 const effectiveActualDataAcknowledged =
   (!config.PUMPPORTAL_TOKEN_TRADES_ENABLED ||
     config.PUMPPORTAL_TOKEN_TRADES_ACK_METERED) &&
   (!liveTradeTrackingEnabled || config.LIVE_TRADE_TRACKING_ACK_METERED) &&
-  (!launchTrackingEnabled || config.PUMPPORTAL_LAUNCH_TRACKING_ACK_METERED);
+  (!launchTrackingEnabled || config.PUMPPORTAL_LAUNCH_TRACKING_ACK_METERED) &&
+  (!meteredLaunchDataEnabled || config.METERED_LAUNCH_DATA_ACK_COST);
 const mockFeed: MockFeedProviderOptions = {
   scenario: config.MOCK_FEED_SCENARIO
 };
@@ -160,6 +158,9 @@ const options: ApiServerOptions = {
         : config.PUMPPORTAL_TOKEN_TRADES_UNSUBSCRIBE_AFTER_MS,
       launchTrackingEnabled
         ? config.PUMPPORTAL_LAUNCH_TRACKING_EXTENDED_MS
+        : config.PUMPPORTAL_TOKEN_TRADES_UNSUBSCRIBE_AFTER_MS,
+      meteredLaunchDataEnabled
+        ? config.METERED_LAUNCH_DATA_EXTENDED_TRACK_MS
         : config.PUMPPORTAL_TOKEN_TRADES_UNSUBSCRIBE_AFTER_MS
     )
   }),
@@ -190,6 +191,31 @@ const options: ApiServerOptions = {
     autoUnsubscribeOnLowScore:
       config.PUMPPORTAL_LAUNCH_TRACKING_AUTO_UNSUBSCRIBE_ON_LOW_SCORE,
     eventCostSolPer10000: config.PUMPPORTAL_DATA_EVENT_COST_SOL_PER_10000
+  }),
+  meteredLaunchData: createMeteredLaunchDataConfig({
+    acknowledgedCost: config.METERED_LAUNCH_DATA_ACK_COST,
+    apiKeyConfigured: dataApiKey !== undefined,
+    autoUnsubscribeOnHardReject:
+      config.METERED_LAUNCH_DATA_AUTO_UNSUBSCRIBE_ON_HARD_REJECT,
+    autoUnsubscribeOnLowScore:
+      config.METERED_LAUNCH_DATA_AUTO_UNSUBSCRIBE_ON_LOW_SCORE,
+    dataWalletPublicKeyConfigured:
+      config.PUMPPORTAL_DATA_WALLET_PUBLIC_KEY !== undefined,
+    enabled: meteredLaunchDataEnabled,
+    eventCostSolPer10000: config.PUMPPORTAL_DATA_EVENT_COST_SOL_PER_10000,
+    extendedTrackMs: config.METERED_LAUNCH_DATA_EXTENDED_TRACK_MS,
+    initialTrackMs: config.METERED_LAUNCH_DATA_INITIAL_TRACK_MS,
+    liveDiscoveryEnabled: config.PUMPPORTAL_LIVE_DISCOVERY_ENABLED,
+    maxConcurrentMints: config.METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS,
+    maxEventsPerMint: config.METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT,
+    maxEventsPerSession: config.METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION,
+    maxSessionCostSol: config.METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL,
+    minScoreToExtend: config.METERED_LAUNCH_DATA_MIN_SCORE_TO_EXTEND,
+    minScoreToTrack: config.METERED_LAUNCH_DATA_MIN_SCORE_TO_TRACK,
+    mode: config.METERED_LAUNCH_DATA_MODE,
+    projectRateWindowMs: config.METERED_LAUNCH_DATA_PROJECT_RATE_WINDOW_MS,
+    requireDataWalletReady:
+      config.METERED_LAUNCH_DATA_REQUIRE_DATA_WALLET_READY
   }),
   liveTradeTracking: {
     acknowledgedMetered: config.LIVE_TRADE_TRACKING_ACK_METERED,
@@ -472,6 +498,7 @@ server.app.log.info(
     chainVerifier: server.chainVerifier.getStatus(),
     actualData: server.actualData.getStatus(),
     launchScanner: server.launchScanner.getStatus(),
+    meteredLaunchData: server.meteredLaunchData.getStatus(),
     watchedWalletExit: server.watchedWalletExit.getStatus(),
     paperPortfolio: server.paperPortfolio.getStatus(),
     dataWallet: server.pumpPortalDataWallet.getStatus(),

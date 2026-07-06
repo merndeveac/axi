@@ -336,7 +336,12 @@ export class PumpPortalDataWalletService {
       balanceKnown && balanceSol < this.config.minBalanceSol;
 
     return unique([
-      ...(this.config.apiKeyConfigured ? [] : ["PUMPPORTAL_API_KEY_MISSING"]),
+      ...(this.config.apiKeyConfigured
+        ? []
+        : [
+            "PUMPPORTAL_DATA_API_KEY_MISSING",
+            "PUMPPORTAL_API_KEY_MISSING"
+          ]),
       ...(options.publicKeyConfigured
         ? []
         : ["DATA_WALLET_PUBLIC_KEY_MISSING"]),

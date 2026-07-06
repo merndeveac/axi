@@ -13,6 +13,7 @@
     "test": "pnpm -r --if-present test",
     "clean": "pnpm -r --if-present clean",
     "live:tokens": "node scripts/dev/start-live-tokens.mjs",
+    "live:tokens:metered": "node scripts/dev/start-live-tokens-metered.mjs",
     "live:tokens:stop": "pnpm local:stop",
     "live:tokens:logs": "pnpm local:logs",
     "local:stop": "node scripts/dev/stop-local.mjs",

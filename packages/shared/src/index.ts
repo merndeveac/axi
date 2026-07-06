@@ -798,6 +798,12 @@ export type LiveTokenCardViewModel = {
   strategy: StrategySignalExplanation;
   rawEventCount: number;
   actualTradeEventCount: number;
+  meteredLaunchDataState: LiveLaunchTrackingState;
+  priceActionSource: "PumpPortal subscribeTokenTrade" | "unavailable";
+  realTradeEventCount: number;
+  realPriceActionReady: boolean;
+  realTimeSeriesReady: boolean;
+  missingDataReason: string | null;
   marketObservationCount: number;
   chainVerificationStatus: ChainVerificationStatus | "not_checked";
   feedProvider: string;

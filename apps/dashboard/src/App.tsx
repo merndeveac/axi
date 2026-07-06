@@ -67,6 +67,9 @@ type StorageStats = {
   pumpPortalTokenTradeEventCount: number;
   actualDataSubscriptionCount: number;
   actualDataSessionCount: number;
+  meteredLaunchDataSessionCount: number;
+  meteredLaunchDataSubscriptionCount: number;
+  meteredLaunchDataEventCount: number;
   tokenIdentityCount: number;
   tokenIdentityResolvedCount: number;
   tokenIdentityUnresolvedCount: number;
@@ -156,6 +159,7 @@ type ActualDataStatus = {
   reasonCodes: string[];
   subscribedTokenCount: number;
   totalEventsThisSession: number;
+  meteredLaunchData?: MeteredLaunchDataStatus;
 };
 
 type PumpPortalDataWalletStatus = {
@@ -290,7 +294,66 @@ type LaunchScannerStatus = {
   minScoreToRip: number;
   trackedMints: string[];
   reasonCodes: string[];
+  meteredLaunchData?: MeteredLaunchDataStatus;
   paperOnly: true;
+  tradingDisabled: true;
+};
+
+type MeteredLaunchDataStatus = {
+  enabled: boolean;
+  acknowledgedCost: boolean;
+  requireDataWalletReady: boolean;
+  ready: boolean;
+  mode: string;
+  provider: string;
+  liveDiscoveryEnabled: boolean;
+  liveDiscoveryActive: boolean;
+  apiKeyConfigured: boolean;
+  dataWalletConfigured: boolean;
+  dataWalletBalanceSol: number | null;
+  dataWalletBalanceStatus: string;
+  dataWalletEstimatedEventsRemaining: number | null;
+  maxConcurrentMints: number;
+  trackedMintCount: number;
+  maxEventsPerMint: number;
+  maxEventsPerSession: number;
+  totalEventsThisSession: number;
+  estimatedCostSol: number;
+  maxSessionCostSol: number;
+  remainingBudgetSol: number;
+  projectedCostPerHourSol: number;
+  budgetReached: boolean;
+  reasonCodes: string[];
+  trackedMints: string[];
+  lastStopReason: string | null;
+  paperOnly: true;
+  dataOnly: true;
+  tradingDisabled: true;
+};
+
+type MeteredLaunchDataTrackedMint = {
+  mint: string;
+  status: string;
+  reason: string;
+  eventCount: number;
+  estimatedCostSol: number;
+  subscribedAt: string | null;
+  unsubscribedAt: string | null;
+  initialReviewAt: string | null;
+  extendedReviewAt: string | null;
+  latestTradeAt: string | null;
+  latestPriceSol: number | null;
+  latestVolumeSol: number | null;
+  reasonCodes: string[];
+};
+
+type MeteredLaunchDataTrackedResponse = {
+  current: MeteredLaunchDataTrackedMint[];
+  persisted: MeteredLaunchDataTrackedMint[];
+  sessions: unknown[];
+  status: MeteredLaunchDataStatus;
+  paperOnly: true;
+  dataOnly: true;
   tradingDisabled: true;
 };
 
@@ -425,6 +488,12 @@ type HealthStatus = {
   liveFeedReady: boolean;
   liveTokenCount: number;
   launchScanner: LaunchScannerStatus;
+  meteredLaunchData: MeteredLaunchDataStatus;
+  meteredLaunchDataEnabled: boolean;
+  meteredLaunchDataReady: boolean;
+  meteredLaunchDataTrackedCount: number;
+  meteredLaunchDataEstimatedCostSol: number;
+  meteredLaunchDataBudgetReached: boolean;
   mockFeedEnabled: boolean;
   mockRuntimeBlocked: boolean;
   noFeedMode: boolean;
@@ -830,6 +899,11 @@ export function App() {
     useState<LiveTradeTrackingStatus | null>(null);
   const [launchScannerStatus, setLaunchScannerStatus] =
     useState<LaunchScannerStatus | null>(null);
+  const [meteredLaunchDataStatus, setMeteredLaunchDataStatus] =
+    useState<MeteredLaunchDataStatus | null>(null);
+  const [meteredLaunchDataTracked, setMeteredLaunchDataTracked] = useState<
+    MeteredLaunchDataTrackedMint[]
+  >([]);
   const [liveCardEnrichmentStatus, setLiveCardEnrichmentStatus] =
     useState<LiveCardEnrichmentStatus | null>(null);
   const [indexerStatus, setIndexerStatus] = useState<IndexerStatus | null>(
@@ -954,6 +1028,8 @@ export function App() {
           nextPaperPortfolioPerformance,
           nextLiveTradeTrackingStatus,
           nextLaunchScannerStatus,
+          nextMeteredLaunchDataStatus,
+          nextMeteredLaunchDataTracked,
           nextActualTrades,
           nextLiveCardEnrichmentStatus,
           nextMarketStatus,
@@ -1001,6 +1077,10 @@ export function App() {
           ),
           fetchJson<LiveTradeTrackingStatus>("/live/trade-tracking/status"),
           fetchJson<LaunchScannerStatus>("/launch/status"),
+          fetchJson<MeteredLaunchDataStatus>("/metered-launch-data/status"),
+          fetchJson<MeteredLaunchDataTrackedResponse>(
+            "/metered-launch-data/tracked?limit=25"
+          ),
           fetchJson<PumpPortalTradeRow[]>("/actual-data/trades?limit=10"),
           fetchJson<LiveCardEnrichmentStatus>("/enrichment/status"),
           fetchJson<MarketStatus>("/market/status"),
@@ -1041,6 +1121,8 @@ export function App() {
           setPaperPortfolioPerformance(nextPaperPortfolioPerformance);
           setLiveTradeTrackingStatus(nextLiveTradeTrackingStatus);
           setLaunchScannerStatus(nextLaunchScannerStatus);
+          setMeteredLaunchDataStatus(nextMeteredLaunchDataStatus);
+          setMeteredLaunchDataTracked(nextMeteredLaunchDataTracked.current);
           setActualTrades(nextActualTrades);
           setLiveCardEnrichmentStatus(nextLiveCardEnrichmentStatus);
           setMarketStatus(nextMarketStatus);
@@ -1315,6 +1397,8 @@ export function App() {
           liveTradeTrackingStatus={liveTradeTrackingStatus}
           marketObservations={marketObservations}
           marketStatus={marketStatus}
+          meteredLaunchDataStatus={meteredLaunchDataStatus}
+          meteredLaunchDataTracked={meteredLaunchDataTracked}
           pumpPortalWalletsStatus={pumpPortalWalletsStatus}
           tokenIdentities={tokenIdentities}
           tokenIdentityStatus={tokenIdentityStatus}
@@ -1503,6 +1587,13 @@ function TokenCard({
           >
             {formatTradeTrackingState(card.tradeTrackingState)}
           </span>
+          <span
+            className={`terminal-badge ${getMeteredLaunchDataBadgeClass(
+              card
+            )}`}
+          >
+            {formatMeteredLaunchDataLabel(card)}
+          </span>
           <span className={`action action-${normalizeClassName(card.action)}`}>
             {card.action}
           </span>
@@ -1515,6 +1606,11 @@ function TokenCard({
           detail={card.launchScoreLabel}
           label="launch"
           value={card.launchPhase.toUpperCase()}
+        />
+        <Stat
+          detail={card.missingDataReason ?? card.priceActionSource}
+          label="data"
+          value={formatMeteredLaunchDataLabel(card)}
         />
         <Stat label="vol 5s" value={formatSol(card.launchVolume5sSol)} />
         <Stat label="vol 30s" value={formatSol(card.launchVolume30sSol)} />
@@ -2519,6 +2615,8 @@ function DataTab({
   liveTradeTrackingStatus,
   marketObservations,
   marketStatus,
+  meteredLaunchDataStatus,
+  meteredLaunchDataTracked,
   pumpPortalWalletsStatus,
   tokenIdentities,
   tokenIdentityStatus
@@ -2536,6 +2634,8 @@ function DataTab({
   liveTradeTrackingStatus: LiveTradeTrackingStatus | null;
   marketObservations: MarketObservationRow[];
   marketStatus: MarketStatus | null;
+  meteredLaunchDataStatus: MeteredLaunchDataStatus | null;
+  meteredLaunchDataTracked: MeteredLaunchDataTrackedMint[];
   pumpPortalWalletsStatus: PumpPortalWalletsStatus | null;
   tokenIdentities: TokenIdentityRow[];
   tokenIdentityStatus: TokenIdentityStatus | null;
@@ -2572,6 +2672,20 @@ function DataTab({
           } mints`}
           tone={
             launchScannerStatus?.launchTrackingEnabled ? "warn" : "neutral"
+          }
+        />
+        <MetricValue
+          label="metered launch data"
+          value={meteredLaunchDataStatus?.enabled ? "ON" : "OFF"}
+          detail={`${meteredLaunchDataStatus?.trackedMintCount ?? 0}/${
+            meteredLaunchDataStatus?.maxConcurrentMints ?? 0
+          } mints`}
+          tone={
+            meteredLaunchDataStatus?.budgetReached
+              ? "bad"
+              : meteredLaunchDataStatus?.ready
+                ? "warn"
+                : "neutral"
           }
         />
         <MetricValue
@@ -2855,6 +2969,128 @@ function DataTab({
               .join(" / ") || "no launch mints tracked"}
           </span>
         </div>
+      </DataPanel>
+      <DataPanel
+        ariaLabel="Metered launch data"
+        meta={
+          <span>
+            {meteredLaunchDataStatus?.acknowledgedCost
+              ? "COST ACKED"
+              : "ACK MISSING"}
+          </span>
+        }
+        title="METERED LAUNCH DATA"
+      >
+        <div className="status-grid secondary-grid embedded-grid">
+          <MetricValue
+            label="enabled"
+            value={meteredLaunchDataStatus?.enabled ? "ON" : "OFF"}
+            detail={meteredLaunchDataStatus?.mode ?? "newest"}
+            tone={meteredLaunchDataStatus?.enabled ? "warn" : "neutral"}
+          />
+          <MetricValue
+            label="ready"
+            value={meteredLaunchDataStatus?.ready ? "YES" : "NO"}
+            detail={
+              meteredLaunchDataStatus?.liveDiscoveryActive
+                ? "discovery active"
+                : "discovery offline"
+            }
+            tone={meteredLaunchDataStatus?.ready ? "good" : "bad"}
+          />
+          <MetricValue
+            label="data wallet"
+            value={
+              meteredLaunchDataStatus?.dataWalletConfigured ? "READY" : "BLOCKED"
+            }
+            detail={(
+              meteredLaunchDataStatus?.dataWalletBalanceStatus ?? "unknown"
+            ).toUpperCase()}
+            tone={getDataWalletTone(
+              meteredLaunchDataStatus?.dataWalletBalanceStatus
+            )}
+          />
+          <MetricValue
+            label="api key"
+            value={meteredLaunchDataStatus?.apiKeyConfigured ? "YES" : "NO"}
+            detail="backend only"
+            tone={
+              meteredLaunchDataStatus?.apiKeyConfigured ? "good" : "bad"
+            }
+          />
+          <MetricValue
+            label="tracked mints"
+            value={formatCompactNumber(
+              meteredLaunchDataStatus?.trackedMintCount
+            )}
+            detail={`${formatCompactNumber(
+              meteredLaunchDataStatus?.maxConcurrentMints
+            )} cap`}
+          />
+          <MetricValue
+            label="events"
+            value={formatCompactNumber(
+              meteredLaunchDataStatus?.totalEventsThisSession
+            )}
+            detail={`${formatCompactNumber(
+              meteredLaunchDataStatus?.maxEventsPerSession
+            )} cap`}
+          />
+          <MetricValue
+            label="cost"
+            value={formatSol(meteredLaunchDataStatus?.estimatedCostSol)}
+            detail={`${formatSol(
+              meteredLaunchDataStatus?.maxSessionCostSol
+            )} cap`}
+            tone={meteredLaunchDataStatus?.budgetReached ? "bad" : "neutral"}
+          />
+          <MetricValue
+            label="remaining"
+            value={formatSol(meteredLaunchDataStatus?.remainingBudgetSol)}
+            detail={`${formatSol(
+              meteredLaunchDataStatus?.projectedCostPerHourSol
+            )} / hr projected`}
+          />
+          <MetricValue
+            label="stop"
+            value={
+              meteredLaunchDataStatus?.lastStopReason
+                ? meteredLaunchDataStatus.lastStopReason.toUpperCase()
+                : "--"
+            }
+            detail={
+              meteredLaunchDataStatus?.budgetReached
+                ? "budget reached"
+                : "no stop condition"
+            }
+          />
+        </div>
+        <ReasonBlock
+          title="Metered Launch Data Reasons"
+          codes={meteredLaunchDataStatus?.reasonCodes}
+        />
+        <TableShell
+          empty="No metered launch mints tracked"
+          headers={[
+            "Mint",
+            "Status",
+            "Subscribed",
+            "Events",
+            "Cost",
+            "Latest",
+            "Reason"
+          ]}
+          rows={meteredLaunchDataTracked.map((item) => [
+            formatMintShort(item.mint),
+            item.status.toUpperCase(),
+            formatTime(item.subscribedAt),
+            formatCompactNumber(item.eventCount),
+            formatSol(item.estimatedCostSol),
+            formatTimeAgo(item.latestTradeAt),
+            item.reason
+          ])}
+          title="METERED TRACKED MINTS"
+        />
       </DataPanel>
       <ReasonBlock title="Indexer Reasons" codes={indexerStatus?.reasonCodes} />
       <ReasonBlock
@@ -3603,6 +3839,54 @@ function formatDataQuality(value: string): string {
 
 function formatTradeTrackingState(value: string): string {
   return value.replaceAll("_", " ").toUpperCase();
+}
+
+function formatMeteredLaunchDataLabel(card: LiveTokenCardViewModel): string {
+  if (card.realTimeSeriesReady) {
+    return "TIME SERIES READY";
+  }
+
+  if (card.realPriceActionReady) {
+    return "PRICE ACTION READY";
+  }
+
+  if (card.meteredLaunchDataState === "tracking") {
+    return "METERED TRACKING";
+  }
+
+  if (card.meteredLaunchDataState === "budget_reached") {
+    return "BUDGET BLOCKED";
+  }
+
+  if (card.missingDataReason?.includes("WALLET")) {
+    return "WALLET LOW";
+  }
+
+  if (card.missingDataReason?.includes("ACK")) {
+    return "ACK MISSING";
+  }
+
+  return "DISCOVERY ONLY";
+}
+
+function getMeteredLaunchDataBadgeClass(
+  card: LiveTokenCardViewModel
+): string {
+  const label = formatMeteredLaunchDataLabel(card);
+
+  if (label.includes("READY") || label === "METERED TRACKING") {
+    return "terminal-badge-online";
+  }
+
+  if (label.includes("BLOCKED") || label === "WALLET LOW") {
+    return "terminal-badge-offline";
+  }
+
+  if (label === "ACK MISSING") {
+    return "terminal-badge-warning";
+  }
+
+  return "terminal-badge-neutral";
 }
 
 function getTradeTrackingBadgeClass(value: string): string {

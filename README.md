@@ -217,6 +217,65 @@ PUMPPORTAL_LAUNCH_TRACKING_MAX_EVENTS_PER_SESSION=1000
 PUMPPORTAL_LAUNCH_TRACKING_MAX_SESSION_COST_SOL=0.001
 ```
 
+## Funded PumpPortal Data Wallet For Launch Scanner Time Series
+
+Metered launch data mode is the canonical safe path for real Pump.fun
+price-action ticks. It keeps free PumpPortal `subscribeNewToken` and
+`subscribeMigration` discovery running, then selects a small capped set of
+launch mints for PumpPortal `subscribeTokenTrade` only. Those token-trade
+messages feed launch momentum windows, live cards, paper entry signals, and the
+paper portfolio mark-price path.
+
+This wallet pays only for PumpPortal metered data messages. AXI does not use it
+for live trading, does not store private keys, does not sign transactions, does
+not call PumpPortal Lightning execution, does not call the PumpPortal Local
+Transaction API, does not call Jupiter, and does not subscribe to
+`subscribeAccountTrade` in this mode. The PumpPortal API key is backend-only.
+The dashboard can show the public funding address, balance, and configured
+booleans, but never displays the API key.
+
+PumpPortal's published metered data price used by AXI's estimator is
+`0.01 SOL` per `10,000` messages. Start with small caps.
+
+Example `.env.local`:
+
+```bash
+PUMPPORTAL_DATA_WALLET_PUBLIC_KEY=<PUBLIC_FUNDING_ADDRESS>
+PUMPPORTAL_DATA_API_KEY=<PUMPPORTAL_DATA_API_KEY>
+SOLANA_RPC_HTTP=<RPC_HTTP_URL>
+
+METERED_LAUNCH_DATA_ENABLED=true
+METERED_LAUNCH_DATA_ACK_COST=true
+METERED_LAUNCH_DATA_MODE=newest
+METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS=3
+METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION=1000
+METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL=0.001
+```
+
+Start:
+
+```bash
+pnpm live:tokens:metered
+```
+
+Endpoints:
+
+- `GET /metered-launch-data/status`
+- `GET /metered-launch-data/tracked`
+- `GET /metered-launch-data/events`
+- `GET /metered-launch-data/cost`
+- `POST /metered-launch-data/track`
+- `DELETE /metered-launch-data/track/:mint`
+- `POST /metered-launch-data/evaluate`
+
+CLI helpers:
+
+```bash
+pnpm --filter @axi/api metered-launch-data:status
+pnpm --filter @axi/api metered-launch-data:cost -- --events 10000
+pnpm --filter @axi/api metered-launch-data:simulate -- --fixture strong-ripper
+```
+
 Launch scanner endpoints:
 
 - `GET /launch/status`
@@ -869,6 +928,7 @@ Live-token runtime helpers:
 
 ```bash
 pnpm live:tokens
+pnpm live:tokens:metered
 pnpm live:tokens:stop
 pnpm live:tokens:logs
 ```
@@ -889,6 +949,22 @@ This launches the API and dashboard with `DATA_FEED_MODE=live`,
 `DATA_FEED=pumpportal`, `AXI_RUNTIME_MODE=pumpportal_first`, PumpPortal
 `subscribeNewToken` and `subscribeMigration` enabled, runtime mock data
 disabled, paper auto-ordering disabled, and metered token trades disabled.
+
+Start the same runtime with capped metered launch data enabled only after you
+set the explicit data-wallet gates in your shell or `.env.local`:
+
+```bash
+METERED_LAUNCH_DATA_ENABLED=true
+METERED_LAUNCH_DATA_ACK_COST=true
+PUMPPORTAL_DATA_API_KEY=<PUMPPORTAL_DATA_API_KEY>
+PUMPPORTAL_DATA_WALLET_PUBLIC_KEY=<PUBLIC_FUNDING_ADDRESS>
+pnpm live:tokens:metered
+```
+
+The metered launcher refuses to start if the enable flag, cost ACK, data API
+key, or public funding address is missing. It does not set the ACK for you and
+forces live trading, Lightning execution, account-trade streams, and paper
+auto-orders off.
 
 Manual API launch:
 

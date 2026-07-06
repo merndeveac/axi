@@ -278,6 +278,9 @@ export type StorageStats = {
   pumpPortalTokenTradeEventCount: number;
   actualDataSubscriptionCount: number;
   actualDataSessionCount: number;
+  meteredLaunchDataSessionCount: number;
+  meteredLaunchDataSubscriptionCount: number;
+  meteredLaunchDataEventCount: number;
   tokenIdentityCount: number;
   tokenIdentityResolvedCount: number;
   tokenIdentityUnresolvedCount: number;
@@ -624,6 +627,75 @@ export type StoredActualDataSession = Omit<
   createdAt: string;
   startedAt: string | null;
   stoppedAt: string | null;
+};
+
+export type MeteredLaunchDataSessionInput = {
+  status: string;
+  mode: string;
+  trackedMintCount: number;
+  totalEvents: number;
+  estimatedCostSol: number;
+  budgetReached: boolean;
+  reasonCodes: string[];
+  payload: unknown;
+  startedAt?: string | null;
+  stoppedAt?: string | null;
+  createdAt?: string;
+};
+
+export type StoredMeteredLaunchDataSession = Omit<
+  MeteredLaunchDataSessionInput,
+  "createdAt" | "startedAt" | "stoppedAt"
+> & {
+  id: number;
+  createdAt: string;
+  startedAt: string | null;
+  stoppedAt: string | null;
+};
+
+export type MeteredLaunchDataSubscriptionInput = {
+  mint: string;
+  status: string;
+  reason: string;
+  eventCount: number;
+  estimatedCostSol: number;
+  subscribedAt?: string | null;
+  unsubscribedAt?: string | null;
+  reasonCodes: string[];
+  payload: unknown;
+  createdAt?: string;
+};
+
+export type StoredMeteredLaunchDataSubscription = Omit<
+  MeteredLaunchDataSubscriptionInput,
+  "createdAt" | "subscribedAt" | "unsubscribedAt"
+> & {
+  id: number;
+  createdAt: string;
+  subscribedAt: string | null;
+  unsubscribedAt: string | null;
+};
+
+export type MeteredLaunchDataEventInput = {
+  mint: string;
+  signature?: string | null;
+  side: TokenTradeEvent["side"];
+  trader?: string | null;
+  priceSol?: number | null;
+  volumeSol?: number | null;
+  tokenAmount?: number | null;
+  usableForMetrics: boolean;
+  reasonCodes: string[];
+  payload: unknown;
+  createdAt?: string;
+};
+
+export type StoredMeteredLaunchDataEvent = Omit<
+  MeteredLaunchDataEventInput,
+  "createdAt"
+> & {
+  id: number;
+  createdAt: string;
 };
 
 export type LaunchCandidateInput = {
@@ -1075,6 +1147,50 @@ type ActualDataSessionRow = {
   budget_event_limit: number;
   started_at: string | null;
   stopped_at: string | null;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
+type MeteredLaunchDataSessionRow = {
+  id: number;
+  status: string;
+  mode: string;
+  tracked_mint_count: number;
+  total_events: number;
+  estimated_cost_sol: number;
+  budget_reached: number;
+  reason_codes_json: string;
+  payload_json: string;
+  started_at: string | null;
+  stopped_at: string | null;
+  created_at: string;
+};
+
+type MeteredLaunchDataSubscriptionRow = {
+  id: number;
+  mint: string;
+  status: string;
+  reason: string;
+  event_count: number;
+  estimated_cost_sol: number;
+  subscribed_at: string | null;
+  unsubscribed_at: string | null;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
+type MeteredLaunchDataEventRow = {
+  id: number;
+  mint: string;
+  signature: string | null;
+  side: TokenTradeEvent["side"];
+  trader: string | null;
+  price_sol: number | null;
+  volume_sol: number | null;
+  token_amount: number | null;
+  usable_for_metrics: number;
   reason_codes_json: string;
   payload_json: string;
   created_at: string;
@@ -1588,6 +1704,47 @@ const actualDataSessionInputSchema = z.object({
   budgetEventLimit: z.number().int().nonnegative(),
   startedAt: z.string().datetime().nullable().optional(),
   stoppedAt: z.string().datetime().nullable().optional(),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown(),
+  createdAt: z.string().datetime().optional()
+});
+
+const meteredLaunchDataSessionInputSchema = z.object({
+  status: z.string().min(1),
+  mode: z.string().min(1),
+  trackedMintCount: z.number().int().nonnegative(),
+  totalEvents: z.number().int().nonnegative(),
+  estimatedCostSol: z.number().nonnegative(),
+  budgetReached: z.boolean(),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown(),
+  startedAt: z.string().datetime().nullable().optional(),
+  stoppedAt: z.string().datetime().nullable().optional(),
+  createdAt: z.string().datetime().optional()
+});
+
+const meteredLaunchDataSubscriptionInputSchema = z.object({
+  mint: z.string().min(1),
+  status: z.string().min(1),
+  reason: z.string().min(1),
+  eventCount: z.number().int().nonnegative(),
+  estimatedCostSol: z.number().nonnegative(),
+  subscribedAt: z.string().datetime().nullable().optional(),
+  unsubscribedAt: z.string().datetime().nullable().optional(),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown(),
+  createdAt: z.string().datetime().optional()
+});
+
+const meteredLaunchDataEventInputSchema = z.object({
+  mint: z.string().min(1),
+  signature: z.string().min(1).nullable().optional(),
+  side: z.enum(["buy", "sell", "unknown"]),
+  trader: z.string().min(1).nullable().optional(),
+  priceSol: z.number().nonnegative().nullable().optional(),
+  volumeSol: z.number().nonnegative().nullable().optional(),
+  tokenAmount: z.number().nonnegative().nullable().optional(),
+  usableForMetrics: z.boolean(),
   reasonCodes: z.array(z.string().min(1)),
   payload: z.unknown(),
   createdAt: z.string().datetime().optional()
@@ -3042,6 +3199,252 @@ export function listActualDataSessionsForReplay(
     .all(parsedLimit) as ActualDataSessionRow[];
 
   return rows.map(mapActualDataSessionRow);
+}
+
+export function saveMeteredLaunchDataSession(
+  session: MeteredLaunchDataSessionInput
+): StoredMeteredLaunchDataSession {
+  const parsed = meteredLaunchDataSessionInputSchema.parse(session);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const payload = sanitizeStoragePayload(parsed.payload);
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into metered_launch_data_sessions (
+        status,
+        mode,
+        tracked_mint_count,
+        total_events,
+        estimated_cost_sol,
+        budget_reached,
+        reason_codes_json,
+        payload_json,
+        started_at,
+        stopped_at,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.status,
+      parsed.mode,
+      parsed.trackedMintCount,
+      parsed.totalEvents,
+      parsed.estimatedCostSol,
+      parsed.budgetReached ? 1 : 0,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(payload),
+      parsed.startedAt ?? null,
+      parsed.stoppedAt ?? null,
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    status: parsed.status,
+    mode: parsed.mode,
+    trackedMintCount: parsed.trackedMintCount,
+    totalEvents: parsed.totalEvents,
+    estimatedCostSol: parsed.estimatedCostSol,
+    budgetReached: parsed.budgetReached,
+    reasonCodes: parsed.reasonCodes,
+    payload,
+    startedAt: parsed.startedAt ?? null,
+    stoppedAt: parsed.stoppedAt ?? null,
+    createdAt
+  };
+}
+
+export function listMeteredLaunchDataSessions(
+  limit = 50
+): StoredMeteredLaunchDataSession[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from metered_launch_data_sessions
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as MeteredLaunchDataSessionRow[];
+
+  return rows.map(mapMeteredLaunchDataSessionRow);
+}
+
+export function saveMeteredLaunchDataSubscription(
+  subscription: MeteredLaunchDataSubscriptionInput
+): StoredMeteredLaunchDataSubscription {
+  const parsed = meteredLaunchDataSubscriptionInputSchema.parse(subscription);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const payload = sanitizeStoragePayload(parsed.payload);
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into metered_launch_data_subscriptions (
+        mint,
+        status,
+        reason,
+        event_count,
+        estimated_cost_sol,
+        subscribed_at,
+        unsubscribed_at,
+        reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.mint,
+      parsed.status,
+      parsed.reason,
+      parsed.eventCount,
+      parsed.estimatedCostSol,
+      parsed.subscribedAt ?? null,
+      parsed.unsubscribedAt ?? null,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(payload),
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    mint: parsed.mint,
+    status: parsed.status,
+    reason: parsed.reason,
+    eventCount: parsed.eventCount,
+    estimatedCostSol: parsed.estimatedCostSol,
+    subscribedAt: parsed.subscribedAt ?? null,
+    unsubscribedAt: parsed.unsubscribedAt ?? null,
+    reasonCodes: parsed.reasonCodes,
+    payload,
+    createdAt
+  };
+}
+
+export function listMeteredLaunchDataSubscriptions(
+  limit = 50
+): StoredMeteredLaunchDataSubscription[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from metered_launch_data_subscriptions
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as MeteredLaunchDataSubscriptionRow[];
+
+  return rows.map(mapMeteredLaunchDataSubscriptionRow);
+}
+
+export function listMeteredLaunchDataSubscriptionsByMint(
+  mint: string,
+  limit = 50
+): StoredMeteredLaunchDataSubscription[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from metered_launch_data_subscriptions
+       where mint = ?
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(mint, parsedLimit) as MeteredLaunchDataSubscriptionRow[];
+
+  return rows.map(mapMeteredLaunchDataSubscriptionRow);
+}
+
+export function saveMeteredLaunchDataEvent(
+  event: MeteredLaunchDataEventInput
+): StoredMeteredLaunchDataEvent {
+  const parsed = meteredLaunchDataEventInputSchema.parse(event);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const payload = sanitizeStoragePayload(parsed.payload);
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into metered_launch_data_events (
+        mint,
+        signature,
+        side,
+        trader,
+        price_sol,
+        volume_sol,
+        token_amount,
+        usable_for_metrics,
+        reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.mint,
+      parsed.signature ?? null,
+      parsed.side,
+      parsed.trader ?? null,
+      parsed.priceSol ?? null,
+      parsed.volumeSol ?? null,
+      parsed.tokenAmount ?? null,
+      parsed.usableForMetrics ? 1 : 0,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(payload),
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    mint: parsed.mint,
+    signature: parsed.signature ?? null,
+    side: parsed.side,
+    trader: parsed.trader ?? null,
+    priceSol: parsed.priceSol ?? null,
+    volumeSol: parsed.volumeSol ?? null,
+    tokenAmount: parsed.tokenAmount ?? null,
+    usableForMetrics: parsed.usableForMetrics,
+    reasonCodes: parsed.reasonCodes,
+    payload,
+    createdAt
+  };
+}
+
+export function listMeteredLaunchDataEvents(
+  limit = 50
+): StoredMeteredLaunchDataEvent[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from metered_launch_data_events
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as MeteredLaunchDataEventRow[];
+
+  return rows.map(mapMeteredLaunchDataEventRow);
+}
+
+export function listMeteredLaunchDataEventsByMint(
+  mint: string,
+  limit = 50
+): StoredMeteredLaunchDataEvent[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from metered_launch_data_events
+       where mint = ?
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(mint, parsedLimit) as MeteredLaunchDataEventRow[];
+
+  return rows.map(mapMeteredLaunchDataEventRow);
 }
 
 export function saveLaunchCandidate(
@@ -5061,6 +5464,15 @@ export function getStorageStats(): StorageStats {
     ),
     actualDataSubscriptionCount: countRows(db, "actual_data_subscriptions"),
     actualDataSessionCount: countRows(db, "actual_data_sessions"),
+    meteredLaunchDataSessionCount: countRows(
+      db,
+      "metered_launch_data_sessions"
+    ),
+    meteredLaunchDataSubscriptionCount: countRows(
+      db,
+      "metered_launch_data_subscriptions"
+    ),
+    meteredLaunchDataEventCount: countRows(db, "metered_launch_data_events"),
     tokenIdentityCount: countRows(db, "token_identities"),
     tokenIdentityResolvedCount: countResolvedTokenIdentities(db),
     tokenIdentityUnresolvedCount: countUnresolvedTokenIdentities(db),
@@ -5948,6 +6360,77 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(13, "paper_portfolio_pnl_engine", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 14)) {
+    db.exec(`
+      create table if not exists metered_launch_data_sessions (
+        id integer primary key autoincrement,
+        status text not null,
+        mode text not null,
+        tracked_mint_count integer not null,
+        total_events integer not null,
+        estimated_cost_sol real not null,
+        budget_reached integer not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        started_at text,
+        stopped_at text,
+        created_at text not null
+      );
+
+      create index if not exists idx_metered_launch_data_sessions_created_at
+        on metered_launch_data_sessions(created_at);
+
+      create table if not exists metered_launch_data_subscriptions (
+        id integer primary key autoincrement,
+        mint text not null,
+        status text not null,
+        reason text not null,
+        event_count integer not null,
+        estimated_cost_sol real not null,
+        subscribed_at text,
+        unsubscribed_at text,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_metered_launch_data_subscriptions_created_at
+        on metered_launch_data_subscriptions(created_at);
+
+      create index if not exists idx_metered_launch_data_subscriptions_mint
+        on metered_launch_data_subscriptions(mint);
+
+      create table if not exists metered_launch_data_events (
+        id integer primary key autoincrement,
+        mint text not null,
+        signature text,
+        side text not null,
+        trader text,
+        price_sol real,
+        volume_sol real,
+        token_amount real,
+        usable_for_metrics integer not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_metered_launch_data_events_created_at
+        on metered_launch_data_events(created_at);
+
+      create index if not exists idx_metered_launch_data_events_mint
+        on metered_launch_data_events(mint);
+
+      create index if not exists idx_metered_launch_data_events_signature
+        on metered_launch_data_events(signature);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(14, "metered_launch_data", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -6419,6 +6902,62 @@ function mapActualDataSessionRow(
     budgetEventLimit: row.budget_event_limit,
     startedAt: row.started_at,
     stoppedAt: row.stopped_at,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at
+  };
+}
+
+function mapMeteredLaunchDataSessionRow(
+  row: MeteredLaunchDataSessionRow
+): StoredMeteredLaunchDataSession {
+  return {
+    id: row.id,
+    status: row.status,
+    mode: row.mode,
+    trackedMintCount: row.tracked_mint_count,
+    totalEvents: row.total_events,
+    estimatedCostSol: row.estimated_cost_sol,
+    budgetReached: Boolean(row.budget_reached),
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
+    startedAt: row.started_at,
+    stoppedAt: row.stopped_at,
+    createdAt: row.created_at
+  };
+}
+
+function mapMeteredLaunchDataSubscriptionRow(
+  row: MeteredLaunchDataSubscriptionRow
+): StoredMeteredLaunchDataSubscription {
+  return {
+    id: row.id,
+    mint: row.mint,
+    status: row.status,
+    reason: row.reason,
+    eventCount: row.event_count,
+    estimatedCostSol: row.estimated_cost_sol,
+    subscribedAt: row.subscribed_at,
+    unsubscribedAt: row.unsubscribed_at,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at
+  };
+}
+
+function mapMeteredLaunchDataEventRow(
+  row: MeteredLaunchDataEventRow
+): StoredMeteredLaunchDataEvent {
+  return {
+    id: row.id,
+    mint: row.mint,
+    signature: row.signature,
+    side: row.side,
+    trader: row.trader,
+    priceSol: row.price_sol,
+    volumeSol: row.volume_sol,
+    tokenAmount: row.token_amount,
+    usableForMetrics: Boolean(row.usable_for_metrics),
     reasonCodes: JSON.parse(row.reason_codes_json) as string[],
     payload: JSON.parse(row.payload_json),
     createdAt: row.created_at
