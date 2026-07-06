@@ -24,6 +24,7 @@
     { "path": "../../packages/exit-strategy" },
     { "path": "../../packages/market-data" },
     { "path": "../../packages/metrics" },
+    { "path": "../../packages/paper-portfolio" },
     { "path": "../../packages/pumpfun-decoder" },
     { "path": "../../packages/pumpportal-lightning" },
     { "path": "../../packages/risk" },

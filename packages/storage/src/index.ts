@@ -16,6 +16,14 @@ import type {
   WatchTargetKind
 } from "@axi/watch-orchestrator";
 import type {
+  PaperFillStatus,
+  PaperOrderSide as PortfolioOrderSide,
+  PaperOrderSource,
+  PaperOrderType,
+  PaperPositionStatus,
+  PaperRiskLevel
+} from "@axi/paper-portfolio";
+import type {
   TokenIdentity,
   TokenIdentityConfidence,
   TokenIdentityDataSource,
@@ -131,6 +139,128 @@ export type StoredPaperPosition = PaperPositionInput & {
   updatedAt: string;
 };
 
+export type PaperPortfolioOrderInput = {
+  orderId: string;
+  type: PaperOrderType;
+  side: PortfolioOrderSide;
+  mint: string;
+  symbol?: string | null;
+  title?: string | null;
+  source: PaperOrderSource;
+  requestedSizeSol?: number | null;
+  requestedSellPct?: number | null;
+  signalScore?: number | null;
+  riskLevel?: PaperRiskLevel | null;
+  reasonCodes: string[];
+  payload: unknown;
+  createdAt?: string;
+};
+
+export type StoredPaperPortfolioOrder = Omit<
+  PaperPortfolioOrderInput,
+  "createdAt"
+> & {
+  id: number;
+  symbol: string | null;
+  title: string | null;
+  requestedSizeSol: number | null;
+  requestedSellPct: number | null;
+  signalScore: number | null;
+  riskLevel: PaperRiskLevel | null;
+  createdAt: string;
+};
+
+export type PaperPortfolioFillInput = {
+  fillId: string;
+  orderId: string;
+  side: PortfolioOrderSide;
+  mint: string;
+  priceSol: number;
+  effectivePriceSol: number;
+  sizeSol: number;
+  tokenAmount: number;
+  feeSol: number;
+  slippageSol: number;
+  fillStatus: PaperFillStatus;
+  rejectionReason?: string | null;
+  reasonCodes: string[];
+  payload: unknown;
+  createdAt?: string;
+};
+
+export type StoredPaperPortfolioFill = Omit<
+  PaperPortfolioFillInput,
+  "createdAt"
+> & {
+  id: number;
+  rejectionReason: string | null;
+  createdAt: string;
+};
+
+export type PaperPortfolioPositionInput = {
+  positionId: string;
+  mint: string;
+  symbol?: string | null;
+  title?: string | null;
+  status: PaperPositionStatus;
+  entryPriceSol: number;
+  averageEntryPriceSol: number;
+  currentPriceSol?: number | null;
+  sizeSol: number;
+  remainingSizeSol: number;
+  tokenAmount: number;
+  remainingTokenAmount: number;
+  realizedPnlSol: number;
+  unrealizedPnlSol: number;
+  realizedPnlPct: number;
+  unrealizedPnlPct: number;
+  totalFeesSol: number;
+  payload: unknown;
+  openedAt: string;
+  updatedAt: string;
+  closedAt?: string | null;
+  createdAt?: string;
+};
+
+export type StoredPaperPortfolioPosition = Omit<
+  PaperPortfolioPositionInput,
+  "createdAt"
+> & {
+  id: number;
+  symbol: string | null;
+  title: string | null;
+  currentPriceSol: number | null;
+  closedAt: string | null;
+  createdAt: string;
+};
+
+export type PaperPortfolioSnapshotInput = {
+  cashSol: number;
+  deployedSol: number;
+  equitySol: number;
+  realizedPnlSol: number;
+  unrealizedPnlSol: number;
+  totalPnlSol: number;
+  totalPnlPct: number;
+  openPositionCount: number;
+  closedPositionCount: number;
+  winRate: number;
+  maxDrawdownSol: number;
+  maxDrawdownPct: number;
+  totalFeesSol: number;
+  totalTrades: number;
+  payload: unknown;
+  createdAt?: string;
+};
+
+export type StoredPaperPortfolioSnapshot = Omit<
+  PaperPortfolioSnapshotInput,
+  "createdAt"
+> & {
+  id: number;
+  createdAt: string;
+};
+
 export type StorageStats = {
   databasePath: string;
   feedEventCount: number;
@@ -160,6 +290,10 @@ export type StorageStats = {
   candidateDecisionCount: number;
   paperOrderCount: number;
   paperPositionCount: number;
+  paperPortfolioOrderCount: number;
+  paperPortfolioFillCount: number;
+  paperPortfolioPositionCount: number;
+  paperPortfolioSnapshotCount: number;
   watchedWalletCount: number;
   watchedWalletTradeEventCount: number;
   exitRuleCount: number;
@@ -714,6 +848,89 @@ type PaperPositionRow = {
   updated_at: string;
 };
 
+type PaperPortfolioOrderRow = {
+  id: number;
+  order_id: string;
+  type: PaperOrderType;
+  side: PortfolioOrderSide;
+  mint: string;
+  symbol: string | null;
+  title: string | null;
+  source: PaperOrderSource;
+  requested_size_sol: number | null;
+  requested_sell_pct: number | null;
+  signal_score: number | null;
+  risk_level: PaperRiskLevel | null;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
+type PaperPortfolioFillRow = {
+  id: number;
+  fill_id: string;
+  order_id: string;
+  side: PortfolioOrderSide;
+  mint: string;
+  price_sol: number;
+  effective_price_sol: number;
+  size_sol: number;
+  token_amount: number;
+  fee_sol: number;
+  slippage_sol: number;
+  fill_status: PaperFillStatus;
+  rejection_reason: string | null;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
+type PaperPortfolioPositionRow = {
+  id: number;
+  position_id: string;
+  mint: string;
+  symbol: string | null;
+  title: string | null;
+  status: PaperPositionStatus;
+  entry_price_sol: number;
+  average_entry_price_sol: number;
+  current_price_sol: number | null;
+  size_sol: number;
+  remaining_size_sol: number;
+  token_amount: number;
+  remaining_token_amount: number;
+  realized_pnl_sol: number;
+  unrealized_pnl_sol: number;
+  realized_pnl_pct: number;
+  unrealized_pnl_pct: number;
+  total_fees_sol: number;
+  payload_json: string;
+  opened_at: string;
+  updated_at: string;
+  closed_at: string | null;
+  created_at: string;
+};
+
+type PaperPortfolioSnapshotRow = {
+  id: number;
+  cash_sol: number;
+  deployed_sol: number;
+  equity_sol: number;
+  realized_pnl_sol: number;
+  unrealized_pnl_sol: number;
+  total_pnl_sol: number;
+  total_pnl_pct: number;
+  open_position_count: number;
+  closed_position_count: number;
+  win_rate: number;
+  max_drawdown_sol: number;
+  max_drawdown_pct: number;
+  total_fees_sol: number;
+  total_trades: number;
+  payload_json: string;
+  created_at: string;
+};
+
 type RiskSnapshotRow = {
   id: number;
   mint: string;
@@ -1133,6 +1350,95 @@ const paperPositionInputSchema = z.object({
   payload: z.unknown(),
   openedAt: z.string().datetime().optional(),
   updatedAt: z.string().datetime().optional()
+});
+
+const paperPortfolioOrderInputSchema = z.object({
+  orderId: z.string().min(1),
+  type: z.enum(["entry", "exit"]),
+  side: z.enum(["buy", "sell"]),
+  mint: z.string().min(1),
+  symbol: z.string().min(1).nullable().optional(),
+  title: z.string().min(1).nullable().optional(),
+  source: z.enum([
+    "launch_signal",
+    "watched_wallet_exit",
+    "take_profit",
+    "stop_loss",
+    "manual_paper",
+    "replay"
+  ]),
+  requestedSizeSol: z.number().nonnegative().nullable().optional(),
+  requestedSellPct: z.number().nonnegative().max(100).nullable().optional(),
+  signalScore: z.number().nullable().optional(),
+  riskLevel: z
+    .enum(["unknown", "low", "medium", "high", "critical"])
+    .nullable()
+    .optional(),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown(),
+  createdAt: z.string().datetime().optional()
+});
+
+const paperPortfolioFillInputSchema = z.object({
+  fillId: z.string().min(1),
+  orderId: z.string().min(1),
+  side: z.enum(["buy", "sell"]),
+  mint: z.string().min(1),
+  priceSol: z.number().nonnegative(),
+  effectivePriceSol: z.number().nonnegative(),
+  sizeSol: z.number().nonnegative(),
+  tokenAmount: z.number().nonnegative(),
+  feeSol: z.number().nonnegative(),
+  slippageSol: z.number().nonnegative(),
+  fillStatus: z.enum(["filled", "rejected", "partial"]),
+  rejectionReason: z.string().min(1).nullable().optional(),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown(),
+  createdAt: z.string().datetime().optional()
+});
+
+const paperPortfolioPositionInputSchema = z.object({
+  positionId: z.string().min(1),
+  mint: z.string().min(1),
+  symbol: z.string().min(1).nullable().optional(),
+  title: z.string().min(1).nullable().optional(),
+  status: z.enum(["open", "partially_closed", "closed"]),
+  entryPriceSol: z.number().nonnegative(),
+  averageEntryPriceSol: z.number().nonnegative(),
+  currentPriceSol: z.number().nonnegative().nullable().optional(),
+  sizeSol: z.number().nonnegative(),
+  remainingSizeSol: z.number().nonnegative(),
+  tokenAmount: z.number().nonnegative(),
+  remainingTokenAmount: z.number().nonnegative(),
+  realizedPnlSol: z.number(),
+  unrealizedPnlSol: z.number(),
+  realizedPnlPct: z.number(),
+  unrealizedPnlPct: z.number(),
+  totalFeesSol: z.number().nonnegative(),
+  payload: z.unknown(),
+  openedAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  closedAt: z.string().datetime().nullable().optional(),
+  createdAt: z.string().datetime().optional()
+});
+
+const paperPortfolioSnapshotInputSchema = z.object({
+  cashSol: z.number(),
+  deployedSol: z.number().nonnegative(),
+  equitySol: z.number(),
+  realizedPnlSol: z.number(),
+  unrealizedPnlSol: z.number(),
+  totalPnlSol: z.number(),
+  totalPnlPct: z.number(),
+  openPositionCount: z.number().int().nonnegative(),
+  closedPositionCount: z.number().int().nonnegative(),
+  winRate: z.number().min(0).max(100),
+  maxDrawdownSol: z.number().nonnegative(),
+  maxDrawdownPct: z.number().min(0),
+  totalFeesSol: z.number().nonnegative(),
+  totalTrades: z.number().int().nonnegative(),
+  payload: z.unknown(),
+  createdAt: z.string().datetime().optional()
 });
 
 const chainVerificationInputSchema = z.object({
@@ -4362,6 +4668,373 @@ export function listPaperPositions(): StoredPaperPosition[] {
   return rows.map(mapPaperPositionRow);
 }
 
+export function savePaperPortfolioOrder(
+  order: PaperPortfolioOrderInput
+): StoredPaperPortfolioOrder {
+  const parsed = paperPortfolioOrderInputSchema.parse(order);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into paper_portfolio_orders (
+        order_id,
+        type,
+        side,
+        mint,
+        symbol,
+        title,
+        source,
+        requested_size_sol,
+        requested_sell_pct,
+        signal_score,
+        risk_level,
+        reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.orderId,
+      parsed.type,
+      parsed.side,
+      parsed.mint,
+      parsed.symbol ?? null,
+      parsed.title ?? null,
+      parsed.source,
+      parsed.requestedSizeSol ?? null,
+      parsed.requestedSellPct ?? null,
+      parsed.signalScore ?? null,
+      parsed.riskLevel ?? null,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(parsed.payload),
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    orderId: parsed.orderId,
+    type: parsed.type,
+    side: parsed.side,
+    mint: parsed.mint,
+    symbol: parsed.symbol ?? null,
+    title: parsed.title ?? null,
+    source: parsed.source,
+    requestedSizeSol: parsed.requestedSizeSol ?? null,
+    requestedSellPct: parsed.requestedSellPct ?? null,
+    signalScore: parsed.signalScore ?? null,
+    riskLevel: parsed.riskLevel ?? null,
+    reasonCodes: parsed.reasonCodes,
+    payload: parsed.payload,
+    createdAt
+  };
+}
+
+export function listPaperPortfolioOrders(
+  limit = 50
+): StoredPaperPortfolioOrder[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from paper_portfolio_orders
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as PaperPortfolioOrderRow[];
+
+  return rows.map(mapPaperPortfolioOrderRow);
+}
+
+export function savePaperPortfolioFill(
+  fill: PaperPortfolioFillInput
+): StoredPaperPortfolioFill {
+  const parsed = paperPortfolioFillInputSchema.parse(fill);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into paper_portfolio_fills (
+        fill_id,
+        order_id,
+        side,
+        mint,
+        price_sol,
+        effective_price_sol,
+        size_sol,
+        token_amount,
+        fee_sol,
+        slippage_sol,
+        fill_status,
+        rejection_reason,
+        reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.fillId,
+      parsed.orderId,
+      parsed.side,
+      parsed.mint,
+      parsed.priceSol,
+      parsed.effectivePriceSol,
+      parsed.sizeSol,
+      parsed.tokenAmount,
+      parsed.feeSol,
+      parsed.slippageSol,
+      parsed.fillStatus,
+      parsed.rejectionReason ?? null,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(parsed.payload),
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    fillId: parsed.fillId,
+    orderId: parsed.orderId,
+    side: parsed.side,
+    mint: parsed.mint,
+    priceSol: parsed.priceSol,
+    effectivePriceSol: parsed.effectivePriceSol,
+    sizeSol: parsed.sizeSol,
+    tokenAmount: parsed.tokenAmount,
+    feeSol: parsed.feeSol,
+    slippageSol: parsed.slippageSol,
+    fillStatus: parsed.fillStatus,
+    rejectionReason: parsed.rejectionReason ?? null,
+    reasonCodes: parsed.reasonCodes,
+    payload: parsed.payload,
+    createdAt
+  };
+}
+
+export function listPaperPortfolioFills(
+  limit = 50
+): StoredPaperPortfolioFill[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from paper_portfolio_fills
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as PaperPortfolioFillRow[];
+
+  return rows.map(mapPaperPortfolioFillRow);
+}
+
+export function upsertPaperPortfolioPosition(
+  position: PaperPortfolioPositionInput
+): StoredPaperPortfolioPosition {
+  const parsed = paperPortfolioPositionInputSchema.parse(position);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const db = getDb();
+
+  db.prepare(
+    `insert into paper_portfolio_positions (
+      position_id,
+      mint,
+      symbol,
+      title,
+      status,
+      entry_price_sol,
+      average_entry_price_sol,
+      current_price_sol,
+      size_sol,
+      remaining_size_sol,
+      token_amount,
+      remaining_token_amount,
+      realized_pnl_sol,
+      unrealized_pnl_sol,
+      realized_pnl_pct,
+      unrealized_pnl_pct,
+      total_fees_sol,
+      payload_json,
+      opened_at,
+      updated_at,
+      closed_at,
+      created_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    on conflict(position_id) do update set
+      mint = excluded.mint,
+      symbol = excluded.symbol,
+      title = excluded.title,
+      status = excluded.status,
+      entry_price_sol = excluded.entry_price_sol,
+      average_entry_price_sol = excluded.average_entry_price_sol,
+      current_price_sol = excluded.current_price_sol,
+      size_sol = excluded.size_sol,
+      remaining_size_sol = excluded.remaining_size_sol,
+      token_amount = excluded.token_amount,
+      remaining_token_amount = excluded.remaining_token_amount,
+      realized_pnl_sol = excluded.realized_pnl_sol,
+      unrealized_pnl_sol = excluded.unrealized_pnl_sol,
+      realized_pnl_pct = excluded.realized_pnl_pct,
+      unrealized_pnl_pct = excluded.unrealized_pnl_pct,
+      total_fees_sol = excluded.total_fees_sol,
+      payload_json = excluded.payload_json,
+      updated_at = excluded.updated_at,
+      closed_at = excluded.closed_at`
+  ).run(
+    parsed.positionId,
+    parsed.mint,
+    parsed.symbol ?? null,
+    parsed.title ?? null,
+    parsed.status,
+    parsed.entryPriceSol,
+    parsed.averageEntryPriceSol,
+    parsed.currentPriceSol ?? null,
+    parsed.sizeSol,
+    parsed.remainingSizeSol,
+    parsed.tokenAmount,
+    parsed.remainingTokenAmount,
+    parsed.realizedPnlSol,
+    parsed.unrealizedPnlSol,
+    parsed.realizedPnlPct,
+    parsed.unrealizedPnlPct,
+    parsed.totalFeesSol,
+    stringifyJson(parsed.payload),
+    parsed.openedAt,
+    parsed.updatedAt,
+    parsed.closedAt ?? null,
+    createdAt
+  );
+
+  const row = db
+    .prepare("select * from paper_portfolio_positions where position_id = ?")
+    .get(parsed.positionId) as PaperPortfolioPositionRow | undefined;
+
+  if (!row) {
+    throw new Error(`Failed to upsert paper portfolio position ${parsed.positionId}`);
+  }
+
+  return mapPaperPortfolioPositionRow(row);
+}
+
+export function listPaperPortfolioPositions(
+  limit = 100
+): StoredPaperPortfolioPosition[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from paper_portfolio_positions
+       order by datetime(updated_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as PaperPortfolioPositionRow[];
+
+  return rows.map(mapPaperPortfolioPositionRow);
+}
+
+export function getPaperPortfolioPosition(
+  mint: string
+): StoredPaperPortfolioPosition | null {
+  const row = getDb()
+    .prepare(
+      `select *
+       from paper_portfolio_positions
+       where mint = ?
+       order by datetime(updated_at) desc, id desc
+       limit 1`
+    )
+    .get(mint) as PaperPortfolioPositionRow | undefined;
+
+  return row ? mapPaperPortfolioPositionRow(row) : null;
+}
+
+export function savePaperPortfolioSnapshot(
+  snapshot: PaperPortfolioSnapshotInput
+): StoredPaperPortfolioSnapshot {
+  const parsed = paperPortfolioSnapshotInputSchema.parse(snapshot);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const db = getDb();
+
+  const result = db
+    .prepare(
+      `insert into paper_portfolio_snapshots (
+        cash_sol,
+        deployed_sol,
+        equity_sol,
+        realized_pnl_sol,
+        unrealized_pnl_sol,
+        total_pnl_sol,
+        total_pnl_pct,
+        open_position_count,
+        closed_position_count,
+        win_rate,
+        max_drawdown_sol,
+        max_drawdown_pct,
+        total_fees_sol,
+        total_trades,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.cashSol,
+      parsed.deployedSol,
+      parsed.equitySol,
+      parsed.realizedPnlSol,
+      parsed.unrealizedPnlSol,
+      parsed.totalPnlSol,
+      parsed.totalPnlPct,
+      parsed.openPositionCount,
+      parsed.closedPositionCount,
+      parsed.winRate,
+      parsed.maxDrawdownSol,
+      parsed.maxDrawdownPct,
+      parsed.totalFeesSol,
+      parsed.totalTrades,
+      stringifyJson(parsed.payload),
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    cashSol: parsed.cashSol,
+    deployedSol: parsed.deployedSol,
+    equitySol: parsed.equitySol,
+    realizedPnlSol: parsed.realizedPnlSol,
+    unrealizedPnlSol: parsed.unrealizedPnlSol,
+    totalPnlSol: parsed.totalPnlSol,
+    totalPnlPct: parsed.totalPnlPct,
+    openPositionCount: parsed.openPositionCount,
+    closedPositionCount: parsed.closedPositionCount,
+    winRate: parsed.winRate,
+    maxDrawdownSol: parsed.maxDrawdownSol,
+    maxDrawdownPct: parsed.maxDrawdownPct,
+    totalFeesSol: parsed.totalFeesSol,
+    totalTrades: parsed.totalTrades,
+    payload: parsed.payload,
+    createdAt
+  };
+}
+
+export function listPaperPortfolioSnapshots(
+  limit = 50
+): StoredPaperPortfolioSnapshot[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from paper_portfolio_snapshots
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as PaperPortfolioSnapshotRow[];
+
+  return rows.map(mapPaperPortfolioSnapshotRow);
+}
+
 export function getStorageStats(): StorageStats {
   const db = getDb();
   const lastSignal = db
@@ -4403,6 +5076,10 @@ export function getStorageStats(): StorageStats {
     candidateDecisionCount: countRows(db, "candidate_decisions"),
     paperOrderCount: countRows(db, "paper_orders"),
     paperPositionCount: countRows(db, "paper_positions"),
+    paperPortfolioOrderCount: countRows(db, "paper_portfolio_orders"),
+    paperPortfolioFillCount: countRows(db, "paper_portfolio_fills"),
+    paperPortfolioPositionCount: countRows(db, "paper_portfolio_positions"),
+    paperPortfolioSnapshotCount: countRows(db, "paper_portfolio_snapshots"),
     watchedWalletCount: countRows(db, "watched_wallets"),
     watchedWalletTradeEventCount: countRows(
       db,
@@ -5149,6 +5826,128 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(12, "watched_wallet_exit_strategy", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 13)) {
+    db.exec(`
+      create table if not exists paper_portfolio_orders (
+        id integer primary key autoincrement,
+        order_id text not null,
+        type text not null,
+        side text not null,
+        mint text not null,
+        symbol text,
+        title text,
+        source text not null,
+        requested_size_sol real,
+        requested_sell_pct real,
+        signal_score real,
+        risk_level text,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_paper_portfolio_orders_created_at
+        on paper_portfolio_orders(created_at);
+
+      create index if not exists idx_paper_portfolio_orders_mint
+        on paper_portfolio_orders(mint);
+
+      create index if not exists idx_paper_portfolio_orders_order_id
+        on paper_portfolio_orders(order_id);
+
+      create table if not exists paper_portfolio_fills (
+        id integer primary key autoincrement,
+        fill_id text not null,
+        order_id text not null,
+        side text not null,
+        mint text not null,
+        price_sol real not null,
+        effective_price_sol real not null,
+        size_sol real not null,
+        token_amount real not null,
+        fee_sol real not null,
+        slippage_sol real not null,
+        fill_status text not null,
+        rejection_reason text,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_paper_portfolio_fills_created_at
+        on paper_portfolio_fills(created_at);
+
+      create index if not exists idx_paper_portfolio_fills_mint
+        on paper_portfolio_fills(mint);
+
+      create index if not exists idx_paper_portfolio_fills_order_id
+        on paper_portfolio_fills(order_id);
+
+      create table if not exists paper_portfolio_positions (
+        id integer primary key autoincrement,
+        position_id text not null unique,
+        mint text not null,
+        symbol text,
+        title text,
+        status text not null,
+        entry_price_sol real not null,
+        average_entry_price_sol real not null,
+        current_price_sol real,
+        size_sol real not null,
+        remaining_size_sol real not null,
+        token_amount real not null,
+        remaining_token_amount real not null,
+        realized_pnl_sol real not null,
+        unrealized_pnl_sol real not null,
+        realized_pnl_pct real not null,
+        unrealized_pnl_pct real not null,
+        total_fees_sol real not null,
+        payload_json text not null,
+        opened_at text not null,
+        updated_at text not null,
+        closed_at text,
+        created_at text not null
+      );
+
+      create index if not exists idx_paper_portfolio_positions_updated_at
+        on paper_portfolio_positions(updated_at);
+
+      create index if not exists idx_paper_portfolio_positions_mint
+        on paper_portfolio_positions(mint);
+
+      create index if not exists idx_paper_portfolio_positions_status
+        on paper_portfolio_positions(status);
+
+      create table if not exists paper_portfolio_snapshots (
+        id integer primary key autoincrement,
+        cash_sol real not null,
+        deployed_sol real not null,
+        equity_sol real not null,
+        realized_pnl_sol real not null,
+        unrealized_pnl_sol real not null,
+        total_pnl_sol real not null,
+        total_pnl_pct real not null,
+        open_position_count integer not null,
+        closed_position_count integer not null,
+        win_rate real not null,
+        max_drawdown_sol real not null,
+        max_drawdown_pct real not null,
+        total_fees_sol real not null,
+        total_trades integer not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_paper_portfolio_snapshots_created_at
+        on paper_portfolio_snapshots(created_at);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(13, "paper_portfolio_pnl_engine", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -5391,6 +6190,105 @@ function mapPaperPositionRow(row: PaperPositionRow): StoredPaperPosition {
     payload: JSON.parse(row.payload_json),
     openedAt: row.opened_at,
     updatedAt: row.updated_at
+  };
+}
+
+function mapPaperPortfolioOrderRow(
+  row: PaperPortfolioOrderRow
+): StoredPaperPortfolioOrder {
+  return {
+    id: row.id,
+    orderId: row.order_id,
+    type: row.type,
+    side: row.side,
+    mint: row.mint,
+    symbol: row.symbol,
+    title: row.title,
+    source: row.source,
+    requestedSizeSol: row.requested_size_sol,
+    requestedSellPct: row.requested_sell_pct,
+    signalScore: row.signal_score,
+    riskLevel: row.risk_level,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at
+  };
+}
+
+function mapPaperPortfolioFillRow(
+  row: PaperPortfolioFillRow
+): StoredPaperPortfolioFill {
+  return {
+    id: row.id,
+    fillId: row.fill_id,
+    orderId: row.order_id,
+    side: row.side,
+    mint: row.mint,
+    priceSol: row.price_sol,
+    effectivePriceSol: row.effective_price_sol,
+    sizeSol: row.size_sol,
+    tokenAmount: row.token_amount,
+    feeSol: row.fee_sol,
+    slippageSol: row.slippage_sol,
+    fillStatus: row.fill_status,
+    rejectionReason: row.rejection_reason,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at
+  };
+}
+
+function mapPaperPortfolioPositionRow(
+  row: PaperPortfolioPositionRow
+): StoredPaperPortfolioPosition {
+  return {
+    id: row.id,
+    positionId: row.position_id,
+    mint: row.mint,
+    symbol: row.symbol,
+    title: row.title,
+    status: row.status,
+    entryPriceSol: row.entry_price_sol,
+    averageEntryPriceSol: row.average_entry_price_sol,
+    currentPriceSol: row.current_price_sol,
+    sizeSol: row.size_sol,
+    remainingSizeSol: row.remaining_size_sol,
+    tokenAmount: row.token_amount,
+    remainingTokenAmount: row.remaining_token_amount,
+    realizedPnlSol: row.realized_pnl_sol,
+    unrealizedPnlSol: row.unrealized_pnl_sol,
+    realizedPnlPct: row.realized_pnl_pct,
+    unrealizedPnlPct: row.unrealized_pnl_pct,
+    totalFeesSol: row.total_fees_sol,
+    payload: JSON.parse(row.payload_json),
+    openedAt: row.opened_at,
+    updatedAt: row.updated_at,
+    closedAt: row.closed_at,
+    createdAt: row.created_at
+  };
+}
+
+function mapPaperPortfolioSnapshotRow(
+  row: PaperPortfolioSnapshotRow
+): StoredPaperPortfolioSnapshot {
+  return {
+    id: row.id,
+    cashSol: row.cash_sol,
+    deployedSol: row.deployed_sol,
+    equitySol: row.equity_sol,
+    realizedPnlSol: row.realized_pnl_sol,
+    unrealizedPnlSol: row.unrealized_pnl_sol,
+    totalPnlSol: row.total_pnl_sol,
+    totalPnlPct: row.total_pnl_pct,
+    openPositionCount: row.open_position_count,
+    closedPositionCount: row.closed_position_count,
+    winRate: row.win_rate,
+    maxDrawdownSol: row.max_drawdown_sol,
+    maxDrawdownPct: row.max_drawdown_pct,
+    totalFeesSol: row.total_fees_sol,
+    totalTrades: row.total_trades,
+    payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at
   };
 }
 

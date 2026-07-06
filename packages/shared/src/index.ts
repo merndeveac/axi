@@ -856,6 +856,30 @@ export type LiveTokenCardViewModel = {
     watchedWalletTriggers: string[];
     exitBlockers: string[];
   };
+  paperPositionSummary: {
+    hasPosition: boolean;
+    status: "open" | "partially_closed" | "closed" | null;
+    entryPriceSol: number | null;
+    currentPriceSol: number | null;
+    unrealizedPnlPct: number | null;
+    unrealizedPnlSol: number | null;
+    realizedPnlSol: number | null;
+    remainingSizeSol: number | null;
+    latestPaperOrder: {
+      orderId: string;
+      side: "buy" | "sell";
+      source: string;
+      createdAt: string;
+      reasonCodes: string[];
+    } | null;
+    latestPaperExitSignal: {
+      signalId: string;
+      sellPct: number;
+      blocked: boolean;
+      createdAt: string;
+      reasonCodes: string[];
+    } | null;
+  };
   dataCompletenessLabel: LiveCardDataQualityLabel;
   missingCriticalFields: string[];
   enrichmentStatus: "disabled" | "not_checked" | "partial" | "available";

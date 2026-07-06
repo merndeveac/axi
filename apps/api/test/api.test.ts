@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { TokenCreatedEvent, TokenTradeEvent } from "@axi/data-feeds";
+import type { ExitSignal } from "@axi/exit-strategy";
 import type { NormalizedIndexerEvent } from "@axi/indexer-core";
 import type { SolanaChainClient } from "@axi/solana-chain";
 import type { LiveTokenCardViewModel, StrategyStatus } from "@axi/shared";
@@ -428,6 +429,286 @@ describe("@axi/api", () => {
     expect(response.statusCode).toBe(200);
     expect(body).toEqual(expect.any(Array));
     expect(body).toHaveLength(0);
+  });
+
+  it("GET /paper-portfolio/status is paper-only with policies disabled by default", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/paper-portfolio/status"
+    });
+    const body = response.json() as {
+      enabled: boolean;
+      entryPolicyEnabled: boolean;
+      exitPolicyEnabled: boolean;
+      liveExecutionDisabled: boolean;
+      paperOnly: boolean;
+      reasonCodes: string[];
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.enabled).toBe(true);
+    expect(body.entryPolicyEnabled).toBe(false);
+    expect(body.exitPolicyEnabled).toBe(false);
+    expect(body.paperOnly).toBe(true);
+    expect(body.liveExecutionDisabled).toBe(true);
+    expect(body.reasonCodes).toContain("PAPER_ENTRY_POLICY_DISABLED");
+    expect(body.reasonCodes).toContain("PAPER_EXIT_POLICY_DISABLED");
+  });
+
+  it("paper portfolio manual entry rejects missing prices and fills with explicit prices", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const rejectedResponse = await server.app.inject({
+      method: "POST",
+      url: "/paper-portfolio/manual-entry",
+      payload: {
+        mint: "So11111111111111111111111111111111111111112",
+        sizeSol: 0.005,
+        reason: "manual_test"
+      }
+    });
+    const rejected = rejectedResponse.json() as {
+      blocked: boolean;
+      fill: {
+        fillStatus: string;
+        reasonCodes: string[];
+      };
+    };
+
+    expect(rejectedResponse.statusCode).toBe(200);
+    expect(rejected.blocked).toBe(true);
+    expect(rejected.fill.fillStatus).toBe("rejected");
+    expect(rejected.fill.reasonCodes).toContain("PAPER_PRICE_MISSING");
+
+    const filledResponse = await server.app.inject({
+      method: "POST",
+      url: "/paper-portfolio/manual-entry",
+      payload: {
+        mint: "So11111111111111111111111111111111111111112",
+        sizeSol: 0.005,
+        marketPriceSol: 0.001,
+        reason: "manual_test"
+      }
+    });
+    const filled = filledResponse.json() as {
+      blocked: boolean;
+      fill: {
+        fillStatus: string;
+      };
+      position: {
+        mint: string;
+        status: string;
+        remainingSizeSol: number;
+      };
+      liveExecutionDisabled: boolean;
+      paperOnly: boolean;
+    };
+    const positionsResponse = await server.app.inject({
+      method: "GET",
+      url: "/paper-portfolio/positions"
+    });
+    const positions = positionsResponse.json() as {
+      positions: unknown[];
+      status: {
+        openPositionCount: number;
+      };
+    };
+
+    expect(filledResponse.statusCode).toBe(200);
+    expect(filled.blocked).toBe(false);
+    expect(filled.fill.fillStatus).toBe("filled");
+    expect(filled.position.status).toBe("open");
+    expect(filled.position.remainingSizeSol).toBe(0.005);
+    expect(filled.paperOnly).toBe(true);
+    expect(filled.liveExecutionDisabled).toBe(true);
+    expect(positionsResponse.statusCode).toBe(200);
+    expect(positions.positions).toHaveLength(1);
+    expect(positions.status.openPositionCount).toBe(1);
+  });
+
+  it("paper portfolio manual exit updates realized PnL without live execution", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    await server.app.inject({
+      method: "POST",
+      url: "/paper-portfolio/manual-entry",
+      payload: {
+        mint: "So11111111111111111111111111111111111111112",
+        sizeSol: 0.005,
+        marketPriceSol: 0.001,
+        reason: "manual_test"
+      }
+    });
+
+    const exitResponse = await server.app.inject({
+      method: "POST",
+      url: "/paper-portfolio/manual-exit",
+      payload: {
+        mint: "So11111111111111111111111111111111111111112",
+        sellPct: 50,
+        marketPriceSol: 0.002,
+        reason: "manual_test"
+      }
+    });
+    const body = exitResponse.json() as {
+      blocked: boolean;
+      fill: {
+        fillStatus: string;
+        side: string;
+      };
+      position: {
+        realizedPnlSol: number;
+        status: string;
+      };
+      liveExecutionDisabled: boolean;
+      paperOnly: boolean;
+    };
+
+    expect(exitResponse.statusCode).toBe(200);
+    expect(body.blocked).toBe(false);
+    expect(body.fill.side).toBe("sell");
+    expect(body.fill.fillStatus).toBe("partial");
+    expect(body.position.status).toBe("partially_closed");
+    expect(body.position.realizedPnlSol).toBeGreaterThan(0);
+    expect(body.paperOnly).toBe(true);
+    expect(body.liveExecutionDisabled).toBe(true);
+  });
+
+  it("enabled paper entry policy can create a simulated launch entry", async () => {
+    const mint = "PumpPortalMint111111111111111111111111111";
+    server = createApiServer({
+      logLevel: false,
+      paperPortfolio: {
+        entry: {
+          enabled: true,
+          allowedLabels: ["trade_tracked", "watching", "watch", "none"],
+          blockHardReject: false,
+          cooldownByMintMs: 0,
+          maxAgeSeconds: 600,
+          maxRiskLevel: "critical",
+          minBuySellRatio: 0,
+          minLaunchScore: 0,
+          minUniqueBuyers10s: 1,
+          minValidTradeSamples: 1,
+          positionSizeSol: 0.005,
+          requirePrice: true,
+          requireTradeTracked: true
+        }
+      },
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    server.emitFeedEvent(createPumpPortalEvent());
+    server.emitFeedEvent(createPumpPortalTradeEvent(mint));
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: `/paper-portfolio/positions/${mint}`
+    });
+    const body = response.json() as {
+      position: {
+        mint: string;
+        status: string;
+      };
+      summary: {
+        hasPosition: boolean;
+      };
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.position.mint).toBe(mint);
+    expect(body.position.status).toBe("open");
+    expect(body.summary.hasPosition).toBe(true);
+  });
+
+  it("enabled paper exit policy can consume a watched-wallet exit signal", async () => {
+    const mint = "So11111111111111111111111111111111111111112";
+    server = createApiServer({
+      logLevel: false,
+      paperPortfolio: {
+        exit: {
+          allowWatchedWalletSignals: true,
+          cooldownMs: 0,
+          defaultSellPct: 100,
+          enabled: true,
+          minProfitPct: 25,
+          requirePrice: true,
+          stopLossPct: -25,
+          takeProfitPct: 50,
+          trailingStopPct: null
+        }
+      },
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    server.paperPortfolio.manualEntry({
+      marketPriceSol: 0.001,
+      mint,
+      reason: "manual_test",
+      sizeSol: 0.005
+    });
+    server.paperPortfolio.updateMarkPrice(mint, 0.002);
+
+    const evaluations = server.paperPortfolio.ingestExitSignals([
+      createExitSignal(mint)
+    ]);
+
+    expect(evaluations).toHaveLength(1);
+    expect(evaluations[0]?.blocked).toBe(false);
+    expect(evaluations[0]?.fill?.fillStatus).toBe("filled");
+    expect(evaluations[0]?.position?.status).toBe("closed");
+    expect(evaluations[0]?.paperOnly).toBe(true);
+    expect(evaluations[0]?.liveExecutionDisabled).toBe(true);
+  });
+
+  it("POST /paper-portfolio/backtest replays launch fixtures locally", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/paper-portfolio/backtest",
+      payload: {
+        fixture: "strong-ripper"
+      }
+    });
+    const body = response.json() as {
+      entryCount: number;
+      fixture: string;
+      liveExecutionDisabled: boolean;
+      paperOnly: boolean;
+      snapshot: {
+        totalTrades: number;
+      };
+      source: string;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.source).toBe("launch-fixture");
+    expect(body.fixture).toBe("strong-ripper");
+    expect(body.entryCount).toBeGreaterThanOrEqual(1);
+    expect(body.snapshot.totalTrades).toBeGreaterThanOrEqual(1);
+    expect(body.paperOnly).toBe(true);
+    expect(body.liveExecutionDisabled).toBe(true);
   });
 
   it("GET /exit/status is disabled by default", async () => {
@@ -2980,6 +3261,53 @@ function createDataWalletSolanaClient(balanceSol: number) {
       inspectedAt: "2026-01-01T00:00:00.000Z"
     })
   } as unknown as SolanaChainClient;
+}
+
+function createExitSignal(mint: string): ExitSignal {
+  return {
+    id: "exit-signal-test-1",
+    mint,
+    wallet: "So11111111111111111111111111111111111111112",
+    walletAlias: "paper watcher",
+    ruleId: "paper-exit-rule",
+    action: "paper_sell",
+    sellPct: 100,
+    sellReason: "watched wallet buy",
+    blocked: false,
+    blockers: [],
+    warnings: [],
+    positionSnapshot: {
+      mint,
+      symbol: "SOL",
+      title: "Solana",
+      entryPriceSol: 0.001,
+      currentPriceSol: 0.002,
+      sizeSol: 0.005,
+      tokenAmount: 5,
+      openedAt: "2026-01-01T00:00:00.000Z",
+      unrealizedPnlPct: 100,
+      unrealizedPnlSol: 0.005,
+      status: "open"
+    },
+    triggerEvent: {
+      wallet: "So11111111111111111111111111111111111111112",
+      walletAlias: "paper watcher",
+      mint,
+      side: "buy",
+      priceSol: 0.002,
+      volumeSol: 1,
+      tokenAmount: 500,
+      signature: "ExitTradeSig111111111111111111111111111111",
+      timestamp: "2026-01-01T00:01:00.000Z",
+      source: "test",
+      confidence: "high",
+      usableForExitStrategy: true,
+      reasonCodes: ["WATCHED_WALLET_TRADE_OBSERVED"],
+      raw: null
+    },
+    reasonCodes: ["WATCHED_WALLET_BUY_TRIGGER"],
+    createdAt: "2026-01-01T00:01:00.000Z"
+  };
 }
 
 function createPumpPortalEvent(): TokenCreatedEvent {

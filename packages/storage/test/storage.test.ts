@@ -68,6 +68,10 @@ import {
   listPumpPortalTokenTradeEventsByMint,
   listPumpPortalTokenTradeEventsForReplay,
   listPaperOrders,
+  listPaperPortfolioFills,
+  listPaperPortfolioOrders,
+  listPaperPortfolioPositions,
+  listPaperPortfolioSnapshots,
   listPaperPositions,
   listRecentSignals,
   listRiskSnapshotsForReplay,
@@ -106,6 +110,9 @@ import {
   saveActualDataSession,
   saveActualDataSubscription,
   savePaperOrder,
+  savePaperPortfolioFill,
+  savePaperPortfolioOrder,
+  savePaperPortfolioSnapshot,
   savePumpPortalWalletStatusSnapshot,
   savePumpPortalTokenTradeEvent,
   saveRiskSnapshot,
@@ -117,6 +124,8 @@ import {
   saveWatchAction,
   saveWatchPlan,
   upsertTokenIdentity,
+  getPaperPortfolioPosition,
+  upsertPaperPortfolioPosition,
   upsertPaperPosition
 } from "../src/index";
 
@@ -159,6 +168,10 @@ describe("@axi/storage", () => {
     expect(stats.launchTrackingSessionCount).toBe(0);
     expect(stats.riskSnapshotCount).toBe(0);
     expect(stats.candidateDecisionCount).toBe(0);
+    expect(stats.paperPortfolioOrderCount).toBe(0);
+    expect(stats.paperPortfolioFillCount).toBe(0);
+    expect(stats.paperPortfolioPositionCount).toBe(0);
+    expect(stats.paperPortfolioSnapshotCount).toBe(0);
     expect(stats.watchedWalletCount).toBe(0);
     expect(stats.watchedWalletTradeEventCount).toBe(0);
     expect(stats.exitRuleCount).toBe(0);
@@ -232,6 +245,109 @@ describe("@axi/storage", () => {
     expect(positions).toHaveLength(1);
     expect(positions[0]?.sizeSol).toBe(0.5);
     expect(positions[0]?.tokenAmount).toBe(1190.46);
+  });
+
+  it("paper portfolio records can be saved, listed, fetched, and counted", () => {
+    initStorage({ databasePath });
+    const order = savePaperPortfolioOrder({
+      orderId: "paper-order-1",
+      type: "entry",
+      side: "buy",
+      mint,
+      symbol: "MOCK",
+      title: "Mock Token",
+      source: "launch_signal",
+      requestedSizeSol: 0.005,
+      requestedSellPct: null,
+      signalScore: 91,
+      riskLevel: "low",
+      reasonCodes: ["PAPER_ENTRY_INTENT_CREATED"],
+      payload: {
+        paperOnly: true
+      },
+      createdAt: "2026-01-01T00:00:00.000Z"
+    });
+    const fill = savePaperPortfolioFill({
+      fillId: "paper-fill-1",
+      orderId: order.orderId,
+      side: "buy",
+      mint,
+      priceSol: 0.0005,
+      effectivePriceSol: 0.000515,
+      sizeSol: 0.005,
+      tokenAmount: 9.708737864,
+      feeSol: 0.00005,
+      slippageSol: 0.00015,
+      fillStatus: "filled",
+      rejectionReason: null,
+      reasonCodes: ["PAPER_BUY_FILLED"],
+      payload: {
+        paperOnly: true
+      },
+      createdAt: "2026-01-01T00:00:01.000Z"
+    });
+    const position = upsertPaperPortfolioPosition({
+      positionId: "paper-position-1",
+      mint,
+      symbol: "MOCK",
+      title: "Mock Token",
+      status: "open",
+      entryPriceSol: 0.000515,
+      averageEntryPriceSol: 0.000515,
+      currentPriceSol: null,
+      sizeSol: 0.005,
+      remainingSizeSol: 0.005,
+      tokenAmount: 9.708737864,
+      remainingTokenAmount: 9.708737864,
+      realizedPnlSol: 0,
+      unrealizedPnlSol: 0,
+      realizedPnlPct: 0,
+      unrealizedPnlPct: 0,
+      totalFeesSol: 0.00005,
+      payload: {
+        paperOnly: true
+      },
+      openedAt: "2026-01-01T00:00:01.000Z",
+      updatedAt: "2026-01-01T00:00:01.000Z",
+      closedAt: null
+    });
+    const snapshot = savePaperPortfolioSnapshot({
+      cashSol: 0.99495,
+      deployedSol: 0.005,
+      equitySol: 0.99995,
+      realizedPnlSol: 0,
+      unrealizedPnlSol: 0,
+      totalPnlSol: 0,
+      totalPnlPct: -0.005,
+      openPositionCount: 1,
+      closedPositionCount: 0,
+      winRate: 0,
+      maxDrawdownSol: 0.00005,
+      maxDrawdownPct: 0.005,
+      totalFeesSol: 0.00005,
+      totalTrades: 1,
+      payload: {
+        paperOnly: true
+      },
+      createdAt: "2026-01-01T00:00:02.000Z"
+    });
+
+    const stats = getStorageStats();
+
+    expect(order.id).toBeGreaterThan(0);
+    expect(fill.id).toBeGreaterThan(0);
+    expect(position.id).toBeGreaterThan(0);
+    expect(snapshot.id).toBeGreaterThan(0);
+    expect(listPaperPortfolioOrders()).toHaveLength(1);
+    expect(listPaperPortfolioFills()).toHaveLength(1);
+    expect(listPaperPortfolioPositions()).toHaveLength(1);
+    expect(listPaperPortfolioSnapshots()).toHaveLength(1);
+    expect(getPaperPortfolioPosition(mint)?.positionId).toBe("paper-position-1");
+    expect(getPaperPortfolioPosition(mint)?.currentPriceSol).toBeNull();
+    expect(stats.paperPortfolioOrderCount).toBe(1);
+    expect(stats.paperPortfolioFillCount).toBe(1);
+    expect(stats.paperPortfolioPositionCount).toBe(1);
+    expect(stats.paperPortfolioSnapshotCount).toBe(1);
   });
 
   it("risk snapshot can be saved, listed, and fetched by mint", () => {
@@ -945,6 +1061,77 @@ describe("@axi/storage", () => {
       status: "open",
       payload: {}
     });
+    savePaperPortfolioOrder({
+      orderId: "stats-paper-order",
+      type: "entry",
+      side: "buy",
+      mint,
+      symbol: "MOCK",
+      title: "Mock Token",
+      source: "launch_signal",
+      requestedSizeSol: 0.005,
+      requestedSellPct: null,
+      signalScore: 90,
+      riskLevel: "low",
+      reasonCodes: ["PAPER_ENTRY_INTENT_CREATED"],
+      payload: {}
+    });
+    savePaperPortfolioFill({
+      fillId: "stats-paper-fill",
+      orderId: "stats-paper-order",
+      side: "buy",
+      mint,
+      priceSol: 0.00042,
+      effectivePriceSol: 0.0004326,
+      sizeSol: 0.005,
+      tokenAmount: 11.558,
+      feeSol: 0.00005,
+      slippageSol: 0.00015,
+      fillStatus: "filled",
+      rejectionReason: null,
+      reasonCodes: ["PAPER_BUY_FILLED"],
+      payload: {}
+    });
+    upsertPaperPortfolioPosition({
+      positionId: "stats-paper-position",
+      mint,
+      symbol: "MOCK",
+      title: "Mock Token",
+      status: "open",
+      entryPriceSol: 0.0004326,
+      averageEntryPriceSol: 0.0004326,
+      currentPriceSol: 0.00042,
+      sizeSol: 0.005,
+      remainingSizeSol: 0.005,
+      tokenAmount: 11.558,
+      remainingTokenAmount: 11.558,
+      realizedPnlSol: 0,
+      unrealizedPnlSol: -0.00015,
+      realizedPnlPct: 0,
+      unrealizedPnlPct: -3,
+      totalFeesSol: 0.00005,
+      payload: {},
+      openedAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      closedAt: null
+    });
+    savePaperPortfolioSnapshot({
+      cashSol: 0.99495,
+      deployedSol: 0.005,
+      equitySol: 0.9998,
+      realizedPnlSol: 0,
+      unrealizedPnlSol: -0.00015,
+      totalPnlSol: -0.00015,
+      totalPnlPct: -0.015,
+      openPositionCount: 1,
+      closedPositionCount: 0,
+      winRate: 0,
+      maxDrawdownSol: 0.0002,
+      maxDrawdownPct: 0.02,
+      totalFeesSol: 0.00005,
+      totalTrades: 1,
+      payload: {}
+    });
     saveWatchedWallet({
       address: "StatsWallet111111111111111111111111111111",
       alias: "stats wallet",
@@ -1015,6 +1202,10 @@ describe("@axi/storage", () => {
     expect(stats.candidateDecisionCount).toBe(1);
     expect(stats.paperOrderCount).toBe(1);
     expect(stats.paperPositionCount).toBe(1);
+    expect(stats.paperPortfolioOrderCount).toBe(1);
+    expect(stats.paperPortfolioFillCount).toBe(1);
+    expect(stats.paperPortfolioPositionCount).toBe(1);
+    expect(stats.paperPortfolioSnapshotCount).toBe(1);
     expect(stats.watchedWalletCount).toBe(1);
     expect(stats.watchedWalletTradeEventCount).toBe(1);
     expect(stats.exitRuleCount).toBe(1);

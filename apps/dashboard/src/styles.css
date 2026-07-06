@@ -522,7 +522,7 @@ h1 {
 
 .strategy-strip {
   display: grid;
-  grid-template-columns: 100px 160px repeat(3, minmax(0, 1fr));
+  grid-template-columns: 100px 150px repeat(5, minmax(0, 1fr));
   gap: 1px;
   border-bottom: 1px solid var(--line-dim);
   background: var(--line-dim);

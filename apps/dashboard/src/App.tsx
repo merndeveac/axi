@@ -35,6 +35,7 @@ type ApiStatus = "checking" | "connected" | "disconnected";
 type TabId =
   | "live"
   | "signals"
+  | "portfolio"
   | "metrics"
   | "risk"
   | "exit"
@@ -78,6 +79,10 @@ type StorageStats = {
   candidateDecisionCount: number;
   paperOrderCount: number;
   paperPositionCount: number;
+  paperPortfolioOrderCount: number;
+  paperPortfolioFillCount: number;
+  paperPortfolioPositionCount: number;
+  paperPortfolioSnapshotCount: number;
   watchedWalletCount: number;
   watchedWalletTradeEventCount: number;
   exitRuleCount: number;
@@ -429,6 +434,12 @@ type HealthStatus = {
   watchedWalletCount: number;
   watchedWalletExit: ExitStatus;
   watchedWalletTradeEventCount: number;
+  paperPortfolio: PaperPortfolioStatus;
+  paperPortfolioEnabled: boolean;
+  paperEntryEnabled: boolean;
+  paperExitEnabled: boolean;
+  openPaperPositionCount: number;
+  totalPaperPnlSol: number;
   exitRuleCount: number;
   exitSignalCount: number;
   mode: string;
@@ -574,6 +585,131 @@ type ExitSignal = {
   createdAt: string;
 };
 
+type PaperPortfolioStatus = {
+  enabled: boolean;
+  entryPolicyEnabled: boolean;
+  exitPolicyEnabled: boolean;
+  openPositionCount: number;
+  closedPositionCount: number;
+  orderCount: number;
+  fillCount: number;
+  snapshotCount: number;
+  totalPnlSol: number;
+  realizedPnlSol: number;
+  unrealizedPnlSol: number;
+  winRate: number;
+  maxDrawdownSol: number;
+  paperOnly: true;
+  liveExecutionDisabled: true;
+  reasonCodes: string[];
+};
+
+type PaperPortfolioSnapshot = {
+  cashSol: number;
+  deployedSol: number;
+  equitySol: number;
+  realizedPnlSol: number;
+  unrealizedPnlSol: number;
+  totalPnlSol: number;
+  totalPnlPct: number;
+  openPositionCount: number;
+  closedPositionCount: number;
+  winRate: number;
+  maxDrawdownSol: number;
+  maxDrawdownPct: number;
+  totalFeesSol: number;
+  totalTrades: number;
+  updatedAt: string;
+};
+
+type PaperPortfolioPosition = {
+  id: number;
+  positionId: string;
+  mint: string;
+  symbol: string | null;
+  title: string | null;
+  status: "open" | "partially_closed" | "closed";
+  entryPriceSol: number;
+  averageEntryPriceSol: number;
+  currentPriceSol: number | null;
+  sizeSol: number;
+  remainingSizeSol: number;
+  tokenAmount: number;
+  remainingTokenAmount: number;
+  realizedPnlSol: number;
+  unrealizedPnlSol: number;
+  realizedPnlPct: number;
+  unrealizedPnlPct: number;
+  totalFeesSol: number;
+  openedAt: string;
+  updatedAt: string;
+  closedAt: string | null;
+};
+
+type PaperPortfolioOrder = {
+  id: number;
+  orderId: string;
+  type: "entry" | "exit";
+  side: "buy" | "sell";
+  mint: string;
+  symbol: string | null;
+  title: string | null;
+  source: string;
+  requestedSizeSol: number | null;
+  requestedSellPct: number | null;
+  signalScore: number | null;
+  riskLevel: string | null;
+  reasonCodes: string[];
+  createdAt: string;
+};
+
+type PaperPortfolioFill = {
+  id: number;
+  fillId: string;
+  orderId: string;
+  side: "buy" | "sell";
+  mint: string;
+  priceSol: number;
+  effectivePriceSol: number;
+  sizeSol: number;
+  tokenAmount: number;
+  feeSol: number;
+  slippageSol: number;
+  fillStatus: "filled" | "rejected" | "partial";
+  rejectionReason: string | null;
+  reasonCodes: string[];
+  createdAt: string;
+};
+
+type PaperPortfolioSnapshotResponse = {
+  snapshot: PaperPortfolioSnapshot;
+  status: PaperPortfolioStatus;
+};
+
+type PaperPortfolioPositionsResponse = {
+  positions: PaperPortfolioPosition[];
+  status: PaperPortfolioStatus;
+};
+
+type PaperPortfolioOrdersResponse = {
+  orders: PaperPortfolioOrder[];
+  status: PaperPortfolioStatus;
+};
+
+type PaperPortfolioFillsResponse = {
+  fills: PaperPortfolioFill[];
+  status: PaperPortfolioStatus;
+};
+
+type PaperPortfolioPerformanceResponse = {
+  snapshot: PaperPortfolioSnapshot;
+  bestTrade: PaperPortfolioPosition | null;
+  worstTrade: PaperPortfolioPosition | null;
+  snapshots: Array<PaperPortfolioSnapshot & { id?: number; createdAt?: string }>;
+  paperOnly: true;
+  liveExecutionDisabled: true;
+};
+
 type ExitWalletsResponse = {
   current: ExitWallet[];
   persisted: ExitWallet[];
@@ -635,6 +771,7 @@ type ServerMessage =
 const tabs: Array<{ id: TabId; label: string }> = [
   { id: "live", label: "LIVE" },
   { id: "signals", label: "SIGNALS" },
+  { id: "portfolio", label: "PORTFOLIO" },
   { id: "metrics", label: "METRICS" },
   { id: "risk", label: "RISK" },
   { id: "exit", label: "EXIT" },
@@ -674,6 +811,21 @@ export function App() {
   const [exitRules, setExitRules] = useState<ExitRule[]>([]);
   const [exitEvents, setExitEvents] = useState<ExitEvent[]>([]);
   const [exitSignals, setExitSignals] = useState<ExitSignal[]>([]);
+  const [paperPortfolioStatus, setPaperPortfolioStatus] =
+    useState<PaperPortfolioStatus | null>(null);
+  const [paperPortfolioSnapshot, setPaperPortfolioSnapshot] =
+    useState<PaperPortfolioSnapshot | null>(null);
+  const [paperPortfolioPositions, setPaperPortfolioPositions] = useState<
+    PaperPortfolioPosition[]
+  >([]);
+  const [paperPortfolioOrders, setPaperPortfolioOrders] = useState<
+    PaperPortfolioOrder[]
+  >([]);
+  const [paperPortfolioFills, setPaperPortfolioFills] = useState<
+    PaperPortfolioFill[]
+  >([]);
+  const [paperPortfolioPerformance, setPaperPortfolioPerformance] =
+    useState<PaperPortfolioPerformanceResponse | null>(null);
   const [liveTradeTrackingStatus, setLiveTradeTrackingStatus] =
     useState<LiveTradeTrackingStatus | null>(null);
   const [launchScannerStatus, setLaunchScannerStatus] =
@@ -794,6 +946,12 @@ export function App() {
           nextExitRules,
           nextExitEvents,
           nextExitSignals,
+          nextPaperPortfolioStatus,
+          nextPaperPortfolioSnapshot,
+          nextPaperPortfolioPositions,
+          nextPaperPortfolioOrders,
+          nextPaperPortfolioFills,
+          nextPaperPortfolioPerformance,
           nextLiveTradeTrackingStatus,
           nextLaunchScannerStatus,
           nextActualTrades,
@@ -827,6 +985,20 @@ export function App() {
           fetchJson<ExitRulesResponse>("/exit/rules"),
           fetchJson<ExitEventsResponse>("/exit/events?limit=25"),
           fetchJson<ExitSignalsResponse>("/exit/signals?limit=25"),
+          fetchJson<PaperPortfolioStatus>("/paper-portfolio/status"),
+          fetchJson<PaperPortfolioSnapshotResponse>("/paper-portfolio/snapshot"),
+          fetchJson<PaperPortfolioPositionsResponse>(
+            "/paper-portfolio/positions"
+          ),
+          fetchJson<PaperPortfolioOrdersResponse>(
+            "/paper-portfolio/orders?limit=50"
+          ),
+          fetchJson<PaperPortfolioFillsResponse>(
+            "/paper-portfolio/fills?limit=50"
+          ),
+          fetchJson<PaperPortfolioPerformanceResponse>(
+            "/paper-portfolio/performance"
+          ),
           fetchJson<LiveTradeTrackingStatus>("/live/trade-tracking/status"),
           fetchJson<LaunchScannerStatus>("/launch/status"),
           fetchJson<PumpPortalTradeRow[]>("/actual-data/trades?limit=10"),
@@ -861,6 +1033,12 @@ export function App() {
           setExitRules(nextExitRules.current);
           setExitEvents(nextExitEvents.events);
           setExitSignals(nextExitSignals.signals);
+          setPaperPortfolioStatus(nextPaperPortfolioStatus);
+          setPaperPortfolioSnapshot(nextPaperPortfolioSnapshot.snapshot);
+          setPaperPortfolioPositions(nextPaperPortfolioPositions.positions);
+          setPaperPortfolioOrders(nextPaperPortfolioOrders.orders);
+          setPaperPortfolioFills(nextPaperPortfolioFills.fills);
+          setPaperPortfolioPerformance(nextPaperPortfolioPerformance);
           setLiveTradeTrackingStatus(nextLiveTradeTrackingStatus);
           setLaunchScannerStatus(nextLaunchScannerStatus);
           setActualTrades(nextActualTrades);
@@ -1030,6 +1208,22 @@ export function App() {
           tone={unavailableFieldCount > 0 ? "warn" : "good"}
         />
         <MetricValue
+          label="paper pnl"
+          value={formatSol(healthStatus?.totalPaperPnlSol)}
+          detail={`${formatCompactNumber(
+            healthStatus?.openPaperPositionCount
+          )} open`}
+          tone={getPnlTone(healthStatus?.totalPaperPnlSol)}
+        />
+        <MetricValue
+          label="portfolio"
+          value={healthStatus?.paperPortfolioEnabled ? "ON" : "OFF"}
+          detail={`entry ${
+            healthStatus?.paperEntryEnabled ? "on" : "off"
+          } / exit ${healthStatus?.paperExitEnabled ? "on" : "off"}`}
+          tone={healthStatus?.paperPortfolioEnabled ? "good" : "neutral"}
+        />
+        <MetricValue
           label="mock"
           value={healthStatus?.mockFeedEnabled ? "[ON]" : "[OFF]"}
           detail={
@@ -1084,6 +1278,16 @@ export function App() {
       ) : null}
       {activeTab === "signals" ? (
         <SignalsTab cards={cards} signals={signals} strategy={strategyStatus} />
+      ) : null}
+      {activeTab === "portfolio" ? (
+        <PortfolioTab
+          fills={paperPortfolioFills}
+          orders={paperPortfolioOrders}
+          performance={paperPortfolioPerformance}
+          positions={paperPortfolioPositions}
+          snapshot={paperPortfolioSnapshot}
+          status={paperPortfolioStatus}
+        />
       ) : null}
       {activeTab === "metrics" ? <MetricsTab metrics={metrics} /> : null}
       {activeTab === "risk" ? <RiskTab riskRows={riskRows} /> : null}
@@ -1281,6 +1485,11 @@ function TokenCard({
               }`}
             >
               PAPER EXIT SIGNAL
+            </span>
+          ) : null}
+          {card.paperPositionSummary.hasPosition ? (
+            <span className="terminal-badge terminal-badge-warning">
+              PAPER POSITION
             </span>
           ) : null}
           <span className="terminal-badge terminal-badge-neutral">
@@ -1485,6 +1694,16 @@ function TokenCard({
               : "NONE"}
           </strong>
         </div>
+        <div>
+          <span className="muted">position</span>
+          <strong>
+            {card.paperPositionSummary.hasPosition
+              ? `${formatSol(
+                  card.paperPositionSummary.remainingSizeSol
+                )} / ${formatPct(card.paperPositionSummary.unrealizedPnlPct)}`
+              : "NONE"}
+          </strong>
+        </div>
       </div>
 
       <footer className="token-card-footer">
@@ -1610,6 +1829,22 @@ function TokenAudit({ card }: { card: LiveTokenCardViewModel }) {
               ? `${card.exitSignalSummary.exitSignalCount} signal(s)`
               : "NONE"}
           </dd>
+          <dt>paper position</dt>
+          <dd>
+            {card.paperPositionSummary.hasPosition
+              ? `${card.paperPositionSummary.status ?? "open"} / ${formatSol(
+                  card.paperPositionSummary.remainingSizeSol
+                )}`
+              : "NONE"}
+          </dd>
+          <dt>paper pnl</dt>
+          <dd>
+            {card.paperPositionSummary.hasPosition
+              ? `${formatSol(
+                  card.paperPositionSummary.unrealizedPnlSol
+                )} / ${formatPct(card.paperPositionSummary.unrealizedPnlPct)}`
+              : "--"}
+          </dd>
           <dt>exit trigger</dt>
           <dd>
             {card.exitSignalSummary.watchedWalletTriggers.join(", ") || "--"}
@@ -1639,6 +1874,15 @@ function TokenAudit({ card }: { card: LiveTokenCardViewModel }) {
           codes={[
             ...(card.exitSignalSummary.latestExitSignal?.reasonCodes ?? []),
             ...card.exitSignalSummary.exitBlockers
+          ]}
+          limit={16}
+        />
+        <h4>Paper Portfolio</h4>
+        <ReasonCodes
+          codes={[
+            ...(card.paperPositionSummary.latestPaperOrder?.reasonCodes ?? []),
+            ...(card.paperPositionSummary.latestPaperExitSignal?.reasonCodes ??
+              [])
           ]}
           limit={16}
         />
@@ -1735,6 +1979,224 @@ function SignalsTab({
           <ReasonCodes codes={signal.reasonCodes} key="reasons" />
         ])}
         title="RAW SIGNALS"
+      />
+    </section>
+  );
+}
+
+function PortfolioTab({
+  fills,
+  orders,
+  performance,
+  positions,
+  snapshot,
+  status
+}: {
+  fills: PaperPortfolioFill[];
+  orders: PaperPortfolioOrder[];
+  performance: PaperPortfolioPerformanceResponse | null;
+  positions: PaperPortfolioPosition[];
+  snapshot: PaperPortfolioSnapshot | null;
+  status: PaperPortfolioStatus | null;
+}) {
+  const bestTrade = performance?.bestTrade ?? null;
+  const worstTrade = performance?.worstTrade ?? null;
+
+  return (
+    <section className="tab-panel" role="tabpanel">
+      <div className="panel-heading">
+        <div>
+          <h2>PORTFOLIO</h2>
+          <p>
+            Simulated entries, exits, PnL, fees, and replayable paper history.
+          </p>
+        </div>
+        <span className="table-meta">
+          {status?.liveExecutionDisabled ? "NO LIVE EXECUTION" : "--"}
+        </span>
+      </div>
+      <div className="status-grid secondary-grid">
+        <MetricValue
+          label="portfolio"
+          value={status?.enabled ? "ON" : "OFF"}
+          detail="paper only"
+          tone={status?.enabled ? "good" : "neutral"}
+        />
+        <MetricValue
+          label="entry policy"
+          value={status?.entryPolicyEnabled ? "ON" : "OFF"}
+          detail="launch scanner"
+          tone={status?.entryPolicyEnabled ? "warn" : "neutral"}
+        />
+        <MetricValue
+          label="exit policy"
+          value={status?.exitPolicyEnabled ? "ON" : "OFF"}
+          detail="watched wallets / stops"
+          tone={status?.exitPolicyEnabled ? "warn" : "neutral"}
+        />
+        <MetricValue
+          label="cash"
+          value={formatSol(snapshot?.cashSol)}
+          detail="simulated"
+        />
+        <MetricValue
+          label="deployed"
+          value={formatSol(snapshot?.deployedSol)}
+          detail={`${formatCompactNumber(status?.openPositionCount)} open`}
+        />
+        <MetricValue
+          label="equity"
+          value={formatSol(snapshot?.equitySol)}
+          detail="cash + marks"
+        />
+        <MetricValue
+          label="total pnl"
+          value={formatSol(status?.totalPnlSol)}
+          detail={formatPct(snapshot?.totalPnlPct)}
+          tone={getPnlTone(status?.totalPnlSol)}
+        />
+        <MetricValue
+          label="realized"
+          value={formatSol(status?.realizedPnlSol)}
+          detail={`${formatCompactNumber(status?.closedPositionCount)} closed`}
+          tone={getPnlTone(status?.realizedPnlSol)}
+        />
+        <MetricValue
+          label="unrealized"
+          value={formatSol(status?.unrealizedPnlSol)}
+          detail="mark-to-market"
+          tone={getPnlTone(status?.unrealizedPnlSol)}
+        />
+        <MetricValue
+          label="win rate"
+          value={formatPct(status?.winRate)}
+          detail={`${formatCompactNumber(snapshot?.totalTrades)} fills`}
+        />
+        <MetricValue
+          label="drawdown"
+          value={formatSol(status?.maxDrawdownSol)}
+          detail={formatPct(snapshot?.maxDrawdownPct)}
+          tone={status?.maxDrawdownSol ? "warn" : "neutral"}
+        />
+        <MetricValue
+          label="fees"
+          value={formatSol(snapshot?.totalFeesSol)}
+          detail={`${formatCompactNumber(status?.fillCount)} fills stored`}
+        />
+      </div>
+      <ReasonCodes codes={status?.reasonCodes ?? []} limit={18} />
+      <TableShell
+        empty="No paper portfolio positions"
+        headers={[
+          "Token",
+          "Status",
+          "Entry",
+          "Current",
+          "Remaining",
+          "Unrealized",
+          "Realized",
+          "Fees",
+          "Updated"
+        ]}
+        rows={positions.map((position) => [
+          position.title ?? position.symbol ?? formatMintShort(position.mint),
+          position.status,
+          formatSol(position.averageEntryPriceSol),
+          formatSol(position.currentPriceSol),
+          formatSol(position.remainingSizeSol),
+          `${formatSol(position.unrealizedPnlSol)} / ${formatPct(
+            position.unrealizedPnlPct
+          )}`,
+          `${formatSol(position.realizedPnlSol)} / ${formatPct(
+            position.realizedPnlPct
+          )}`,
+          formatSol(position.totalFeesSol),
+          formatTime(position.updatedAt)
+        ])}
+        title="POSITIONS"
+      />
+      <TableShell
+        empty="No paper orders"
+        headers={[
+          "Created",
+          "Token",
+          "Side",
+          "Source",
+          "Size",
+          "Sell %",
+          "Score",
+          "Reasons"
+        ]}
+        rows={orders.map((order) => [
+          formatTime(order.createdAt),
+          order.title ?? order.symbol ?? formatMintShort(order.mint),
+          order.side.toUpperCase(),
+          order.source,
+          formatSol(order.requestedSizeSol),
+          order.requestedSellPct === null ? "--" : `${order.requestedSellPct}%`,
+          formatCompactNumber(order.signalScore),
+          <ReasonCodes codes={order.reasonCodes} key="reasons" limit={5} />
+        ])}
+        title="ORDERS"
+      />
+      <TableShell
+        empty="No paper fills"
+        headers={[
+          "Created",
+          "Token",
+          "Side",
+          "Status",
+          "Price",
+          "Effective",
+          "Size",
+          "Fee",
+          "Reasons"
+        ]}
+        rows={fills.map((fill) => [
+          formatTime(fill.createdAt),
+          formatMintShort(fill.mint),
+          fill.side.toUpperCase(),
+          fill.fillStatus,
+          formatSol(fill.priceSol),
+          formatSol(fill.effectivePriceSol),
+          formatSol(fill.sizeSol),
+          formatSol(fill.feeSol),
+          <ReasonCodes codes={fill.reasonCodes} key="reasons" limit={5} />
+        ])}
+        title="FILLS"
+      />
+      <TableShell
+        empty="No closed paper trades yet"
+        headers={["Rank", "Token", "Realized", "Return", "Closed"]}
+        rows={[
+          ...(bestTrade
+            ? [
+                [
+                  "best",
+                  bestTrade.title ??
+                    bestTrade.symbol ??
+                    formatMintShort(bestTrade.mint),
+                  formatSol(bestTrade.realizedPnlSol),
+                  formatPct(bestTrade.realizedPnlPct),
+                  formatTime(bestTrade.closedAt)
+                ]
+              ]
+            : []),
+          ...(worstTrade
+            ? [
+                [
+                  "worst",
+                  worstTrade.title ??
+                    worstTrade.symbol ??
+                    formatMintShort(worstTrade.mint),
+                  formatSol(worstTrade.realizedPnlSol),
+                  formatPct(worstTrade.realizedPnlPct),
+                  formatTime(worstTrade.closedAt)
+                ]
+              ]
+            : [])
+        ]}
+        title="PERFORMANCE"
       />
     </section>
   );
@@ -3175,6 +3637,16 @@ function getDataWalletTone(
   }
 
   return "neutral";
+}
+
+function getPnlTone(
+  value: number | null | undefined
+): "good" | "bad" | "warn" | "neutral" {
+  if (typeof value !== "number" || !Number.isFinite(value) || value === 0) {
+    return "neutral";
+  }
+
+  return value > 0 ? "good" : "bad";
 }
 
 function copyPublicKey(publicKey: string | null): void {

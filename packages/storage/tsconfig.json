@@ -13,6 +13,7 @@
     { "path": "../chain-events" },
     { "path": "../data-feeds" },
     { "path": "../market-data" },
+    { "path": "../paper-portfolio" },
     { "path": "../token-identity" },
     { "path": "../watch-orchestrator" }
   ]

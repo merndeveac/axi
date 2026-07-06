@@ -88,6 +88,8 @@ import {
   listTokenIdentities,
   listUnresolvedTokenIdentities,
   type StorageHandle,
+  type StoredPaperPortfolioPosition,
+  type StoredPaperPosition,
   upsertPaperPosition
 } from "@axi/storage";
 import type { WatchOrchestratorOptions } from "@axi/watch-orchestrator";
@@ -135,6 +137,14 @@ import {
   type WatchedWalletExitConfig,
   type WatchedWalletExitService
 } from "./watched-wallet-exit-service";
+import {
+  createPaperPortfolioService,
+  createPaperPortfolioServiceConfig,
+  PaperPortfolioServiceError,
+  type PaperPortfolioService,
+  type PaperPortfolioServiceConfig
+} from "./paper-portfolio-service";
+import { runPaperBacktest } from "./paper-backtest-lib";
 import {
   createLiveTokenService,
   type LiveFeedMode,
@@ -724,6 +734,99 @@ export const apiConfigSchema = z.object({
     .int()
     .nonnegative()
     .default(60000),
+  PAPER_PORTFOLIO_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  PAPER_PORTFOLIO_STARTING_CASH_SOL: z.coerce.number().positive().default(1),
+  PAPER_PORTFOLIO_MAX_POSITION_SIZE_SOL: z.coerce
+    .number()
+    .positive()
+    .default(0.01),
+  PAPER_PORTFOLIO_MAX_OPEN_POSITIONS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(3),
+  PAPER_PORTFOLIO_MAX_DAILY_SPEND_SOL: z.coerce
+    .number()
+    .positive()
+    .default(0.05),
+  PAPER_PORTFOLIO_FEE_BPS: z.coerce.number().nonnegative().default(100),
+  PAPER_PORTFOLIO_SLIPPAGE_BPS: z.coerce.number().nonnegative().default(300),
+  PAPER_PORTFOLIO_REQUIRE_PRICE_FOR_ENTRY: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  PAPER_PORTFOLIO_REQUIRE_PRICE_FOR_EXIT: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  PAPER_PORTFOLIO_ALLOW_PARTIAL_EXITS: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  PAPER_PORTFOLIO_FALLBACK_PRICE_SOL: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.coerce.number().positive().optional()
+  ),
+  PAPER_PORTFOLIO_RESET_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  PAPER_ENTRY_ENABLED: z.preprocess(parseBooleanEnv, z.boolean()).default(false),
+  PAPER_ENTRY_MIN_LAUNCH_SCORE: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .default(80),
+  PAPER_ENTRY_POSITION_SIZE_SOL: z.coerce.number().positive().default(0.005),
+  PAPER_ENTRY_REQUIRE_TRADE_TRACKED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  PAPER_ENTRY_REQUIRE_PRICE: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  PAPER_ENTRY_MIN_VALID_SAMPLES: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(10),
+  PAPER_ENTRY_MIN_BUY_SELL_RATIO: z.coerce.number().nonnegative().default(1.5),
+  PAPER_ENTRY_MIN_UNIQUE_BUYERS_10S: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(5),
+  PAPER_ENTRY_MAX_AGE_SECONDS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(120),
+  PAPER_ENTRY_MAX_RISK_LEVEL: z
+    .enum(["unknown", "low", "medium", "high", "critical"])
+    .default("medium"),
+  PAPER_ENTRY_COOLDOWN_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(300000),
+  PAPER_EXIT_ENABLED: z.preprocess(parseBooleanEnv, z.boolean()).default(false),
+  PAPER_EXIT_ALLOW_WATCHED_WALLET_SIGNALS: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  PAPER_EXIT_DEFAULT_SELL_PCT: z.coerce.number().positive().max(100).default(100),
+  PAPER_EXIT_REQUIRE_PRICE: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  PAPER_EXIT_MIN_PROFIT_PCT: z.coerce.number().default(25),
+  PAPER_EXIT_TAKE_PROFIT_PCT: z.coerce.number().default(50),
+  PAPER_EXIT_STOP_LOSS_PCT: z.coerce.number().default(-25),
+  PAPER_EXIT_TRAILING_STOP_PCT: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.coerce.number().positive().optional()
+  ),
+  PAPER_EXIT_COOLDOWN_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(60000),
   LIVE_CARD_ENRICHMENT_ENABLED: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(false),
@@ -989,6 +1092,7 @@ export type ApiServerOptions = {
     Pick<PumpPortalWalletsServiceOptions, "solanaClient">;
   lightning?: Partial<LightningReadinessConfig>;
   watchedWalletExit?: Partial<WatchedWalletExitConfig>;
+  paperPortfolio?: Partial<PaperPortfolioServiceConfig>;
   indexer?: IndexerAdapterOptions;
   realDataRequired?: boolean;
   signalIntervalMs?: number;
@@ -1019,6 +1123,7 @@ export type ApiServer = {
   pumpPortalWallets: PumpPortalWalletsService;
   lightningReadiness: LightningReadinessService;
   watchedWalletExit: WatchedWalletExitService;
+  paperPortfolio: PaperPortfolioService;
   indexerAdapter: IndexerAdapter;
   liveTokens: LiveTokenService;
   tokenIdentity: TokenIdentityService;
@@ -1209,6 +1314,23 @@ const exitCostQuerySchema = z.object({
   wallets: z.coerce.number().int().nonnegative().default(0),
   eventsPerWallet: z.coerce.number().int().nonnegative().default(100)
 });
+const paperPortfolioManualEntryBodySchema = z.object({
+  mint: z.string().min(32),
+  sizeSol: z.coerce.number().positive().optional(),
+  reason: z.string().min(1).default("manual_paper_entry"),
+  marketPriceSol: z.coerce.number().positive().optional()
+});
+const paperPortfolioManualExitBodySchema = z.object({
+  mint: z.string().min(32),
+  sellPct: z.coerce.number().positive().max(100).optional(),
+  reason: z.string().min(1).default("manual_paper_exit"),
+  marketPriceSol: z.coerce.number().positive().optional()
+});
+const paperPortfolioBacktestBodySchema = z.object({
+  fixture: z
+    .enum(["strong-ripper", "weak-launch", "sell-pressure", "no-trades"])
+    .default("strong-ripper")
+});
 
 export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   return apiConfigSchema.parse(env);
@@ -1339,14 +1461,22 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     getCandidate: (mint) => candidateEngine.getCandidate(mint),
     getRiskSnapshot: (mint) => riskSnapshots.get(mint)
   });
+  const getCurrentPaperPriceSol = (mint: string): number | null =>
+    positiveOrNull(metricsEngine.getMetrics(mint)?.latestPriceSol) ??
+    positiveOrNull(actualData.getCandidateSummary(mint)?.latestPriceSol) ??
+    positiveOrNull(launchScanner.getCandidate(mint)?.snapshot.priceSol);
+  const paperPortfolio = createPaperPortfolioService({
+    config: createPaperPortfolioServiceConfig(options.paperPortfolio),
+    getCurrentPriceSol: getCurrentPaperPriceSol,
+    getLaunchCandidate: (mint) => launchScanner.getCandidate(mint),
+    getRecentSignals: () => Array.from(signals.values())
+  });
   const watchedWalletExit = createWatchedWalletExitService({
     config: createWatchedWalletExitConfig(options.watchedWalletExit),
     dataWalletReadiness: () => pumpPortalDataWallet.getActualDataReadiness(),
-    getCurrentPriceSol: (mint) =>
-      positiveOrNull(metricsEngine.getMetrics(mint)?.latestPriceSol) ??
-      positiveOrNull(actualData.getCandidateSummary(mint)?.latestPriceSol) ??
-      positiveOrNull(launchScanner.getCandidate(mint)?.snapshot.priceSol),
-    getOpenPaperPositions: () => listPaperPositions(),
+    getCurrentPriceSol: getCurrentPaperPriceSol,
+    getOpenPaperPositions: () =>
+      paperPortfolioPositionsForExit(paperPortfolio.getPositions()),
     providerName: feed.name,
     ...(feed instanceof PumpPortalFeedProvider
       ? { pumpPortalProvider: feed }
@@ -1380,6 +1510,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const watchStatus = watchOrchestration.getStatus();
     const feedStatus = getFeedStatus();
     const liveStatus = liveTokens.getStatus();
+    const paperPortfolioStatus = paperPortfolio.getStatus();
     const dataWalletStatus = await pumpPortalDataWallet.refreshBalance();
     const pumpPortalWalletsStatus = await pumpPortalWallets.refreshBalances();
 
@@ -1408,6 +1539,16 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       exitStrategyEnabled: watchedWalletExit.getStatus().enabled,
       accountTradeMonitoringEnabled:
         watchedWalletExit.getStatus().accountTradeMonitoringEnabled,
+      paperPortfolio: paperPortfolioStatus,
+      paperPortfolioEnabled: paperPortfolioStatus.enabled,
+      paperEntryEnabled: paperPortfolioStatus.entryPolicyEnabled,
+      paperExitEnabled: paperPortfolioStatus.exitPolicyEnabled,
+      openPaperPositionCount: paperPortfolioStatus.openPositionCount,
+      totalPaperPnlSol: paperPortfolioStatus.totalPnlSol,
+      paperPortfolioOrderCount: stats.paperPortfolioOrderCount,
+      paperPortfolioFillCount: stats.paperPortfolioFillCount,
+      paperPortfolioPositionCount: stats.paperPortfolioPositionCount,
+      paperPortfolioSnapshotCount: stats.paperPortfolioSnapshotCount,
       watchedWalletCount: stats.watchedWalletCount,
       watchedWalletTradeEventCount: stats.watchedWalletTradeEventCount,
       exitRuleCount: stats.exitRuleCount,
@@ -2470,6 +2611,127 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   app.get("/paper/positions", async () => listPaperPositions());
 
+  app.get("/paper-portfolio/status", async () => paperPortfolio.getStatus());
+
+  app.get("/paper-portfolio/snapshot", async () => ({
+    snapshot: paperPortfolio.getSnapshot(),
+    status: paperPortfolio.getStatus(),
+    paperOnly: true,
+    liveExecutionDisabled: true
+  }));
+
+  app.get("/paper-portfolio/positions", async () => ({
+    positions: paperPortfolio.getPositions(),
+    status: paperPortfolio.getStatus(),
+    paperOnly: true,
+    liveExecutionDisabled: true
+  }));
+
+  app.get("/paper-portfolio/positions/:mint", async (request, reply) => {
+    const params = mintParamSchema.parse(request.params);
+    const position = paperPortfolio.getPosition(params.mint);
+
+    if (!position) {
+      return reply.code(404).send({
+        error: "not_found",
+        message: `No paper portfolio position found for mint ${params.mint}`,
+        status: paperPortfolio.getStatus(),
+        paperOnly: true,
+        liveExecutionDisabled: true
+      });
+    }
+
+    return {
+      position,
+      summary: paperPortfolio.getPositionSummaryForMint(params.mint),
+      status: paperPortfolio.getStatus(),
+      paperOnly: true,
+      liveExecutionDisabled: true
+    };
+  });
+
+  app.get("/paper-portfolio/orders", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+
+    return {
+      orders: paperPortfolio.getOrders(query.limit),
+      status: paperPortfolio.getStatus(),
+      paperOnly: true,
+      liveExecutionDisabled: true
+    };
+  });
+
+  app.get("/paper-portfolio/fills", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+
+    return {
+      fills: paperPortfolio.getFills(query.limit),
+      status: paperPortfolio.getStatus(),
+      paperOnly: true,
+      liveExecutionDisabled: true
+    };
+  });
+
+  app.get("/paper-portfolio/performance", async () =>
+    paperPortfolio.getPerformance()
+  );
+
+  app.post("/paper-portfolio/evaluate-entries", async () => ({
+    evaluations: paperPortfolio.evaluateEntries(),
+    status: paperPortfolio.getStatus(),
+    paperOnly: true,
+    liveExecutionDisabled: true
+  }));
+
+  app.post("/paper-portfolio/evaluate-exits", async () => ({
+    evaluations: paperPortfolio.evaluateExits(),
+    status: paperPortfolio.getStatus(),
+    paperOnly: true,
+    liveExecutionDisabled: true
+  }));
+
+  app.post("/paper-portfolio/manual-entry", async (request, reply) => {
+    const body = paperPortfolioManualEntryBodySchema.parse(request.body);
+
+    try {
+      return paperPortfolio.manualEntry({
+        mint: body.mint,
+        reason: body.reason,
+        ...(body.sizeSol !== undefined ? { sizeSol: body.sizeSol } : {}),
+        ...(body.marketPriceSol !== undefined
+          ? { marketPriceSol: body.marketPriceSol }
+          : {})
+      });
+    } catch (error) {
+      return sendPaperPortfolioError(reply, error);
+    }
+  });
+
+  app.post("/paper-portfolio/manual-exit", async (request, reply) => {
+    const body = paperPortfolioManualExitBodySchema.parse(request.body);
+
+    try {
+      return paperPortfolio.manualExit({
+        mint: body.mint,
+        reason: body.reason,
+        ...(body.sellPct !== undefined ? { sellPct: body.sellPct } : {}),
+        ...(body.marketPriceSol !== undefined
+          ? { marketPriceSol: body.marketPriceSol }
+          : {})
+      });
+    } catch (error) {
+      return sendPaperPortfolioError(reply, error);
+    }
+  });
+
+  app.post("/paper-portfolio/backtest", async (request) => {
+    const body = paperPortfolioBacktestBodySchema.parse(request.body ?? {});
+
+    return runPaperBacktest({
+      fixture: body.fixture
+    });
+  });
+
   app.server.on("upgrade", (request, socket, head) => {
     const host = request.headers.host ?? "localhost";
     const url = new URL(request.url ?? "/", `http://${host}`);
@@ -2519,6 +2781,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     feedStarted = true;
     actualData.start();
     launchScanner.start();
+    paperPortfolio.start();
     watchedWalletExit.start();
     void feed.start(handleFeedEvent);
     void chainEvents.start();
@@ -2532,6 +2795,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     feedStarted = false;
     launchScanner.stop();
     watchedWalletExit.stop();
+    paperPortfolio.stop();
     actualData.stop();
     await feed.stop();
     await chainEvents.stop();
@@ -3056,6 +3320,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         exitSignalSummary: watchedWalletExit.getSignalSummaryForMint(
           token.mint
         ),
+        paperPositionSummary: paperPortfolio.getPositionSummaryForMint(
+          token.mint
+        ),
         dataCompletenessLabel: dataCompleteness.dataQualityLabel,
         missingCriticalFields: dataCompleteness.missingCriticalFields,
         enrichmentStatus,
@@ -3280,6 +3547,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         ],
         launchMissingDataReasons: ["PUMPPORTAL_LAUNCH_SCANNER_UNAVAILABLE"],
         exitSignalSummary: watchedWalletExit.getSignalSummaryForMint(
+          token.mint
+        ),
+        paperPositionSummary: paperPortfolio.getPositionSummaryForMint(
           token.mint
         ),
         dataCompletenessLabel: dataCompleteness.dataQualityLabel,
@@ -3783,7 +4053,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   function handleFeedEvent(event: FeedEvent): void {
     if (event.type === "account_trade") {
       saveFeedEvent(event);
-      watchedWalletExit.ingestFeedEvent(event);
+      const exitEvaluation = watchedWalletExit.ingestFeedEvent(event);
+      paperPortfolio.ingestExitSignals(exitEvaluation.signals);
       return;
     }
 
@@ -3864,6 +4135,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     saveRiskSnapshot(riskSnapshot);
     candidateEngine.updateRisk(candidate.mint, riskSnapshot);
     launchScanner.ingestFeedEvent(event);
+    paperPortfolio.updateMarkPrice(
+      candidate.mint,
+      getCurrentPaperPriceSol(candidate.mint)
+    );
 
     const score = scoreFeedCandidate({
       candidate,
@@ -3941,6 +4216,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     });
     const storedSignal = saveSignal(signal);
     cacheSignal(signal);
+    paperPortfolio.evaluateEntrySignal(signal);
+    paperPortfolio.evaluateExits();
 
     if (
       paperAutoOrder &&
@@ -4107,6 +4384,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     });
     saveSignal(signal);
     cacheSignal(signal);
+    paperPortfolio.evaluateEntrySignal(signal);
+    paperPortfolio.evaluateExits();
     broadcast({
       type: "signal",
       signal
@@ -4450,6 +4729,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     pumpPortalWallets,
     lightningReadiness,
     watchedWalletExit,
+    paperPortfolio,
     risk: riskEngine,
     chainVerifier,
     liveTokens,
@@ -4674,6 +4954,20 @@ function getRiskFlags(event: FeedEvent): RiskFlags {
 
 function sendWatchedWalletExitError(reply: FastifyReply, error: unknown) {
   if (error instanceof WatchedWalletExitServiceError) {
+    return reply.code(error.statusCode).send({
+      error: error.code,
+      message: error.message,
+      reasonCodes: error.reasonCodes,
+      paperOnly: true,
+      liveExecutionDisabled: true
+    });
+  }
+
+  throw error;
+}
+
+function sendPaperPortfolioError(reply: FastifyReply, error: unknown) {
+  if (error instanceof PaperPortfolioServiceError) {
     return reply.code(error.statusCode).send({
       error: error.code,
       message: error.message,
@@ -5676,6 +5970,31 @@ function positiveOrNull(value: number | null | undefined): number | null {
 
 function numberOrNull(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function paperPortfolioPositionsForExit(
+  positions: StoredPaperPortfolioPosition[]
+): StoredPaperPosition[] {
+  return positions
+    .filter((position) => position.status !== "closed")
+    .map((position) => ({
+      id: position.id,
+      mint: position.mint,
+      symbol: position.symbol ?? "UNKNOWN",
+      sizeSol: position.remainingSizeSol,
+      tokenAmount: position.remainingTokenAmount,
+      entryPrice: position.averageEntryPriceSol,
+      status: "open",
+      payload: {
+        ...(position.payload && typeof position.payload === "object"
+          ? position.payload
+          : {}),
+        paperPortfolioPosition: position,
+        source: "paper_portfolio"
+      },
+      openedAt: position.openedAt,
+      updatedAt: position.updatedAt
+    }));
 }
 
 function meetsMinimumConfidence(

@@ -112,6 +112,66 @@ Exit endpoints:
 - `POST /exit/simulate`
 - `GET /exit/cost`
 
+## Paper Portfolio And PnL Engine
+
+The paper portfolio layer is a pure simulated portfolio/PnL engine plus local
+SQLite persistence and API/dashboard read models. It can turn launch scanner
+signals into simulated paper entries and watched-wallet/take-profit/stop-loss
+signals into simulated paper exits, but both policy loops are disabled by
+default. Manual paper entry/exit endpoints are simulation-only and require a
+market price when no safe local price is available.
+
+This feature does not sign, send, prepare, or broadcast transactions. It does
+not load wallets, expose API keys, call PumpPortal Lightning execution, call
+PumpPortal trading APIs, call Jupiter swap APIs, use Axiom private APIs, or
+scrape Axiom. All portfolio orders/fills are local paper records.
+
+Default safety config:
+
+```bash
+PAPER_PORTFOLIO_ENABLED=true
+PAPER_ENTRY_ENABLED=false
+PAPER_EXIT_ENABLED=false
+PAPER_PORTFOLIO_STARTING_CASH_SOL=1
+PAPER_PORTFOLIO_MAX_POSITION_SIZE_SOL=0.01
+PAPER_PORTFOLIO_MAX_OPEN_POSITIONS=3
+PAPER_PORTFOLIO_MAX_DAILY_SPEND_SOL=0.05
+PAPER_PORTFOLIO_FEE_BPS=100
+PAPER_PORTFOLIO_SLIPPAGE_BPS=300
+PAPER_ENTRY_MIN_LAUNCH_SCORE=80
+PAPER_ENTRY_POSITION_SIZE_SOL=0.005
+PAPER_EXIT_TAKE_PROFIT_PCT=50
+PAPER_EXIT_STOP_LOSS_PCT=-25
+```
+
+Paper portfolio endpoints:
+
+- `GET /paper-portfolio/status`
+- `GET /paper-portfolio/snapshot`
+- `GET /paper-portfolio/positions`
+- `GET /paper-portfolio/positions/:mint`
+- `GET /paper-portfolio/orders`
+- `GET /paper-portfolio/fills`
+- `GET /paper-portfolio/performance`
+- `POST /paper-portfolio/evaluate-entries`
+- `POST /paper-portfolio/evaluate-exits`
+- `POST /paper-portfolio/manual-entry`
+- `POST /paper-portfolio/manual-exit`
+- `POST /paper-portfolio/backtest`
+
+Replay/backtest examples:
+
+```bash
+pnpm --filter @axi/api paper:backtest -- --fixture strong-ripper
+pnpm --filter @axi/api paper:backtest -- --source launch-fixture sell-pressure
+pnpm --filter @axi/api paper:backtest -- --from-db .data/axi.sqlite --limit 100
+```
+
+The dashboard has a PORTFOLIO tab for simulated cash, deployed SOL, equity,
+realized/unrealized PnL, fees, positions, orders, fills, and best/worst closed
+paper trades. Live launch cards also include a compact paper position summary
+when a token has an open simulated position.
+
 CLI helpers:
 
 ```bash
@@ -537,7 +597,8 @@ Current persistence tables include `feed_events`, `signals`, `risk_snapshots`,
 `lightning_trade_plans`,
 `pumpportal_wallet_status_snapshots`, `watched_wallets`,
 `watched_wallet_trade_events`, `exit_rules`, `exit_signals`, `paper_orders`,
-and `paper_positions`.
+`paper_positions`, `paper_portfolio_orders`, `paper_portfolio_fills`,
+`paper_portfolio_positions`, and `paper_portfolio_snapshots`.
 
 Clear local paper data with:
 
@@ -904,6 +965,8 @@ Dashboard tabs:
   sort/filter/search controls, and inline audit expansion.
 - SIGNALS: read-only strategy status plus signal explanation and raw signal
   rows.
+- PORTFOLIO: simulated cash, equity, positions, paper orders/fills, PnL, fees,
+  and best/worst closed paper trades.
 - METRICS: rolling windows, velocity, acceleration, sample counts, and metric
   debug values.
 - RISK: risk levels, hard rejects, authority flags, holder concentration, and
@@ -1379,6 +1442,18 @@ Endpoints:
 - `POST /watch/plan`
 - `GET /paper/orders`
 - `GET /paper/positions`
+- `GET /paper-portfolio/status`
+- `GET /paper-portfolio/snapshot`
+- `GET /paper-portfolio/positions`
+- `GET /paper-portfolio/positions/:mint`
+- `GET /paper-portfolio/orders`
+- `GET /paper-portfolio/fills`
+- `GET /paper-portfolio/performance`
+- `POST /paper-portfolio/evaluate-entries`
+- `POST /paper-portfolio/evaluate-exits`
+- `POST /paper-portfolio/manual-entry`
+- `POST /paper-portfolio/manual-exit`
+- `POST /paper-portfolio/backtest`
 - `GET /exit/status`
 - `GET /exit/wallets`
 - `POST /exit/wallets`
@@ -1701,6 +1776,8 @@ docker compose --profile indexer up -d
 - `@axi/execution`: in-memory paper execution only.
 - `@axi/exit-strategy`: pure deterministic watched-wallet paper exit
   evaluation and simulation fixtures.
+- `@axi/paper-portfolio`: pure simulated portfolio/PnL engine with fee,
+  slippage, position history, and paper-only order/fill models.
 - `@axi/metrics`: local rolling-window metrics for paper-mode signal features.
 - `@axi/pumpportal-lightning`: pure PumpPortal Lightning request construction,
   safety validation, disabled execution client, and dry-run plan models.

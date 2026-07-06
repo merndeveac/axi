@@ -92,6 +92,9 @@ importers:
       '@axi/metrics':
         specifier: workspace:*
         version: link:../../packages/metrics
+      '@axi/paper-portfolio':
+        specifier: workspace:*
+        version: link:../../packages/paper-portfolio
       '@axi/pumpfun-decoder':
         specifier: workspace:*
         version: link:../../packages/pumpfun-decoder
@@ -286,6 +289,8 @@ importers:
         specifier: workspace:*
         version: link:../shared
 
+  packages/paper-portfolio: {}
+
   packages/pumpfun-decoder:
     dependencies:
       '@axi/indexer-core':
@@ -338,6 +343,9 @@ importers:
       '@axi/market-data':
         specifier: workspace:*
         version: link:../market-data
+      '@axi/paper-portfolio':
+        specifier: workspace:*
+        version: link:../paper-portfolio
       '@axi/shared':
         specifier: workspace:*
         version: link:../shared

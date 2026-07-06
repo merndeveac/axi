@@ -29,6 +29,7 @@
     "exit:status": "tsx --conditions=development src/exit-status.ts",
     "exit:simulate": "tsx --conditions=development src/exit-simulate.ts",
     "exit:cost": "tsx --conditions=development src/exit-cost.ts",
+    "paper:backtest": "tsx --conditions=development src/paper-backtest.ts",
     "tokens:resolve": "tsx --conditions=development src/tokens-resolve.ts",
     "tokens:normalize": "tsx --conditions=development src/tokens-normalize.ts",
     "clean": "rm -rf dist"
@@ -47,6 +48,7 @@
     "@axi/managed-stream-clients": "workspace:*",
     "@axi/market-data": "workspace:*",
     "@axi/metrics": "workspace:*",
+    "@axi/paper-portfolio": "workspace:*",
     "@axi/pumpfun-decoder": "workspace:*",
     "@axi/pumpportal-lightning": "workspace:*",
     "@axi/risk": "workspace:*",
