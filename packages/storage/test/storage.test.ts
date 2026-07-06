@@ -17,6 +17,9 @@ import { normalizePumpPortalIdentity } from "@axi/token-identity";
 import {
   closeStorage,
   createReplayStream,
+  deleteExitRule,
+  deleteWatchedWallet,
+  getExitRule,
   getPumpPortalTokenTradeEvent,
   getTokenIdentity,
   getChainTradeEvent,
@@ -40,6 +43,9 @@ import {
   listLaunchTrackingSessions,
   listLaunchTradeSamplesByMint,
   listPumpPortalWalletStatusSnapshots,
+  listExitRules,
+  listExitSignals,
+  listExitSignalsByMint,
   getStorageStats,
   getLaunchCandidate,
   initStorage,
@@ -76,6 +82,10 @@ import {
   listWatchActions,
   listWatchActionsByMint,
   listWatchActionsForReplay,
+  listWatchedWallets,
+  listWatchedWalletTradeEvents,
+  listWatchedWalletTradeEventsByMint,
+  listWatchedWalletTradeEventsByWallet,
   listWatchPlans,
   listWatchPlansForReplay,
   saveCandidateDecision,
@@ -85,6 +95,8 @@ import {
   saveFeedEvent,
   saveLiveFeedEvent,
   saveLightningTradePlan,
+  saveExitRule,
+  saveExitSignal,
   saveLaunchCandidate,
   saveLaunchScoreSnapshot,
   saveLaunchTrackingEvent,
@@ -98,6 +110,8 @@ import {
   savePumpPortalTokenTradeEvent,
   saveRiskSnapshot,
   saveSignal,
+  saveWatchedWallet,
+  saveWatchedWalletTradeEvent,
   saveTokenIdentity,
   saveTokenMetadataFetch,
   saveWatchAction,
@@ -145,6 +159,10 @@ describe("@axi/storage", () => {
     expect(stats.launchTrackingSessionCount).toBe(0);
     expect(stats.riskSnapshotCount).toBe(0);
     expect(stats.candidateDecisionCount).toBe(0);
+    expect(stats.watchedWalletCount).toBe(0);
+    expect(stats.watchedWalletTradeEventCount).toBe(0);
+    expect(stats.exitRuleCount).toBe(0);
+    expect(stats.exitSignalCount).toBe(0);
   });
 
   it("signal can be saved and read", () => {
@@ -628,6 +646,154 @@ describe("@axi/storage", () => {
     expect(serialized).not.toContain("private-key-value");
   });
 
+  it("watched wallet exit strategy records can be saved, listed, counted, and sanitized", () => {
+    initStorage({ databasePath });
+    const walletAddress = "WatchWallet111111111111111111111111111111";
+    const otherWalletAddress = "OtherWallet111111111111111111111111111111";
+    const wallet = saveWatchedWallet({
+      address: walletAddress,
+      alias: "paper watcher",
+      tags: ["smart_money", "exit_liquidity"],
+      enabled: true,
+      source: "manual",
+      reasonCodes: ["WATCHED_WALLET_ADDED"],
+      payload: {
+        apiKey: "api-key-value",
+        publicNote: "safe"
+      },
+      createdAt: "2026-01-01T00:00:12.000Z",
+      updatedAt: "2026-01-01T00:00:12.000Z"
+    });
+    saveWatchedWallet({
+      address: otherWalletAddress,
+      alias: null,
+      tags: ["other"],
+      enabled: false,
+      source: "test",
+      reasonCodes: ["WATCHED_WALLET_ADDED"],
+      createdAt: "2026-01-01T00:00:13.000Z",
+      updatedAt: "2026-01-01T00:00:13.000Z"
+    });
+
+    const event = saveWatchedWalletTradeEvent({
+      wallet: walletAddress,
+      walletAlias: "paper watcher",
+      mint,
+      side: "buy",
+      priceSol: 0.00042,
+      volumeSol: 0.25,
+      tokenAmount: 595.23,
+      signature: "exit-sig-1",
+      confidence: "high",
+      usableForExitStrategy: true,
+      reasonCodes: ["PUMPPORTAL_ACCOUNT_TRADE"],
+      payload: {
+        privateKey: "private-key-value",
+        source: "test"
+      },
+      createdAt: "2026-01-01T00:00:14.000Z"
+    });
+    saveWatchedWalletTradeEvent({
+      wallet: otherWalletAddress,
+      mint: "OtherMint111111111111111111111111111111111",
+      side: "sell",
+      confidence: "medium",
+      usableForExitStrategy: true,
+      reasonCodes: ["PUMPPORTAL_ACCOUNT_TRADE"],
+      createdAt: "2026-01-01T00:00:15.000Z"
+    });
+
+    const rule = saveExitRule({
+      id: "watched-wallet-buy-take-profit",
+      name: "Watched wallet buy take profit",
+      enabled: true,
+      trigger: "watched_wallet_buy",
+      minProfitPct: 25,
+      minProfitSol: null,
+      sellPct: 100,
+      requirePositionOpenedBeforeWalletTrade: true,
+      allowedWalletTags: ["smart_money"],
+      blockedWalletTags: ["blocked"],
+      requireCurrentPrice: true,
+      maxPositionAgeMs: null,
+      cooldownMs: 60_000,
+      priority: 100,
+      reasonCodes: ["DEFAULT_EXIT_RULE"],
+      payload: {
+        seedPhrase: "seed phrase value",
+        paperOnly: true
+      },
+      createdAt: "2026-01-01T00:00:16.000Z",
+      updatedAt: "2026-01-01T00:00:16.000Z"
+    });
+
+    const signal = saveExitSignal({
+      id: "exit-signal-1",
+      mint,
+      wallet: walletAddress,
+      walletAlias: "paper watcher",
+      ruleId: rule.ruleId,
+      action: "paper_sell",
+      sellPct: 100,
+      blocked: false,
+      blockers: [],
+      warnings: ["PAPER_SELL_PLAN_ONLY"],
+      reasonCodes: ["EXIT_SIGNAL_CREATED", "LIVE_EXECUTION_DISABLED"],
+      payload: {
+        keypair: "secret-keypair",
+        triggerEventId: event.id
+      },
+      createdAt: "2026-01-01T00:00:17.000Z"
+    });
+
+    const wallets = listWatchedWallets();
+    const events = listWatchedWalletTradeEvents(10);
+    const eventsByWallet = listWatchedWalletTradeEventsByWallet(
+      walletAddress,
+      10
+    );
+    const eventsByMint = listWatchedWalletTradeEventsByMint(mint, 10);
+    const rules = listExitRules();
+    const fetchedRule = getExitRule(rule.ruleId);
+    const signals = listExitSignals(10);
+    const signalsByMint = listExitSignalsByMint(mint, 10);
+    const stats = getStorageStats();
+    const serialized = JSON.stringify({
+      wallets,
+      events,
+      rules,
+      signals
+    }).toLowerCase();
+
+    expect(wallet.id).toBeGreaterThan(0);
+    expect(event.id).toBeGreaterThan(0);
+    expect(signal.id).toBeGreaterThan(0);
+    expect(wallets).toHaveLength(2);
+    expect(wallets[0]?.enabled).toBe(false);
+    expect(events).toHaveLength(2);
+    expect(eventsByWallet).toHaveLength(1);
+    expect(eventsByMint).toHaveLength(1);
+    expect(rules).toHaveLength(1);
+    expect(fetchedRule?.ruleId).toBe("watched-wallet-buy-take-profit");
+    expect(fetchedRule?.allowedWalletTags).toEqual(["smart_money"]);
+    expect(fetchedRule?.blockedWalletTags).toEqual(["blocked"]);
+    expect(fetchedRule?.requireCurrentPrice).toBe(true);
+    expect(signals).toHaveLength(1);
+    expect(signalsByMint).toHaveLength(1);
+    expect(stats.watchedWalletCount).toBe(2);
+    expect(stats.watchedWalletTradeEventCount).toBe(2);
+    expect(stats.exitRuleCount).toBe(1);
+    expect(stats.exitSignalCount).toBe(1);
+    expect(serialized).not.toContain("api-key-value");
+    expect(serialized).not.toContain("private-key-value");
+    expect(serialized).not.toContain("seed phrase value");
+    expect(serialized).not.toContain("secret-keypair");
+    expect(deleteExitRule(rule.ruleId)).toBe(true);
+    expect(deleteWatchedWallet(walletAddress)).toBe(true);
+    expect(listExitRules()).toHaveLength(0);
+    expect(listWatchedWallets()).toHaveLength(1);
+  });
+
   it("launch scanner records can be saved, listed, and counted", () => {
     initStorage({ databasePath });
     const candidate = saveLaunchCandidate({
@@ -779,6 +945,51 @@ describe("@axi/storage", () => {
       status: "open",
       payload: {}
     });
+    saveWatchedWallet({
+      address: "StatsWallet111111111111111111111111111111",
+      alias: "stats wallet",
+      tags: ["stats"],
+      enabled: true,
+      source: "test",
+      reasonCodes: ["WATCHED_WALLET_ADDED"],
+      payload: {}
+    });
+    saveWatchedWalletTradeEvent({
+      wallet: "StatsWallet111111111111111111111111111111",
+      mint,
+      side: "buy",
+      confidence: "high",
+      usableForExitStrategy: true,
+      reasonCodes: ["WATCHED_WALLET_TRADE_OBSERVED"],
+      payload: {}
+    });
+    saveExitRule({
+      id: "stats-rule",
+      name: "Stats rule",
+      enabled: true,
+      trigger: "watched_wallet_buy",
+      minProfitPct: 25,
+      sellPct: 100,
+      requirePositionOpenedBeforeWalletTrade: true,
+      requireCurrentPrice: true,
+      cooldownMs: 60_000,
+      priority: 100,
+      reasonCodes: ["DEFAULT_EXIT_RULE"],
+      payload: {}
+    });
+    saveExitSignal({
+      id: "stats-signal",
+      mint,
+      wallet: "StatsWallet111111111111111111111111111111",
+      ruleId: "stats-rule",
+      action: "paper_sell",
+      sellPct: 100,
+      blocked: false,
+      blockers: [],
+      warnings: ["PAPER_SELL_PLAN_ONLY"],
+      reasonCodes: ["EXIT_SIGNAL_CREATED"],
+      payload: {}
+    });
 
     const stats = getStorageStats();
 
@@ -804,6 +1015,10 @@ describe("@axi/storage", () => {
     expect(stats.candidateDecisionCount).toBe(1);
     expect(stats.paperOrderCount).toBe(1);
     expect(stats.paperPositionCount).toBe(1);
+    expect(stats.watchedWalletCount).toBe(1);
+    expect(stats.watchedWalletTradeEventCount).toBe(1);
+    expect(stats.exitRuleCount).toBe(1);
+    expect(stats.exitSignalCount).toBe(1);
     expect(stats.lastSignalAt).toEqual(expect.any(String));
   });
 

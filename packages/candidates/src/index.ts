@@ -118,7 +118,7 @@ export class CandidateLifecycleEngine {
         state.firstSeenAt,
         event.candidate.firstSeenAt
       );
-    } else {
+    } else if (event.type === "trade") {
       if (event.symbol) {
         state.symbol = event.symbol;
       }
@@ -129,6 +129,8 @@ export class CandidateLifecycleEngine {
 
       applyOptionalIdentityFields(state, event);
 
+      state.source = event.source;
+    } else {
       state.source = event.source;
     }
 
@@ -404,7 +406,7 @@ export class CandidateLifecycleEngine {
       state.name = event.candidate.name;
       applyCandidateIdentityFields(state, event.candidate);
       state.source = event.candidate.source;
-    } else {
+    } else if (event.type === "trade") {
       if (event.symbol) {
         state.symbol = event.symbol;
       }
@@ -414,6 +416,8 @@ export class CandidateLifecycleEngine {
       }
 
       applyOptionalIdentityFields(state, event);
+      state.source = event.source;
+    } else {
       state.source = event.source;
     }
 

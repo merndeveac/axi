@@ -85,6 +85,10 @@ export class RollingMetricsEngine {
       return this.getMetrics(mint);
     }
 
+    if (event.type === "account_trade") {
+      return undefined;
+    }
+
     return this.ingestTradeEvent(event);
   }
 

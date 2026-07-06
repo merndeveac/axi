@@ -849,7 +849,11 @@ function getEventMint(event: FeedEvent): string {
 }
 
 function getEventSymbol(event: FeedEvent): string | undefined {
-  return event.type === "token_created" ? event.candidate.symbol : event.symbol;
+  if (event.type === "token_created") {
+    return event.candidate.symbol;
+  }
+
+  return event.type === "trade" ? event.symbol : undefined;
 }
 
 function getEventTimestamp(event: FeedEvent): string | undefined {

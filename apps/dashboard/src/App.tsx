@@ -32,7 +32,14 @@ import {
 
 type ConnectionStatus = "connecting" | "open" | "closed";
 type ApiStatus = "checking" | "connected" | "disconnected";
-type TabId = "live" | "signals" | "metrics" | "risk" | "data" | "storage";
+type TabId =
+  | "live"
+  | "signals"
+  | "metrics"
+  | "risk"
+  | "exit"
+  | "data"
+  | "storage";
 type SortMode =
   | "newest"
   | "launchScore"
@@ -71,6 +78,10 @@ type StorageStats = {
   candidateDecisionCount: number;
   paperOrderCount: number;
   paperPositionCount: number;
+  watchedWalletCount: number;
+  watchedWalletTradeEventCount: number;
+  exitRuleCount: number;
+  exitSignalCount: number;
   lastSignalAt: string | null;
 };
 
@@ -92,6 +103,8 @@ type FeedStatus = {
   newTokenEventCount: number;
   migrationEventCount: number;
   tokenTradeEventCount: number;
+  accountTradeEventCount: number;
+  accountTradeSubscriptions: string[];
   parseErrorCount: number;
   lastError: string | null;
   reasonCodes: string[];
@@ -395,6 +408,7 @@ type TokenIdentityStatus = {
 
 type HealthStatus = {
   actualData: ActualDataStatus;
+  accountTradeMonitoringEnabled: boolean;
   dataFeedMode: string;
   dataFeed: string;
   feed: FeedStatus;
@@ -412,6 +426,11 @@ type HealthStatus = {
   noRealFeedMessage?: string;
   realDataActive: boolean;
   tokenIdentity: TokenIdentityStatus;
+  watchedWalletCount: number;
+  watchedWalletExit: ExitStatus;
+  watchedWalletTradeEventCount: number;
+  exitRuleCount: number;
+  exitSignalCount: number;
   mode: string;
   paperAutoOrder: boolean;
   paperOnly: boolean;
@@ -475,6 +494,104 @@ type PumpPortalTradeRow = {
   createdAt: string;
 };
 
+type ExitStatus = {
+  enabled: boolean;
+  accountTradesEnabled: boolean;
+  meteredAck: boolean;
+  watchedWalletCount: number;
+  enabledRuleCount: number;
+  observedTradeCount: number;
+  exitSignalCount: number;
+  maxWatchedWallets: number;
+  maxEventsPerSession: number;
+  estimatedCostSol: number;
+  budgetReached: boolean;
+  dataWalletReady: boolean;
+  accountTradeMonitoringEnabled: boolean;
+  accountTradeSubscribedWalletCount: number;
+  accountTradeEventCount: number;
+  reasonCodes: string[];
+  paperOnly: true;
+  liveExecutionDisabled: true;
+};
+
+type ExitWallet = {
+  address: string;
+  alias: string | null;
+  tags: string[];
+  enabled: boolean;
+  source: string;
+  reasonCodes: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ExitRule = {
+  id?: string;
+  ruleId?: string;
+  name: string;
+  enabled: boolean;
+  trigger: string;
+  minProfitPct: number;
+  minProfitSol?: number | null;
+  sellPct: number;
+  requirePositionOpenedBeforeWalletTrade: boolean;
+  requireCurrentPrice?: boolean;
+  cooldownMs: number;
+  priority: number;
+  reasonCodes: string[];
+};
+
+type ExitEvent = {
+  id: number;
+  wallet: string;
+  walletAlias: string | null;
+  mint: string;
+  side: string;
+  priceSol: number | null;
+  volumeSol: number | null;
+  tokenAmount: number | null;
+  signature: string | null;
+  confidence: string;
+  usableForExitStrategy: boolean;
+  reasonCodes: string[];
+  createdAt: string;
+};
+
+type ExitSignal = {
+  id: number;
+  signalId: string;
+  mint: string;
+  wallet: string;
+  walletAlias: string | null;
+  ruleId: string;
+  action: "paper_sell";
+  sellPct: number;
+  blocked: boolean;
+  blockers: string[];
+  warnings: string[];
+  reasonCodes: string[];
+  createdAt: string;
+};
+
+type ExitWalletsResponse = {
+  current: ExitWallet[];
+  persisted: ExitWallet[];
+};
+
+type ExitRulesResponse = {
+  current: ExitRule[];
+  persisted: ExitRule[];
+};
+
+type ExitEventsResponse = {
+  events: ExitEvent[];
+};
+
+type ExitSignalsResponse = {
+  signals: ExitSignal[];
+};
+
 type MarketObservationRow = {
   id: number;
   signature: string;
@@ -520,6 +637,7 @@ const tabs: Array<{ id: TabId; label: string }> = [
   { id: "signals", label: "SIGNALS" },
   { id: "metrics", label: "METRICS" },
   { id: "risk", label: "RISK" },
+  { id: "exit", label: "EXIT" },
   { id: "data", label: "DATA" },
   { id: "storage", label: "STORAGE / DEBUG" }
 ];
@@ -551,6 +669,11 @@ export function App() {
     useState<PumpPortalWalletsStatus | null>(null);
   const [lightningStatus, setLightningStatus] =
     useState<LightningStatus | null>(null);
+  const [exitStatus, setExitStatus] = useState<ExitStatus | null>(null);
+  const [exitWallets, setExitWallets] = useState<ExitWallet[]>([]);
+  const [exitRules, setExitRules] = useState<ExitRule[]>([]);
+  const [exitEvents, setExitEvents] = useState<ExitEvent[]>([]);
+  const [exitSignals, setExitSignals] = useState<ExitSignal[]>([]);
   const [liveTradeTrackingStatus, setLiveTradeTrackingStatus] =
     useState<LiveTradeTrackingStatus | null>(null);
   const [launchScannerStatus, setLaunchScannerStatus] =
@@ -666,6 +789,11 @@ export function App() {
           nextDataWalletStatus,
           nextPumpPortalWalletsStatus,
           nextLightningStatus,
+          nextExitStatus,
+          nextExitWallets,
+          nextExitRules,
+          nextExitEvents,
+          nextExitSignals,
           nextLiveTradeTrackingStatus,
           nextLaunchScannerStatus,
           nextActualTrades,
@@ -694,6 +822,11 @@ export function App() {
           ),
           fetchJson<PumpPortalWalletsStatus>("/pumpportal/wallets/status"),
           fetchJson<LightningStatus>("/execution/lightning/status"),
+          fetchJson<ExitStatus>("/exit/status"),
+          fetchJson<ExitWalletsResponse>("/exit/wallets"),
+          fetchJson<ExitRulesResponse>("/exit/rules"),
+          fetchJson<ExitEventsResponse>("/exit/events?limit=25"),
+          fetchJson<ExitSignalsResponse>("/exit/signals?limit=25"),
           fetchJson<LiveTradeTrackingStatus>("/live/trade-tracking/status"),
           fetchJson<LaunchScannerStatus>("/launch/status"),
           fetchJson<PumpPortalTradeRow[]>("/actual-data/trades?limit=10"),
@@ -723,6 +856,11 @@ export function App() {
           setDataWalletStatus(nextDataWalletStatus);
           setPumpPortalWalletsStatus(nextPumpPortalWalletsStatus);
           setLightningStatus(nextLightningStatus);
+          setExitStatus(nextExitStatus);
+          setExitWallets(nextExitWallets.current);
+          setExitRules(nextExitRules.current);
+          setExitEvents(nextExitEvents.events);
+          setExitSignals(nextExitSignals.signals);
           setLiveTradeTrackingStatus(nextLiveTradeTrackingStatus);
           setLaunchScannerStatus(nextLaunchScannerStatus);
           setActualTrades(nextActualTrades);
@@ -949,6 +1087,15 @@ export function App() {
       ) : null}
       {activeTab === "metrics" ? <MetricsTab metrics={metrics} /> : null}
       {activeTab === "risk" ? <RiskTab riskRows={riskRows} /> : null}
+      {activeTab === "exit" ? (
+        <ExitTab
+          events={exitEvents}
+          rules={exitRules}
+          signals={exitSignals}
+          status={exitStatus}
+          wallets={exitWallets}
+        />
+      ) : null}
       {activeTab === "data" ? (
         <DataTab
           actualDataStatus={actualDataStatus}
@@ -1125,6 +1272,17 @@ function TokenCard({
           <span className="terminal-badge terminal-badge-online">
             {card.launchPhase.toUpperCase()}
           </span>
+          {card.exitSignalSummary.hasExitSignal ? (
+            <span
+              className={`terminal-badge ${
+                card.exitSignalSummary.latestExitSignal?.blocked
+                  ? "terminal-badge-warning"
+                  : "terminal-badge-online"
+              }`}
+            >
+              PAPER EXIT SIGNAL
+            </span>
+          ) : null}
           <span className="terminal-badge terminal-badge-neutral">
             {formatDataQuality(card.dataCompleteness.dataQualityLabel)}{" "}
             {card.dataCompleteness.completenessPct}%
@@ -1317,6 +1475,16 @@ function TokenCard({
           <span className="muted">blockers</span>
           <DriverList drivers={card.strategy.blockers} />
         </div>
+        <div>
+          <span className="muted">exit</span>
+          <strong>
+            {card.exitSignalSummary.hasExitSignal
+              ? card.exitSignalSummary.latestExitSignal?.blocked
+                ? "BLOCKED"
+                : `PLAN ${card.exitSignalSummary.latestExitSignal?.sellPct ?? 0}%`
+              : "NONE"}
+          </strong>
+        </div>
       </div>
 
       <footer className="token-card-footer">
@@ -1436,6 +1604,16 @@ function TokenAudit({ card }: { card: LiveTokenCardViewModel }) {
           <dd>{card.launchTradeSampleCount}</dd>
           <dt>launch price</dt>
           <dd>{formatSol(card.launchPriceSol)}</dd>
+          <dt>paper exit</dt>
+          <dd>
+            {card.exitSignalSummary.hasExitSignal
+              ? `${card.exitSignalSummary.exitSignalCount} signal(s)`
+              : "NONE"}
+          </dd>
+          <dt>exit trigger</dt>
+          <dd>
+            {card.exitSignalSummary.watchedWalletTriggers.join(", ") || "--"}
+          </dd>
           <dt>enrichment</dt>
           <dd>
             {card.enrichmentStatus}
@@ -1456,6 +1634,14 @@ function TokenAudit({ card }: { card: LiveTokenCardViewModel }) {
         <ReasonCodes codes={card.launchReasonCodes} limit={16} />
         <h4>Launch Missing Data</h4>
         <ReasonCodes codes={card.launchMissingDataReasons} limit={16} />
+        <h4>Paper Exit</h4>
+        <ReasonCodes
+          codes={[
+            ...(card.exitSignalSummary.latestExitSignal?.reasonCodes ?? []),
+            ...card.exitSignalSummary.exitBlockers
+          ]}
+          limit={16}
+        />
         <h4>Unavailable Fields</h4>
         <ReasonCodes codes={card.unavailableFields} limit={16} />
         <h4>Warnings</h4>
@@ -1651,6 +1837,207 @@ function RiskTab({ riskRows }: { riskRows: RiskSnapshot[] }) {
           formatUsd(risk.flags.liquidityUsd),
           <ReasonCodes codes={risk.reasonCodes} key="reasons" />
         ])}
+      />
+    </section>
+  );
+}
+
+function ExitTab({
+  events,
+  rules,
+  signals,
+  status,
+  wallets
+}: {
+  events: ExitEvent[];
+  rules: ExitRule[];
+  signals: ExitSignal[];
+  status: ExitStatus | null;
+  wallets: ExitWallet[];
+}) {
+  const eventStatsByWallet = new Map<
+    string,
+    { count: number; latestAt: string | null }
+  >();
+
+  for (const event of events) {
+    const current = eventStatsByWallet.get(event.wallet) ?? {
+      count: 0,
+      latestAt: null
+    };
+    eventStatsByWallet.set(event.wallet, {
+      count: current.count + 1,
+      latestAt:
+        current.latestAt && current.latestAt > event.createdAt
+          ? current.latestAt
+          : event.createdAt
+    });
+  }
+
+  return (
+    <section className="tab-panel" role="tabpanel">
+      <div className="panel-heading">
+        <div>
+          <h2>EXIT</h2>
+          <p>
+            Watched-wallet triggers, paper exit plans, and metered account-trade
+            gates.
+          </p>
+        </div>
+      </div>
+      <div className="status-grid secondary-grid">
+        <MetricValue
+          label="strategy"
+          value={status?.enabled ? "ON" : "OFF"}
+          detail="paper exit only"
+          tone={status?.enabled ? "warn" : "neutral"}
+        />
+        <MetricValue
+          label="account trades"
+          value={status?.accountTradesEnabled ? "ON" : "OFF"}
+          detail={status?.meteredAck ? "metered ack" : "ack missing"}
+          tone={
+            status?.accountTradeMonitoringEnabled
+              ? "warn"
+              : status?.accountTradesEnabled
+                ? "bad"
+                : "neutral"
+          }
+        />
+        <MetricValue
+          label="watched"
+          value={`${formatCompactNumber(status?.watchedWalletCount)}/${formatCompactNumber(
+            status?.maxWatchedWallets
+          )}`}
+          detail={`${formatCompactNumber(
+            status?.accountTradeSubscribedWalletCount
+          )} subscribed`}
+        />
+        <MetricValue
+          label="rules"
+          value={formatCompactNumber(status?.enabledRuleCount)}
+          detail={`${rules.length} configured`}
+        />
+        <MetricValue
+          label="events"
+          value={`${formatCompactNumber(status?.observedTradeCount)}/${formatCompactNumber(
+            status?.maxEventsPerSession
+          )}`}
+          detail={`${formatCompactNumber(
+            status?.accountTradeEventCount
+          )} session`}
+        />
+        <MetricValue
+          label="signals"
+          value={formatCompactNumber(status?.exitSignalCount)}
+          detail="paper plans"
+        />
+        <MetricValue
+          label="budget"
+          value={formatSol(status?.estimatedCostSol)}
+          detail={status?.budgetReached ? "cap reached" : "within cap"}
+          tone={status?.budgetReached ? "bad" : "neutral"}
+        />
+        <MetricValue
+          label="data wallet"
+          value={status?.dataWalletReady ? "READY" : "BLOCKED"}
+          detail="metered stream gate"
+          tone={status?.dataWalletReady ? "good" : "neutral"}
+        />
+        <MetricValue
+          label="paper only"
+          value={status?.paperOnly ? "YES" : "UNKNOWN"}
+          detail={
+            status?.liveExecutionDisabled ? "live execution disabled" : "--"
+          }
+          tone="good"
+        />
+      </div>
+      <ReasonCodes codes={status?.reasonCodes ?? []} limit={18} />
+      <TableShell
+        empty="No watched wallets configured"
+        headers={["Alias", "Address", "Tags", "Enabled", "Last Event", "Events"]}
+        rows={wallets.map((wallet) => {
+          const stats = eventStatsByWallet.get(wallet.address);
+
+          return [
+            wallet.alias ?? "--",
+            formatMintShort(wallet.address),
+            wallet.tags.join(", ") || "--",
+            wallet.enabled ? "yes" : "no",
+            formatTime(stats?.latestAt ?? null),
+            formatCompactNumber(stats?.count ?? 0)
+          ];
+        })}
+        title="WATCHED WALLETS"
+      />
+      <TableShell
+        empty="No exit rules configured"
+        headers={[
+          "Name",
+          "Enabled",
+          "Trigger",
+          "Min Profit",
+          "Sell Plan",
+          "Cooldown",
+          "Priority"
+        ]}
+        rows={rules.map((rule) => [
+          rule.name,
+          rule.enabled ? "yes" : "no",
+          rule.trigger,
+          formatPct(rule.minProfitPct / 100),
+          `${rule.sellPct}%`,
+          `${formatCompactNumber(rule.cooldownMs)}ms`,
+          rule.priority
+        ])}
+        title="RULES"
+      />
+      <TableShell
+        empty="No watched wallet trade events"
+        headers={[
+          "Wallet",
+          "Mint",
+          "Side",
+          "Price",
+          "Volume",
+          "Signature",
+          "Time"
+        ]}
+        rows={events.map((event) => [
+          event.walletAlias ?? formatMintShort(event.wallet),
+          formatMintShort(event.mint),
+          event.side.toUpperCase(),
+          formatSol(event.priceSol),
+          formatSol(event.volumeSol),
+          formatMintShort(event.signature),
+          formatTime(event.createdAt)
+        ])}
+        title="WATCHED WALLET EVENTS"
+      />
+      <TableShell
+        empty="No paper exit signals"
+        headers={[
+          "Token",
+          "Wallet",
+          "Rule",
+          "Sell Plan",
+          "Blocked",
+          "Blockers",
+          "Warnings",
+          "Created"
+        ]}
+        rows={signals.map((signal) => [
+          formatMintShort(signal.mint),
+          signal.walletAlias ?? formatMintShort(signal.wallet),
+          signal.ruleId,
+          `${signal.sellPct}%`,
+          signal.blocked ? "yes" : "no",
+          <ReasonCodes codes={signal.blockers} key="blockers" limit={4} />,
+          <ReasonCodes codes={signal.warnings} key="warnings" limit={4} />,
+          formatTime(signal.createdAt)
+        ])}
+        title="PAPER EXIT SIGNALS"
       />
     </section>
   );

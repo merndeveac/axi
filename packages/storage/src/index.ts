@@ -160,6 +160,10 @@ export type StorageStats = {
   candidateDecisionCount: number;
   paperOrderCount: number;
   paperPositionCount: number;
+  watchedWalletCount: number;
+  watchedWalletTradeEventCount: number;
+  exitRuleCount: number;
+  exitSignalCount: number;
   lastSignalAt: string | null;
 };
 
@@ -208,6 +212,123 @@ export type StoredPumpPortalWalletStatusSnapshot = Omit<
   tradingWalletPublicKey: string | null;
   dataWalletBalanceSol: number | null;
   tradingWalletBalanceSol: number | null;
+};
+
+export type WatchedWalletInput = {
+  address: string;
+  alias?: string | null;
+  tags: string[];
+  enabled: boolean;
+  source: "manual" | "imported" | "test";
+  reasonCodes: string[];
+  payload?: unknown;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type StoredWatchedWallet = Omit<
+  WatchedWalletInput,
+  "createdAt" | "updatedAt" | "payload"
+> & {
+  id: number;
+  alias: string | null;
+  payload: unknown;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WatchedWalletTradeEventInput = {
+  wallet: string;
+  walletAlias?: string | null;
+  mint: string;
+  side: "buy" | "sell" | "unknown";
+  priceSol?: number | null;
+  volumeSol?: number | null;
+  tokenAmount?: number | null;
+  signature?: string | null;
+  confidence: "low" | "medium" | "high";
+  usableForExitStrategy: boolean;
+  reasonCodes: string[];
+  payload?: unknown;
+  createdAt?: string;
+};
+
+export type StoredWatchedWalletTradeEvent = Omit<
+  WatchedWalletTradeEventInput,
+  "createdAt" | "payload"
+> & {
+  id: number;
+  walletAlias: string | null;
+  priceSol: number | null;
+  volumeSol: number | null;
+  tokenAmount: number | null;
+  signature: string | null;
+  payload: unknown;
+  createdAt: string;
+};
+
+export type ExitRuleInput = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  trigger:
+    | "watched_wallet_buy"
+    | "watched_wallet_sell"
+    | "watched_wallet_any_trade";
+  minProfitPct: number;
+  minProfitSol?: number | null;
+  sellPct: number;
+  requirePositionOpenedBeforeWalletTrade: boolean;
+  allowedWalletTags?: string[];
+  blockedWalletTags?: string[];
+  requireCurrentPrice: boolean;
+  maxPositionAgeMs?: number | null;
+  cooldownMs: number;
+  priority: number;
+  reasonCodes: string[];
+  payload?: unknown;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type StoredExitRule = Omit<
+  ExitRuleInput,
+  "id" | "createdAt" | "updatedAt" | "payload"
+> & {
+  id: number;
+  ruleId: string;
+  minProfitSol: number | null;
+  maxPositionAgeMs: number | null;
+  payload: unknown;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ExitSignalInput = {
+  id: string;
+  mint: string;
+  wallet: string;
+  walletAlias?: string | null;
+  ruleId: string;
+  action: "paper_sell";
+  sellPct: number;
+  blocked: boolean;
+  blockers: string[];
+  warnings: string[];
+  reasonCodes: string[];
+  payload?: unknown;
+  createdAt?: string;
+};
+
+export type StoredExitSignal = Omit<
+  ExitSignalInput,
+  "id" | "createdAt" | "payload"
+> & {
+  id: number;
+  signalId: string;
+  walletAlias: string | null;
+  payload: unknown;
+  createdAt: string;
 };
 
 export type StoredRiskSnapshot = {
@@ -909,6 +1030,72 @@ type PumpPortalWalletStatusSnapshotRow = {
   created_at: string;
 };
 
+type WatchedWalletRow = {
+  id: number;
+  address: string;
+  alias: string | null;
+  tags_json: string;
+  enabled: number;
+  source: WatchedWalletInput["source"];
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type WatchedWalletTradeEventRow = {
+  id: number;
+  wallet: string;
+  wallet_alias: string | null;
+  mint: string;
+  side: WatchedWalletTradeEventInput["side"];
+  price_sol: number | null;
+  volume_sol: number | null;
+  token_amount: number | null;
+  signature: string | null;
+  confidence: WatchedWalletTradeEventInput["confidence"];
+  usable_for_exit_strategy: number;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
+type ExitRuleRow = {
+  id: number;
+  rule_id: string;
+  name: string;
+  enabled: number;
+  trigger: ExitRuleInput["trigger"];
+  min_profit_pct: number;
+  min_profit_sol: number | null;
+  sell_pct: number;
+  require_position_opened_before_wallet_trade: number;
+  max_position_age_ms: number | null;
+  cooldown_ms: number;
+  priority: number;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type ExitSignalRow = {
+  id: number;
+  signal_id: string;
+  mint: string;
+  wallet: string;
+  wallet_alias: string | null;
+  rule_id: string;
+  action: ExitSignalInput["action"];
+  sell_pct: number;
+  blocked: number;
+  blockers_json: string;
+  warnings_json: string;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
 type CountRow = {
   count: number;
 };
@@ -1322,6 +1509,75 @@ const pumpPortalWalletStatusSnapshotInputSchema = z.object({
   tradingWalletStatus: z.string().min(1),
   reasonCodes: z.array(z.string().min(1)),
   payload: z.unknown(),
+  createdAt: z.string().datetime().optional()
+});
+
+const watchedWalletInputSchema = z.object({
+  address: z.string().min(32),
+  alias: z.string().min(1).nullable().optional(),
+  tags: z.array(z.string().min(1)),
+  enabled: z.boolean(),
+  source: z.enum(["manual", "imported", "test"]),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown().optional(),
+  createdAt: z.string().datetime().optional(),
+  updatedAt: z.string().datetime().optional()
+});
+
+const watchedWalletTradeEventInputSchema = z.object({
+  wallet: z.string().min(32),
+  walletAlias: z.string().min(1).nullable().optional(),
+  mint: z.string().min(32),
+  side: z.enum(["buy", "sell", "unknown"]),
+  priceSol: z.number().nonnegative().nullable().optional(),
+  volumeSol: z.number().nonnegative().nullable().optional(),
+  tokenAmount: z.number().nonnegative().nullable().optional(),
+  signature: z.string().min(1).nullable().optional(),
+  confidence: z.enum(["low", "medium", "high"]),
+  usableForExitStrategy: z.boolean(),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown().optional(),
+  createdAt: z.string().datetime().optional()
+});
+
+const exitRuleInputSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  enabled: z.boolean(),
+  trigger: z.enum([
+    "watched_wallet_buy",
+    "watched_wallet_sell",
+    "watched_wallet_any_trade"
+  ]),
+  minProfitPct: z.number().nonnegative(),
+  minProfitSol: z.number().nonnegative().nullable().optional(),
+  sellPct: z.number().positive().max(100),
+  requirePositionOpenedBeforeWalletTrade: z.boolean(),
+  allowedWalletTags: z.array(z.string().min(1)).optional(),
+  blockedWalletTags: z.array(z.string().min(1)).optional(),
+  requireCurrentPrice: z.boolean(),
+  maxPositionAgeMs: z.number().nonnegative().nullable().optional(),
+  cooldownMs: z.number().nonnegative(),
+  priority: z.number(),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown().optional(),
+  createdAt: z.string().datetime().optional(),
+  updatedAt: z.string().datetime().optional()
+});
+
+const exitSignalInputSchema = z.object({
+  id: z.string().min(1),
+  mint: z.string().min(32),
+  wallet: z.string().min(32),
+  walletAlias: z.string().min(1).nullable().optional(),
+  ruleId: z.string().min(1),
+  action: z.literal("paper_sell"),
+  sellPct: z.number().positive().max(100),
+  blocked: z.boolean(),
+  blockers: z.array(z.string().min(1)),
+  warnings: z.array(z.string().min(1)),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown().optional(),
   createdAt: z.string().datetime().optional()
 });
 
@@ -3473,6 +3729,387 @@ export function listPumpPortalWalletStatusSnapshots(
   return rows.map(mapPumpPortalWalletStatusSnapshotRow);
 }
 
+export function saveWatchedWallet(
+  wallet: WatchedWalletInput
+): StoredWatchedWallet {
+  const parsed = watchedWalletInputSchema.parse(wallet);
+  const now = new Date().toISOString();
+  const createdAt = parsed.createdAt ?? now;
+  const updatedAt = parsed.updatedAt ?? now;
+  const payload = sanitizeStoragePayload({
+    ...parsed,
+    payload: parsed.payload ?? null
+  });
+  const db = getDb();
+
+  db.prepare(
+    `insert into watched_wallets (
+      address,
+      alias,
+      tags_json,
+      enabled,
+      source,
+      reason_codes_json,
+      payload_json,
+      created_at,
+      updated_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    on conflict(address) do update set
+      alias = excluded.alias,
+      tags_json = excluded.tags_json,
+      enabled = excluded.enabled,
+      source = excluded.source,
+      reason_codes_json = excluded.reason_codes_json,
+      payload_json = excluded.payload_json,
+      updated_at = excluded.updated_at`
+  ).run(
+    parsed.address,
+    parsed.alias ?? null,
+    stringifyJson(parsed.tags),
+    parsed.enabled ? 1 : 0,
+    parsed.source,
+    stringifyJson(parsed.reasonCodes),
+    stringifyJson(payload),
+    createdAt,
+    updatedAt
+  );
+
+  const row = db
+    .prepare("select * from watched_wallets where address = ?")
+    .get(parsed.address) as WatchedWalletRow | undefined;
+
+  if (!row) {
+    throw new Error(`Failed to save watched wallet ${parsed.address}`);
+  }
+
+  return mapWatchedWalletRow(row);
+}
+
+export function listWatchedWallets(): StoredWatchedWallet[] {
+  const rows = getDb()
+    .prepare(
+      `select *
+       from watched_wallets
+       order by datetime(updated_at) desc, id desc`
+    )
+    .all() as WatchedWalletRow[];
+
+  return rows.map(mapWatchedWalletRow);
+}
+
+export function deleteWatchedWallet(address: string): boolean {
+  const result = getDb()
+    .prepare("delete from watched_wallets where address = ?")
+    .run(address);
+
+  return Number(result.changes) > 0;
+}
+
+export function saveWatchedWalletTradeEvent(
+  event: WatchedWalletTradeEventInput
+): StoredWatchedWalletTradeEvent {
+  const parsed = watchedWalletTradeEventInputSchema.parse(event);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const payload = sanitizeStoragePayload(parsed.payload ?? parsed);
+  const db = getDb();
+  const result = db
+    .prepare(
+      `insert into watched_wallet_trade_events (
+        wallet,
+        wallet_alias,
+        mint,
+        side,
+        price_sol,
+        volume_sol,
+        token_amount,
+        signature,
+        confidence,
+        usable_for_exit_strategy,
+        reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.wallet,
+      parsed.walletAlias ?? null,
+      parsed.mint,
+      parsed.side,
+      parsed.priceSol ?? null,
+      parsed.volumeSol ?? null,
+      parsed.tokenAmount ?? null,
+      parsed.signature ?? null,
+      parsed.confidence,
+      parsed.usableForExitStrategy ? 1 : 0,
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(payload),
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    wallet: parsed.wallet,
+    walletAlias: parsed.walletAlias ?? null,
+    mint: parsed.mint,
+    side: parsed.side,
+    priceSol: parsed.priceSol ?? null,
+    volumeSol: parsed.volumeSol ?? null,
+    tokenAmount: parsed.tokenAmount ?? null,
+    signature: parsed.signature ?? null,
+    confidence: parsed.confidence,
+    usableForExitStrategy: parsed.usableForExitStrategy,
+    reasonCodes: parsed.reasonCodes,
+    payload,
+    createdAt
+  };
+}
+
+export function listWatchedWalletTradeEvents(
+  limit = 50
+): StoredWatchedWalletTradeEvent[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from watched_wallet_trade_events
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as WatchedWalletTradeEventRow[];
+
+  return rows.map(mapWatchedWalletTradeEventRow);
+}
+
+export function listWatchedWalletTradeEventsByWallet(
+  address: string,
+  limit = 50
+): StoredWatchedWalletTradeEvent[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from watched_wallet_trade_events
+       where wallet = ?
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(address, parsedLimit) as WatchedWalletTradeEventRow[];
+
+  return rows.map(mapWatchedWalletTradeEventRow);
+}
+
+export function listWatchedWalletTradeEventsByMint(
+  mint: string,
+  limit = 50
+): StoredWatchedWalletTradeEvent[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from watched_wallet_trade_events
+       where mint = ?
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(mint, parsedLimit) as WatchedWalletTradeEventRow[];
+
+  return rows.map(mapWatchedWalletTradeEventRow);
+}
+
+export function saveExitRule(rule: ExitRuleInput): StoredExitRule {
+  const parsed = exitRuleInputSchema.parse(rule);
+  const now = new Date().toISOString();
+  const createdAt = parsed.createdAt ?? now;
+  const updatedAt = parsed.updatedAt ?? now;
+  const payload = sanitizeStoragePayload({
+    ...parsed,
+    payload: parsed.payload ?? null
+  });
+  const db = getDb();
+
+  db.prepare(
+    `insert into exit_rules (
+      rule_id,
+      name,
+      enabled,
+      trigger,
+      min_profit_pct,
+      min_profit_sol,
+      sell_pct,
+      require_position_opened_before_wallet_trade,
+      max_position_age_ms,
+      cooldown_ms,
+      priority,
+      reason_codes_json,
+      payload_json,
+      created_at,
+      updated_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    on conflict(rule_id) do update set
+      name = excluded.name,
+      enabled = excluded.enabled,
+      trigger = excluded.trigger,
+      min_profit_pct = excluded.min_profit_pct,
+      min_profit_sol = excluded.min_profit_sol,
+      sell_pct = excluded.sell_pct,
+      require_position_opened_before_wallet_trade =
+        excluded.require_position_opened_before_wallet_trade,
+      max_position_age_ms = excluded.max_position_age_ms,
+      cooldown_ms = excluded.cooldown_ms,
+      priority = excluded.priority,
+      reason_codes_json = excluded.reason_codes_json,
+      payload_json = excluded.payload_json,
+      updated_at = excluded.updated_at`
+  ).run(
+    parsed.id,
+    parsed.name,
+    parsed.enabled ? 1 : 0,
+    parsed.trigger,
+    parsed.minProfitPct,
+    parsed.minProfitSol ?? null,
+    parsed.sellPct,
+    parsed.requirePositionOpenedBeforeWalletTrade ? 1 : 0,
+    parsed.maxPositionAgeMs ?? null,
+    parsed.cooldownMs,
+    parsed.priority,
+    stringifyJson(parsed.reasonCodes),
+    stringifyJson(payload),
+    createdAt,
+    updatedAt
+  );
+
+  const row = db
+    .prepare("select * from exit_rules where rule_id = ?")
+    .get(parsed.id) as ExitRuleRow | undefined;
+
+  if (!row) {
+    throw new Error(`Failed to save exit rule ${parsed.id}`);
+  }
+
+  return mapExitRuleRow(row);
+}
+
+export function listExitRules(): StoredExitRule[] {
+  const rows = getDb()
+    .prepare(
+      `select *
+       from exit_rules
+       order by priority asc, rule_id asc`
+    )
+    .all() as ExitRuleRow[];
+
+  return rows.map(mapExitRuleRow);
+}
+
+export function getExitRule(ruleId: string): StoredExitRule | null {
+  const row = getDb()
+    .prepare("select * from exit_rules where rule_id = ?")
+    .get(ruleId) as ExitRuleRow | undefined;
+
+  return row ? mapExitRuleRow(row) : null;
+}
+
+export function deleteExitRule(ruleId: string): boolean {
+  const result = getDb()
+    .prepare("delete from exit_rules where rule_id = ?")
+    .run(ruleId);
+
+  return Number(result.changes) > 0;
+}
+
+export function saveExitSignal(signal: ExitSignalInput): StoredExitSignal {
+  const parsed = exitSignalInputSchema.parse(signal);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const payload = sanitizeStoragePayload(parsed.payload ?? parsed);
+  const db = getDb();
+  const result = db
+    .prepare(
+      `insert into exit_signals (
+        signal_id,
+        mint,
+        wallet,
+        wallet_alias,
+        rule_id,
+        action,
+        sell_pct,
+        blocked,
+        blockers_json,
+        warnings_json,
+        reason_codes_json,
+        payload_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.id,
+      parsed.mint,
+      parsed.wallet,
+      parsed.walletAlias ?? null,
+      parsed.ruleId,
+      parsed.action,
+      parsed.sellPct,
+      parsed.blocked ? 1 : 0,
+      stringifyJson(parsed.blockers),
+      stringifyJson(parsed.warnings),
+      stringifyJson(parsed.reasonCodes),
+      stringifyJson(payload),
+      createdAt
+    );
+
+  return {
+    id: toRowId(result.lastInsertRowid),
+    signalId: parsed.id,
+    mint: parsed.mint,
+    wallet: parsed.wallet,
+    walletAlias: parsed.walletAlias ?? null,
+    ruleId: parsed.ruleId,
+    action: parsed.action,
+    sellPct: parsed.sellPct,
+    blocked: parsed.blocked,
+    blockers: parsed.blockers,
+    warnings: parsed.warnings,
+    reasonCodes: parsed.reasonCodes,
+    payload,
+    createdAt
+  };
+}
+
+export function listExitSignals(limit = 50): StoredExitSignal[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from exit_signals
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as ExitSignalRow[];
+
+  return rows.map(mapExitSignalRow);
+}
+
+export function listExitSignalsByMint(
+  mint: string,
+  limit = 50
+): StoredExitSignal[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from exit_signals
+       where mint = ?
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(mint, parsedLimit) as ExitSignalRow[];
+
+  return rows.map(mapExitSignalRow);
+}
+
 export async function* createReplayStream(
   options: {
     limit?: number;
@@ -3766,6 +4403,13 @@ export function getStorageStats(): StorageStats {
     candidateDecisionCount: countRows(db, "candidate_decisions"),
     paperOrderCount: countRows(db, "paper_orders"),
     paperPositionCount: countRows(db, "paper_positions"),
+    watchedWalletCount: countRows(db, "watched_wallets"),
+    watchedWalletTradeEventCount: countRows(
+      db,
+      "watched_wallet_trade_events"
+    ),
+    exitRuleCount: countRows(db, "exit_rules"),
+    exitSignalCount: countRows(db, "exit_signals"),
     lastSignalAt: lastSignal.last_signal_at
   };
 }
@@ -4406,6 +5050,105 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(11, "launch_scanner", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 12)) {
+    db.exec(`
+      create table if not exists watched_wallets (
+        id integer primary key autoincrement,
+        address text not null unique,
+        alias text,
+        tags_json text not null,
+        enabled integer not null,
+        source text not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null,
+        updated_at text not null
+      );
+
+      create index if not exists idx_watched_wallets_updated_at
+        on watched_wallets(updated_at);
+
+      create table if not exists watched_wallet_trade_events (
+        id integer primary key autoincrement,
+        wallet text not null,
+        wallet_alias text,
+        mint text not null,
+        side text not null,
+        price_sol real,
+        volume_sol real,
+        token_amount real,
+        signature text,
+        confidence text not null,
+        usable_for_exit_strategy integer not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_watched_wallet_trade_events_created_at
+        on watched_wallet_trade_events(created_at);
+
+      create index if not exists idx_watched_wallet_trade_events_wallet
+        on watched_wallet_trade_events(wallet);
+
+      create index if not exists idx_watched_wallet_trade_events_mint
+        on watched_wallet_trade_events(mint);
+
+      create table if not exists exit_rules (
+        id integer primary key autoincrement,
+        rule_id text not null unique,
+        name text not null,
+        enabled integer not null,
+        trigger text not null,
+        min_profit_pct real not null,
+        min_profit_sol real,
+        sell_pct real not null,
+        require_position_opened_before_wallet_trade integer not null,
+        max_position_age_ms real,
+        cooldown_ms real not null,
+        priority real not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null,
+        updated_at text not null
+      );
+
+      create index if not exists idx_exit_rules_rule_id
+        on exit_rules(rule_id);
+
+      create table if not exists exit_signals (
+        id integer primary key autoincrement,
+        signal_id text not null,
+        mint text not null,
+        wallet text not null,
+        wallet_alias text,
+        rule_id text not null,
+        action text not null,
+        sell_pct real not null,
+        blocked integer not null,
+        blockers_json text not null,
+        warnings_json text not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_exit_signals_created_at
+        on exit_signals(created_at);
+
+      create index if not exists idx_exit_signals_mint
+        on exit_signals(mint);
+
+      create index if not exists idx_exit_signals_wallet
+        on exit_signals(wallet);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(12, "watched_wallet_exit_strategy", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -4504,7 +5247,7 @@ function getFeedEventMint(event: FeedEvent): string {
     return event.candidate.mint;
   }
 
-  return event.token.mint;
+  return event.mint;
 }
 
 function getFeedEventTimestamp(event: FeedEvent): string {
@@ -5000,6 +5743,93 @@ function mapPumpPortalWalletStatusSnapshotRow(
     tradingWalletBalanceSol: row.trading_wallet_balance_sol,
     dataWalletStatus: row.data_wallet_status,
     tradingWalletStatus: row.trading_wallet_status,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at
+  };
+}
+
+function mapWatchedWalletRow(row: WatchedWalletRow): StoredWatchedWallet {
+  return {
+    id: row.id,
+    address: row.address,
+    alias: row.alias,
+    tags: JSON.parse(row.tags_json) as string[],
+    enabled: Boolean(row.enabled),
+    source: row.source,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapWatchedWalletTradeEventRow(
+  row: WatchedWalletTradeEventRow
+): StoredWatchedWalletTradeEvent {
+  return {
+    id: row.id,
+    wallet: row.wallet,
+    walletAlias: row.wallet_alias,
+    mint: row.mint,
+    side: row.side,
+    priceSol: row.price_sol,
+    volumeSol: row.volume_sol,
+    tokenAmount: row.token_amount,
+    signature: row.signature,
+    confidence: row.confidence,
+    usableForExitStrategy: Boolean(row.usable_for_exit_strategy),
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at
+  };
+}
+
+function mapExitRuleRow(row: ExitRuleRow): StoredExitRule {
+  const payload = JSON.parse(row.payload_json);
+  const payloadRule =
+    payload && typeof payload === "object"
+      ? (payload as Partial<ExitRuleInput>)
+      : {};
+
+  return {
+    id: row.id,
+    ruleId: row.rule_id,
+    name: row.name,
+    enabled: Boolean(row.enabled),
+    trigger: row.trigger,
+    minProfitPct: row.min_profit_pct,
+    minProfitSol: row.min_profit_sol,
+    sellPct: row.sell_pct,
+    requirePositionOpenedBeforeWalletTrade: Boolean(
+      row.require_position_opened_before_wallet_trade
+    ),
+    allowedWalletTags: payloadRule.allowedWalletTags ?? [],
+    blockedWalletTags: payloadRule.blockedWalletTags ?? [],
+    requireCurrentPrice: payloadRule.requireCurrentPrice ?? true,
+    maxPositionAgeMs: row.max_position_age_ms,
+    cooldownMs: row.cooldown_ms,
+    priority: row.priority,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapExitSignalRow(row: ExitSignalRow): StoredExitSignal {
+  return {
+    id: row.id,
+    signalId: row.signal_id,
+    mint: row.mint,
+    wallet: row.wallet,
+    walletAlias: row.wallet_alias,
+    ruleId: row.rule_id,
+    action: row.action,
+    sellPct: row.sell_pct,
+    blocked: Boolean(row.blocked),
+    blockers: JSON.parse(row.blockers_json) as string[],
+    warnings: JSON.parse(row.warnings_json) as string[],
     reasonCodes: JSON.parse(row.reason_codes_json) as string[],
     payload: JSON.parse(row.payload_json),
     createdAt: row.created_at

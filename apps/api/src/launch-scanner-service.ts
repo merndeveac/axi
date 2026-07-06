@@ -251,6 +251,10 @@ export class LaunchScannerService {
       return this.ingestDiscovery(event);
     }
 
+    if (event.type !== "trade") {
+      return undefined;
+    }
+
     return this.ingestTrade(event);
   }
 

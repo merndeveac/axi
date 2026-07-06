@@ -79,6 +79,9 @@ const mockFeed: MockFeedProviderOptions = {
   scenario: config.MOCK_FEED_SCENARIO
 };
 const pumpPortal: PumpPortalFeedProviderOptions = {
+  maxAccountTradeEventsPerSession:
+    config.EXIT_STRATEGY_MAX_EVENTS_PER_SESSION,
+  maxAccountTradeSubscriptions: config.EXIT_STRATEGY_MAX_WATCHED_WALLETS,
   maxTokenTradeEventsPerMint: effectiveTokenTradeMaxEventsPerMint,
   maxTokenTradeEventsPerSession: effectiveTokenTradeMaxEventsPerSession,
   maxTokenTradeSubscriptions: effectiveTokenTradeMaxSubscribedTokens,
@@ -209,6 +212,21 @@ const options: ApiServerOptions = {
     jupiterPriceEnabled: config.JUPITER_PRICE_ENABLED,
     maxMintsPerMinute: config.LIVE_CARD_ENRICHMENT_MAX_MINTS_PER_MINUTE,
     onNewToken: config.LIVE_CARD_ENRICHMENT_ON_NEW_TOKEN
+  },
+  watchedWalletExit: {
+    accountTradesAcknowledgedMetered:
+      config.EXIT_STRATEGY_ACCOUNT_TRADES_ACK_METERED,
+    accountTradesEnabled: config.EXIT_STRATEGY_ACCOUNT_TRADES_ENABLED,
+    apiKeyConfigured: dataApiKey !== undefined,
+    cooldownMs: config.EXIT_STRATEGY_COOLDOWN_MS,
+    defaultMinProfitPct: config.EXIT_STRATEGY_DEFAULT_MIN_PROFIT_PCT,
+    defaultSellPct: config.EXIT_STRATEGY_DEFAULT_SELL_PCT,
+    enabled: config.EXIT_STRATEGY_ENABLED,
+    eventCostSolPer10000: config.PUMPPORTAL_DATA_EVENT_COST_SOL_PER_10000,
+    maxEventsPerSession: config.EXIT_STRATEGY_MAX_EVENTS_PER_SESSION,
+    maxSessionCostSol: config.EXIT_STRATEGY_MAX_SESSION_COST_SOL,
+    maxWatchedWallets: config.EXIT_STRATEGY_MAX_WATCHED_WALLETS,
+    requireDataWalletReady: config.EXIT_STRATEGY_REQUIRE_DATA_WALLET_READY
   },
   pumpPortalDataWallet: {
     apiKeyConfigured: dataApiKey !== undefined,
@@ -413,6 +431,7 @@ server.app.log.info(
     chainVerifier: server.chainVerifier.getStatus(),
     actualData: server.actualData.getStatus(),
     launchScanner: server.launchScanner.getStatus(),
+    watchedWalletExit: server.watchedWalletExit.getStatus(),
     dataWallet: server.pumpPortalDataWallet.getStatus(),
     pumpPortalWallets: server.pumpPortalWallets.getStatus(),
     lightningReadiness: server.lightningReadiness.getStatus(),

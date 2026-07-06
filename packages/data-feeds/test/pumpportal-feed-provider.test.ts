@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildPumpPortalWsUrl,
   maskPumpPortalUrl,
+  normalizePumpPortalAccountTradePayload,
   normalizePumpPortalTokenTradePayload,
   PumpPortalFeedProvider,
   type FeedEvent,
@@ -367,6 +368,122 @@ describe("PumpPortalFeedProvider", () => {
     ]);
 
     expect(sentMethods()).not.toContain("subscribeAccountTrade");
+    provider.stop();
+  });
+
+  it("subscribes and unsubscribes account trades on the existing websocket", () => {
+    const provider = createProvider({
+      maxAccountTradeSubscriptions: 2,
+      subscribeMigration: false,
+      subscribeNewToken: false
+    });
+
+    provider.start(() => undefined);
+    FakeWebSocket.instances[0]?.emit("open");
+    const subscribed = provider.subscribeAccountTrades([
+      "So11111111111111111111111111111111111111112"
+    ]);
+    const unsubscribed = provider.unsubscribeAccountTrades([
+      "So11111111111111111111111111111111111111112"
+    ]);
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(subscribed.subscribed).toEqual([
+      "So11111111111111111111111111111111111111112"
+    ]);
+    expect(unsubscribed.unsubscribed).toEqual([
+      "So11111111111111111111111111111111111111112"
+    ]);
+    expect(sentPayloads()).toContainEqual({
+      keys: ["So11111111111111111111111111111111111111112"],
+      method: "subscribeAccountTrade"
+    });
+    expect(sentPayloads()).toContainEqual({
+      keys: ["So11111111111111111111111111111111111111112"],
+      method: "unsubscribeAccountTrade"
+    });
+    provider.stop();
+  });
+
+  it("rejects invalid account-trade wallets and enforces max watched wallets", () => {
+    const provider = createProvider({
+      maxAccountTradeSubscriptions: 1,
+      subscribeMigration: false,
+      subscribeNewToken: false
+    });
+
+    provider.start(() => undefined);
+    FakeWebSocket.instances[0]?.emit("open");
+    const result = provider.subscribeAccountTrades([
+      "So11111111111111111111111111111111111111112",
+      "invalid-wallet",
+      "11111111111111111111111111111111"
+    ]);
+
+    expect(result.subscribed).toEqual([
+      "So11111111111111111111111111111111111111112"
+    ]);
+    expect(result.rejected).toEqual([
+      "invalid-wallet",
+      "11111111111111111111111111111111"
+    ]);
+    expect(result.reasonCodes).toContain("ACCOUNT_TRADE_MAX_WALLETS_REACHED");
+    provider.stop();
+  });
+
+  it("normalizes account-trade buy and sell payloads", () => {
+    const buy = normalizePumpPortalAccountTradePayload({
+      mint: "So11111111111111111111111111111111111111112",
+      solAmount: 2,
+      tokenAmount: 4000,
+      traderPublicKey: "So11111111111111111111111111111111111111112",
+      txSignature: "sig-buy",
+      txType: "buy"
+    });
+    const sell = normalizePumpPortalAccountTradePayload({
+      mint: "So11111111111111111111111111111111111111112",
+      solAmount: 1,
+      tokenAmount: 2000,
+      traderPublicKey: "So11111111111111111111111111111111111111112",
+      txSignature: "sig-sell",
+      txType: "sell"
+    });
+
+    expect(buy?.type).toBe("account_trade");
+    expect(buy?.side).toBe("buy");
+    expect(buy?.priceSol).toBe(0.0005);
+    expect(buy?.usableForExitStrategy).toBe(true);
+    expect(buy?.reasonCodes).toContain("ACCOUNT_TRADE_USABLE_FOR_EXIT");
+    expect(sell?.side).toBe("sell");
+  });
+
+  it("emits subscribed account trades without opening another websocket", () => {
+    const events: FeedEvent[] = [];
+    const provider = createProvider({
+      subscribeMigration: false,
+      subscribeNewToken: false
+    });
+
+    provider.start((event) => events.push(event));
+    FakeWebSocket.instances[0]?.emit("open");
+    provider.subscribeAccountTrades([
+      "So11111111111111111111111111111111111111112"
+    ]);
+    FakeWebSocket.instances[0]?.emit(
+      "message",
+      JSON.stringify({
+        mint: "So11111111111111111111111111111111111111112",
+        solAmount: 2,
+        tokenAmount: 4000,
+        traderPublicKey: "So11111111111111111111111111111111111111112",
+        txSignature: "sig-buy",
+        txType: "buy"
+      })
+    );
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(events[0]?.type).toBe("account_trade");
+    expect(provider.getStatus().accountTradeEventCount).toBe(1);
     provider.stop();
   });
 

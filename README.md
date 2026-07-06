@@ -35,7 +35,9 @@ It requires `DATA_FEED_MODE=mock`, `DATA_FEED=mock`, `ALLOW_MOCK_DATA=true`, and
 `MOCK_FEED_ENABLED=true`. A public PumpPortal feed provider is available behind
 `DATA_FEED_MODE=live` / `DATA_FEED=pumpportal` for new-token and migration
 events, plus opt-in metered `subscribeTokenTrade` ingestion for selected mints
-only.
+only. Watched-wallet paper exit signals can also observe PumpPortal
+`subscribeAccountTrade`, but only behind explicit exit-strategy and metered
+acknowledgement gates.
 
 ## PumpPortal-First Launch Scanner
 
@@ -51,6 +53,79 @@ mints, through the existing one-WebSocket PumpPortal provider and the metered
 actual-data gates. It never uses account-trade streams, trading APIs, wallet
 loading, signing, transaction sending, or live execution. Tracking is disabled
 by default and remains paper-only.
+
+## Watched Wallet Paper Exit Strategy
+
+Branch `dev/watched-wallet-paper-exit-strategy` adds a paper-only exit strategy
+layer. The idea is simple: if AXI already holds an open paper position and a
+configured watched wallet later buys the same mint, AXI can create a paper
+take-profit plan when paper PnL is above the configured threshold.
+
+This feature does not sell, sign, send transactions, create orders, load
+wallets, call PumpPortal Lightning, call PumpPortal Local Transaction APIs, or
+call Jupiter. It only creates persisted `paper_sell` exit signals/plans.
+
+The pure evaluator lives in `@axi/exit-strategy`. It supports watched wallets,
+watched-wallet buy/sell/any-trade rules, minimum profit thresholds, sell-plan
+percentages, current-price requirements, position-opened-before-wallet-trade
+guards, cooldowns, blocked signals, and deterministic simulation fixtures.
+
+Watched-wallet observation can use PumpPortal `subscribeAccountTrade` through
+the existing single PumpPortal WebSocket provider. It is disabled by default,
+metered, capped, and blocked until every explicit gate is set:
+
+```bash
+EXIT_STRATEGY_ENABLED=true
+EXIT_STRATEGY_ACCOUNT_TRADES_ENABLED=true
+EXIT_STRATEGY_ACCOUNT_TRADES_ACK_METERED=true
+EXIT_STRATEGY_DEFAULT_MIN_PROFIT_PCT=25
+EXIT_STRATEGY_DEFAULT_SELL_PCT=100
+EXIT_STRATEGY_MAX_WATCHED_WALLETS=25
+EXIT_STRATEGY_MAX_EVENTS_PER_SESSION=1000
+EXIT_STRATEGY_MAX_SESSION_COST_SOL=0.001
+EXIT_STRATEGY_REQUIRE_DATA_WALLET_READY=true
+```
+
+Example strategy:
+
+1. Watch public wallet X.
+2. AXI opens a paper position in mint Y.
+3. Wallet X buys mint Y after AXI's paper entry.
+4. If paper PnL is at least 25%, create a paper exit signal to sell 100%.
+
+Exit endpoints:
+
+- `GET /exit/status`
+- `GET /exit/wallets`
+- `POST /exit/wallets`
+- `DELETE /exit/wallets/:address`
+- `GET /exit/rules`
+- `POST /exit/rules`
+- `PATCH /exit/rules/:ruleId`
+- `DELETE /exit/rules/:ruleId`
+- `GET /exit/events`
+- `GET /exit/events/wallet/:address`
+- `GET /exit/events/mint/:mint`
+- `GET /exit/signals`
+- `GET /exit/signals/:mint`
+- `POST /exit/evaluate`
+- `POST /exit/simulate`
+- `GET /exit/cost`
+
+CLI helpers:
+
+```bash
+pnpm --filter @axi/api exit:status
+pnpm --filter @axi/api exit:simulate -- --fixture watched-wallet-buy-profit
+pnpm --filter @axi/api exit:cost -- --wallets 10 --events-per-wallet 100
+```
+
+Fixture names:
+
+- `watched-wallet-buy-profit`
+- `watched-wallet-buy-no-position`
+- `watched-wallet-buy-below-profit`
+- `watched-wallet-sell`
 
 Default launch runtime env:
 
@@ -460,7 +535,9 @@ Current persistence tables include `feed_events`, `signals`, `risk_snapshots`,
 `launch_trade_samples`, `launch_score_snapshots`, `launch_tracking_events`,
 `launch_tracking_sessions`, `token_identities`, `token_metadata_fetches`,
 `lightning_trade_plans`,
-`pumpportal_wallet_status_snapshots`, `paper_orders`, and `paper_positions`.
+`pumpportal_wallet_status_snapshots`, `watched_wallets`,
+`watched_wallet_trade_events`, `exit_rules`, `exit_signals`, `paper_orders`,
+and `paper_positions`.
 
 Clear local paper data with:
 
@@ -831,6 +908,8 @@ Dashboard tabs:
   debug values.
 - RISK: risk levels, hard rejects, authority flags, holder concentration, and
   risk reasons.
+- EXIT: watched-wallet paper exit status, metered account-trade gates, watched
+  wallets, exit rules, observed wallet trades, and paper exit signals.
 - DATA: PumpPortal launch tracking status, budget, tracked mints, feed/live
   feed state, wallet readiness, managed stream status as secondary future
   infrastructure, market data, chain, and token identity health.
@@ -968,7 +1047,9 @@ read-only, observation-only, and paper-only. It requires:
 - `PUMPPORTAL_TOKEN_TRADES_ACK_METERED=true`
 
 Only selected token mints are subscribed. One WebSocket connection is used.
-`subscribeAccountTrade`, PumpPortal trading APIs, wallet loading, private-key
+This token-trade path does not use `subscribeAccountTrade`; watched-wallet
+account-trade observation is a separate exit-strategy-only feature with its own
+disabled-by-default gates. PumpPortal trading APIs, wallet loading, private-key
 handling, signing, transaction sending, and live trading are not implemented.
 
 Safe manual run:
@@ -1298,6 +1379,22 @@ Endpoints:
 - `POST /watch/plan`
 - `GET /paper/orders`
 - `GET /paper/positions`
+- `GET /exit/status`
+- `GET /exit/wallets`
+- `POST /exit/wallets`
+- `DELETE /exit/wallets/:address`
+- `GET /exit/rules`
+- `POST /exit/rules`
+- `PATCH /exit/rules/:ruleId`
+- `DELETE /exit/rules/:ruleId`
+- `GET /exit/events`
+- `GET /exit/events/wallet/:address`
+- `GET /exit/events/mint/:mint`
+- `GET /exit/signals`
+- `GET /exit/signals/:mint`
+- `POST /exit/evaluate`
+- `POST /exit/simulate`
+- `GET /exit/cost`
 - `ws://localhost:8787/ws/signals`
 
 `GET /signals` returns the current in-memory signal cache. `GET
@@ -1315,8 +1412,8 @@ live tokens, PumpPortal launch momentum snapshots, identity summaries, rolling
 metrics, candidate decisions, risk snapshots, actual-data summaries, market
 observations, and chain verification summaries. Cards include a
 data-completeness model, launch phase/score/windows, trade-tracking state,
-latest trade time, trade count, and optional enrichment fields. Unknown data
-stays `null`; the dashboard renders it as `--`.
+latest trade time, trade count, watched-wallet paper exit summary, and optional
+enrichment fields. Unknown data stays `null`; the dashboard renders it as `--`.
 
 `GET /launch/status` reports PumpPortal-first discovery and launch-tracking
 gates. `GET /launch/cards`, `/launch/candidates`, and `/launch/scores` expose
@@ -1325,6 +1422,15 @@ current-session launch scanner state. `POST /launch/track` and
 after all launch tracking, actual-data, API-key, data-wallet, and budget gates
 pass. `GET /launch/cost` estimates metered tracking cost from token/hour and
 events/token assumptions.
+
+`GET /exit/status` reports watched-wallet paper exit gates, wallet/rule/event
+counts, estimated metered cost, PumpPortal account-trade acknowledgement state,
+data-wallet readiness, and `liveExecutionDisabled: true`. `/exit/wallets`,
+`/exit/rules`, `/exit/events`, and `/exit/signals` expose the configured
+watched wallets, paper exit rules, observed wallet trades, and paper exit
+signals. `POST /exit/evaluate` only evaluates open paper positions against
+recent watched-wallet events. `POST /exit/simulate` is a pure local simulation
+path with no network and no persistence.
 
 `GET /strategy/status` exposes read-only paper strategy thresholds, scoring
 weights, formula notes, and safety gates. It is for visibility and tuning only;
@@ -1378,8 +1484,8 @@ dry-run plans only and persist them to `lightning_trade_plans`. `POST
 selected mint caps, session budgets, and tracked mints. `POST
 /live/trade-tracking/track` accepts `{ "mint": "...", "reason": "manual" }` and
 subscribes only through the existing read-only PumpPortal token-trade path when
-both acknowledgement gates and all caps pass. There are no account trade
-subscriptions and no trading endpoints.
+both acknowledgement gates and all caps pass. This live-card tracking flow does
+not subscribe to account trades and has no trading endpoints.
 
 `GET /enrichment/status` reports optional live-card enrichment settings. `POST
 /enrichment/tokens` accepts `{ "mint": "..." }` and fetches read-only display
@@ -1593,6 +1699,8 @@ docker compose --profile indexer up -d
 - `@axi/token-identity`: local token identity normalization and source
   confidence helpers.
 - `@axi/execution`: in-memory paper execution only.
+- `@axi/exit-strategy`: pure deterministic watched-wallet paper exit
+  evaluation and simulation fixtures.
 - `@axi/metrics`: local rolling-window metrics for paper-mode signal features.
 - `@axi/pumpportal-lightning`: pure PumpPortal Lightning request construction,
   safety validation, disabled execution client, and dry-run plan models.
@@ -1663,6 +1771,9 @@ docker compose --profile indexer up -d
 - `dev/pumpportal-first-launch-scanner` contains the PumpPortal-first launch
   scanner, pure launch momentum package, launch storage tables, launch API/CLI,
   and dashboard launch-card status fields.
+- `dev/watched-wallet-paper-exit-strategy` contains pure watched-wallet paper
+  exit evaluation, gated PumpPortal account-trade observation, exit storage,
+  API endpoints, dashboard EXIT tab, and local CLI helpers.
 
 Direct Solana RPC verification and watched-address transaction ingestion exist,
 and local market-data normalization and watch orchestration exist, but they are
@@ -1670,5 +1781,5 @@ read-only and disabled or conservative by default. This project still has no
 wallet UI, no private-key loading, no live trading, no Solana transaction
 signing, no transaction sending, no real risk-data provider, no DEX-specific
 decoding, no full-market indexing, no active/default Geyser or gRPC runtime, no
-account-trade streams, no PumpPortal trading API usage, no Axiom private API
-usage, and no Axiom scraping.
+default account-trade streams, no PumpPortal trading API usage, no Axiom private
+API usage, and no Axiom scraping.

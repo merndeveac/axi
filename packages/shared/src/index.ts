@@ -839,6 +839,23 @@ export type LiveTokenCardViewModel = {
   launchBlockers: string[];
   launchReasonCodes: string[];
   launchMissingDataReasons: string[];
+  exitSignalSummary: {
+    hasExitSignal: boolean;
+    exitSignalCount: number;
+    latestExitSignal: {
+      signalId: string;
+      action: "paper_sell";
+      sellPct: number;
+      blocked: boolean;
+      wallet: string;
+      walletAlias: string | null;
+      ruleId: string;
+      createdAt: string;
+      reasonCodes: string[];
+    } | null;
+    watchedWalletTriggers: string[];
+    exitBlockers: string[];
+  };
   dataCompletenessLabel: LiveCardDataQualityLabel;
   missingCriticalFields: string[];
   enrichmentStatus: "disabled" | "not_checked" | "partial" | "available";

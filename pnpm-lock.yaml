@@ -68,6 +68,9 @@ importers:
       '@axi/execution':
         specifier: workspace:*
         version: link:../../packages/execution
+      '@axi/exit-strategy':
+        specifier: workspace:*
+        version: link:../../packages/exit-strategy
       '@axi/indexer-core':
         specifier: workspace:*
         version: link:../../packages/indexer-core
@@ -221,6 +224,8 @@ importers:
       '@axi/shared':
         specifier: workspace:*
         version: link:../shared
+
+  packages/exit-strategy: {}
 
   packages/indexer-core:
     dependencies:

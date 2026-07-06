@@ -26,6 +26,9 @@
     "pumpportal:wallets:status": "tsx --conditions=development src/pumpportal-wallets-status.ts",
     "lightning:status": "tsx --conditions=development src/lightning-status.ts",
     "lightning:plan-buy": "tsx --conditions=development src/lightning-plan-buy.ts",
+    "exit:status": "tsx --conditions=development src/exit-status.ts",
+    "exit:simulate": "tsx --conditions=development src/exit-simulate.ts",
+    "exit:cost": "tsx --conditions=development src/exit-cost.ts",
     "tokens:resolve": "tsx --conditions=development src/tokens-resolve.ts",
     "tokens:normalize": "tsx --conditions=development src/tokens-normalize.ts",
     "clean": "rm -rf dist"
@@ -36,6 +39,7 @@
     "@axi/data-feeds": "workspace:*",
     "@axi/event-bus": "workspace:*",
     "@axi/execution": "workspace:*",
+    "@axi/exit-strategy": "workspace:*",
     "@axi/indexer-core": "workspace:*",
     "@axi/launch-momentum": "workspace:*",
     "@axi/live-state": "workspace:*",

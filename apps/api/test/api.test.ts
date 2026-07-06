@@ -430,6 +430,231 @@ describe("@axi/api", () => {
     expect(body).toHaveLength(0);
   });
 
+  it("GET /exit/status is disabled by default", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/exit/status"
+    });
+    const body = response.json() as {
+      accountTradeMonitoringEnabled: boolean;
+      accountTradesEnabled: boolean;
+      enabled: boolean;
+      liveExecutionDisabled: boolean;
+      paperOnly: boolean;
+      reasonCodes: string[];
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.enabled).toBe(false);
+    expect(body.accountTradesEnabled).toBe(false);
+    expect(body.accountTradeMonitoringEnabled).toBe(false);
+    expect(body.paperOnly).toBe(true);
+    expect(body.liveExecutionDisabled).toBe(true);
+    expect(body.reasonCodes).toContain("EXIT_STRATEGY_DISABLED");
+  });
+
+  it("POST /exit/wallets adds a watched wallet", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/exit/wallets",
+      payload: {
+        address: "So11111111111111111111111111111111111111112",
+        alias: "paper watcher",
+        tags: ["smart_money", "exit_liquidity"]
+      }
+    });
+    const body = response.json() as {
+      wallet: {
+        address: string;
+        alias: string | null;
+        tags: string[];
+      };
+      liveExecutionDisabled: boolean;
+      paperOnly: boolean;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.wallet.address).toBe(
+      "So11111111111111111111111111111111111111112"
+    );
+    expect(body.wallet.alias).toBe("paper watcher");
+    expect(body.wallet.tags).toContain("smart_money");
+    expect(body.paperOnly).toBe(true);
+    expect(body.liveExecutionDisabled).toBe(true);
+  });
+
+  it("POST /exit/wallets rejects an invalid wallet", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/exit/wallets",
+      payload: {
+        address: "InvalidWallet000000000000000000000000000",
+        tags: []
+      }
+    });
+    const body = response.json() as {
+      error: string;
+      liveExecutionDisabled: boolean;
+      paperOnly: boolean;
+    };
+
+    expect(response.statusCode).toBe(400);
+    expect(body.error).toBe("INVALID_WATCHED_WALLET_ADDRESS");
+    expect(body.paperOnly).toBe(true);
+    expect(body.liveExecutionDisabled).toBe(true);
+  });
+
+  it("POST /exit/rules adds an exit rule", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/exit/rules",
+      payload: {
+        id: "test-exit-rule",
+        name: "Test exit rule",
+        enabled: true,
+        trigger: "watched_wallet_buy",
+        minProfitPct: 25,
+        sellPct: 50,
+        requireCurrentPrice: true
+      }
+    });
+    const body = response.json() as {
+      rule: {
+        id: string;
+        enabled: boolean;
+        sellPct: number;
+      };
+      liveExecutionDisabled: boolean;
+      paperOnly: boolean;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.rule.id).toBe("test-exit-rule");
+    expect(body.rule.enabled).toBe(true);
+    expect(body.rule.sellPct).toBe(50);
+    expect(body.paperOnly).toBe(true);
+    expect(body.liveExecutionDisabled).toBe(true);
+  });
+
+  it("POST /exit/simulate returns a paper exit signal", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/exit/simulate",
+      payload: {
+        event: {
+          wallet: "So11111111111111111111111111111111111111112",
+          mint: "So11111111111111111111111111111111111111112",
+          side: "buy",
+          priceSol: 0.00075,
+          volumeSol: 3,
+          tokenAmount: 4000,
+          timestamp: "2026-01-01T00:01:00.000Z",
+          source: "test",
+          confidence: "high",
+          usableForExitStrategy: true,
+          reasonCodes: ["WATCHED_WALLET_TRADE_OBSERVED"]
+        },
+        position: {
+          mint: "So11111111111111111111111111111111111111112",
+          symbol: "EXIT",
+          entryPriceSol: 0.0005,
+          currentPriceSol: 0.00075,
+          sizeSol: 1,
+          tokenAmount: 2000,
+          openedAt: "2026-01-01T00:00:00.000Z",
+          unrealizedPnlPct: 50,
+          unrealizedPnlSol: 0.5,
+          status: "open"
+        },
+        rule: {
+          id: "simulate-rule",
+          enabled: true,
+          minProfitPct: 25,
+          sellPct: 100
+        }
+      }
+    });
+    const body = response.json() as {
+      signal: {
+        action: string;
+        blocked: boolean;
+        sellPct: number;
+      } | null;
+      liveExecutionDisabled: boolean;
+      paperOnly: boolean;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.signal?.action).toBe("paper_sell");
+    expect(body.signal?.blocked).toBe(false);
+    expect(body.signal?.sellPct).toBe(100);
+    expect(body.paperOnly).toBe(true);
+    expect(body.liveExecutionDisabled).toBe(true);
+  });
+
+  it("POST /exit/evaluate with no position returns no actionable signal", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/exit/evaluate"
+    });
+    const body = response.json() as {
+      openPositionCount: number;
+      signals: unknown[];
+      liveExecutionDisabled: boolean;
+      paperOnly: boolean;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.openPositionCount).toBe(0);
+    expect(body.signals).toHaveLength(0);
+    expect(body.paperOnly).toBe(true);
+    expect(body.liveExecutionDisabled).toBe(true);
+  });
+
+  it("account trade subscription is blocked without metered acknowledgement", async () => {
+    server = createExitTestServer({
+      accountTradesAcknowledgedMetered: false,
+      accountTradesEnabled: true,
+      enabled: true
+    });
+
+    const addWalletResponse = await server.app.inject({
+      method: "POST",
+      url: "/exit/wallets",
+      payload: {
+        address: "So11111111111111111111111111111111111111112",
+        tags: ["smart_money"]
+      }
+    });
+    const statusResponse = await server.app.inject({
+      method: "GET",
+      url: "/exit/status"
+    });
+    const status = statusResponse.json() as {
+      accountTradeMonitoringEnabled: boolean;
+      reasonCodes: string[];
+    };
+
+    expect(addWalletResponse.statusCode).toBe(200);
+    expect(statusResponse.statusCode).toBe(200);
+    expect(status.accountTradeMonitoringEnabled).toBe(false);
+    expect(status.reasonCodes).toContain(
+      "ACCOUNT_TRADE_METERED_NOT_ACKNOWLEDGED"
+    );
+  });
+
   it("GET /actual-data/status is disabled by default", async () => {
     server = createTestServer();
 
@@ -2662,6 +2887,35 @@ function createActualDataTestServer(options: {
             )
           }
         : {})
+    },
+    startFeed: false,
+    storageDatabasePath: databasePath
+  });
+}
+
+function createExitTestServer(options: {
+  accountTradesAcknowledgedMetered: boolean;
+  accountTradesEnabled: boolean;
+  enabled: boolean;
+}): ApiServer {
+  return createApiServer({
+    dataFeed: "pumpportal",
+    logLevel: false,
+    pumpPortal: {
+      apiKey: "test-api-key",
+      maxAccountTradeEventsPerSession: 100,
+      maxAccountTradeSubscriptions: 2,
+      subscribeMigration: false,
+      subscribeNewToken: false,
+      wsUrl: "wss://example.test/pumpportal"
+    },
+    watchedWalletExit: {
+      accountTradesAcknowledgedMetered:
+        options.accountTradesAcknowledgedMetered,
+      accountTradesEnabled: options.accountTradesEnabled,
+      apiKeyConfigured: true,
+      enabled: options.enabled,
+      requireDataWalletReady: false
     },
     startFeed: false,
     storageDatabasePath: databasePath

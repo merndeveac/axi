@@ -21,6 +21,7 @@
     { "path": "../../packages/scoring" },
     { "path": "../../packages/data-feeds" },
     { "path": "../../packages/execution" },
+    { "path": "../../packages/exit-strategy" },
     { "path": "../../packages/market-data" },
     { "path": "../../packages/metrics" },
     { "path": "../../packages/pumpfun-decoder" },

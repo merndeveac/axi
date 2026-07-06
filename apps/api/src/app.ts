@@ -129,6 +129,13 @@ import {
   type TokenIdentityServiceConfig
 } from "./token-identity-service";
 import {
+  createWatchedWalletExitConfig,
+  createWatchedWalletExitService,
+  WatchedWalletExitServiceError,
+  type WatchedWalletExitConfig,
+  type WatchedWalletExitService
+} from "./watched-wallet-exit-service";
+import {
   createLiveTokenService,
   type LiveFeedMode,
   type LiveToken,
@@ -677,6 +684,46 @@ export const apiConfigSchema = z.object({
     .int()
     .nonnegative()
     .default(180000),
+  EXIT_STRATEGY_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  EXIT_STRATEGY_ACCOUNT_TRADES_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  EXIT_STRATEGY_ACCOUNT_TRADES_ACK_METERED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  EXIT_STRATEGY_MAX_WATCHED_WALLETS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(25),
+  EXIT_STRATEGY_MAX_EVENTS_PER_SESSION: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(1000),
+  EXIT_STRATEGY_MAX_SESSION_COST_SOL: z.coerce
+    .number()
+    .positive()
+    .default(0.001),
+  EXIT_STRATEGY_DEFAULT_MIN_PROFIT_PCT: z.coerce
+    .number()
+    .nonnegative()
+    .default(25),
+  EXIT_STRATEGY_DEFAULT_SELL_PCT: z.coerce
+    .number()
+    .positive()
+    .max(100)
+    .default(100),
+  EXIT_STRATEGY_REQUIRE_DATA_WALLET_READY: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  EXIT_STRATEGY_COOLDOWN_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(60000),
   LIVE_CARD_ENRICHMENT_ENABLED: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(false),
@@ -941,6 +988,7 @@ export type ApiServerOptions = {
   pumpPortalWallets?: Partial<PumpPortalWalletsConfig> &
     Pick<PumpPortalWalletsServiceOptions, "solanaClient">;
   lightning?: Partial<LightningReadinessConfig>;
+  watchedWalletExit?: Partial<WatchedWalletExitConfig>;
   indexer?: IndexerAdapterOptions;
   realDataRequired?: boolean;
   signalIntervalMs?: number;
@@ -970,6 +1018,7 @@ export type ApiServer = {
   pumpPortalDataWallet: PumpPortalDataWalletService;
   pumpPortalWallets: PumpPortalWalletsService;
   lightningReadiness: LightningReadinessService;
+  watchedWalletExit: WatchedWalletExitService;
   indexerAdapter: IndexerAdapter;
   liveTokens: LiveTokenService;
   tokenIdentity: TokenIdentityService;
@@ -1081,6 +1130,84 @@ const lightningPlanBodySchema = z.object({
 });
 const tokenResolveBodySchema = z.object({
   mint: z.string().min(1)
+});
+const walletAddressParamSchema = z.object({
+  address: z.string().min(32)
+});
+const exitWalletBodySchema = z.object({
+  address: z.string().min(32),
+  alias: z.string().min(1).nullable().optional(),
+  tags: z.array(z.string().min(1)).default([]),
+  enabled: z.boolean().optional()
+});
+const exitRuleBodySchema = z.object({
+  id: z.string().min(1).optional(),
+  name: z.string().min(1).optional(),
+  enabled: z.boolean().optional(),
+  trigger: z
+    .enum([
+      "watched_wallet_buy",
+      "watched_wallet_sell",
+      "watched_wallet_any_trade"
+    ])
+    .optional(),
+  minProfitPct: z.coerce.number().nonnegative().optional(),
+  minProfitSol: z.coerce.number().nonnegative().nullable().optional(),
+  sellPct: z.coerce.number().positive().max(100).optional(),
+  requirePositionOpenedBeforeWalletTrade: z.boolean().optional(),
+  allowedWalletTags: z.array(z.string().min(1)).optional(),
+  blockedWalletTags: z.array(z.string().min(1)).optional(),
+  requireCurrentPrice: z.boolean().optional(),
+  maxPositionAgeMs: z.coerce.number().nonnegative().nullable().optional(),
+  cooldownMs: z.coerce.number().nonnegative().optional(),
+  priority: z.coerce.number().optional(),
+  reasonCodes: z.array(z.string().min(1)).optional()
+});
+const exitRulePatchBodySchema = exitRuleBodySchema.omit({ id: true });
+const exitRuleParamSchema = z.object({
+  ruleId: z.string().min(1)
+});
+const exitTradeEventBodySchema = z.object({
+  wallet: z.string().min(32),
+  walletAlias: z.string().min(1).nullable().optional(),
+  mint: z.string().min(32),
+  side: z.enum(["buy", "sell", "unknown"]),
+  priceSol: z.coerce.number().nonnegative().nullable().optional(),
+  volumeSol: z.coerce.number().nonnegative().nullable().optional(),
+  tokenAmount: z.coerce.number().nonnegative().nullable().optional(),
+  signature: z.string().min(1).nullable().optional(),
+  timestamp: z.string().datetime(),
+  source: z
+    .enum(["pumpportal_account_trade", "chain_events", "test"])
+    .default("test"),
+  confidence: z.enum(["low", "medium", "high"]).default("high"),
+  usableForExitStrategy: z.boolean().default(true),
+  reasonCodes: z.array(z.string().min(1)).default(["EXIT_SIMULATION_EVENT"]),
+  raw: z.unknown().optional()
+});
+const exitPositionBodySchema = z
+  .object({
+    mint: z.string().min(32),
+    symbol: z.string().min(1).nullable().optional(),
+    title: z.string().min(1).nullable().optional(),
+    entryPriceSol: z.coerce.number().nonnegative().nullable().optional(),
+    currentPriceSol: z.coerce.number().nonnegative().nullable().optional(),
+    sizeSol: z.coerce.number().nonnegative(),
+    tokenAmount: z.coerce.number().nonnegative().nullable().optional(),
+    openedAt: z.string().datetime(),
+    unrealizedPnlPct: z.coerce.number().nullable().optional(),
+    unrealizedPnlSol: z.coerce.number().nullable().optional(),
+    status: z.enum(["open", "closed", "unknown"]).default("open")
+  })
+  .nullable();
+const exitSimulateBodySchema = z.object({
+  event: exitTradeEventBodySchema,
+  position: exitPositionBodySchema,
+  rule: exitRuleBodySchema.optional()
+});
+const exitCostQuerySchema = z.object({
+  wallets: z.coerce.number().int().nonnegative().default(0),
+  eventsPerWallet: z.coerce.number().int().nonnegative().default(100)
 });
 
 export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
@@ -1212,6 +1339,19 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     getCandidate: (mint) => candidateEngine.getCandidate(mint),
     getRiskSnapshot: (mint) => riskSnapshots.get(mint)
   });
+  const watchedWalletExit = createWatchedWalletExitService({
+    config: createWatchedWalletExitConfig(options.watchedWalletExit),
+    dataWalletReadiness: () => pumpPortalDataWallet.getActualDataReadiness(),
+    getCurrentPriceSol: (mint) =>
+      positiveOrNull(metricsEngine.getMetrics(mint)?.latestPriceSol) ??
+      positiveOrNull(actualData.getCandidateSummary(mint)?.latestPriceSol) ??
+      positiveOrNull(launchScanner.getCandidate(mint)?.snapshot.priceSol),
+    getOpenPaperPositions: () => listPaperPositions(),
+    providerName: feed.name,
+    ...(feed instanceof PumpPortalFeedProvider
+      ? { pumpPortalProvider: feed }
+      : {})
+  });
   const clients = new Set<WebSocket>();
   const wss = new WebSocketServer({ noServer: true });
   const maxSignalCacheSize = 100;
@@ -1219,7 +1359,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   app.addHook("onRequest", (request, reply, done) => {
     reply.header("Access-Control-Allow-Origin", "*");
-    reply.header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
+    reply.header(
+      "Access-Control-Allow-Methods",
+      "GET,POST,PATCH,DELETE,OPTIONS"
+    );
     reply.header("Access-Control-Allow-Headers", "content-type");
 
     if (request.method === "OPTIONS") {
@@ -1261,6 +1404,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       dataWallet: dataWalletStatus,
       pumpPortalWallets: pumpPortalWalletsStatus,
       lightningReadiness: lightningReadiness.getStatus(),
+      watchedWalletExit: watchedWalletExit.getStatus(),
+      exitStrategyEnabled: watchedWalletExit.getStatus().enabled,
+      accountTradeMonitoringEnabled:
+        watchedWalletExit.getStatus().accountTradeMonitoringEnabled,
+      watchedWalletCount: stats.watchedWalletCount,
+      watchedWalletTradeEventCount: stats.watchedWalletTradeEventCount,
+      exitRuleCount: stats.exitRuleCount,
+      exitSignalCount: stats.exitSignalCount,
       liveTradeTracking: getLiveTradeTrackingStatus(),
       liveCardEnrichment: getLiveCardEnrichmentStatus(),
       indexer: indexerAdapter.getStatus(),
@@ -1615,6 +1766,171 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     return launchScanner.estimateCost({
       avgEventsPerToken: query.avgEventsPerToken,
       tokensPerHour: query.tokensPerHour
+    });
+  });
+
+  app.get("/exit/status", async () => watchedWalletExit.getStatus());
+
+  app.get("/exit/wallets", async () => ({
+    current: watchedWalletExit.listWallets(),
+    persisted: watchedWalletExit.listStoredWallets(),
+    status: watchedWalletExit.getStatus(),
+    paperOnly: true,
+    liveExecutionDisabled: true
+  }));
+
+  app.post("/exit/wallets", async (request, reply) => {
+    const body = exitWalletBodySchema.parse(request.body);
+
+    try {
+      return {
+        ...watchedWalletExit.addWallet(body),
+        status: watchedWalletExit.getStatus(),
+        paperOnly: true,
+        liveExecutionDisabled: true
+      };
+    } catch (error) {
+      return sendWatchedWalletExitError(reply, error);
+    }
+  });
+
+  app.delete("/exit/wallets/:address", async (request) => {
+    const params = walletAddressParamSchema.parse(request.params);
+
+    return {
+      ...watchedWalletExit.removeWallet(params.address),
+      status: watchedWalletExit.getStatus(),
+      paperOnly: true,
+      liveExecutionDisabled: true
+    };
+  });
+
+  app.get("/exit/rules", async () => ({
+    current: watchedWalletExit.listRules(),
+    persisted: watchedWalletExit.listStoredRules(),
+    status: watchedWalletExit.getStatus(),
+    paperOnly: true,
+    liveExecutionDisabled: true
+  }));
+
+  app.post("/exit/rules", async (request, reply) => {
+    const body = exitRuleBodySchema.parse(request.body ?? {});
+
+    try {
+      return {
+        rule: watchedWalletExit.addRule(body),
+        status: watchedWalletExit.getStatus(),
+        paperOnly: true,
+        liveExecutionDisabled: true
+      };
+    } catch (error) {
+      return sendWatchedWalletExitError(reply, error);
+    }
+  });
+
+  app.patch("/exit/rules/:ruleId", async (request, reply) => {
+    const params = exitRuleParamSchema.parse(request.params);
+    const body = exitRulePatchBodySchema.parse(request.body ?? {});
+
+    try {
+      return {
+        rule: watchedWalletExit.updateRule(params.ruleId, body),
+        status: watchedWalletExit.getStatus(),
+        paperOnly: true,
+        liveExecutionDisabled: true
+      };
+    } catch (error) {
+      return sendWatchedWalletExitError(reply, error);
+    }
+  });
+
+  app.delete("/exit/rules/:ruleId", async (request) => {
+    const params = exitRuleParamSchema.parse(request.params);
+
+    return {
+      ...watchedWalletExit.removeRule(params.ruleId),
+      status: watchedWalletExit.getStatus(),
+      paperOnly: true,
+      liveExecutionDisabled: true
+    };
+  });
+
+  app.get("/exit/events", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+
+    return {
+      events: watchedWalletExit.getRecentEvents(query.limit),
+      status: watchedWalletExit.getStatus(),
+      paperOnly: true,
+      liveExecutionDisabled: true
+    };
+  });
+
+  app.get("/exit/events/wallet/:address", async (request) => {
+    const params = walletAddressParamSchema.parse(request.params);
+    const query = limitQuerySchema.parse(request.query);
+
+    return {
+      events: watchedWalletExit.getRecentEventsByWallet(
+        params.address,
+        query.limit
+      ),
+      status: watchedWalletExit.getStatus(),
+      paperOnly: true,
+      liveExecutionDisabled: true
+    };
+  });
+
+  app.get("/exit/events/mint/:mint", async (request) => {
+    const params = mintParamSchema.parse(request.params);
+    const query = limitQuerySchema.parse(request.query);
+
+    return {
+      events: watchedWalletExit.getRecentEventsByMint(params.mint, query.limit),
+      status: watchedWalletExit.getStatus(),
+      paperOnly: true,
+      liveExecutionDisabled: true
+    };
+  });
+
+  app.get("/exit/signals", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+
+    return {
+      signals: watchedWalletExit.getSignals(query.limit),
+      status: watchedWalletExit.getStatus(),
+      paperOnly: true,
+      liveExecutionDisabled: true
+    };
+  });
+
+  app.get("/exit/signals/:mint", async (request) => {
+    const params = mintParamSchema.parse(request.params);
+    const query = limitQuerySchema.parse(request.query);
+
+    return {
+      signals: watchedWalletExit.getSignalsByMint(params.mint, query.limit),
+      summary: watchedWalletExit.getSignalSummaryForMint(params.mint),
+      status: watchedWalletExit.getStatus(),
+      paperOnly: true,
+      liveExecutionDisabled: true
+    };
+  });
+
+  app.post("/exit/evaluate", async () => watchedWalletExit.evaluateForOpenPositions());
+
+  app.post("/exit/simulate", async (request) => {
+    const body = exitSimulateBodySchema.parse(request.body);
+
+    return watchedWalletExit.simulate(body);
+  });
+
+  app.get("/exit/cost", async (request) => {
+    const query = exitCostQuerySchema.parse(request.query);
+
+    return watchedWalletExit.estimateCost({
+      eventsPerWallet: query.eventsPerWallet,
+      wallets: query.wallets
     });
   });
 
@@ -2203,6 +2519,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     feedStarted = true;
     actualData.start();
     launchScanner.start();
+    watchedWalletExit.start();
     void feed.start(handleFeedEvent);
     void chainEvents.start();
   }
@@ -2214,6 +2531,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
     feedStarted = false;
     launchScanner.stop();
+    watchedWalletExit.stop();
     actualData.stop();
     await feed.stop();
     await chainEvents.stop();
@@ -2259,6 +2577,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       newTokenEventCount: pumpPortalStatus?.newTokenEventCount ?? 0,
       migrationEventCount: pumpPortalStatus?.migrationEventCount ?? 0,
       tokenTradeEventCount: pumpPortalStatus?.tokenTradeEventCount ?? 0,
+      accountTradeEventCount: pumpPortalStatus?.accountTradeEventCount ?? 0,
+      accountTradeSubscriptions:
+        feed instanceof PumpPortalFeedProvider
+          ? feed.getAccountTradeSubscriptions()
+          : [],
       parseErrorCount: pumpPortalStatus?.parseErrorCount ?? 0,
       lastError: pumpPortalStatus?.lastError ?? null,
       reasonCodes,
@@ -2730,6 +3053,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           ...(launchSnapshot?.reasonCodes ?? [])
         ]),
         launchMissingDataReasons,
+        exitSignalSummary: watchedWalletExit.getSignalSummaryForMint(
+          token.mint
+        ),
         dataCompletenessLabel: dataCompleteness.dataQualityLabel,
         missingCriticalFields: dataCompleteness.missingCriticalFields,
         enrichmentStatus,
@@ -2953,6 +3279,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           "PUMPPORTAL_LAUNCH_SCANNER_UNAVAILABLE"
         ],
         launchMissingDataReasons: ["PUMPPORTAL_LAUNCH_SCANNER_UNAVAILABLE"],
+        exitSignalSummary: watchedWalletExit.getSignalSummaryForMint(
+          token.mint
+        ),
         dataCompletenessLabel: dataCompleteness.dataQualityLabel,
         missingCriticalFields: dataCompleteness.missingCriticalFields,
         enrichmentStatus: token.dataCompleteness.label === "enriched" ? "partial" : "disabled",
@@ -3452,6 +3781,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   }
 
   function handleFeedEvent(event: FeedEvent): void {
+    if (event.type === "account_trade") {
+      saveFeedEvent(event);
+      watchedWalletExit.ingestFeedEvent(event);
+      return;
+    }
+
     const actualDataSummary =
       event.type === "trade" && event.source === "pumpportal"
         ? actualData.handlePumpPortalTradeEvent(event)
@@ -4114,6 +4449,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     pumpPortalDataWallet,
     pumpPortalWallets,
     lightningReadiness,
+    watchedWalletExit,
     risk: riskEngine,
     chainVerifier,
     liveTokens,
@@ -4318,7 +4654,9 @@ function createTokenCandidateFromState(state: CandidateState): TokenCandidate {
 }
 
 function getLegacyMetrics(event: FeedEvent): RollingMetrics {
-  return event.metrics;
+  return event.type === "account_trade"
+    ? createEmptyLegacyMetrics()
+    : event.metrics;
 }
 
 function getLiveFeedEventType(event: FeedEvent): string {
@@ -4329,7 +4667,23 @@ function getLiveFeedEventType(event: FeedEvent): string {
 }
 
 function getRiskFlags(event: FeedEvent): RiskFlags {
-  return event.riskFlags;
+  return event.type === "account_trade"
+    ? createFallbackRiskFlags()
+    : event.riskFlags;
+}
+
+function sendWatchedWalletExitError(reply: FastifyReply, error: unknown) {
+  if (error instanceof WatchedWalletExitServiceError) {
+    return reply.code(error.statusCode).send({
+      error: error.code,
+      message: error.message,
+      reasonCodes: error.reasonCodes,
+      paperOnly: true,
+      liveExecutionDisabled: true
+    });
+  }
+
+  throw error;
 }
 
 function createPendingChainVerificationSummary(

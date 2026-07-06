@@ -34,6 +34,11 @@ import {
   type TokenIdentity
 } from "@axi/token-identity";
 
+type ReplayFeedEvent = Extract<
+  FeedEvent,
+  { type: "token_created" } | { type: "trade" }
+>;
+
 type ReplayArgs = {
   db?: string;
   candidates: boolean;
@@ -319,7 +324,7 @@ function getReplayIdentity(
   return undefined;
 }
 
-function createReplayWatchPlan(event: FeedEvent): CandidateWatchPlan {
+function createReplayWatchPlan(event: ReplayFeedEvent): CandidateWatchPlan {
   return createWatchPlan({
     event,
     options: {
@@ -332,7 +337,7 @@ function createReplayWatchPlan(event: FeedEvent): CandidateWatchPlan {
   });
 }
 
-function isFeedEvent(value: unknown): value is FeedEvent {
+function isFeedEvent(value: unknown): value is ReplayFeedEvent {
   return (
     typeof value === "object" &&
     value !== null &&
@@ -418,7 +423,7 @@ function getReplayMarketObservation(options: {
 function getReplayFeedEvent(
   source: ReplaySource,
   payload: unknown
-): FeedEvent | undefined {
+): ReplayFeedEvent | undefined {
   if (source === "feed_events" && isFeedEvent(payload)) {
     return payload;
   }
@@ -618,7 +623,7 @@ function createFeedEventFromMarketObservation(
 }
 
 function evaluateReplayFeedEvent(options: {
-  event: FeedEvent;
+  event: ReplayFeedEvent;
   metrics: RollingMetricsSnapshot | undefined;
   metricsEngine: ReturnType<typeof createRollingMetricsEngine> | undefined;
   riskEngine: ReturnType<typeof createRiskEngine> | undefined;
@@ -702,7 +707,7 @@ function evaluateReplayFeedEvent(options: {
 }
 
 function createRiskInput(options: {
-  event: FeedEvent;
+  event: ReplayFeedEvent;
   metrics: RollingMetrics;
   rollingMetrics: RollingMetricsSnapshot | undefined;
 }): RiskInput {
@@ -769,15 +774,15 @@ function createRiskInput(options: {
   return input;
 }
 
-function getEventMint(event: FeedEvent): string {
+function getEventMint(event: ReplayFeedEvent): string {
   return event.type === "token_created" ? event.candidate.mint : event.mint;
 }
 
-function getEventSymbol(event: FeedEvent): string | undefined {
+function getEventSymbol(event: ReplayFeedEvent): string | undefined {
   return event.type === "token_created" ? event.candidate.symbol : event.symbol;
 }
 
-function getEventName(event: FeedEvent): string | undefined {
+function getEventName(event: ReplayFeedEvent): string | undefined {
   return event.type === "token_created" ? event.candidate.name : event.name;
 }
 
