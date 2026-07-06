@@ -245,6 +245,31 @@ describe("MeteredLaunchDataService", () => {
     );
   });
 
+  it("extends tracking for hot launch candidates after the initial window", () => {
+    const service = createService(
+      {
+        acknowledgedCost: true,
+        apiKeyConfigured: true,
+        dataWalletPublicKeyConfigured: true,
+        enabled: true,
+        extendedTrackMs: 900_000,
+        initialTrackMs: 0,
+        minScoreToExtend: 45
+      },
+      readyWallet,
+      new PumpPortalFeedProvider(),
+      createLaunchCandidate({
+        phase: "hot",
+        score: 70
+      })
+    );
+
+    service.trackMint(mint, "manual");
+
+    expect(service.getTrackedMint(mint)?.status).toBe("tracking");
+    expect(service.getTrackedMint(mint)?.extendedReviewAt).toBeTruthy();
+  });
+
   it("updates cost counters from PumpPortal token-trade events", () => {
     const service = createService({
       acknowledgedCost: true,

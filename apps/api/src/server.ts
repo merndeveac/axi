@@ -26,6 +26,13 @@ const tradingWalletPublicKey = samePumpPortalWallet
 const liveTradeTrackingEnabled = config.LIVE_TRADE_TRACKING_ENABLED;
 const launchTrackingEnabled = config.PUMPPORTAL_LAUNCH_TRACKING_ENABLED;
 const meteredLaunchDataEnabled = config.METERED_LAUNCH_DATA_ENABLED;
+const effectiveMeteredLaunchDataExtendedTrackMs =
+  config.MOMENTUM_ADAPTIVE_TRACKING_ENABLED
+    ? Math.max(
+        config.METERED_LAUNCH_DATA_EXTENDED_TRACK_MS,
+        config.MOMENTUM_ADAPTIVE_MAX_TRACK_MS
+      )
+    : config.METERED_LAUNCH_DATA_EXTENDED_TRACK_MS;
 const effectiveTokenTradeMaxSubscribedTokens = Math.min(
   config.PUMPPORTAL_TOKEN_TRADES_MAX_SUBSCRIBED_TOKENS,
   liveTradeTrackingEnabled
@@ -160,7 +167,7 @@ const options: ApiServerOptions = {
         ? config.PUMPPORTAL_LAUNCH_TRACKING_EXTENDED_MS
         : config.PUMPPORTAL_TOKEN_TRADES_UNSUBSCRIBE_AFTER_MS,
       meteredLaunchDataEnabled
-        ? config.METERED_LAUNCH_DATA_EXTENDED_TRACK_MS
+        ? effectiveMeteredLaunchDataExtendedTrackMs
         : config.PUMPPORTAL_TOKEN_TRADES_UNSUBSCRIBE_AFTER_MS
     )
   }),
@@ -203,7 +210,7 @@ const options: ApiServerOptions = {
       config.PUMPPORTAL_DATA_WALLET_PUBLIC_KEY !== undefined,
     enabled: meteredLaunchDataEnabled,
     eventCostSolPer10000: config.PUMPPORTAL_DATA_EVENT_COST_SOL_PER_10000,
-    extendedTrackMs: config.METERED_LAUNCH_DATA_EXTENDED_TRACK_MS,
+    extendedTrackMs: effectiveMeteredLaunchDataExtendedTrackMs,
     initialTrackMs: config.METERED_LAUNCH_DATA_INITIAL_TRACK_MS,
     liveDiscoveryEnabled: config.PUMPPORTAL_LIVE_DISCOVERY_ENABLED,
     maxConcurrentMints: config.METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS,

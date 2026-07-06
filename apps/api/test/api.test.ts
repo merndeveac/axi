@@ -2266,6 +2266,8 @@ describe("@axi/api", () => {
     expect(row?.mint).toBe(createPumpPortalEvent().candidate.mint);
     expect(row?.displayName).toBe("PORTAL Portal Token");
     expect(row?.dataQualityLabel).toBe("discovery_only");
+    expect(row?.sparkline.direction).toBe("unavailable");
+    expect(row?.sparkline.reasonCodes).toContain("INSUFFICIENT_PRICE_SAMPLES");
     expect(row?.priceSol).toBeNull();
     expect(row?.volume10sSol).toBeNull();
     expect(row?.marketCapUsd).toBeNull();
@@ -2275,6 +2277,9 @@ describe("@axi/api", () => {
     expect(row?.unavailableFields).toContain("LIQUIDITY_UNAVAILABLE");
     expect(row?.unavailableFields).toContain(
       "INSUFFICIENT_SAMPLES_FOR_DERIVATIVE"
+    );
+    expect(row?.missingFieldReasons.price).toContain(
+      "TOKEN_TRADE_TRACKING_DISABLED"
     );
   });
 
@@ -2305,7 +2310,7 @@ describe("@axi/api", () => {
     expect(row?.dataQualityLabel).toBe("metered_tracking");
   });
 
-  it("GET /ui/momentum-rows exposes derivatives after enough trade samples", async () => {
+  it("GET /ui/momentum-rows exposes an up sparkline and derivatives after enough trade samples", async () => {
     server = createApiServer({
       logLevel: false,
       startFeed: false,
@@ -2344,6 +2349,9 @@ describe("@axi/api", () => {
     const row = rows[0];
 
     expect(response.statusCode).toBe(200);
+    expect(row?.sparkline.direction).toBe("up");
+    expect(row?.sparkline.points).toHaveLength(2);
+    expect(row?.sparkline.priceChangePct).toBeGreaterThan(0);
     expect(row?.volumeVelocitySolPerSec).toEqual(expect.any(Number));
     expect(row?.volumeAccelerationSolPerSec2).toEqual(expect.any(Number));
     expect(row?.priceVelocityPctPerSec).toEqual(expect.any(Number));
@@ -2352,6 +2360,164 @@ describe("@axi/api", () => {
       "INSUFFICIENT_SAMPLES_FOR_DERIVATIVE"
     );
     expect(findNonFiniteNumbers(row)).toEqual([]);
+  });
+
+  it("GET /ui/momentum-rows reports down and flat sparkline directions", async () => {
+    const cases: Array<{
+      expected: MomentumScannerRow["sparkline"]["direction"];
+      mint: string;
+      prices: [number, number];
+    }> = [
+      {
+        expected: "down",
+        mint: "PumpPortalDown1111111111111111111111111111",
+        prices: [0.0005, 0.0004]
+      },
+      {
+        expected: "flat",
+        mint: "PumpPortalFlat1111111111111111111111111111",
+        prices: [0.0004, 0.0004]
+      }
+    ];
+
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    for (const testCase of cases) {
+      server.emitFeedEvent(createPumpPortalEvent({ mint: testCase.mint }));
+      server.metrics.ingestTradeObservation({
+        mint: testCase.mint,
+        priceSol: testCase.prices[0],
+        quoteAsset: "SOL",
+        side: "buy",
+        symbol: "PORTAL",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        trader: `${testCase.expected}-buyer-1`,
+        usableForMetrics: true,
+        volumeSol: 1
+      });
+      server.metrics.ingestTradeObservation({
+        mint: testCase.mint,
+        priceSol: testCase.prices[1],
+        quoteAsset: "SOL",
+        side: "buy",
+        symbol: "PORTAL",
+        timestamp: "2026-01-01T00:00:04.000Z",
+        trader: `${testCase.expected}-buyer-2`,
+        usableForMetrics: true,
+        volumeSol: 1
+      });
+    }
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/ui/momentum-rows"
+    });
+    const rows = response.json() as MomentumScannerRow[];
+
+    expect(response.statusCode).toBe(200);
+    for (const testCase of cases) {
+      expect(
+        rows.find((row) => row.mint === testCase.mint)?.sparkline.direction
+      ).toBe(testCase.expected);
+    }
+  });
+
+  it("GET /ui/momentum-rows exposes PumpPortal SOL market fields without inventing USD", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+    server.emitFeedEvent(
+      createPumpPortalEvent({
+        candidate: {
+          bondingCurveKey: "Curve1111111111111111111111111111111111",
+          marketCapSol: 42,
+          pool: "Pool11111111111111111111111111111111111",
+          vSolInBondingCurve: 12.5,
+          vTokensInBondingCurve: 1_000_000
+        },
+        raw: {
+          bondingCurveKey: "Curve1111111111111111111111111111111111",
+          marketCapSol: 42,
+          pool: "Pool11111111111111111111111111111111111",
+          vSolInBondingCurve: 12.5,
+          vTokensInBondingCurve: 1_000_000
+        }
+      })
+    );
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/ui/momentum-rows"
+    });
+    const row = (response.json() as MomentumScannerRow[])[0];
+
+    expect(response.statusCode).toBe(200);
+    expect(row?.marketCapSol).toBe(42);
+    expect(row?.marketCapUsd).toBeNull();
+    expect(row?.vSolInBondingCurve).toBe(12.5);
+    expect(row?.vTokensInBondingCurve).toBe(1_000_000);
+    expect(row?.bondingCurveKey).toBe(
+      "Curve1111111111111111111111111111111111"
+    );
+    expect(row?.poolAddress).toBe("Pool11111111111111111111111111111111111");
+    expect(row?.unavailableFields).not.toContain("MARKET_CAP_UNAVAILABLE");
+  });
+
+  it("GET /ui/momentum-rows preserves a migrated token as one row", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+    const event = createPumpPortalEvent();
+    server.emitFeedEvent(event);
+    server.metrics.ingestTradeObservation({
+      mint: event.candidate.mint,
+      priceSol: 0.0004,
+      quoteAsset: "SOL",
+      side: "buy",
+      symbol: event.candidate.symbol,
+      timestamp: "2026-01-01T00:00:02.000Z",
+      trader: "Buyer1111111111111111111111111111111111111",
+      usableForMetrics: true,
+      volumeSol: 1
+    });
+    server.emitFeedEvent(
+      createPumpPortalEvent({
+        mint: event.candidate.mint,
+        raw: {
+          newPool: "MigratedPool11111111111111111111111111111",
+          txType: "migration"
+        },
+        rawSourceEventType: "migration",
+        timestamp: "2026-01-01T00:00:20.000Z"
+      })
+    );
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/ui/momentum-rows"
+    });
+    const rows = response.json() as MomentumScannerRow[];
+    const row = rows[0];
+
+    expect(response.statusCode).toBe(200);
+    expect(rows).toHaveLength(1);
+    expect(row?.eventTypes).toEqual(["new_token", "migration"]);
+    expect(row?.migrationStatus).toBe("migrated");
+    expect(row?.migrationPool).toBe(
+      "MigratedPool11111111111111111111111111111"
+    );
+    expect(row?.volume10sSol).toBe(1);
+    expect(row?.adaptiveTrackingReasonCodes).toContain(
+      "MIGRATED_TOKEN_VISIBLE"
+    );
   });
 
   it("GET /ui/momentum-diagnostics explains missing scanner fields", async () => {
@@ -2376,6 +2542,9 @@ describe("@axi/api", () => {
     expect(diagnostics.tokensWithMarketCap).toBe(0);
     expect(diagnostics.unavailableFieldCounts.MARKET_CAP_UNAVAILABLE).toBe(1);
     expect(diagnostics.missingCriticalFieldCounts.price).toBe(1);
+    expect(diagnostics.topMissingReasons[0]?.reasonCode).toBe(
+      "TOKEN_TRADE_TRACKING_DISABLED"
+    );
     expect(diagnostics.recommendedNextActions).toContain(
       "ENABLE_METERED_TOKEN_TRADES_FOR_PRICE_ACTION"
     );
@@ -3940,8 +4109,18 @@ function createExitSignal(mint: string): ExitSignal {
   };
 }
 
-function createPumpPortalEvent(): TokenCreatedEvent {
-  const mint = "PumpPortalMint111111111111111111111111111";
+function createPumpPortalEvent(
+  options: {
+    candidate?: Partial<TokenCreatedEvent["candidate"]>;
+    mint?: string;
+    raw?: Record<string, unknown>;
+    rawSourceEventType?: string;
+    timestamp?: string;
+  } = {}
+): TokenCreatedEvent {
+  const mint =
+    options.mint ?? "PumpPortalMint111111111111111111111111111";
+  const timestamp = options.timestamp ?? "2026-01-01T00:00:00.000Z";
 
   return {
     type: "token_created",
@@ -3953,9 +4132,10 @@ function createPumpPortalEvent(): TokenCreatedEvent {
       mint,
       symbol: "PORTAL",
       name: "Portal Token",
+      ...options.candidate,
       source: "pumpportal",
       ageSeconds: 0,
-      firstSeenAt: "2026-01-01T00:00:00.000Z"
+      firstSeenAt: timestamp
     },
     metrics: {
       priceUsd: 0,
@@ -3981,8 +4161,9 @@ function createPumpPortalEvent(): TokenCreatedEvent {
       buyerVelocity: 0
     },
     metricsComplete: false,
-    rawSourceEventType: "new_token",
-    receivedAt: "2026-01-01T00:00:00.000Z",
+    ...(options.raw ? { raw: options.raw } : {}),
+    rawSourceEventType: options.rawSourceEventType ?? "new_token",
+    receivedAt: timestamp,
     riskFlags: {
       mintAuthorityActive: false,
       freezeAuthorityActive: false,
@@ -3994,7 +4175,7 @@ function createPumpPortalEvent(): TokenCreatedEvent {
       honeypotSuspected: false
     },
     source: "pumpportal",
-    timestamp: "2026-01-01T00:00:00.000Z"
+    timestamp
   };
 }
 

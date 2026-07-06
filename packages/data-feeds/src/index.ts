@@ -1179,6 +1179,19 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       "bondingCurveKey",
       "bondingCurveAddress"
     ]);
+    const marketCapSol = readNumber(payload, ["marketCapSol", "market_cap_sol"]);
+    const vSolInBondingCurve = readNumber(payload, [
+      "vSolInBondingCurve",
+      "virtualSolReserves",
+      "virtualSolReserve"
+    ]);
+    const vTokensInBondingCurve = readNumber(payload, [
+      "vTokensInBondingCurve",
+      "virtualTokenReserves",
+      "virtualTokenReserve"
+    ]);
+    const pool = readString(payload, ["pool", "pair", "newPool"]);
+    const raydiumPool = readString(payload, ["raydiumPool", "raydium_pool"]);
     const signature = readString(payload, [
       "signature",
       "txSignature",
@@ -1205,6 +1218,12 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
         ...(telegram ? { telegram } : {}),
         ...(discord ? { discord } : {}),
         ...(creator ? { creator } : {}),
+        ...(marketCapSol !== null ? { marketCapSol } : {}),
+        ...(vSolInBondingCurve !== null ? { vSolInBondingCurve } : {}),
+        ...(vTokensInBondingCurve !== null ? { vTokensInBondingCurve } : {}),
+        ...(bondingCurve ? { bondingCurveKey: bondingCurve } : {}),
+        ...(pool ? { pool } : {}),
+        ...(raydiumPool ? { raydiumPool } : {}),
         source: "pumpportal",
         ageSeconds: 0,
         firstSeenAt: timestamp

@@ -93,6 +93,12 @@ export const TokenCandidateSchema = z.object({
   telegram: z.string().nullable().optional(),
   discord: z.string().nullable().optional(),
   creator: z.string().nullable().optional(),
+  marketCapSol: z.number().nonnegative().nullable().optional(),
+  vSolInBondingCurve: z.number().nonnegative().nullable().optional(),
+  vTokensInBondingCurve: z.number().nonnegative().nullable().optional(),
+  bondingCurveKey: z.string().nullable().optional(),
+  pool: z.string().nullable().optional(),
+  raydiumPool: z.string().nullable().optional(),
   source: z.string().min(1),
   ageSeconds: z.number().nonnegative(),
   firstSeenAt: z.string().datetime()
@@ -704,6 +710,21 @@ export type LiveCardLaunchScoreComponents = {
   missingDataPenalty: number;
 };
 
+export type MomentumSparklinePoint = {
+  t: string;
+  priceSol: number;
+  volumeSol: number | null;
+};
+
+export type MomentumSparkline = {
+  points: MomentumSparklinePoint[];
+  direction: "up" | "down" | "flat" | "unavailable";
+  priceChangePct: number | null;
+  windowSeconds: number;
+  source: string | null;
+  reasonCodes: string[];
+};
+
 export type LiveTokenCardViewModel = {
   mint: string;
   shortMint: string;
@@ -720,6 +741,7 @@ export type LiveTokenCardViewModel = {
   sourceMode: string;
   realData: boolean;
   eventTypes: string[];
+  latestEventType: string | null;
   firstSeenAt: string;
   lastSeenAt: string;
   ageSeconds: number;
@@ -733,8 +755,14 @@ export type LiveTokenCardViewModel = {
   priceQuote: number | null;
   quoteAsset: QuoteAsset | null;
   marketCapUsd: number | null;
+  marketCapSol: number | null;
   fdvUsd: number | null;
   liquidityUsd: number | null;
+  vSolInBondingCurve: number | null;
+  vTokensInBondingCurve: number | null;
+  bondingCurveKey: string | null;
+  poolAddress: string | null;
+  raydiumPool: string | null;
   volume1sUsd: number | null;
   volume3sUsd: number | null;
   volume5sUsd: number | null;
@@ -856,6 +884,12 @@ export type LiveTokenCardViewModel = {
   launchBlockers: string[];
   launchReasonCodes: string[];
   launchMissingDataReasons: string[];
+  migrationStatus: "not_migrated" | "migrated";
+  migratedAt: string | null;
+  migrationSource: string | null;
+  migrationPool: string | null;
+  adaptiveTrackingReasonCodes: string[];
+  sparkline: MomentumSparkline;
   exitSignalSummary: {
     hasExitSignal: boolean;
     exitSignalCount: number;
@@ -940,6 +974,8 @@ export type MomentumScannerRow = {
   launchedAt: string | null;
   latestEventAt: string | null;
   eventType: string | null;
+  eventTypes: string[];
+  latestEventType: string | null;
   launchPhase: string;
   launchScore: number;
   launchScoreLabel: string;
@@ -950,8 +986,14 @@ export type MomentumScannerRow = {
   priceSol: number | null;
   priceUsd: number | null;
   marketCapUsd: number | null;
+  marketCapSol: number | null;
   fdvUsd: number | null;
   liquidityUsd: number | null;
+  vSolInBondingCurve: number | null;
+  vTokensInBondingCurve: number | null;
+  bondingCurveKey: string | null;
+  poolAddress: string | null;
+  raydiumPool: string | null;
   priceSource: string | null;
   marketDataSource: string | null;
   marketDataFreshnessMs: number | null;
@@ -1003,12 +1045,21 @@ export type MomentumScannerRow = {
   unrealizedPnlSol: number | null;
   realizedPnlSol: number | null;
   latestPaperExitSignal: LiveTokenCardViewModel["paperPositionSummary"]["latestPaperExitSignal"];
+  hasMetadata: boolean;
+  hasSocialLinks: boolean;
+  migrationStatus: "not_migrated" | "migrated";
+  migratedAt: string | null;
+  migrationSource: string | null;
+  migrationPool: string | null;
+  adaptiveTrackingReasonCodes: string[];
+  sparkline: MomentumSparkline;
   realData: boolean;
   source: string;
   dataQualityLabel: MomentumDataQualityLabel;
   missingCriticalFields: string[];
   unavailableFields: string[];
   staleFields: string[];
+  missingFieldReasons: Record<string, string[]>;
   fieldDiagnosticsSummary: string;
   reasonCodes: string[];
   lastUpdatedAt: string | null;
@@ -1033,6 +1084,7 @@ export type MomentumDiagnostics = {
   tokensWithPaperPosition: number;
   unavailableFieldCounts: Record<string, number>;
   missingCriticalFieldCounts: Record<string, number>;
+  topMissingReasons: Array<{ reasonCode: string; count: number }>;
   dataSources: {
     pumpportalLiveDiscovery: {
       enabled: boolean;

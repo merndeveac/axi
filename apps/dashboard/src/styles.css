@@ -1,8 +1,8 @@
 :root {
-  --bg: #0b0f14;
-  --panel: #111820;
-  --panel-2: #151d27;
-  --panel-3: #1b2530;
+  --bg: #080a0d;
+  --panel: #101214;
+  --panel-2: #15181c;
+  --panel-3: #1b2026;
   --line: rgba(255, 255, 255, 0.1);
   --line-strong: rgba(92, 200, 255, 0.35);
   --line-dim: rgba(255, 255, 255, 0.07);
@@ -363,7 +363,7 @@ h1 {
   border-bottom: 1px solid var(--line-dim);
   margin: -10px -10px 10px;
   padding: 10px;
-  background: #101720;
+  background: #101316;
 }
 
 .panel-heading h2 {
@@ -724,7 +724,7 @@ dd {
   gap: 12px;
   min-width: max-content;
   border-bottom: 1px solid var(--line-dim);
-  background: #030604;
+  background: #0b0d10;
   padding: 9px 10px;
 }
 
@@ -753,7 +753,7 @@ th {
   top: 0;
   z-index: 1;
   border-bottom: 1px solid var(--line);
-  background: #07110c;
+  background: #101316;
   color: var(--muted);
   font-size: 0.68rem;
   font-weight: 800;
@@ -833,7 +833,11 @@ tr:last-child td {
 }
 
 .scanner-controls {
-  grid-template-columns: minmax(220px, 1fr) 170px 170px 116px 128px 116px;
+  grid-template-columns:
+    minmax(220px, 1fr)
+    170px
+    170px
+    repeat(6, minmax(104px, max-content));
   margin: 10px;
 }
 
@@ -867,15 +871,15 @@ tr:last-child td {
 .scanner-row-main {
   display: grid;
   grid-template-columns:
-    minmax(210px, 1.35fr)
-    minmax(110px, 0.7fr)
-    minmax(160px, 1fr)
-    minmax(180px, 1.1fr)
-    minmax(150px, 0.95fr)
-    minmax(145px, 0.9fr)
-    minmax(140px, 0.85fr)
-    minmax(145px, 0.85fr);
-  gap: 1px;
+    minmax(280px, 1.8fr)
+    minmax(136px, 0.8fr)
+    minmax(132px, 0.78fr)
+    minmax(132px, 0.78fr)
+    minmax(140px, 0.82fr)
+    minmax(142px, 0.82fr)
+    minmax(156px, 0.9fr)
+    minmax(160px, 0.95fr);
+  gap: 0;
   align-items: stretch;
 }
 
@@ -883,7 +887,7 @@ tr:last-child td {
   position: sticky;
   top: 0;
   z-index: 1;
-  background: #0d131a;
+  background: #0e1115;
 }
 
 .scanner-table-header span {
@@ -894,22 +898,25 @@ tr:last-child td {
 }
 
 .scanner-row {
-  background: var(--panel);
+  background: #0f1216;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
 }
 
 .scanner-row-main {
   width: 100%;
-  min-height: 60px;
+  min-height: 88px;
   border: 0;
-  border-radius: 0;
-  background: var(--panel);
+  background: #111418;
   color: var(--text);
   padding: 0;
   text-align: left;
+  transition:
+    background 140ms ease,
+    transform 140ms ease;
 }
 
 .scanner-row-main:hover {
-  background: var(--panel-2);
+  background: #171b21;
 }
 
 .scanner-row-main > div,
@@ -919,12 +926,42 @@ tr:last-child td {
   flex-direction: column;
   justify-content: center;
   gap: 3px;
-  padding: 8px 9px;
+  padding: 8px 10px;
   border-left: 1px solid var(--line-dim);
 }
 
-.scanner-row-main > div:first-child {
+.scanner-row-main > div:first-child,
+.scanner-token-cell {
   border-left: 0;
+}
+
+.scanner-token-cell {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.scanner-token-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.scanner-token-image {
+  width: 48px;
+  height: 48px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: #0b0d10;
+  object-fit: cover;
+}
+
+.scanner-token-image.fallback {
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  font-weight: 800;
 }
 
 .scanner-token-cell strong,
@@ -937,8 +974,8 @@ tr:last-child td {
   white-space: nowrap;
 }
 
-.scanner-token-cell span,
-.scanner-token-cell small,
+.scanner-token-copy span,
+.scanner-token-copy small,
 .scanner-row-main small,
 .scanner-metric-stack span,
 .scanner-metric-stack small {
@@ -950,8 +987,104 @@ tr:last-child td {
   white-space: nowrap;
 }
 
+.scanner-token-copy small,
+.scanner-token-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.scanner-token-copy small span,
+.scanner-token-flags span {
+  width: fit-content;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  padding: 1px 6px;
+}
+
 .scanner-metric-stack strong {
   font-variant-numeric: tabular-nums;
+}
+
+.scanner-spark-cell {
+  align-items: center;
+  text-align: center;
+}
+
+.scanner-sparkline {
+  width: 116px;
+  height: 34px;
+}
+
+.scanner-sparkline polyline {
+  stroke: var(--muted);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.scanner-sparkline.up polyline,
+.sparkline-change.up {
+  stroke: var(--green);
+  color: var(--green);
+}
+
+.scanner-sparkline.down polyline,
+.sparkline-change.down {
+  stroke: var(--red);
+  color: var(--red);
+}
+
+.scanner-sparkline.flat polyline,
+.sparkline-change.flat {
+  stroke: var(--accent);
+  color: var(--accent);
+}
+
+.sparkline-empty {
+  display: grid;
+  place-items: center;
+  width: 116px;
+  height: 34px;
+  border: 1px dashed rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.sparkline-change {
+  font-size: 0.72rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.scanner-signal-cell {
+  display: grid;
+  align-content: center;
+  gap: 3px;
+}
+
+.scanner-signal-cell strong {
+  color: var(--text);
+  font-size: 0.78rem;
+}
+
+.scanner-signal-cell span,
+.scanner-signal-cell small {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.pnl-good {
+  color: var(--green) !important;
+}
+
+.pnl-bad {
+  color: var(--red) !important;
+}
+
+.pnl-neutral {
+  color: var(--muted) !important;
 }
 
 .score-pill {
@@ -984,10 +1117,10 @@ tr:last-child td {
 
 .scanner-row-audit {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
   border-top: 1px solid var(--line-dim);
-  background: #0f1620;
+  background: #101318;
   padding: 12px;
 }
 
@@ -1027,16 +1160,27 @@ tr:last-child td {
   font-size: 0.75rem;
 }
 
-@keyframes cursor-blink {
-  0%,
-  42% {
-    opacity: 0.8;
-  }
+.audit-reason-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
 
-  43%,
-  100% {
-    opacity: 0.18;
-  }
+.audit-reason-grid span {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--line-dim);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.025);
+  padding: 7px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.audit-reason-grid strong {
+  color: var(--text);
+  text-transform: uppercase;
 }
 
 @media (max-width: 1100px) {
@@ -1067,7 +1211,7 @@ tr:last-child td {
 
   .scanner-table-header,
   .scanner-row-main {
-    min-width: 1180px;
+    min-width: 1280px;
   }
 
   .scanner-row-audit {

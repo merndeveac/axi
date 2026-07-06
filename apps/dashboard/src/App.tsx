@@ -46,11 +46,16 @@ type TabId =
 type SortMode =
   | "newest"
   | "launchScore"
+  | "marketCap"
+  | "liquidity"
   | "volume10s"
+  | "txns10s"
+  | "priceChange"
   | "volumeVelocity"
   | "priceVelocity"
   | "uniqueBuyers"
   | "buySellRatio"
+  | "signalStrength"
   | "risk"
   | "pnl";
 type ActionFilter =
@@ -60,7 +65,10 @@ type ActionFilter =
   | "ripping"
   | "rejected"
   | "tradeTracked"
+  | "priceActionReady"
   | "discoveryOnly"
+  | "migrated"
+  | "paperPosition"
   | "missingCritical";
 
 type StorageStats = {
@@ -1017,6 +1025,9 @@ export function App() {
   const [actionFilter, setActionFilter] = useState<ActionFilter>("all");
   const [realOnly, setRealOnly] = useState(true);
   const [showUnavailable, setShowUnavailable] = useState(false);
+  const [hideUnavailableHeavy, setHideUnavailableHeavy] = useState(false);
+  const [trackedOnly, setTrackedOnly] = useState(false);
+  const [showMigrated, setShowMigrated] = useState(true);
   const [compactMode, setCompactMode] = useState(true);
   const [search, setSearch] = useState("");
   const [expandedMint, setExpandedMint] = useState<string | null>(null);
@@ -1259,10 +1270,26 @@ export function App() {
   const visibleRows = useMemo(
     () =>
       sortRows(
-        filterRows(momentumRows, { actionFilter, realOnly, search }),
+        filterRows(momentumRows, {
+          actionFilter,
+          hideUnavailableHeavy,
+          realOnly,
+          search,
+          showMigrated,
+          trackedOnly
+        }),
         sortMode
       ),
-    [actionFilter, momentumRows, realOnly, search, sortMode]
+    [
+      actionFilter,
+      hideUnavailableHeavy,
+      momentumRows,
+      realOnly,
+      search,
+      showMigrated,
+      sortMode,
+      trackedOnly
+    ]
   );
   const runRuntimeAction = async (path: string, label: string) => {
     setRuntimeActionStatus(`${label}...`);
@@ -1463,6 +1490,7 @@ export function App() {
           expandedMint={expandedMint}
           feedStatus={feedStatus}
           healthStatus={healthStatus}
+          hideUnavailableHeavy={hideUnavailableHeavy}
           liveStatus={liveStatus}
           realOnly={realOnly}
           rows={visibleRows}
@@ -1470,13 +1498,18 @@ export function App() {
           setActionFilter={setActionFilter}
           setCompactMode={setCompactMode}
           setExpandedMint={setExpandedMint}
+          setHideUnavailableHeavy={setHideUnavailableHeavy}
           setRealOnly={setRealOnly}
           setSearch={setSearch}
+          setShowMigrated={setShowMigrated}
           setShowUnavailable={setShowUnavailable}
           setSortMode={setSortMode}
+          setTrackedOnly={setTrackedOnly}
+          showMigrated={showMigrated}
           showUnavailable={showUnavailable}
           sortMode={sortMode}
           totalRows={momentumRows.length}
+          trackedOnly={trackedOnly}
         />
       ) : null}
       {activeTab === "signals" ? (
@@ -1562,6 +1595,7 @@ function ScannerTab({
   expandedMint,
   feedStatus,
   healthStatus,
+  hideUnavailableHeavy,
   liveStatus,
   realOnly,
   rows,
@@ -1569,13 +1603,18 @@ function ScannerTab({
   setActionFilter,
   setCompactMode,
   setExpandedMint,
+  setHideUnavailableHeavy,
   setRealOnly,
   setSearch,
+  setShowMigrated,
   setShowUnavailable,
   setSortMode,
+  setTrackedOnly,
+  showMigrated,
   showUnavailable,
   sortMode,
-  totalRows
+  totalRows,
+  trackedOnly
 }: {
   actionFilter: ActionFilter;
   compactMode: boolean;
@@ -1583,6 +1622,7 @@ function ScannerTab({
   expandedMint: string | null;
   feedStatus: FeedStatus | null;
   healthStatus: HealthStatus | null;
+  hideUnavailableHeavy: boolean;
   liveStatus: LiveStatus | null;
   realOnly: boolean;
   rows: MomentumScannerRow[];
@@ -1590,13 +1630,18 @@ function ScannerTab({
   setActionFilter: (value: ActionFilter) => void;
   setCompactMode: (value: boolean) => void;
   setExpandedMint: (value: string | null) => void;
+  setHideUnavailableHeavy: (value: boolean) => void;
   setRealOnly: (value: boolean) => void;
   setSearch: (value: string) => void;
+  setShowMigrated: (value: boolean) => void;
   setShowUnavailable: (value: boolean) => void;
   setSortMode: (value: SortMode) => void;
+  setTrackedOnly: (value: boolean) => void;
+  showMigrated: boolean;
   showUnavailable: boolean;
   sortMode: SortMode;
   totalRows: number;
+  trackedOnly: boolean;
 }) {
   return (
     <section className="tab-panel scanner-panel" role="tabpanel">
@@ -1629,11 +1674,16 @@ function ScannerTab({
           >
             <option value="newest">newest</option>
             <option value="launchScore">launch score</option>
+            <option value="marketCap">market cap</option>
+            <option value="liquidity">liquidity</option>
             <option value="volume10s">volume 10s</option>
+            <option value="txns10s">txns 10s</option>
+            <option value="priceChange">price change</option>
             <option value="volumeVelocity">volume velocity</option>
             <option value="priceVelocity">price velocity</option>
             <option value="uniqueBuyers">unique buyers</option>
             <option value="buySellRatio">buy/sell ratio</option>
+            <option value="signalStrength">signal strength</option>
             <option value="risk">risk</option>
             <option value="pnl">PnL</option>
           </select>
@@ -1652,7 +1702,10 @@ function ScannerTab({
             <option value="ripping">ripping</option>
             <option value="rejected">rejected</option>
             <option value="tradeTracked">trade tracked</option>
+            <option value="priceActionReady">price action ready</option>
             <option value="discoveryOnly">discovery only</option>
+            <option value="migrated">migrated</option>
+            <option value="paperPosition">paper position</option>
             <option value="missingCritical">missing critical</option>
           </select>
         </label>
@@ -1666,11 +1719,27 @@ function ScannerTab({
         </label>
         <label className="check-control">
           <input
-            checked={showUnavailable}
-            onChange={(event) => setShowUnavailable(event.target.checked)}
+            checked={hideUnavailableHeavy}
+            onChange={(event) => setHideUnavailableHeavy(event.target.checked)}
             type="checkbox"
           />
-          <span>Unavailable</span>
+          <span>Hide sparse</span>
+        </label>
+        <label className="check-control">
+          <input
+            checked={trackedOnly}
+            onChange={(event) => setTrackedOnly(event.target.checked)}
+            type="checkbox"
+          />
+          <span>Tracked only</span>
+        </label>
+        <label className="check-control">
+          <input
+            checked={showMigrated}
+            onChange={(event) => setShowMigrated(event.target.checked)}
+            type="checkbox"
+          />
+          <span>Migrated</span>
         </label>
         <label className="check-control">
           <input
@@ -1679,6 +1748,14 @@ function ScannerTab({
             type="checkbox"
           />
           <span>Compact</span>
+        </label>
+        <label className="check-control">
+          <input
+            checked={showUnavailable}
+            onChange={(event) => setShowUnavailable(event.target.checked)}
+            type="checkbox"
+          />
+          <span>Audit reasons</span>
         </label>
       </div>
 
@@ -1695,14 +1772,14 @@ function ScannerTab({
       {rows.length > 0 ? (
         <div className={compactMode ? "scanner-table compact" : "scanner-table"}>
           <div className="scanner-table-header" role="row">
-            <span>Token</span>
-            <span>Signal</span>
-            <span>Market</span>
-            <span>Volume / Flow</span>
-            <span>Derivatives</span>
-            <span>Risk</span>
-            <span>Portfolio</span>
-            <span>Data</span>
+            <span>Pair / Token</span>
+            <span>Sparkline</span>
+            <span>Market Cap</span>
+            <span>Liquidity</span>
+            <span>Volume</span>
+            <span>TXNS</span>
+            <span>Token Info / Risk</span>
+            <span>AXI Signal</span>
           </div>
           {rows.map((row) => (
             <ScannerRow
@@ -1736,69 +1813,160 @@ function ScannerRow({
   row: MomentumScannerRow;
   showUnavailable: boolean;
 }) {
+  const rowClass = [
+    "scanner-row",
+    expanded ? "expanded" : "",
+    "spark-" + row.sparkline.direction
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <article className={expanded ? "scanner-row expanded" : "scanner-row"}>
+    <article className={rowClass}>
       <button className="scanner-row-main" onClick={onToggle} type="button">
         <div className="scanner-token-cell">
-          <strong>{row.displayName}</strong>
-          <span>
-            {row.symbol ?? "UNKNOWN"} / {row.shortMint}
-          </span>
-          <small>
-            {formatAge(row.ageSeconds)} / {row.source}
-          </small>
+          <TokenThumbnail row={row} />
+          <div className="scanner-token-copy">
+            <strong title={row.mint}>{row.displayName}</strong>
+            <span>
+              {row.symbol ?? "UNKNOWN"} / {formatAge(row.ageSeconds)} /{" "}
+              <span className="mono" title={row.mint}>{row.shortMint}</span>
+            </span>
+            <small>
+              <span>{row.source}</span>
+              <span>{formatDataQuality(row.latestEventType ?? row.eventType ?? "new_token")}</span>
+              {row.migrationStatus === "migrated" ? <span>migrated</span> : null}
+            </small>
+            <small className="scanner-token-flags">
+              <span>{row.hasMetadata ? "metadata" : "metadata pending"}</span>
+              <span>{row.hasSocialLinks ? "links" : "no social provider"}</span>
+            </small>
+          </div>
         </div>
-        <div>
-          <span className={
-            row.hardReject
-              ? "score-pill danger"
-              : row.launchPhase === "ripping"
-                ? "score-pill hot"
-                : row.launchPhase === "hot"
-                  ? "score-pill warn"
-                  : "score-pill"
-          }>
-            {row.launchScore}
+        <div className="scanner-spark-cell">
+          <Sparkline sparkline={row.sparkline} />
+          <span className={"sparkline-change " + row.sparkline.direction}>
+            {formatPct(row.sparkline.priceChangePct)}
           </span>
-          <small>{formatDataQuality(row.launchPhase)}</small>
-          <small>{row.signalAction}</small>
+          <small>{row.sparkline.source ?? "no trade samples"}</small>
         </div>
         <MetricStack
-          primary={formatSol(row.priceSol)}
-          secondary={"MC " + formatUsd(row.marketCapUsd)}
-          tertiary={"Liq " + formatUsd(row.liquidityUsd) + " / FDV " + formatUsd(row.fdvUsd)}
+          primary={formatMarketCap(row)}
+          secondary={"FDV " + formatUsd(row.fdvUsd)}
+          tertiary={row.marketDataSource ?? row.priceSource ?? "payload/enrichment pending"}
+        />
+        <MetricStack
+          primary={formatUsd(row.liquidityUsd)}
+          secondary={row.poolAddress ?? row.raydiumPool ?? "pool pending"}
+          tertiary={"curve " + formatSol(row.vSolInBondingCurve)}
         />
         <MetricStack
           primary={formatSol(row.volume10sSol) + " 10s"}
           secondary={formatSol(row.volume30sSol) + " 30s"}
-          tertiary={formatCompactNumber(row.buyCount10s) + "/" + formatCompactNumber(row.sellCount10s) + " buys/sells"}
+          tertiary={"net " + formatSol(row.netVolume10sSol)}
         />
         <MetricStack
-          primary={formatVelocity(row.volumeVelocitySolPerSec, "sol")}
-          secondary={formatVelocity(row.priceVelocityPctPerSec, "pct")}
-          tertiary={formatVelocity(row.buyerVelocityPerSec, "buyers")}
+          primary={formatCompactNumber(row.tradeCount10s) + " / 10s"}
+          secondary={
+            formatCompactNumber(row.buyCount10s) +
+            " / " +
+            formatCompactNumber(row.sellCount10s)
+          }
+          tertiary={
+            "buyers " +
+            formatCompactNumber(row.uniqueBuyers10s) +
+            " / ratio " +
+            formatCompactNumber(row.buySellRatio)
+          }
         />
         <MetricStack
           primary={String(row.riskLevel)}
-          secondary={row.hardReject ? "hard reject" : "pass"}
-          tertiary={"top " + formatPct(row.topHolderPct) + " / top10 " + formatPct(row.top10HolderPct)}
+          secondary={row.hardReject ? "hard reject" : "risk pass"}
+          tertiary={
+            "top " +
+            formatPct(row.topHolderPct) +
+            " / top10 " +
+            formatPct(row.top10HolderPct)
+          }
           tone={row.hardReject ? "bad" : row.riskLevel === "low" ? "good" : "neutral"}
         />
-        <MetricStack
-          primary={row.paperPositionStatus ?? "none"}
-          secondary={formatPct(row.unrealizedPnlPct)}
-          tertiary={formatSol(row.unrealizedPnlSol) + " unrealized"}
-          tone={getPnlTone(row.unrealizedPnlSol)}
-        />
-        <MetricStack
-          primary={formatDataQuality(row.dataQualityLabel)}
-          secondary={row.missingCriticalFields.length + " critical"}
-          tertiary={formatTimeAgo(row.lastUpdatedAt)}
-          tone={row.missingCriticalFields.length > 0 ? "warn" : "neutral"}
-        />
+        <div className="scanner-signal-cell">
+          <span className={getScorePillClass(row)}>{row.launchScore}</span>
+          <strong>{formatDataQuality(row.launchPhase)}</strong>
+          <span>{row.signalAction}</span>
+          <small>
+            {row.signalStrength} / {row.buyReadyPaper ? "paper ready" : "paper blocked"}
+          </small>
+          <small>
+            {row.trackingState} / {formatDataQuality(row.dataQualityLabel)}
+          </small>
+          {row.hasPaperPosition ? (
+            <small className={"pnl-" + getPnlTone(row.unrealizedPnlSol)}>
+              {row.paperPositionStatus} {formatPct(row.unrealizedPnlPct)}
+            </small>
+          ) : null}
+        </div>
       </button>
       {expanded ? <ScannerRowAudit row={row} showUnavailable={showUnavailable} /> : null}
     </article>
+  );
+}
+
+function TokenThumbnail({ row }: { row: MomentumScannerRow }) {
+  if (row.imageUri) {
+    return (
+      <img
+        alt=""
+        className="scanner-token-image"
+        loading="lazy"
+        src={row.imageUri}
+      />
+    );
+  }
+
+  return (
+    <span className="scanner-token-image fallback" aria-hidden="true">
+      {(row.symbol ?? row.displayName).slice(0, 2).toUpperCase()}
+    </span>
+  );
+}
+
+function Sparkline({
+  sparkline
+}: {
+  sparkline: MomentumScannerRow["sparkline"];
+}) {
+  if (sparkline.points.length < 2) {
+    return <div className="sparkline-empty">no trade samples</div>;
+  }
+
+  const prices = sparkline.points.map((point) => point.priceSol);
+  const min = Math.min(...prices);
+  const max = Math.max(...prices);
+  const range = max - min || 1;
+  const width = 116;
+  const height = 34;
+  const points = sparkline.points
+    .map((point, index) => {
+      const x =
+        sparkline.points.length === 1
+          ? 0
+          : (index / (sparkline.points.length - 1)) * width;
+      const y = height - ((point.priceSol - min) / range) * height;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(" ");
+
+  return (
+    <svg
+      aria-label={`price sparkline ${sparkline.direction}`}
+      className={"scanner-sparkline " + sparkline.direction}
+      focusable="false"
+      role="img"
+      viewBox={`0 0 ${width} ${height}`}
+    >
+      <polyline fill="none" points={points} />
+    </svg>
   );
 }
 
@@ -1822,6 +1990,34 @@ function MetricStack({
   );
 }
 
+function getScorePillClass(row: MomentumScannerRow): string {
+  if (row.hardReject || row.launchPhase === "rejected") {
+    return "score-pill danger";
+  }
+
+  if (row.launchPhase === "ripping") {
+    return "score-pill hot";
+  }
+
+  if (row.launchPhase === "hot") {
+    return "score-pill warn";
+  }
+
+  return "score-pill";
+}
+
+function formatMarketCap(row: MomentumScannerRow): string {
+  if (row.marketCapUsd !== null) {
+    return formatUsd(row.marketCapUsd);
+  }
+
+  if (row.marketCapSol !== null) {
+    return formatSol(row.marketCapSol);
+  }
+
+  return "—";
+}
+
 function ScannerRowAudit({
   row,
   showUnavailable
@@ -1834,6 +2030,10 @@ function ScannerRowAudit({
       <div>
         <h4>Metric Windows</h4>
         <dl>
+          <dt>sparkline</dt>
+          <dd>
+            {row.sparkline.direction} / {formatPct(row.sparkline.priceChangePct)}
+          </dd>
           <dt>volume 5s / 10s / 30s / 60s</dt>
           <dd>
             {formatSol(row.volume5sSol)} / {formatSol(row.volume10sSol)} / {formatSol(row.volume30sSol)} / {formatSol(row.volume60sSol)}
@@ -1848,6 +2048,8 @@ function ScannerRowAudit({
           </dd>
           <dt>latest trade</dt>
           <dd>{formatTimeAgo(row.latestTradeAt)}</dd>
+          <dt>sample count</dt>
+          <dd>{formatCompactNumber(row.realTradeEventCount)}</dd>
         </dl>
       </div>
       <div>
@@ -1887,6 +2089,30 @@ function ScannerRowAudit({
         </dl>
       </div>
       <div>
+        <h4>Market / Migration</h4>
+        <dl>
+          <dt>market cap</dt>
+          <dd>{formatMarketCap(row)}</dd>
+          <dt>liquidity / fdv</dt>
+          <dd>
+            {formatUsd(row.liquidityUsd)} / {formatUsd(row.fdvUsd)}
+          </dd>
+          <dt>curve reserves</dt>
+          <dd>
+            {formatSol(row.vSolInBondingCurve)} /{" "}
+            {formatCompactNumber(row.vTokensInBondingCurve)} tokens
+          </dd>
+          <dt>bonding curve</dt>
+          <dd>{row.bondingCurveKey ?? "—"}</dd>
+          <dt>pool</dt>
+          <dd>{row.poolAddress ?? row.raydiumPool ?? "—"}</dd>
+          <dt>migration</dt>
+          <dd>
+            {row.migrationStatus} / {formatTimeAgo(row.migratedAt)}
+          </dd>
+        </dl>
+      </div>
+      <div>
         <h4>Risk / Position</h4>
         <dl>
           <dt>mint / freeze auth</dt>
@@ -1903,12 +2129,26 @@ function ScannerRowAudit({
           </dd>
           <dt>paper exit</dt>
           <dd>{row.latestPaperExitSignal ? row.latestPaperExitSignal.sellPct + "%" : "none"}</dd>
+          <dt>position pnl</dt>
+          <dd>
+            {formatPct(row.unrealizedPnlPct)} / {formatSol(row.unrealizedPnlSol)}
+          </dd>
         </dl>
       </div>
       <div className="scanner-audit-wide">
         <h4>Data Audit</h4>
         <p>{row.fieldDiagnosticsSummary}</p>
+        <div className="audit-reason-grid">
+          {Object.entries(row.missingFieldReasons).map(([field, reasons]) => (
+            <span key={field}>
+              <strong>{field}</strong>
+              {reasons.length > 0 ? reasons.join(", ") : "available"}
+            </span>
+          ))}
+        </div>
         <ReasonCodes codes={row.reasonCodes} limit={18} />
+        <h4>Adaptive Tracking</h4>
+        <ReasonCodes codes={row.adaptiveTrackingReasonCodes} limit={12} />
         {showUnavailable ? (
           <>
             <h4>Unavailable Fields</h4>
@@ -3873,14 +4113,32 @@ function filterRows(
   rows: MomentumScannerRow[],
   options: {
     actionFilter: ActionFilter;
+    hideUnavailableHeavy: boolean;
     realOnly: boolean;
     search: string;
+    showMigrated: boolean;
+    trackedOnly: boolean;
   }
 ): MomentumScannerRow[] {
   const query = options.search.trim().toLowerCase();
 
   return rows.filter((row) => {
     if (options.realOnly && !row.realData) {
+      return false;
+    }
+
+    if (options.trackedOnly && row.trackingState !== "tracking") {
+      return false;
+    }
+
+    if (!options.showMigrated && row.migrationStatus === "migrated") {
+      return false;
+    }
+
+    if (
+      options.hideUnavailableHeavy &&
+      row.unavailableFields.length + row.missingCriticalFields.length >= 8
+    ) {
       return false;
     }
 
@@ -3920,8 +4178,23 @@ function filterRows(
       return row.trackingState === "tracking" || row.realTradeEventCount > 0;
     }
 
+    if (options.actionFilter === "priceActionReady") {
+      return (
+        row.dataQualityLabel === "price_action_ready" ||
+        row.sparkline.direction !== "unavailable"
+      );
+    }
+
     if (options.actionFilter === "discoveryOnly") {
       return row.dataQualityLabel === "discovery_only";
+    }
+
+    if (options.actionFilter === "migrated") {
+      return row.migrationStatus === "migrated";
+    }
+
+    if (options.actionFilter === "paperPosition") {
+      return row.hasPaperPosition;
     }
 
     if (options.actionFilter === "missingCritical") {
@@ -3959,10 +4232,32 @@ function sortRows(
       );
     }
 
+    if (sortMode === "marketCap") {
+      return (
+        (right.marketCapUsd ?? right.marketCapSol ?? -1) -
+        (left.marketCapUsd ?? left.marketCapSol ?? -1)
+      );
+    }
+
+    if (sortMode === "liquidity") {
+      return (right.liquidityUsd ?? -1) - (left.liquidityUsd ?? -1);
+    }
+
     if (sortMode === "volume10s") {
       return (
         (right.volume10sSol ?? right.volume10sUsd ?? -1) -
         (left.volume10sSol ?? left.volume10sUsd ?? -1)
+      );
+    }
+
+    if (sortMode === "txns10s") {
+      return (right.tradeCount10s ?? -1) - (left.tradeCount10s ?? -1);
+    }
+
+    if (sortMode === "priceChange") {
+      return (
+        (right.sparkline.priceChangePct ?? -1) -
+        (left.sparkline.priceChangePct ?? -1)
       );
     }
 
@@ -3982,6 +4277,13 @@ function sortRows(
     if (sortMode === "buySellRatio") {
       return (
         (right.buySellRatio ?? -1) - (left.buySellRatio ?? -1)
+      );
+    }
+
+    if (sortMode === "signalStrength") {
+      return (
+        signalStrengthWeight(right.signalStrength) -
+        signalStrengthWeight(left.signalStrength)
       );
     }
 
@@ -4009,6 +4311,28 @@ function parseRowTime(timestamp: string | null): number {
 
   const parsed = Date.parse(timestamp);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function signalStrengthWeight(value: string): number {
+  const normalized = value.toLowerCase();
+
+  if (normalized.includes("ripping") || normalized.includes("strong")) {
+    return 5;
+  }
+
+  if (normalized.includes("hot") || normalized.includes("medium")) {
+    return 4;
+  }
+
+  if (normalized.includes("watch") || normalized.includes("weak")) {
+    return 3;
+  }
+
+  if (normalized.includes("reject")) {
+    return 1;
+  }
+
+  return 2;
 }
 
 function upsertSignal(

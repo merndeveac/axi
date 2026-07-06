@@ -35,6 +35,16 @@ export type TradeObservationInput = {
   reasonCodes?: string[];
 };
 
+export type RecentTradeSample = {
+  mint: string;
+  side: "buy" | "sell";
+  priceSol: number;
+  priceUsd: number;
+  timestamp: string;
+  volumeSol: number;
+  volumeUsd: number;
+};
+
 type TradeSample = {
   mint: string;
   symbol?: string;
@@ -268,6 +278,26 @@ export class RollingMetricsEngine {
     return Array.from(this.tokens.values()).map((state) =>
       this.buildSnapshot(state, latestReferenceTime(state))
     );
+  }
+
+  getRecentTradeSamples(mint: string, limit = 50): RecentTradeSample[] {
+    const state = this.tokens.get(mint);
+
+    if (!state) {
+      return [];
+    }
+
+    return state.trades
+      .slice(-limit)
+      .map((trade) => ({
+        mint: trade.mint,
+        side: trade.side,
+        priceSol: trade.priceSol,
+        priceUsd: trade.priceUsd,
+        timestamp: trade.timestamp,
+        volumeSol: trade.volumeSol,
+        volumeUsd: trade.volumeUsd
+      }));
   }
 
   resetMetrics(mint: string): void {

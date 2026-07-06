@@ -685,6 +685,28 @@ export const apiConfigSchema = z.object({
     .int()
     .positive()
     .default(60000),
+  MOMENTUM_ADAPTIVE_TRACKING_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  MOMENTUM_ADAPTIVE_EXTEND_ON_HOT: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  MOMENTUM_ADAPTIVE_EXTEND_ON_RIPPING: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  MOMENTUM_ADAPTIVE_EXTEND_ON_PAPER_POSITION: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  MOMENTUM_ADAPTIVE_MAX_TRACK_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(900000),
+  MOMENTUM_KEEP_MIGRATED_TOKENS_VISIBLE_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(1800000),
   PUMPPORTAL_TOKEN_TRADES_ENABLED: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(false),
@@ -3285,6 +3307,47 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     );
   }
 
+  function buildMomentumSparkline(
+    mint: string
+  ): MomentumScannerRow["sparkline"] {
+    const meteredSamples = meteredLaunchData
+      .getRecentTradeEvents()
+      .filter((event) => event.mint === mint)
+      .map((event) => ({
+        priceSol: finiteOrNull(event.priceSol),
+        t: event.createdAt,
+        volumeSol: finiteOrNull(event.volumeSol)
+      }))
+      .filter(
+        (sample): sample is { priceSol: number; t: string; volumeSol: number | null } =>
+          sample.priceSol !== null && sample.priceSol > 0
+      );
+
+    if (meteredSamples.length >= 2) {
+      return createMomentumSparkline(meteredSamples, {
+        source: "PumpPortal subscribeTokenTrade",
+        windowSeconds: 60
+      });
+    }
+
+    const metricSamples = metricsEngine
+      .getRecentTradeSamples(mint, 50)
+      .map((event) => ({
+        priceSol: finiteOrNull(event.priceSol),
+        t: event.timestamp,
+        volumeSol: finiteOrNull(event.volumeSol)
+      }))
+      .filter(
+        (sample): sample is { priceSol: number; t: string; volumeSol: number | null } =>
+          sample.priceSol !== null && sample.priceSol > 0
+      );
+
+    return createMomentumSparkline(metricSamples, {
+      source: metricSamples.length > 0 ? "rolling_metrics_trade_samples" : null,
+      windowSeconds: 60
+    });
+  }
+
   function liveCardToMomentumScannerRow(
     card: LiveTokenCardViewModel
   ): MomentumScannerRow {
@@ -3299,9 +3362,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const derivativeReasonCodes = hasDerivativeSamples
       ? []
       : ["INSUFFICIENT_SAMPLES_FOR_DERIVATIVE"];
+    const missingFieldReasons = buildMomentumMissingFieldReasons(card, {
+      hasDerivativeSamples,
+      hasTradeSamples
+    });
     const marketUnavailable = [
-      ...(card.marketCapUsd === null ? ["MARKET_CAP_UNAVAILABLE"] : []),
-      ...(card.liquidityUsd === null ? ["LIQUIDITY_UNAVAILABLE"] : []),
+      ...(card.marketCapUsd === null && card.marketCapSol === null
+        ? (missingFieldReasons.marketCap ?? [])
+        : []),
+      ...(card.liquidityUsd === null ? (missingFieldReasons.liquidity ?? []) : []),
       ...(card.fdvUsd === null ? ["FDV_UNAVAILABLE"] : []),
       ...(card.enrichmentStatus === "disabled" ? ["ENRICHMENT_DISABLED"] : [])
     ];
@@ -3312,6 +3381,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         : [];
     const unavailableFields = uniqueReasonCodes([
       ...card.unavailableFields,
+      ...Object.values(missingFieldReasons).flat(),
       ...marketUnavailable,
       ...holderUnavailable,
       ...derivativeReasonCodes,
@@ -3371,6 +3441,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       ...card.launchReasonCodes,
       ...card.launchMissingDataReasons,
       ...card.dataSourceWarnings,
+      ...Object.values(missingFieldReasons).flat(),
       ...marketUnavailable,
       ...holderUnavailable,
       ...derivativeReasonCodes,
@@ -3393,6 +3464,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       launchedAt: card.firstSeenAt,
       latestEventAt: card.latestEventAt,
       eventType: card.eventTypes.at(-1) ?? null,
+      eventTypes: card.eventTypes,
+      latestEventType: card.latestEventType,
       launchPhase: card.launchPhase,
       launchScore: card.launchScore,
       launchScoreLabel: card.launchScoreLabel,
@@ -3403,8 +3476,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       priceSol: finiteOrNull(card.priceSol ?? card.launchPriceSol),
       priceUsd: finiteOrNull(card.priceUsd),
       marketCapUsd: finiteOrNull(card.marketCapUsd),
+      marketCapSol: finiteOrNull(card.marketCapSol),
       fdvUsd: finiteOrNull(card.fdvUsd),
       liquidityUsd: finiteOrNull(card.liquidityUsd),
+      vSolInBondingCurve: finiteOrNull(card.vSolInBondingCurve),
+      vTokensInBondingCurve: finiteOrNull(card.vTokensInBondingCurve),
+      bondingCurveKey: card.bondingCurveKey,
+      poolAddress: card.poolAddress,
+      raydiumPool: card.raydiumPool,
       priceSource:
         card.priceSol !== null || card.priceUsd !== null
           ? card.priceActionSource
@@ -3482,12 +3561,21 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       realizedPnlSol: finiteOrNull(card.paperPositionSummary.realizedPnlSol),
       latestPaperExitSignal:
         card.paperPositionSummary.latestPaperExitSignal,
+      hasMetadata: Boolean(card.metadataUri || card.imageUri),
+      hasSocialLinks: card.missingFields.includes("socials") === false,
+      migrationStatus: card.migrationStatus,
+      migratedAt: card.migratedAt,
+      migrationSource: card.migrationSource,
+      migrationPool: card.migrationPool,
+      adaptiveTrackingReasonCodes: card.adaptiveTrackingReasonCodes,
+      sparkline: card.sparkline,
       realData: card.realData,
       source: card.source,
       dataQualityLabel: qualityLabel,
       missingCriticalFields: card.missingCriticalFields,
       unavailableFields,
       staleFields,
+      missingFieldReasons,
       fieldDiagnosticsSummary: summarizeMomentumFields({
         missingCriticalFields: card.missingCriticalFields,
         staleFields,
@@ -3562,8 +3650,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       tokensWithVolume: rows.filter(
         (row) => row.volume10sSol !== null || row.volume10sUsd !== null
       ).length,
-      tokensWithMarketCap: rows.filter((row) => row.marketCapUsd !== null)
-        .length,
+      tokensWithMarketCap: rows.filter(
+        (row) => row.marketCapUsd !== null || row.marketCapSol !== null
+      ).length,
       tokensWithLiquidity: rows.filter((row) => row.liquidityUsd !== null)
         .length,
       tokensWithTradeData: rows.filter((row) => row.realTradeEventCount > 0)
@@ -3581,6 +3670,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         .length,
       unavailableFieldCounts,
       missingCriticalFieldCounts,
+      topMissingReasons: getTopMissingReasons(
+        rows.flatMap((row) => Object.values(row.missingFieldReasons).flat())
+      ),
       dataSources: {
         pumpportalLiveDiscovery: {
           enabled: feedStatus.enabled,
@@ -3659,6 +3751,13 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       const tokenEvents = liveEvents.filter(
         (event) => event.mint === token.mint
       );
+      const marketHints = getLiveTokenMarketHints(tokenEvents);
+      const migrationState = getLiveTokenMigrationState({
+        eventTypes: token.eventTypes,
+        latestEventAt: token.latestEventAt,
+        source: token.source,
+        tokenEvents
+      });
       const metricsAvailable = Boolean(metrics && metrics.sampleCount > 0);
       const window1s = metrics?.windows["1s"];
       const window3s = metrics?.windows["3s"];
@@ -3775,6 +3874,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               : meteredLaunchDataStatus.ready
                 ? "not_tracked"
                 : "blocked";
+      const paperPositionSummary = paperPortfolio.getPositionSummaryForMint(
+        token.mint
+      );
+      const exitSignalSummary = watchedWalletExit.getSignalSummaryForMint(
+        token.mint
+      );
       const realTradeEventCount =
         meteredTracking?.eventCount ?? actualDataSummary?.eventCount ?? 0;
       const realPriceActionReady =
@@ -3871,6 +3976,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         sourceMode: token.sourceMode,
         realData: token.realData,
         eventTypes: token.eventTypes,
+        latestEventType: token.eventTypes.at(-1) ?? null,
         firstSeenAt: token.firstSeenAt,
         lastSeenAt: token.lastSeenAt,
         ageSeconds: getAgeSeconds(token.firstSeenAt, nowMs),
@@ -3886,8 +3992,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           (candidate?.latestMarketObservationSummary?.quoteAsset as
             QuoteAsset | undefined) ?? null,
         marketCapUsd,
+        marketCapSol: marketHints.marketCapSol,
         fdvUsd,
         liquidityUsd,
+        vSolInBondingCurve: marketHints.vSolInBondingCurve,
+        vTokensInBondingCurve: marketHints.vTokensInBondingCurve,
+        bondingCurveKey: marketHints.bondingCurveKey,
+        poolAddress: marketHints.poolAddress,
+        raydiumPool: marketHints.raydiumPool,
         volume1sUsd: metricsAvailable
           ? numberOrNull(window1s?.totalVolumeUsd)
           : null,
@@ -4139,12 +4251,19 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           ...(launchSnapshot?.reasonCodes ?? [])
         ]),
         launchMissingDataReasons,
-        exitSignalSummary: watchedWalletExit.getSignalSummaryForMint(
-          token.mint
-        ),
-        paperPositionSummary: paperPortfolio.getPositionSummaryForMint(
-          token.mint
-        ),
+        migrationStatus: migrationState.status,
+        migratedAt: migrationState.migratedAt,
+        migrationSource: migrationState.source,
+        migrationPool: migrationState.pool,
+        adaptiveTrackingReasonCodes: getAdaptiveTrackingReasonCodes({
+          hasPaperPosition: paperPositionSummary.hasPosition,
+          launchPhase: launchSnapshot?.phase ?? "discovery_only",
+          migrationStatus: migrationState.status,
+          trackingState: meteredLaunchDataState
+        }),
+        sparkline: buildMomentumSparkline(token.mint),
+        exitSignalSummary,
+        paperPositionSummary,
         dataCompletenessLabel: dataCompleteness.dataQualityLabel,
         missingCriticalFields: dataCompleteness.missingCriticalFields,
         enrichmentStatus,
@@ -4206,6 +4325,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         sourceMode: token.sourceMode,
         realData: token.sourceMode === "real",
         eventTypes: token.eventTypes,
+        latestEventType: token.eventTypes.at(-1) ?? null,
         firstSeenAt: token.firstSeenAt,
         lastSeenAt: token.lastSeenAt,
         ageSeconds: token.ageSeconds,
@@ -4219,8 +4339,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         priceQuote: latestPriceSol,
         quoteAsset: latestPriceSol !== null ? "SOL" : null,
         marketCapUsd: token.market.marketCapUsd,
+        marketCapSol: null,
         fdvUsd: token.market.fdvUsd,
         liquidityUsd: token.market.liquidityUsd,
+        vSolInBondingCurve: null,
+        vTokensInBondingCurve: null,
+        bondingCurveKey: null,
+        poolAddress: null,
+        raydiumPool: null,
         volume1sUsd: numberOrNull(token.market.volumeUsd1s),
         volume3sUsd: null,
         volume5sUsd: numberOrNull(token.market.volumeUsd5s),
@@ -4376,6 +4502,20 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           "PUMPPORTAL_LAUNCH_SCANNER_UNAVAILABLE"
         ],
         launchMissingDataReasons: ["PUMPPORTAL_LAUNCH_SCANNER_UNAVAILABLE"],
+        migrationStatus: token.eventTypes.includes("token_migrated")
+          ? "migrated"
+          : "not_migrated",
+        migratedAt: token.eventTypes.includes("token_migrated")
+          ? token.lastSeenAt
+          : null,
+        migrationSource: token.eventTypes.includes("token_migrated")
+          ? token.source
+          : null,
+        migrationPool: null,
+        adaptiveTrackingReasonCodes: token.eventTypes.includes("token_migrated")
+          ? ["MIGRATED_TOKEN_VISIBLE"]
+          : [],
+        sparkline: buildMomentumSparkline(token.mint),
         exitSignalSummary: watchedWalletExit.getSignalSummaryForMint(
           token.mint
         ),
@@ -6880,6 +7020,277 @@ function chooseDerivativeValue(
   return finiteOrNull(primary) ?? finiteOrNull(fallback);
 }
 
+function createMomentumSparkline(
+  samples: Array<{ priceSol: number; t: string; volumeSol: number | null }>,
+  options: { source: string | null; windowSeconds: number }
+): MomentumScannerRow["sparkline"] {
+  const sorted = [...samples]
+    .filter(
+      (sample) =>
+        Number.isFinite(sample.priceSol) &&
+        sample.priceSol > 0 &&
+        !Number.isNaN(Date.parse(sample.t))
+    )
+    .sort((left, right) => Date.parse(left.t) - Date.parse(right.t))
+    .slice(-24);
+
+  if (sorted.length < 2) {
+    return {
+      points: [],
+      direction: "unavailable",
+      priceChangePct: null,
+      windowSeconds: options.windowSeconds,
+      source: options.source,
+      reasonCodes: uniqueReasonCodes([
+        "INSUFFICIENT_PRICE_SAMPLES",
+        ...(sorted.length === 0 ? ["NO_TRADE_EVENTS"] : [])
+      ])
+    };
+  }
+
+  const first = sorted[0]!;
+  const last = sorted.at(-1)!;
+  const priceChangePct =
+    first.priceSol > 0
+      ? ((last.priceSol - first.priceSol) / first.priceSol) * 100
+      : null;
+  const roundedChange =
+    priceChangePct === null ? null : Math.round(priceChangePct * 1000) / 1000;
+
+  return {
+    points: sorted.map((sample) => ({
+      t: sample.t,
+      priceSol: sample.priceSol,
+      volumeSol: sample.volumeSol
+    })),
+    direction:
+      roundedChange === null
+        ? "unavailable"
+        : roundedChange > 0
+          ? "up"
+          : roundedChange < 0
+            ? "down"
+            : "flat",
+    priceChangePct: roundedChange,
+    windowSeconds: options.windowSeconds,
+    source: options.source,
+    reasonCodes: uniqueReasonCodes([
+      "SPARKLINE_REAL_TRADE_SAMPLES",
+      ...(options.source ? [options.source.toUpperCase().replaceAll(" ", "_")] : [])
+    ])
+  };
+}
+
+function getLiveTokenMarketHints(
+  tokenEvents: Array<{ payload: FeedEvent }>
+): {
+  bondingCurveKey: string | null;
+  marketCapSol: number | null;
+  poolAddress: string | null;
+  raydiumPool: string | null;
+  vSolInBondingCurve: number | null;
+  vTokensInBondingCurve: number | null;
+} {
+  const hints = {
+    bondingCurveKey: null as string | null,
+    marketCapSol: null as number | null,
+    poolAddress: null as string | null,
+    raydiumPool: null as string | null,
+    vSolInBondingCurve: null as number | null,
+    vTokensInBondingCurve: null as number | null
+  };
+
+  for (const event of tokenEvents) {
+    if (event.payload.type !== "token_created") {
+      continue;
+    }
+
+    const raw =
+      event.payload.raw && typeof event.payload.raw === "object"
+        ? (event.payload.raw as Record<string, unknown>)
+        : {};
+
+    hints.marketCapSol ??=
+      finiteOrNull(event.payload.candidate.marketCapSol) ??
+      positiveOrNull(readNumber(raw.marketCapSol));
+    hints.vSolInBondingCurve ??=
+      finiteOrNull(event.payload.candidate.vSolInBondingCurve) ??
+      positiveOrNull(readNumber(raw.vSolInBondingCurve));
+    hints.vTokensInBondingCurve ??=
+      finiteOrNull(event.payload.candidate.vTokensInBondingCurve) ??
+      positiveOrNull(readNumber(raw.vTokensInBondingCurve));
+    hints.bondingCurveKey ??=
+      event.payload.candidate.bondingCurveKey ??
+      event.payload.bondingCurve ??
+      readString(raw.bondingCurveKey) ??
+      readString(raw.bondingCurve);
+    hints.poolAddress ??=
+      event.payload.candidate.pool ??
+      readString(raw.pool) ??
+      readString(raw.pair) ??
+      readString(raw.newPool);
+    hints.raydiumPool ??=
+      event.payload.candidate.raydiumPool ?? readString(raw.raydiumPool);
+  }
+
+  return hints;
+}
+
+function getLiveTokenMigrationState(options: {
+  eventTypes: string[];
+  latestEventAt: string;
+  source: string;
+  tokenEvents: Array<{ createdAt: string; eventType: string; payload: FeedEvent }>;
+}): {
+  migratedAt: string | null;
+  pool: string | null;
+  source: string | null;
+  status: "not_migrated" | "migrated";
+} {
+  const migrationEvent = options.tokenEvents.find(
+    (event) =>
+      event.eventType === "migration" ||
+      event.payload.rawSourceEventType?.toLowerCase().includes("migr")
+  );
+  const migrated =
+    options.eventTypes.includes("migration") ||
+    options.eventTypes.includes("token_migrated") ||
+    migrationEvent !== undefined;
+
+  if (!migrated) {
+    return {
+      migratedAt: null,
+      pool: null,
+      source: null,
+      status: "not_migrated"
+    };
+  }
+
+  const raw =
+    migrationEvent?.payload.raw && typeof migrationEvent.payload.raw === "object"
+      ? (migrationEvent.payload.raw as Record<string, unknown>)
+      : {};
+
+  return {
+    migratedAt: migrationEvent?.createdAt ?? options.latestEventAt,
+    pool:
+      readString(raw.pool) ??
+      readString(raw.newPool) ??
+      readString(raw.raydiumPool),
+    source: migrationEvent?.payload.source ?? options.source,
+    status: "migrated"
+  };
+}
+
+function getAdaptiveTrackingReasonCodes(options: {
+  hasPaperPosition: boolean;
+  launchPhase: string;
+  migrationStatus: "not_migrated" | "migrated";
+  trackingState: string;
+}): string[] {
+  const reasonCodes = ["MOMENTUM_ADAPTIVE_TRACKING_RULES_AVAILABLE"];
+
+  if (options.launchPhase === "hot") {
+    reasonCodes.push("MOMENTUM_EXTEND_ON_HOT");
+  }
+
+  if (options.launchPhase === "ripping") {
+    reasonCodes.push("MOMENTUM_EXTEND_ON_RIPPING");
+  }
+
+  if (options.hasPaperPosition) {
+    reasonCodes.push("MOMENTUM_EXTEND_ON_PAPER_POSITION");
+  }
+
+  if (options.migrationStatus === "migrated") {
+    reasonCodes.push("MIGRATED_TOKEN_VISIBLE");
+
+    if (options.trackingState !== "tracking") {
+      reasonCodes.push("TRADE_SOURCE_UNAVAILABLE_AFTER_MIGRATION");
+    }
+  }
+
+  return uniqueReasonCodes(reasonCodes);
+}
+
+function buildMomentumMissingFieldReasons(
+  card: LiveTokenCardViewModel,
+  options: { hasDerivativeSamples: boolean; hasTradeSamples: boolean }
+): Record<string, string[]> {
+  const tokenTradeTrackingUnavailable =
+    card.meteredLaunchDataState === "blocked" ||
+    card.meteredLaunchDataState === "not_tracked" ||
+    card.meteredLaunchDataState === "unsubscribed";
+  const marketCapAvailable =
+    card.marketCapUsd !== null || card.marketCapSol !== null;
+
+  return {
+    marketCap: marketCapAvailable
+      ? []
+      : uniqueReasonCodes([
+          ...(card.enrichmentStatus === "disabled" ? ["ENRICHMENT_DISABLED"] : []),
+          card.ageSeconds < 300 ? "TOKEN_TOO_NEW" : "MARKET_CAP_UNAVAILABLE"
+        ]),
+    liquidity:
+      card.liquidityUsd !== null
+        ? []
+        : uniqueReasonCodes([
+            ...(card.enrichmentStatus === "disabled" ? ["ENRICHMENT_DISABLED"] : []),
+            "LIQUIDITY_UNAVAILABLE",
+            card.migrationStatus === "not_migrated"
+              ? "TOKEN_NOT_MIGRATED"
+              : "POOL_NOT_DETECTED"
+          ]),
+    price:
+      card.priceSol !== null || card.priceUsd !== null
+        ? []
+        : uniqueReasonCodes([
+            tokenTradeTrackingUnavailable
+              ? "TOKEN_TRADE_TRACKING_DISABLED"
+              : "INSUFFICIENT_TRADE_SAMPLES",
+            "PRICE_UNAVAILABLE"
+          ]),
+    volume:
+      card.volume10sSol !== null || card.volume10sUsd !== null
+        ? []
+        : uniqueReasonCodes([
+            tokenTradeTrackingUnavailable
+              ? "TOKEN_TRADE_TRACKING_DISABLED"
+              : options.hasTradeSamples
+                ? "VOLUME_UNAVAILABLE"
+                : "NO_TRADE_EVENTS"
+          ]),
+    holders:
+      card.holderCount !== null ||
+      card.topHolderPct !== null ||
+      card.top10HolderPct !== null
+        ? []
+        : [
+            "CHAIN_VERIFY_DISABLED",
+            "HOLDER_DATA_UNAVAILABLE",
+            "HOLDER_TIME_SERIES_UNAVAILABLE"
+          ],
+    social: ["SOCIAL_PROVIDER_NOT_CONFIGURED"],
+    derivatives: options.hasDerivativeSamples
+      ? []
+      : uniqueReasonCodes([
+          "INSUFFICIENT_SAMPLES_FOR_DERIVATIVE",
+          ...(tokenTradeTrackingUnavailable
+            ? ["TOKEN_TRADE_TRACKING_DISABLED"]
+            : [])
+        ])
+  };
+}
+
+function getTopMissingReasons(
+  reasonCodes: string[]
+): Array<{ reasonCode: string; count: number }> {
+  return Object.entries(countRowFields(reasonCodes))
+    .map(([reasonCode, count]) => ({ reasonCode, count }))
+    .sort((left, right) => right.count - left.count || left.reasonCode.localeCompare(right.reasonCode))
+    .slice(0, 12);
+}
+
 function getMomentumDataQualityLabel(
   card: LiveTokenCardViewModel
 ): MomentumScannerRow["dataQualityLabel"] {
@@ -6952,6 +7363,7 @@ function countRowFields(fields: string[]): Record<string, number> {
 function getMomentumRecommendedActions(options: {
   actualStatus: {
     acknowledgedMetered: boolean;
+    apiKeyConfigured: boolean;
     dataWalletBalanceStatus: string;
     enabled: boolean;
     totalEventsThisSession: number;
@@ -6981,10 +7393,12 @@ function getMomentumRecommendedActions(options: {
   ) {
     if (!options.actualStatus.enabled) {
       actions.push("ENABLE_METERED_TOKEN_TRADES_FOR_PRICE_ACTION");
+    } else if (!options.actualStatus.apiKeyConfigured) {
+      actions.push("CHECK_PUMPPORTAL_API_KEY");
     } else if (!options.actualStatus.acknowledgedMetered) {
-      actions.push("ACK_MISSING");
+      actions.push("CHECK_METERED_ACK");
     } else if (options.actualStatus.totalEventsThisSession === 0) {
-      actions.push("WAITING_FOR_TRADE_SAMPLES");
+      actions.push("WAIT_FOR_MORE_TRADE_SAMPLES");
     }
   }
 
@@ -7009,11 +7423,11 @@ function getMomentumRecommendedActions(options: {
     options.actualStatus.dataWalletBalanceStatus === "critical" ||
     options.actualStatus.dataWalletBalanceStatus === "low"
   ) {
-    actions.push("DATA_WALLET_BALANCE_LOW");
+    actions.push("CHECK_DATA_WALLET_BALANCE");
   }
 
   if (options.unavailableFieldCounts.INSUFFICIENT_SAMPLES_FOR_DERIVATIVE) {
-    actions.push("WAITING_FOR_TRADE_SAMPLES");
+    actions.push("WAIT_FOR_MORE_TRADE_SAMPLES");
   }
 
   if (options.unavailableFieldCounts.SOCIAL_SIGNAL_PROVIDER_NOT_CONFIGURED) {
