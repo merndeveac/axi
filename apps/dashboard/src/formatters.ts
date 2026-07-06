@@ -2,11 +2,11 @@ export type VelocityUnit = "usd" | "sol" | "pct" | "buyers" | "holders";
 
 export function formatUnknown(value: unknown): string {
   if (value === null || value === undefined || value === "") {
-    return "--";
+    return "—";
   }
 
   if (typeof value === "number" && !isFiniteNumber(value)) {
-    return "--";
+    return "—";
   }
 
   return String(value);
@@ -14,7 +14,7 @@ export function formatUnknown(value: unknown): string {
 
 export function formatCompactNumber(value: number | null | undefined): string {
   if (!isFiniteNumber(value)) {
-    return "--";
+    return "—";
   }
 
   return Intl.NumberFormat("en", {
@@ -25,7 +25,7 @@ export function formatCompactNumber(value: number | null | undefined): string {
 
 export function formatSol(value: number | null | undefined): string {
   if (!isFiniteNumber(value)) {
-    return "--";
+    return "—";
   }
 
   const digits = Math.abs(value) < 0.001 ? 6 : 4;
@@ -34,7 +34,7 @@ export function formatSol(value: number | null | undefined): string {
 
 export function formatUsd(value: number | null | undefined): string {
   if (!isFiniteNumber(value)) {
-    return "--";
+    return "—";
   }
 
   const sign = value < 0 ? "-" : "";
@@ -50,7 +50,7 @@ export function formatUsd(value: number | null | undefined): string {
 
 export function formatPct(value: number | null | undefined): string {
   if (!isFiniteNumber(value)) {
-    return "--";
+    return "—";
   }
 
   return `${formatSigned(value, 2)}%`;
@@ -61,7 +61,7 @@ export function formatVelocity(
   unit: VelocityUnit
 ): string {
   if (!isFiniteNumber(value)) {
-    return "--";
+    return "—";
   }
 
   if (unit === "usd") {
@@ -84,7 +84,7 @@ export function formatAcceleration(
   unit: VelocityUnit
 ): string {
   if (!isFiniteNumber(value)) {
-    return "--";
+    return "—";
   }
 
   if (unit === "usd") {
@@ -104,7 +104,7 @@ export function formatAcceleration(
 
 export function formatAge(seconds: number | null | undefined): string {
   if (!isFiniteNumber(seconds)) {
-    return "--";
+    return "—";
   }
 
   if (seconds < 60) {
@@ -120,13 +120,13 @@ export function formatAge(seconds: number | null | undefined): string {
 
 export function formatTimeAgo(timestamp: string | null | undefined): string {
   if (!timestamp) {
-    return "--";
+    return "—";
   }
 
   const parsed = Date.parse(timestamp);
 
   if (!Number.isFinite(parsed)) {
-    return "--";
+    return "—";
   }
 
   return `${formatAge((Date.now() - parsed) / 1000)} ago`;
@@ -134,13 +134,13 @@ export function formatTimeAgo(timestamp: string | null | undefined): string {
 
 export function formatTime(timestamp: string | null | undefined): string {
   if (!timestamp) {
-    return "--";
+    return "—";
   }
 
   const parsed = Date.parse(timestamp);
 
   if (!Number.isFinite(parsed)) {
-    return "--";
+    return "—";
   }
 
   return new Date(parsed).toLocaleTimeString();
@@ -148,7 +148,7 @@ export function formatTime(timestamp: string | null | undefined): string {
 
 export function formatMintShort(mint: string | null | undefined): string {
   if (!mint) {
-    return "--";
+    return "—";
   }
 
   return mint.length <= 14 ? mint : `${mint.slice(0, 8)}...${mint.slice(-6)}`;

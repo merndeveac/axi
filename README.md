@@ -54,6 +54,37 @@ actual-data gates. It never uses account-trade streams, trading APIs, wallet
 loading, signing, transaction sending, or live execution. Tracking is disabled
 by default and remains paper-only.
 
+## Modern Momentum Scanner UI
+
+Branch `dev/momentum-scanner-row-ui-data-audit` adds the row-based dashboard
+scanner surface. The Scanner tab is the default product view: one current
+session token per compact row, with expandable audit details for metric windows,
+derivatives, strategy components, reason codes, unavailable fields, risk, and
+paper portfolio state.
+
+The Scanner tab is backed by:
+
+- `GET /ui/momentum-rows`
+- `GET /ui/momentum-diagnostics`
+
+`/ui/momentum-rows` composes one `MomentumScannerRow` per live/session token on
+the API side. The dashboard does not join the main row from many endpoints in
+React. Rows include identity, age, launch phase/score, price, market cap, FDV,
+liquidity, rolling volume/flow, buy/sell ratio, net pressure, derivatives,
+risk/holder fields, paper position/PnL, data quality, missing/unavailable field
+lists, and strategy drivers/blockers.
+
+Unavailable data stays `null` and renders as `—`; it is not displayed as zero.
+Zero is reserved for true observed zero values. `/ui/momentum-diagnostics`
+explains blanks with field counts, source status, reason codes, and recommended
+next actions. Market cap, FDV, and liquidity require enrichment. Price action
+requires metered PumpPortal token-trade samples. Holder derivatives require a
+real holder time series. Social/tweet signals are not implemented in this repo
+and report `SOCIAL_SIGNAL_PROVIDER_NOT_CONFIGURED`.
+
+The dashboard has no buy/sell/execute buttons, wallet import, signing controls,
+or live-transaction controls. AXI remains paper-only.
+
 ## Watched Wallet Paper Exit Strategy
 
 Branch `dev/watched-wallet-paper-exit-strategy` adds a paper-only exit strategy
@@ -718,7 +749,7 @@ Holder count, top-holder, and top-10-holder values can appear when read-only
 chain verification or risk snapshots provide them. Holder velocity and holder
 acceleration are not computed unless a real holder time series exists. In the
 current live-token card model those derivative fields are `null`, render as
-`--`, and include `HOLDER_TIME_SERIES_UNAVAILABLE`.
+`—`, and include `HOLDER_TIME_SERIES_UNAVAILABLE`.
 
 ## Risk And Candidate Lifecycle
 
@@ -1133,48 +1164,54 @@ The free new-token and migration streams can populate current-session live
 tokens and launches, with names and symbols when the payload includes them.
 They do not provide full trade volume or velocity by themselves.
 
-The dashboard is live-token-first. Its default LIVE tab renders current-session
-token intelligence cards from:
+The dashboard is scanner-first. Its default Scanner tab renders current-session
+momentum rows from:
 
 ```text
-GET /ui/live-token-cards
+GET /ui/momentum-rows
+GET /ui/momentum-diagnostics
 ```
 
-Each card includes identity, live feed status, market fields, participant flow,
-strategy calculations, risk flags, final signal/action/score, and audit fields.
-Fields that are not available from the current data source remain `null` in the
-API, render as `--` in the UI, and are listed in `missingFields`,
-`unavailableFields`, `dataSourceWarnings`, and calculation reason codes. The
-card endpoint does not include historical mock/replay rows.
+Each row includes identity, live feed status, launch phase/score, market fields,
+participant flow, strategy calculations, risk flags, paper position/PnL, data
+quality, and expandable audit fields. Fields that are not available from the
+current data source remain `null` in the API, render as `—` in the UI, and are
+listed in `missingCriticalFields`, `unavailableFields`, `staleFields`, and
+reason codes. The row endpoint does not include historical mock/replay rows.
+`GET /ui/live-token-cards` remains available as the legacy/debug card view
+model.
 
 Dashboard tabs:
 
-- LIVE: high-density PumpPortal launch scanner cards, launch score/phase,
-  sort/filter/search controls, and inline audit expansion.
-- SIGNALS: read-only strategy status plus signal explanation and raw signal
+- Scanner: compact one-row-per-token momentum scanner with search, sort,
+  filters, real-only, compact mode, and row audit expansion.
+- Signals: read-only strategy status plus signal explanation and raw signal
   rows.
-- PORTFOLIO: simulated cash, equity, positions, paper orders/fills, PnL, fees,
+- Portfolio: simulated cash, equity, positions, paper orders/fills, PnL, fees,
   and best/worst closed paper trades.
-- METRICS: rolling windows, velocity, acceleration, sample counts, and metric
+- Metrics: rolling windows, velocity, acceleration, sample counts, and metric
   debug values.
-- RISK: risk levels, hard rejects, authority flags, holder concentration, and
+- Risk: risk levels, hard rejects, authority flags, holder concentration, and
   risk reasons.
-- EXIT: watched-wallet paper exit status, metered account-trade gates, watched
+- Exit: watched-wallet paper exit status, metered account-trade gates, watched
   wallets, exit rules, observed wallet trades, and paper exit signals.
-- DATA: PumpPortal launch tracking status, budget, tracked mints, feed/live
+- Data: scanner diagnostics, PumpPortal launch tracking status, budget,
+  tracked mints, feed/live
   feed state, wallet readiness, managed stream status as secondary future
   infrastructure, market data, chain, and token identity health.
-- STORAGE / DEBUG: persisted counts, live feed rows, and verification/debug
+- Debug: persisted counts, live feed rows, and verification/debug
   rows.
 
-The LIVE tab can sort by launch score, newest, score, volume velocity,
-10-second volume, or risk. It can filter all/watch/qualified/rejected cards,
-filter to real data only, and search by symbol, name, or mint. It never shows
-buy/sell buttons, wallet controls, signing controls, or live execution controls.
+The Scanner tab can sort by newest, launch score, 10-second volume, volume
+velocity, price velocity, unique buyers, buy/sell ratio, risk, or PnL. It can
+filter all/watch/hot/ripping/rejected/trade-tracked/discovery-only/missing
+critical rows, filter to real data only, and search by symbol, name, or mint. It
+never shows buy/sell buttons, wallet controls, signing controls, or live
+execution controls.
 
 Displayed calculations include first and second derivatives for volume, price,
 and buyers when usable rolling trade samples exist. Holder derivatives are shown
-only when a real holder time series is available; otherwise they render as `--`
+only when a real holder time series is available; otherwise they render as `—`
 with `HOLDER_TIME_SERIES_UNAVAILABLE`.
 
 If tokens arrive but names, symbols, or metadata are missing, enable read-only
@@ -1697,7 +1734,18 @@ metrics, candidate decisions, risk snapshots, actual-data summaries, market
 observations, and chain verification summaries. Cards include a
 data-completeness model, launch phase/score/windows, trade-tracking state,
 latest trade time, trade count, watched-wallet paper exit summary, and optional
-enrichment fields. Unknown data stays `null`; the dashboard renders it as `--`.
+enrichment fields. Unknown data stays `null`; the dashboard renders it as `—`.
+
+`GET /ui/momentum-rows` is the primary dashboard scanner view model. It returns
+compact `MomentumScannerRow` objects for current-session tokens only, excluding
+historical mock/replay rows. It preserves true zeros, returns `null` for missing
+fields, gates derivatives behind enough trade samples, and includes
+field-diagnostic reason codes.
+
+`GET /ui/momentum-diagnostics` summarizes scanner data coverage: tokens with
+price, volume, market cap, liquidity, trade samples, derivatives, risk, holder
+data, and paper positions. It also returns unavailable/missing field counts,
+data-source readiness, reason codes, and recommended next actions.
 
 `GET /launch/status` reports PumpPortal-first discovery and launch-tracking
 gates. `GET /launch/cards`, `/launch/candidates`, and `/launch/scores` expose
@@ -1922,11 +1970,12 @@ pnpm --filter @axi/dashboard dev
 
 The dashboard connects to `ws://localhost:8787/ws/signals`.
 
-The dashboard uses a terminal-style dark UI with PAPER mode kept visible in the
-top status bar. It is organized into LIVE, SIGNALS, METRICS, RISK, DATA, and
-STORAGE / DEBUG tabs. The LIVE tab is the default and renders token
-intelligence cards backed by `/ui/live-token-cards`. Unknown/unavailable values
-render as `--` with reason-code audit visibility. The DATA tab includes a
+The dashboard uses a modern dark scanner UI with PAPER mode kept visible in the
+top status bar. It is organized into Scanner, Signals, Portfolio, Metrics,
+Risk, Exit, Data, and Debug tabs. The Scanner tab is the default and renders one
+compact row per live token backed by `/ui/momentum-rows`. Unknown/unavailable
+values render as `—` with reason-code audit visibility from
+`/ui/momentum-diagnostics`. The Data tab includes scanner diagnostics and a
 PumpPortal metered data-wallet panel showing the public funding address,
 read-only balance, budget estimates, and safety warnings. It has no wallet
 signing controls, buy/sell buttons, withdrawal/import actions, or live-trading
@@ -2024,8 +2073,7 @@ docker compose --profile indexer up -d
   normalization and SOL/quote-aware paper metrics.
 - `dev/real-feed-watch-orchestrator` contains read-only feed-to-chain watch
   orchestration planning and API/dashboard visibility.
-- `dev/dashboard-terminal-ui-pass` contains the terminal-style dashboard UI
-  refinement.
+- `dev/dashboard-terminal-ui-pass` contains an older dashboard UI refinement.
 - `dev/actual-data-pumpportal-trades` contains opt-in PumpPortal token-trade
   ingestion for selected mints.
 - `dev/real-token-identity-normalization` contains no-mock default runtime data
@@ -2036,6 +2084,8 @@ docker compose --profile indexer up -d
 - `dev/live-token-intelligence-ui` contains the live-token intelligence card
   endpoint, read-only strategy status endpoint, tabbed dashboard, card audit
   view, and formatter tests.
+- `dev/momentum-scanner-row-ui-data-audit` contains the modern row-based
+  momentum scanner UI plus `/ui/momentum-rows` and `/ui/momentum-diagnostics`.
 - `dev/pumpportal-data-wallet-readiness` contains PumpPortal data-wallet
   readiness for metered data billing.
 - `dev/pumpportal-lightning-readiness` contains PumpPortal wallet readiness,

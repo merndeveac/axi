@@ -46,6 +46,8 @@ import {
   type CandidateDecision,
   type LiveCardDataCompleteness,
   type LiveTokenCardViewModel,
+  type MomentumDiagnostics,
+  type MomentumScannerRow,
   type LiveTradeTrackingState,
   type ObservationConfidence,
   type OverlaySignal,
@@ -2041,10 +2043,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     return liveTokens.getLiveFeedEvents(query.limit);
   });
 
-  app.get("/ui/live-token-cards", async () =>
-    indexerAdapter.getStatus().preferLiveStateCards
-      ? buildIndexerBackedLiveTokenCards()
-      : buildLiveTokenCards()
+  app.get("/ui/live-token-cards", async () => getLiveTokenCardsForUi());
+
+  app.get("/ui/momentum-rows", async () => getMomentumScannerRows());
+
+  app.get("/ui/momentum-diagnostics", async () =>
+    buildMomentumDiagnostics(getMomentumScannerRows())
   );
 
   app.get("/metered-launch-data/status", async () =>
@@ -3269,6 +3273,361 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     };
   }
 
+  function getLiveTokenCardsForUi(): LiveTokenCardViewModel[] {
+    return indexerAdapter.getStatus().preferLiveStateCards
+      ? buildIndexerBackedLiveTokenCards()
+      : buildLiveTokenCards();
+  }
+
+  function getMomentumScannerRows(): MomentumScannerRow[] {
+    return getLiveTokenCardsForUi().map((card) =>
+      liveCardToMomentumScannerRow(card)
+    );
+  }
+
+  function liveCardToMomentumScannerRow(
+    card: LiveTokenCardViewModel
+  ): MomentumScannerRow {
+    const hasDerivativeSamples =
+      card.sampleCount >= 2 ||
+      card.launchTradeSampleCount >= 2 ||
+      card.realTradeEventCount >= 2;
+    const hasTradeSamples =
+      card.sampleCount > 0 ||
+      card.launchTradeSampleCount > 0 ||
+      card.realTradeEventCount > 0;
+    const derivativeReasonCodes = hasDerivativeSamples
+      ? []
+      : ["INSUFFICIENT_SAMPLES_FOR_DERIVATIVE"];
+    const marketUnavailable = [
+      ...(card.marketCapUsd === null ? ["MARKET_CAP_UNAVAILABLE"] : []),
+      ...(card.liquidityUsd === null ? ["LIQUIDITY_UNAVAILABLE"] : []),
+      ...(card.fdvUsd === null ? ["FDV_UNAVAILABLE"] : []),
+      ...(card.enrichmentStatus === "disabled" ? ["ENRICHMENT_DISABLED"] : [])
+    ];
+    const holderUnavailable =
+      card.holderVelocityPerSec === null ||
+      card.holderAccelerationPerSec2 === null
+        ? ["HOLDER_TIME_SERIES_UNAVAILABLE"]
+        : [];
+    const unavailableFields = uniqueReasonCodes([
+      ...card.unavailableFields,
+      ...marketUnavailable,
+      ...holderUnavailable,
+      ...derivativeReasonCodes,
+      "SOCIAL_SIGNAL_PROVIDER_NOT_CONFIGURED"
+    ]);
+    const staleFields = card.stale ? ["latestEventAt"] : [];
+    const qualityLabel = getMomentumDataQualityLabel(card);
+    const volume5sSol =
+      finiteOrNull(card.volume5sSol) ??
+      (hasTradeSamples ? finiteOrNull(card.launchVolume5sSol) : null);
+    const volume10sSol =
+      finiteOrNull(card.volume10sSol) ??
+      (hasTradeSamples ? finiteOrNull(card.launchVolume10sSol) : null);
+    const volume30sSol =
+      finiteOrNull(card.volume30sSol) ??
+      (hasTradeSamples ? finiteOrNull(card.launchVolume30sSol) : null);
+    const flow10s = hasTradeSamples ? (card.launchWindows?.["10s"] ?? null) : null;
+    const flow5s = hasTradeSamples ? (card.launchWindows?.["5s"] ?? null) : null;
+    const flow30s = hasTradeSamples ? (card.launchWindows?.["30s"] ?? null) : null;
+    const derivatives = {
+      volumeVelocitySolPerSec: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.volumeVelocitySolPerSec,
+        card.launchVolumeVelocitySolPerSec
+      ),
+      volumeAccelerationSolPerSec2: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.volumeAccelerationSolPerSec2,
+        card.launchVolumeAccelerationSolPerSec2
+      ),
+      priceVelocityPctPerSec: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.priceSolVelocityPctPerSec ?? card.priceVelocityPctPerSec,
+        card.launchPriceVelocityPctPerSec
+      ),
+      priceAccelerationPctPerSec2: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.priceSolAccelerationPctPerSec2 ??
+          card.priceAccelerationPctPerSec2,
+        card.launchPriceAccelerationPctPerSec2
+      ),
+      buyerVelocityPerSec: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.buyerVelocityPerSec,
+        card.launchBuyerVelocityPerSec
+      ),
+      buyerAccelerationPerSec2: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.buyerAccelerationPerSec2,
+        card.launchBuyerAccelerationPerSec2
+      )
+    };
+    const reasonCodes = uniqueReasonCodes([
+      ...card.combinedReasonCodes,
+      ...card.dataCompleteness.reasonCodes,
+      ...card.tradeTrackingReasonCodes,
+      ...card.launchReasonCodes,
+      ...card.launchMissingDataReasons,
+      ...card.dataSourceWarnings,
+      ...marketUnavailable,
+      ...holderUnavailable,
+      ...derivativeReasonCodes,
+      "SOCIAL_SIGNAL_PROVIDER_NOT_CONFIGURED",
+      "NO_TRADING_CONTROLS",
+      "PAPER_ONLY"
+    ]);
+
+    return sanitizeMomentumRow({
+      mint: card.mint,
+      shortMint: card.shortMint,
+      title: card.title,
+      displayName: card.displayName,
+      name: card.name,
+      symbol: card.symbol,
+      imageUri: card.imageUri,
+      identitySource: card.identitySource,
+      identityConfidence: card.identityConfidence,
+      ageSeconds: finiteOrNull(card.launchAgeSeconds) ?? finiteOrNull(card.ageSeconds),
+      launchedAt: card.firstSeenAt,
+      latestEventAt: card.latestEventAt,
+      eventType: card.eventTypes.at(-1) ?? null,
+      launchPhase: card.launchPhase,
+      launchScore: card.launchScore,
+      launchScoreLabel: card.launchScoreLabel,
+      signalAction: card.action,
+      signalStrength: card.signalStrength,
+      buyReadyPaper: card.launchBuyReadyPaper || card.buyReady,
+      trackingState: card.meteredLaunchDataState,
+      priceSol: finiteOrNull(card.priceSol ?? card.launchPriceSol),
+      priceUsd: finiteOrNull(card.priceUsd),
+      marketCapUsd: finiteOrNull(card.marketCapUsd),
+      fdvUsd: finiteOrNull(card.fdvUsd),
+      liquidityUsd: finiteOrNull(card.liquidityUsd),
+      priceSource:
+        card.priceSol !== null || card.priceUsd !== null
+          ? card.priceActionSource
+          : null,
+      marketDataSource: card.enrichmentSource,
+      marketDataFreshnessMs:
+        card.marketCapUsd !== null ||
+        card.fdvUsd !== null ||
+        card.liquidityUsd !== null
+          ? card.dataFreshnessMs
+          : null,
+      volume5sSol,
+      volume10sSol,
+      volume30sSol,
+      volume60sSol: hasTradeSamples ? finiteOrNull(card.volume60sSol) : null,
+      volume5sUsd: finiteOrNull(card.volume5sUsd),
+      volume10sUsd: finiteOrNull(card.volume10sUsd),
+      volume30sUsd: finiteOrNull(card.volume30sUsd),
+      volume60sUsd: finiteOrNull(card.volume60sUsd),
+      buyVolume10sSol:
+        finiteOrNull(flow10s?.buyVolumeSol) ??
+        (card.volume10sSol !== null ? finiteOrNull(card.buyVolume10s) : null),
+      sellVolume10sSol:
+        finiteOrNull(flow10s?.sellVolumeSol) ??
+        (card.volume10sSol !== null ? finiteOrNull(card.sellVolume10s) : null),
+      netVolume10sSol:
+        finiteOrNull(flow10s?.netVolumeSol) ??
+        (card.volume10sSol !== null ? finiteOrNull(card.netVolume10s) : null),
+      tradeCount5s: finiteOrNull(flow5s?.tradeCount),
+      tradeCount10s:
+        finiteOrNull(card.totalTradeCount10s) ??
+        finiteOrNull(flow10s?.tradeCount),
+      tradeCount30s: finiteOrNull(flow30s?.tradeCount),
+      buyCount10s:
+        finiteOrNull(card.buyTradeCount10s) ??
+        finiteOrNull(card.launchBuyCount10s),
+      sellCount10s:
+        finiteOrNull(card.sellTradeCount10s) ??
+        finiteOrNull(card.launchSellCount10s),
+      uniqueBuyers10s:
+        finiteOrNull(card.uniqueBuyers10s) ??
+        finiteOrNull(card.launchUniqueBuyers10s),
+      uniqueSellers10s:
+        finiteOrNull(card.uniqueSellers10s) ??
+        finiteOrNull(card.launchUniqueSellers10s),
+      buySellRatio: finiteOrNull(card.buySellRatio ?? flow10s?.buySellRatio),
+      netBuyPressure:
+        finiteOrNull(card.netBuyPressure) ??
+        finiteOrNull(card.launchNetBuyPressure10s),
+      latestTradeAt: card.latestTradeAt,
+      realTradeEventCount: card.realTradeEventCount,
+      ...derivatives,
+      holderVelocityPerSec: null,
+      holderAccelerationPerSec2: null,
+      riskLevel: card.riskLevel,
+      riskScore: finiteOrNull(card.riskScore),
+      hardReject: card.hardReject,
+      topHolderPct: finiteOrNull(card.topHolderPct),
+      top10HolderPct: finiteOrNull(card.top10HolderPct),
+      holderCount: finiteOrNull(card.holderCount),
+      mintAuthorityActive: card.mintAuthorityActive,
+      freezeAuthorityActive: card.freezeAuthorityActive,
+      riskReasonCodes: card.riskReasonCodes,
+      topRiskWarnings: card.topRiskWarnings,
+      hasPaperPosition: card.paperPositionSummary.hasPosition,
+      paperPositionStatus: card.paperPositionSummary.status,
+      entryPriceSol: finiteOrNull(card.paperPositionSummary.entryPriceSol),
+      currentPriceSol: finiteOrNull(card.paperPositionSummary.currentPriceSol),
+      unrealizedPnlPct: finiteOrNull(
+        card.paperPositionSummary.unrealizedPnlPct
+      ),
+      unrealizedPnlSol: finiteOrNull(
+        card.paperPositionSummary.unrealizedPnlSol
+      ),
+      realizedPnlSol: finiteOrNull(card.paperPositionSummary.realizedPnlSol),
+      latestPaperExitSignal:
+        card.paperPositionSummary.latestPaperExitSignal,
+      realData: card.realData,
+      source: card.source,
+      dataQualityLabel: qualityLabel,
+      missingCriticalFields: card.missingCriticalFields,
+      unavailableFields,
+      staleFields,
+      fieldDiagnosticsSummary: summarizeMomentumFields({
+        missingCriticalFields: card.missingCriticalFields,
+        staleFields,
+        unavailableFields
+      }),
+      reasonCodes,
+      lastUpdatedAt: card.lastUpdatedAt,
+      strategyName: card.strategyName,
+      scoreComponents: card.launchScoreComponents ?? {
+        earlyVolumeScore: null,
+        volumeAccelerationScore: null,
+        priceActionScore: null,
+        buyerGrowthScore: null,
+        buyPressureScore: null,
+        riskPenalty: card.strategy.components.riskPenalty,
+        missingDataPenalty: card.strategy.components.missingDataPenalty
+      },
+      positiveDrivers: [
+        ...card.launchDrivers,
+        ...card.strategy.positiveDrivers.map((driver) => driver.label)
+      ],
+      negativeDrivers: card.strategy.negativeDrivers.map(
+        (driver) => driver.label
+      ),
+      blockers: uniqueReasonCodes([
+        ...card.launchBlockers,
+        ...card.strategy.blockers.map((driver) => driver.label)
+      ])
+    });
+  }
+
+  function buildMomentumDiagnostics(
+    rows: MomentumScannerRow[]
+  ): MomentumDiagnostics {
+    const feedStatus = getFeedStatus();
+    const actualStatus = actualData.getStatus();
+    const enrichmentStatus = getLiveCardEnrichmentStatus();
+    const chainVerifierStatus = chainVerifier.getStatus();
+    const indexerStatus = indexerAdapter.getStatus();
+    const chainVerifierReasonCodes = uniqueReasonCodes([
+      chainVerifierStatus.enabled
+        ? "CHAIN_VERIFIER_ENABLED"
+        : "CHAIN_VERIFIER_DISABLED",
+      chainVerifierStatus.configured
+        ? "SOLANA_RPC_VERIFIER_CONFIGURED"
+        : "SOLANA_RPC_VERIFIER_UNCONFIGURED",
+      `CHAIN_VERIFIER_${chainVerifierStatus.status.toUpperCase()}`
+    ]);
+    const unavailableFieldCounts = countRowFields(
+      rows.flatMap((row) => row.unavailableFields)
+    );
+    const missingCriticalFieldCounts = countRowFields(
+      rows.flatMap((row) => row.missingCriticalFields)
+    );
+    const reasonCodes = uniqueReasonCodes([
+      "MOMENTUM_DIAGNOSTICS_READY",
+      ...(rows.length === 0 ? ["NO_LIVE_TOKENS"] : []),
+      ...(Object.keys(unavailableFieldCounts).length > 0
+        ? ["SCANNER_FIELDS_UNAVAILABLE"]
+        : []),
+      ...(Object.keys(missingCriticalFieldCounts).length > 0
+        ? ["SCANNER_CRITICAL_FIELDS_MISSING"]
+        : [])
+    ]);
+
+    return {
+      liveTokenCount: liveTokens.getLiveTokens().length,
+      rowsReturned: rows.length,
+      tokensWithPrice: rows.filter(
+        (row) => row.priceSol !== null || row.priceUsd !== null
+      ).length,
+      tokensWithVolume: rows.filter(
+        (row) => row.volume10sSol !== null || row.volume10sUsd !== null
+      ).length,
+      tokensWithMarketCap: rows.filter((row) => row.marketCapUsd !== null)
+        .length,
+      tokensWithLiquidity: rows.filter((row) => row.liquidityUsd !== null)
+        .length,
+      tokensWithTradeData: rows.filter((row) => row.realTradeEventCount > 0)
+        .length,
+      tokensWithDerivatives: rows.filter(
+        (row) =>
+          row.volumeVelocitySolPerSec !== null ||
+          row.priceVelocityPctPerSec !== null ||
+          row.buyerVelocityPerSec !== null
+      ).length,
+      tokensWithRiskData: rows.filter((row) => row.riskScore !== null).length,
+      tokensWithHolderData: rows.filter((row) => row.holderCount !== null)
+        .length,
+      tokensWithPaperPosition: rows.filter((row) => row.hasPaperPosition)
+        .length,
+      unavailableFieldCounts,
+      missingCriticalFieldCounts,
+      dataSources: {
+        pumpportalLiveDiscovery: {
+          enabled: feedStatus.enabled,
+          connected: feedStatus.connected,
+          tokenCount: liveTokens.getLiveTokens().length,
+          reasonCodes: feedStatus.reasonCodes
+        },
+        pumpportalTokenTrades: {
+          enabled: actualStatus.enabled,
+          acknowledged: actualStatus.acknowledgedMetered,
+          subscribedTokenCount: actualStatus.subscribedTokenCount,
+          eventCount: actualStatus.totalEventsThisSession,
+          reasonCodes: actualStatus.reasonCodes
+        },
+        dexScreener: {
+          enabled: enrichmentStatus.dexScreenerEnabled,
+          cachedMintCount: enrichmentStatus.cachedMintCount,
+          reasonCodes: enrichmentStatus.reasonCodes
+        },
+        jupiter: {
+          enabled: enrichmentStatus.jupiterPriceEnabled,
+          cachedMintCount: enrichmentStatus.cachedMintCount,
+          reasonCodes: enrichmentStatus.reasonCodes
+        },
+        solanaRpcVerifier: {
+          enabled: chainVerifierStatus.enabled,
+          configured: chainVerifierStatus.configured,
+          reasonCodes: chainVerifierReasonCodes
+        },
+        indexer: {
+          enabled: indexerStatus.enabled,
+          liveStateTokenCount: indexerStatus.liveState.tokenCount,
+          reasonCodes: indexerStatus.reasonCodes
+        }
+      },
+      reasonCodes,
+      recommendedNextActions: getMomentumRecommendedActions({
+        actualStatus,
+        chainVerifierStatus,
+        enrichmentStatus,
+        missingCriticalFieldCounts,
+        rows,
+        unavailableFieldCounts
+      })
+    };
+  }
+
   function buildLiveTokenCards(): LiveTokenCardViewModel[] {
     const nowMs = Date.now();
     const feedStatus = getFeedStatus();
@@ -3728,6 +4087,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         launchPriceSol: launchSnapshot?.priceSol ?? null,
         launchWindows: launchSnapshot?.windows ?? null,
         launchDerivatives: launchSnapshot?.derivatives ?? null,
+        launchScoreComponents: launchSnapshot?.components ?? null,
         launchTrackingState:
           launchCandidate?.tracking.state ?? "not_tracked",
         launchVolume5sSol:
@@ -3990,6 +4350,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         launchPriceSol: null,
         launchWindows: null,
         launchDerivatives: null,
+        launchScoreComponents: null,
         launchTrackingState: "not_tracked",
         launchVolume5sSol: null,
         launchVolume10sSol: null,
@@ -6501,6 +6862,165 @@ function positiveOrNull(value: number | null | undefined): number | null {
 
 function numberOrNull(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function finiteOrNull(value: number | null | undefined): number | null {
+  return numberOrNull(value);
+}
+
+function chooseDerivativeValue(
+  hasEnoughSamples: boolean,
+  primary: number | null | undefined,
+  fallback: number | null | undefined
+): number | null {
+  if (!hasEnoughSamples) {
+    return null;
+  }
+
+  return finiteOrNull(primary) ?? finiteOrNull(fallback);
+}
+
+function getMomentumDataQualityLabel(
+  card: LiveTokenCardViewModel
+): MomentumScannerRow["dataQualityLabel"] {
+  if (!card.realData) {
+    return "unavailable";
+  }
+
+  if (card.dataCompletenessLabel === "strategy_ready") {
+    return "strategy_ready";
+  }
+
+  if (
+    card.enrichmentStatus === "available" ||
+    card.enrichmentStatus === "partial"
+  ) {
+    return "enriched";
+  }
+
+  if (card.realTimeSeriesReady && card.realPriceActionReady) {
+    return "price_action_ready";
+  }
+
+  if (
+    card.meteredLaunchDataState === "tracking" ||
+    card.realTradeEventCount > 0 ||
+    card.launchTradeSampleCount > 0
+  ) {
+    return "metered_tracking";
+  }
+
+  return "discovery_only";
+}
+
+function summarizeMomentumFields(options: {
+  missingCriticalFields: string[];
+  staleFields: string[];
+  unavailableFields: string[];
+}): string {
+  const parts = [
+    options.missingCriticalFields.length > 0
+      ? `${options.missingCriticalFields.length} critical missing`
+      : null,
+    options.unavailableFields.length > 0
+      ? `${options.unavailableFields.length} unavailable`
+      : null,
+    options.staleFields.length > 0 ? `${options.staleFields.length} stale` : null
+  ].filter(Boolean);
+
+  return parts.join(" / ") || "all scanner fields available";
+}
+
+function sanitizeMomentumRow(row: MomentumScannerRow): MomentumScannerRow {
+  return JSON.parse(
+    JSON.stringify(row, (_key, value: unknown) =>
+      typeof value === "number" && !Number.isFinite(value) ? null : value
+    )
+  ) as MomentumScannerRow;
+}
+
+function countRowFields(fields: string[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+
+  for (const field of fields) {
+    counts[field] = (counts[field] ?? 0) + 1;
+  }
+
+  return counts;
+}
+
+function getMomentumRecommendedActions(options: {
+  actualStatus: {
+    acknowledgedMetered: boolean;
+    dataWalletBalanceStatus: string;
+    enabled: boolean;
+    totalEventsThisSession: number;
+  };
+  chainVerifierStatus: {
+    configured: boolean;
+    enabled: boolean;
+  };
+  enrichmentStatus: {
+    enabled: boolean;
+  };
+  missingCriticalFieldCounts: Record<string, number>;
+  rows: MomentumScannerRow[];
+  unavailableFieldCounts: Record<string, number>;
+}): string[] {
+  const actions: string[] = [];
+
+  if (options.rows.length === 0) {
+    actions.push("WAITING_FOR_LIVE_TOKENS");
+  }
+
+  if (
+    options.unavailableFieldCounts.priceSol ||
+    options.unavailableFieldCounts.volume10sSol ||
+    options.missingCriticalFieldCounts.price ||
+    options.missingCriticalFieldCounts.volume10s
+  ) {
+    if (!options.actualStatus.enabled) {
+      actions.push("ENABLE_METERED_TOKEN_TRADES_FOR_PRICE_ACTION");
+    } else if (!options.actualStatus.acknowledgedMetered) {
+      actions.push("ACK_MISSING");
+    } else if (options.actualStatus.totalEventsThisSession === 0) {
+      actions.push("WAITING_FOR_TRADE_SAMPLES");
+    }
+  }
+
+  if (
+    (options.unavailableFieldCounts.MARKET_CAP_UNAVAILABLE ||
+      options.unavailableFieldCounts.LIQUIDITY_UNAVAILABLE ||
+      options.unavailableFieldCounts.FDV_UNAVAILABLE) &&
+    !options.enrichmentStatus.enabled
+  ) {
+    actions.push("ENABLE_ENRICHMENT_FOR_MCAP_LIQUIDITY");
+  }
+
+  if (
+    (options.missingCriticalFieldCounts.holderCount ||
+      options.unavailableFieldCounts.HOLDER_TIME_SERIES_UNAVAILABLE) &&
+    (!options.chainVerifierStatus.enabled || !options.chainVerifierStatus.configured)
+  ) {
+    actions.push("ENABLE_CHAIN_VERIFY_FOR_HOLDER_DATA");
+  }
+
+  if (
+    options.actualStatus.dataWalletBalanceStatus === "critical" ||
+    options.actualStatus.dataWalletBalanceStatus === "low"
+  ) {
+    actions.push("DATA_WALLET_BALANCE_LOW");
+  }
+
+  if (options.unavailableFieldCounts.INSUFFICIENT_SAMPLES_FOR_DERIVATIVE) {
+    actions.push("WAITING_FOR_TRADE_SAMPLES");
+  }
+
+  if (options.unavailableFieldCounts.SOCIAL_SIGNAL_PROVIDER_NOT_CONFIGURED) {
+    actions.push("SOCIAL_SIGNAL_PROVIDER_NOT_CONFIGURED");
+  }
+
+  return uniqueReasonCodes(actions);
 }
 
 function paperPortfolioPositionsForExit(

@@ -694,6 +694,16 @@ export type LiveCardLaunchDerivatives = {
   tradeAccelerationPerSec2: number;
 };
 
+export type LiveCardLaunchScoreComponents = {
+  earlyVolumeScore: number;
+  volumeAccelerationScore: number;
+  priceActionScore: number;
+  buyerGrowthScore: number;
+  buyPressureScore: number;
+  riskPenalty: number;
+  missingDataPenalty: number;
+};
+
 export type LiveTokenCardViewModel = {
   mint: string;
   shortMint: string;
@@ -823,6 +833,7 @@ export type LiveTokenCardViewModel = {
   launchPriceSol: number | null;
   launchWindows: LiveCardLaunchWindows | null;
   launchDerivatives: LiveCardLaunchDerivatives | null;
+  launchScoreComponents: LiveCardLaunchScoreComponents | null;
   launchTrackingState: LiveLaunchTrackingState;
   launchVolume5sSol: number | null;
   launchVolume10sSol: number | null;
@@ -895,4 +906,168 @@ export type LiveTokenCardViewModel = {
   missingFields: string[];
   unavailableFields: string[];
   lastUpdatedAt: string;
+};
+
+export type MomentumDataQualityLabel =
+  | "discovery_only"
+  | "metered_tracking"
+  | "price_action_ready"
+  | "enriched"
+  | "strategy_ready"
+  | "unavailable";
+
+export type MomentumScoreComponents = {
+  earlyVolumeScore: number | null;
+  volumeAccelerationScore: number | null;
+  priceActionScore: number | null;
+  buyerGrowthScore: number | null;
+  buyPressureScore: number | null;
+  riskPenalty: number | null;
+  missingDataPenalty: number | null;
+};
+
+export type MomentumScannerRow = {
+  mint: string;
+  shortMint: string;
+  title: string;
+  displayName: string;
+  name: string | null;
+  symbol: string | null;
+  imageUri: string | null;
+  identitySource: TokenIdentityDataSource | string;
+  identityConfidence: TokenIdentityConfidence | string;
+  ageSeconds: number | null;
+  launchedAt: string | null;
+  latestEventAt: string | null;
+  eventType: string | null;
+  launchPhase: string;
+  launchScore: number;
+  launchScoreLabel: string;
+  signalAction: string;
+  signalStrength: SignalStrength | string;
+  buyReadyPaper: boolean;
+  trackingState: string;
+  priceSol: number | null;
+  priceUsd: number | null;
+  marketCapUsd: number | null;
+  fdvUsd: number | null;
+  liquidityUsd: number | null;
+  priceSource: string | null;
+  marketDataSource: string | null;
+  marketDataFreshnessMs: number | null;
+  volume5sSol: number | null;
+  volume10sSol: number | null;
+  volume30sSol: number | null;
+  volume60sSol: number | null;
+  volume5sUsd: number | null;
+  volume10sUsd: number | null;
+  volume30sUsd: number | null;
+  volume60sUsd: number | null;
+  buyVolume10sSol: number | null;
+  sellVolume10sSol: number | null;
+  netVolume10sSol: number | null;
+  tradeCount5s: number | null;
+  tradeCount10s: number | null;
+  tradeCount30s: number | null;
+  buyCount10s: number | null;
+  sellCount10s: number | null;
+  uniqueBuyers10s: number | null;
+  uniqueSellers10s: number | null;
+  buySellRatio: number | null;
+  netBuyPressure: number | null;
+  latestTradeAt: string | null;
+  realTradeEventCount: number;
+  volumeVelocitySolPerSec: number | null;
+  volumeAccelerationSolPerSec2: number | null;
+  priceVelocityPctPerSec: number | null;
+  priceAccelerationPctPerSec2: number | null;
+  buyerVelocityPerSec: number | null;
+  buyerAccelerationPerSec2: number | null;
+  holderVelocityPerSec: number | null;
+  holderAccelerationPerSec2: number | null;
+  riskLevel: RiskLevel | string;
+  riskScore: number | null;
+  hardReject: boolean;
+  topHolderPct: number | null;
+  top10HolderPct: number | null;
+  holderCount: number | null;
+  mintAuthorityActive: boolean | null;
+  freezeAuthorityActive: boolean | null;
+  riskReasonCodes: string[];
+  topRiskWarnings: string[];
+  hasPaperPosition: boolean;
+  paperPositionStatus: string | null;
+  entryPriceSol: number | null;
+  currentPriceSol: number | null;
+  unrealizedPnlPct: number | null;
+  unrealizedPnlSol: number | null;
+  realizedPnlSol: number | null;
+  latestPaperExitSignal: LiveTokenCardViewModel["paperPositionSummary"]["latestPaperExitSignal"];
+  realData: boolean;
+  source: string;
+  dataQualityLabel: MomentumDataQualityLabel;
+  missingCriticalFields: string[];
+  unavailableFields: string[];
+  staleFields: string[];
+  fieldDiagnosticsSummary: string;
+  reasonCodes: string[];
+  lastUpdatedAt: string | null;
+  strategyName: string;
+  scoreComponents: MomentumScoreComponents;
+  positiveDrivers: string[];
+  negativeDrivers: string[];
+  blockers: string[];
+};
+
+export type MomentumDiagnostics = {
+  liveTokenCount: number;
+  rowsReturned: number;
+  tokensWithPrice: number;
+  tokensWithVolume: number;
+  tokensWithMarketCap: number;
+  tokensWithLiquidity: number;
+  tokensWithTradeData: number;
+  tokensWithDerivatives: number;
+  tokensWithRiskData: number;
+  tokensWithHolderData: number;
+  tokensWithPaperPosition: number;
+  unavailableFieldCounts: Record<string, number>;
+  missingCriticalFieldCounts: Record<string, number>;
+  dataSources: {
+    pumpportalLiveDiscovery: {
+      enabled: boolean;
+      connected: boolean;
+      tokenCount: number;
+      reasonCodes: string[];
+    };
+    pumpportalTokenTrades: {
+      enabled: boolean;
+      acknowledged: boolean;
+      subscribedTokenCount: number;
+      eventCount: number;
+      reasonCodes: string[];
+    };
+    dexScreener: {
+      enabled: boolean;
+      cachedMintCount: number;
+      reasonCodes: string[];
+    };
+    jupiter: {
+      enabled: boolean;
+      cachedMintCount: number;
+      reasonCodes: string[];
+    };
+    solanaRpcVerifier: {
+      enabled: boolean;
+      configured: boolean;
+      reasonCodes: string[];
+    };
+    indexer: {
+      enabled: boolean;
+      liveStateTokenCount: number;
+      reasonCodes: string[];
+    };
+  };
+  reasonCodes: string[];
+  recommendedNextActions: string[];
 };

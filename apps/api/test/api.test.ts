@@ -6,7 +6,12 @@ import type { TokenCreatedEvent, TokenTradeEvent } from "@axi/data-feeds";
 import type { ExitSignal } from "@axi/exit-strategy";
 import type { NormalizedIndexerEvent } from "@axi/indexer-core";
 import type { SolanaChainClient } from "@axi/solana-chain";
-import type { LiveTokenCardViewModel, StrategyStatus } from "@axi/shared";
+import type {
+  LiveTokenCardViewModel,
+  MomentumDiagnostics,
+  MomentumScannerRow,
+  StrategyStatus
+} from "@axi/shared";
 import type { ApiServer } from "../src/app";
 import { createApiServer } from "../src/app";
 import { createActualDataConfig } from "../src/actual-data-service";
@@ -2224,6 +2229,161 @@ describe("@axi/api", () => {
     expect(body).toEqual([]);
   });
 
+  it("GET /ui/momentum-rows returns an empty array with no live tokens", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/ui/momentum-rows"
+    });
+    const rows = response.json() as MomentumScannerRow[];
+
+    expect(response.statusCode).toBe(200);
+    expect(rows).toEqual([]);
+  });
+
+  it("GET /ui/momentum-rows returns a discovery-only scanner row", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+    server.emitFeedEvent(createPumpPortalEvent());
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/ui/momentum-rows"
+    });
+    const rows = response.json() as MomentumScannerRow[];
+    const row = rows[0];
+
+    expect(response.statusCode).toBe(200);
+    expect(rows).toHaveLength(1);
+    expect(row?.mint).toBe(createPumpPortalEvent().candidate.mint);
+    expect(row?.displayName).toBe("PORTAL Portal Token");
+    expect(row?.dataQualityLabel).toBe("discovery_only");
+    expect(row?.priceSol).toBeNull();
+    expect(row?.volume10sSol).toBeNull();
+    expect(row?.marketCapUsd).toBeNull();
+    expect(row?.liquidityUsd).toBeNull();
+    expect(row?.missingCriticalFields).toContain("price");
+    expect(row?.unavailableFields).toContain("MARKET_CAP_UNAVAILABLE");
+    expect(row?.unavailableFields).toContain("LIQUIDITY_UNAVAILABLE");
+    expect(row?.unavailableFields).toContain(
+      "INSUFFICIENT_SAMPLES_FOR_DERIVATIVE"
+    );
+  });
+
+  it("GET /ui/momentum-rows includes price, volume, and flow for trade-tracked tokens", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+    const event = createPumpPortalEvent();
+    server.emitFeedEvent(event);
+    server.emitFeedEvent(createPumpPortalTradeEvent(event.candidate.mint));
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/ui/momentum-rows"
+    });
+    const rows = response.json() as MomentumScannerRow[];
+    const row = rows[0];
+
+    expect(response.statusCode).toBe(200);
+    expect(row?.priceSol).toBe(0.00042);
+    expect(row?.volume10sSol).toBe(1.5);
+    expect(row?.buyCount10s).toBe(1);
+    expect(row?.sellCount10s).toBe(0);
+    expect(row?.uniqueBuyers10s).toBe(1);
+    expect(row?.realTradeEventCount).toBe(1);
+    expect(row?.dataQualityLabel).toBe("metered_tracking");
+  });
+
+  it("GET /ui/momentum-rows exposes derivatives after enough trade samples", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+    const event = createPumpPortalEvent();
+    server.emitFeedEvent(event);
+    server.metrics.ingestTradeObservation({
+      mint: event.candidate.mint,
+      priceSol: 0.0004,
+      quoteAsset: "SOL",
+      side: "buy",
+      symbol: event.candidate.symbol,
+      timestamp: "2026-01-01T00:00:02.000Z",
+      trader: "Buyer1111111111111111111111111111111111111",
+      usableForMetrics: true,
+      volumeSol: 1
+    });
+    server.metrics.ingestTradeObservation({
+      mint: event.candidate.mint,
+      priceSol: 0.0005,
+      quoteAsset: "SOL",
+      side: "buy",
+      symbol: event.candidate.symbol,
+      timestamp: "2026-01-01T00:00:04.000Z",
+      trader: "Buyer2222222222222222222222222222222222222",
+      usableForMetrics: true,
+      volumeSol: 2
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/ui/momentum-rows"
+    });
+    const rows = response.json() as MomentumScannerRow[];
+    const row = rows[0];
+
+    expect(response.statusCode).toBe(200);
+    expect(row?.volumeVelocitySolPerSec).toEqual(expect.any(Number));
+    expect(row?.volumeAccelerationSolPerSec2).toEqual(expect.any(Number));
+    expect(row?.priceVelocityPctPerSec).toEqual(expect.any(Number));
+    expect(row?.buyerVelocityPerSec).toEqual(expect.any(Number));
+    expect(row?.unavailableFields).not.toContain(
+      "INSUFFICIENT_SAMPLES_FOR_DERIVATIVE"
+    );
+    expect(findNonFiniteNumbers(row)).toEqual([]);
+  });
+
+  it("GET /ui/momentum-diagnostics explains missing scanner fields", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+    server.emitFeedEvent(createPumpPortalEvent());
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/ui/momentum-diagnostics"
+    });
+    const diagnostics = response.json() as MomentumDiagnostics;
+
+    expect(response.statusCode).toBe(200);
+    expect(diagnostics.liveTokenCount).toBe(1);
+    expect(diagnostics.rowsReturned).toBe(1);
+    expect(diagnostics.tokensWithPrice).toBe(0);
+    expect(diagnostics.tokensWithTradeData).toBe(0);
+    expect(diagnostics.tokensWithMarketCap).toBe(0);
+    expect(diagnostics.unavailableFieldCounts.MARKET_CAP_UNAVAILABLE).toBe(1);
+    expect(diagnostics.missingCriticalFieldCounts.price).toBe(1);
+    expect(diagnostics.recommendedNextActions).toContain(
+      "ENABLE_METERED_TOKEN_TRADES_FOR_PRICE_ACTION"
+    );
+    expect(diagnostics.recommendedNextActions).toContain(
+      "ENABLE_ENRICHMENT_FOR_MCAP_LIQUIDITY"
+    );
+  });
+
   it("GET /indexer/status reports the API adapter", async () => {
     server = createApiServer({
       logLevel: false,
@@ -3448,13 +3608,20 @@ describe("@axi/api", () => {
       method: "GET",
       url: "/ui/live-token-cards"
     });
+    const momentumRowsResponse = await server.app.inject({
+      method: "GET",
+      url: "/ui/momentum-rows"
+    });
     const liveTokens = liveTokensResponse.json() as unknown[];
     const liveCards = liveCardsResponse.json() as unknown[];
+    const momentumRows = momentumRowsResponse.json() as unknown[];
 
     expect(liveTokensResponse.statusCode).toBe(200);
     expect(liveCardsResponse.statusCode).toBe(200);
+    expect(momentumRowsResponse.statusCode).toBe(200);
     expect(liveTokens).toEqual([]);
     expect(liveCards).toEqual([]);
+    expect(momentumRows).toEqual([]);
   });
 
   // TODO: Add a WebSocket integration test after the test harness grows a
@@ -3507,6 +3674,26 @@ function findDisallowedApiKeyFields(
         ...findDisallowedApiKeyFields(child, currentPath)
       ];
     }
+  );
+}
+
+function findNonFiniteNumbers(value: unknown, path = "$"): string[] {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? [] : [path];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) =>
+      findNonFiniteNumbers(item, `${path}[${index}]`)
+    );
+  }
+
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+
+  return Object.entries(value as Record<string, unknown>).flatMap(
+    ([key, child]) => findNonFiniteNumbers(child, `${path}.${key}`)
   );
 }
 

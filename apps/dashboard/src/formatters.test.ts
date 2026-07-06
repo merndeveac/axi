@@ -12,11 +12,11 @@ import {
 } from "./formatters";
 
 describe("dashboard formatters", () => {
-  it("renders unknown numeric values as dashes", () => {
-    expect(formatUnknown(null)).toBe("--");
-    expect(formatUsd(Number.NaN)).toBe("--");
-    expect(formatSol(Number.POSITIVE_INFINITY)).toBe("--");
-    expect(formatVelocity(undefined, "usd")).toBe("--");
+  it("renders unknown numeric values as unavailable", () => {
+    expect(formatUnknown(null)).toBe("—");
+    expect(formatUsd(Number.NaN)).toBe("—");
+    expect(formatSol(Number.POSITIVE_INFINITY)).toBe("—");
+    expect(formatVelocity(undefined, "usd")).toBe("—");
   });
 
   it("formats compact numbers and money", () => {

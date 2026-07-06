@@ -121,6 +121,7 @@ const launchReasonCodes = {
   buyPressure: "LAUNCH_BUY_PRESSURE",
   sellPressure: "LAUNCH_SELL_PRESSURE",
   insufficientTradeData: "LAUNCH_INSUFFICIENT_TRADE_DATA",
+  insufficientSamplesForDerivative: "INSUFFICIENT_SAMPLES_FOR_DERIVATIVE",
   hot: "LAUNCH_HOT",
   ripping: "LAUNCH_RIPPING",
   rejected: "LAUNCH_REJECTED",
@@ -160,6 +161,10 @@ export function evaluateLaunchMomentum(
   if (trades.length > 0 && trades.length < 3) {
     reasonCodes.push(launchReasonCodes.insufficientTradeData);
     blockers.push("LAUNCH_REQUIRES_MORE_TRADE_SAMPLES");
+  }
+
+  if (trades.length < 2) {
+    reasonCodes.push(launchReasonCodes.insufficientSamplesForDerivative);
   }
 
   if (windows["10s"].volumeSol >= 2 || windows["30s"].volumeSol >= 4) {

@@ -23,6 +23,9 @@ describe("launch momentum evaluator", () => {
     expect(snapshot.paperOnly).toBe(true);
     expect(snapshot.tradingDisabled).toBe(true);
     expect(snapshot.reasonCodes).toContain("LAUNCH_DISCOVERY_ONLY");
+    expect(snapshot.reasonCodes).toContain(
+      "INSUFFICIENT_SAMPLES_FOR_DERIVATIVE"
+    );
     expect(snapshot.blockers).toContain(
       "PRICE_ACTION_REQUIRES_METERED_TOKEN_TRADES"
     );

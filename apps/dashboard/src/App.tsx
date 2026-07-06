@@ -6,6 +6,8 @@ import {
 } from "react";
 import type {
   LiveTokenCardViewModel,
+  MomentumDiagnostics,
+  MomentumScannerRow,
   OverlaySignal,
   RiskSnapshot,
   RollingMetricsSnapshot,
@@ -33,22 +35,33 @@ import {
 type ConnectionStatus = "connecting" | "open" | "closed";
 type ApiStatus = "checking" | "connected" | "disconnected";
 type TabId =
-  | "live"
+  | "scanner"
   | "signals"
   | "portfolio"
   | "metrics"
   | "risk"
   | "exit"
   | "data"
-  | "storage";
+  | "debug";
 type SortMode =
   | "newest"
   | "launchScore"
-  | "score"
-  | "volumeVelocity"
   | "volume10s"
-  | "risk";
-type ActionFilter = "all" | "watch" | "qualified" | "rejected";
+  | "volumeVelocity"
+  | "priceVelocity"
+  | "uniqueBuyers"
+  | "buySellRatio"
+  | "risk"
+  | "pnl";
+type ActionFilter =
+  | "all"
+  | "watch"
+  | "hot"
+  | "ripping"
+  | "rejected"
+  | "tradeTracked"
+  | "discoveryOnly"
+  | "missingCritical";
 
 type StorageStats = {
   databasePath: string;
@@ -906,14 +919,14 @@ type ServerMessage =
     };
 
 const tabs: Array<{ id: TabId; label: string }> = [
-  { id: "live", label: "LIVE" },
-  { id: "signals", label: "SIGNALS" },
-  { id: "portfolio", label: "PORTFOLIO" },
-  { id: "metrics", label: "METRICS" },
-  { id: "risk", label: "RISK" },
-  { id: "exit", label: "EXIT" },
-  { id: "data", label: "DATA" },
-  { id: "storage", label: "STORAGE / DEBUG" }
+  { id: "scanner", label: "Scanner" },
+  { id: "signals", label: "Signals" },
+  { id: "portfolio", label: "Portfolio" },
+  { id: "metrics", label: "Metrics" },
+  { id: "risk", label: "Risk" },
+  { id: "exit", label: "Exit" },
+  { id: "data", label: "Data" },
+  { id: "debug", label: "Debug" }
 ];
 
 const wsUrl =
@@ -925,6 +938,9 @@ export function App() {
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("connecting");
+  const [momentumRows, setMomentumRows] = useState<MomentumScannerRow[]>([]);
+  const [momentumDiagnostics, setMomentumDiagnostics] =
+    useState<MomentumDiagnostics | null>(null);
   const [cards, setCards] = useState<LiveTokenCardViewModel[]>([]);
   const [signals, setSignals] = useState<OverlaySignal[]>([]);
   const [metrics, setMetrics] = useState<MetricsRow[]>([]);
@@ -1000,6 +1016,8 @@ export function App() {
   const [sortMode, setSortMode] = useState<SortMode>("launchScore");
   const [actionFilter, setActionFilter] = useState<ActionFilter>("all");
   const [realOnly, setRealOnly] = useState(true);
+  const [showUnavailable, setShowUnavailable] = useState(false);
+  const [compactMode, setCompactMode] = useState(true);
   const [search, setSearch] = useState("");
   const [expandedMint, setExpandedMint] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>("never");
@@ -1016,12 +1034,12 @@ export function App() {
     let retryTimer: number | undefined;
     let closedByReact = false;
 
-    const refreshCards = async () => {
+    const refreshScannerRows = async () => {
       try {
-        const nextCards = await fetchJson<LiveTokenCardViewModel[]>(
-          "/ui/live-token-cards"
+        const nextRows = await fetchJson<MomentumScannerRow[]>(
+          "/ui/momentum-rows"
         );
-        setCards(nextCards);
+        setMomentumRows(nextRows);
       } catch {
         // Polling remains the fallback path.
       }
@@ -1041,7 +1059,7 @@ export function App() {
 
         if (message.type === "signal") {
           setSignals((current) => upsertSignal(current, message.signal));
-          void refreshCards();
+          void refreshScannerRows();
         }
 
         setLastUpdated(new Date().toLocaleTimeString());
@@ -1078,6 +1096,8 @@ export function App() {
           stats,
           nextFeedStatus,
           nextLiveStatus,
+          nextMomentumRows,
+          nextMomentumDiagnostics,
           nextCards,
           nextStrategy,
           nextSignals,
@@ -1118,6 +1138,8 @@ export function App() {
           fetchJson<StorageStats>("/storage/stats"),
           fetchJson<FeedStatus>("/feed/status"),
           fetchJson<LiveStatus>("/live/status"),
+          fetchJson<MomentumScannerRow[]>("/ui/momentum-rows"),
+          fetchJson<MomentumDiagnostics>("/ui/momentum-diagnostics"),
           fetchJson<LiveTokenCardViewModel[]>("/ui/live-token-cards"),
           fetchJson<StrategyStatus>("/strategy/status"),
           fetchJson<OverlaySignal[]>("/signals"),
@@ -1173,6 +1195,8 @@ export function App() {
           setStorageStats(stats);
           setFeedStatus(nextFeedStatus);
           setLiveStatus(nextLiveStatus);
+          setMomentumRows(nextMomentumRows);
+          setMomentumDiagnostics(nextMomentumDiagnostics);
           setCards(nextCards);
           setStrategyStatus(nextStrategy);
           setSignals(nextSignals);
@@ -1232,13 +1256,13 @@ export function App() {
     };
   }, []);
 
-  const visibleCards = useMemo(
+  const visibleRows = useMemo(
     () =>
-      sortCards(
-        filterCards(cards, { actionFilter, realOnly, search }),
+      sortRows(
+        filterRows(momentumRows, { actionFilter, realOnly, search }),
         sortMode
       ),
-    [actionFilter, cards, realOnly, search, sortMode]
+    [actionFilter, momentumRows, realOnly, search, sortMode]
   );
   const runRuntimeAction = async (path: string, label: string) => {
     setRuntimeActionStatus(`${label}...`);
@@ -1253,20 +1277,20 @@ export function App() {
       );
     }
   };
-  const hotLaunchCount = cards.filter((card) =>
-    ["hot", "ripping"].includes(card.launchPhase)
+  const hotLaunchCount = momentumRows.filter((row) =>
+    ["hot", "ripping"].includes(row.launchPhase)
   ).length;
-  const rippingLaunchCount = cards.filter(
-    (card) => card.launchPhase === "ripping"
+  const rippingLaunchCount = momentumRows.filter(
+    (row) => row.launchPhase === "ripping"
   ).length;
-  const launchTrackedCount = cards.filter(
-    (card) => card.launchTradeSampleCount > 0
+  const launchTrackedCount = momentumRows.filter(
+    (row) => row.realTradeEventCount > 0
   ).length;
-  const trackedCardCount = cards.filter(
-    (card) => card.tradeTrackingState === "tracking"
+  const trackedCardCount = momentumRows.filter(
+    (row) => row.trackingState === "tracking"
   ).length;
-  const unavailableFieldCount = cards.reduce(
-    (total, card) => total + card.unavailableFields.length,
+  const unavailableFieldCount = momentumRows.reduce(
+    (total, row) => total + row.unavailableFields.length,
     0
   );
   const modeLabel = (healthStatus?.mode ?? "paper").toUpperCase();
@@ -1299,12 +1323,10 @@ export function App() {
     <main className="app-shell">
       <header className="command-bar">
         <div className="brand-cluster">
-          <span className="prompt">&gt;</span>
           <div>
             <p className="eyebrow">live token intelligence</p>
             <h1>AXI</h1>
           </div>
-          <span className="terminal-cursor" aria-hidden="true" />
         </div>
         <div className="command-status" aria-label="Runtime status">
           <ConnectionBadge label={modeLabel} tone="online" />
@@ -1326,10 +1348,10 @@ export function App() {
 
       <section className="status-grid" aria-label="System status">
         <MetricValue
-          label="launch cards"
-          value={formatCompactNumber(cards.length)}
+          label="scanner rows"
+          value={formatCompactNumber(momentumRows.length)}
           detail="current session"
-          tone={cards.length > 0 ? "good" : "neutral"}
+          tone={momentumRows.length > 0 ? "good" : "neutral"}
         />
         <MetricValue
           label="hot launches"
@@ -1378,7 +1400,7 @@ export function App() {
         <MetricValue
           label="unavailable"
           value={formatCompactNumber(unavailableFieldCount)}
-          detail="shown as --"
+          detail="diagnosed fields"
           tone={unavailableFieldCount > 0 ? "warn" : "good"}
         />
         <MetricValue
@@ -1433,23 +1455,28 @@ export function App() {
         ))}
       </nav>
 
-      {activeTab === "live" ? (
-        <LiveTab
+      {activeTab === "scanner" ? (
+        <ScannerTab
           actionFilter={actionFilter}
-          cards={visibleCards}
+          compactMode={compactMode}
+          diagnostics={momentumDiagnostics}
           expandedMint={expandedMint}
           feedStatus={feedStatus}
           healthStatus={healthStatus}
           liveStatus={liveStatus}
           realOnly={realOnly}
+          rows={visibleRows}
           search={search}
           setActionFilter={setActionFilter}
+          setCompactMode={setCompactMode}
           setExpandedMint={setExpandedMint}
           setRealOnly={setRealOnly}
           setSearch={setSearch}
+          setShowUnavailable={setShowUnavailable}
           setSortMode={setSortMode}
+          showUnavailable={showUnavailable}
           sortMode={sortMode}
-          totalCards={cards.length}
+          totalRows={momentumRows.length}
         />
       ) : null}
       {activeTab === "signals" ? (
@@ -1482,6 +1509,7 @@ export function App() {
           actualTrades={actualTrades}
           chainStatus={chainStatus}
           dataWalletStatus={dataWalletStatus}
+          diagnostics={momentumDiagnostics}
           lightningStatus={lightningStatus}
           feedStatus={feedStatus}
           liveCardEnrichmentStatus={liveCardEnrichmentStatus}
@@ -1501,7 +1529,7 @@ export function App() {
           tokenIdentityStatus={tokenIdentityStatus}
         />
       ) : null}
-      {activeTab === "storage" ? (
+      {activeTab === "debug" ? (
         <StorageTab
           chainVerifications={chainVerifications}
           liveEvents={liveEvents}
@@ -1527,47 +1555,56 @@ function ApiOfflineNotice() {
   );
 }
 
-function LiveTab({
+function ScannerTab({
   actionFilter,
-  cards,
+  compactMode,
+  diagnostics,
   expandedMint,
   feedStatus,
   healthStatus,
   liveStatus,
   realOnly,
+  rows,
   search,
   setActionFilter,
+  setCompactMode,
   setExpandedMint,
   setRealOnly,
   setSearch,
+  setShowUnavailable,
   setSortMode,
+  showUnavailable,
   sortMode,
-  totalCards
+  totalRows
 }: {
   actionFilter: ActionFilter;
-  cards: LiveTokenCardViewModel[];
+  compactMode: boolean;
+  diagnostics: MomentumDiagnostics | null;
   expandedMint: string | null;
   feedStatus: FeedStatus | null;
   healthStatus: HealthStatus | null;
   liveStatus: LiveStatus | null;
   realOnly: boolean;
+  rows: MomentumScannerRow[];
   search: string;
   setActionFilter: (value: ActionFilter) => void;
+  setCompactMode: (value: boolean) => void;
   setExpandedMint: (value: string | null) => void;
   setRealOnly: (value: boolean) => void;
   setSearch: (value: string) => void;
+  setShowUnavailable: (value: boolean) => void;
   setSortMode: (value: SortMode) => void;
+  showUnavailable: boolean;
   sortMode: SortMode;
-  totalCards: number;
+  totalRows: number;
 }) {
   return (
-    <section className="tab-panel live-panel" role="tabpanel">
-      <div className="panel-heading">
+    <section className="tab-panel scanner-panel" role="tabpanel">
+      <div className="panel-heading scanner-heading">
         <div>
-          <h2>PUMPPORTAL LAUNCH SCANNER</h2>
+          <h2>Momentum Scanner</h2>
           <p>
-            {totalCards} current-session launches / sort {sortMode} /
-            unavailable fields render as --
+            {totalRows} current-session rows / {rows.length} visible / blanks are unavailable, not zero
           </p>
         </div>
         <span className="table-meta">
@@ -1575,7 +1612,7 @@ function LiveTab({
         </span>
       </div>
 
-      <div className="live-controls" aria-label="Live token controls">
+      <div className="live-controls scanner-controls" aria-label="Scanner controls">
         <label>
           <span>Search</span>
           <input
@@ -1590,16 +1627,19 @@ function LiveTab({
             onChange={(event) => setSortMode(event.target.value as SortMode)}
             value={sortMode}
           >
-            <option value="launchScore">launch score</option>
             <option value="newest">newest</option>
-            <option value="score">score</option>
-            <option value="volumeVelocity">volume velocity</option>
+            <option value="launchScore">launch score</option>
             <option value="volume10s">volume 10s</option>
+            <option value="volumeVelocity">volume velocity</option>
+            <option value="priceVelocity">price velocity</option>
+            <option value="uniqueBuyers">unique buyers</option>
+            <option value="buySellRatio">buy/sell ratio</option>
             <option value="risk">risk</option>
+            <option value="pnl">PnL</option>
           </select>
         </label>
         <label>
-          <span>Action</span>
+          <span>Filter</span>
           <select
             onChange={(event) =>
               setActionFilter(event.target.value as ActionFilter)
@@ -1608,8 +1648,12 @@ function LiveTab({
           >
             <option value="all">all</option>
             <option value="watch">watch</option>
-            <option value="qualified">qualified</option>
+            <option value="hot">hot</option>
+            <option value="ripping">ripping</option>
             <option value="rejected">rejected</option>
+            <option value="tradeTracked">trade tracked</option>
+            <option value="discoveryOnly">discovery only</option>
+            <option value="missingCritical">missing critical</option>
           </select>
         </label>
         <label className="check-control">
@@ -1618,20 +1662,57 @@ function LiveTab({
             onChange={(event) => setRealOnly(event.target.checked)}
             type="checkbox"
           />
-          <span>REAL only</span>
+          <span>Real only</span>
+        </label>
+        <label className="check-control">
+          <input
+            checked={showUnavailable}
+            onChange={(event) => setShowUnavailable(event.target.checked)}
+            type="checkbox"
+          />
+          <span>Unavailable</span>
+        </label>
+        <label className="check-control">
+          <input
+            checked={compactMode}
+            onChange={(event) => setCompactMode(event.target.checked)}
+            type="checkbox"
+          />
+          <span>Compact</span>
         </label>
       </div>
 
-      {cards.length > 0 ? (
-        <div className="token-grid">
-          {cards.map((card) => (
-            <TokenCard
-              card={card}
-              expanded={expandedMint === card.mint}
-              key={card.mint}
+      <div className="scanner-summary-strip" aria-label="Scanner diagnostics summary">
+        <span>price {formatCompactNumber(diagnostics?.tokensWithPrice)}</span>
+        <span>volume {formatCompactNumber(diagnostics?.tokensWithVolume)}</span>
+        <span>trades {formatCompactNumber(diagnostics?.tokensWithTradeData)}</span>
+        <span>derivatives {formatCompactNumber(diagnostics?.tokensWithDerivatives)}</span>
+        <span>mcap {formatCompactNumber(diagnostics?.tokensWithMarketCap)}</span>
+        <span>liquidity {formatCompactNumber(diagnostics?.tokensWithLiquidity)}</span>
+        <span>holders {formatCompactNumber(diagnostics?.tokensWithHolderData)}</span>
+      </div>
+
+      {rows.length > 0 ? (
+        <div className={compactMode ? "scanner-table compact" : "scanner-table"}>
+          <div className="scanner-table-header" role="row">
+            <span>Token</span>
+            <span>Signal</span>
+            <span>Market</span>
+            <span>Volume / Flow</span>
+            <span>Derivatives</span>
+            <span>Risk</span>
+            <span>Portfolio</span>
+            <span>Data</span>
+          </div>
+          {rows.map((row) => (
+            <ScannerRow
+              expanded={expandedMint === row.mint}
+              key={row.mint}
               onToggle={() =>
-                setExpandedMint(expandedMint === card.mint ? null : card.mint)
+                setExpandedMint(expandedMint === row.mint ? null : row.mint)
               }
+              row={row}
+              showUnavailable={showUnavailable}
             />
           ))}
         </div>
@@ -1644,460 +1725,198 @@ function LiveTab({
   );
 }
 
-function TokenCard({
-  card,
+function ScannerRow({
   expanded,
-  onToggle
+  onToggle,
+  row,
+  showUnavailable
 }: {
-  card: LiveTokenCardViewModel;
   expanded: boolean;
   onToggle: () => void;
+  row: MomentumScannerRow;
+  showUnavailable: boolean;
 }) {
   return (
-    <article className="token-card">
-      <div className="token-card-header">
-        <div className="token-title-block">
-          <h3>{card.displayName}</h3>
+    <article className={expanded ? "scanner-row expanded" : "scanner-row"}>
+      <button className="scanner-row-main" onClick={onToggle} type="button">
+        <div className="scanner-token-cell">
+          <strong>{row.displayName}</strong>
           <span>
-            {card.symbol ?? "UNKNOWN"} / {card.shortMint}
+            {row.symbol ?? "UNKNOWN"} / {row.shortMint}
           </span>
-        </div>
-        <div className="token-card-actions">
-          <span className="terminal-badge terminal-badge-online">
-            {card.realData ? "REAL" : "MOCK"}
-          </span>
-          <span className="terminal-badge terminal-badge-neutral">
-            {card.source.toUpperCase()}
-          </span>
-          <span className="terminal-badge terminal-badge-online">
-            {card.launchPhase.toUpperCase()}
-          </span>
-          {card.exitSignalSummary.hasExitSignal ? (
-            <span
-              className={`terminal-badge ${
-                card.exitSignalSummary.latestExitSignal?.blocked
-                  ? "terminal-badge-warning"
-                  : "terminal-badge-online"
-              }`}
-            >
-              PAPER EXIT SIGNAL
-            </span>
-          ) : null}
-          {card.paperPositionSummary.hasPosition ? (
-            <span className="terminal-badge terminal-badge-warning">
-              PAPER POSITION
-            </span>
-          ) : null}
-          <span className="terminal-badge terminal-badge-neutral">
-            {formatDataQuality(card.dataCompleteness.dataQualityLabel)}{" "}
-            {card.dataCompleteness.completenessPct}%
-          </span>
-          <span
-            className={`terminal-badge ${getTradeTrackingBadgeClass(
-              card.tradeTrackingState
-            )}`}
-          >
-            {formatTradeTrackingState(card.tradeTrackingState)}
-          </span>
-          <span
-            className={`terminal-badge ${getMeteredLaunchDataBadgeClass(
-              card
-            )}`}
-          >
-            {formatMeteredLaunchDataLabel(card)}
-          </span>
-          <span className={`action action-${normalizeClassName(card.action)}`}>
-            {card.action}
-          </span>
-          <span className="score">{card.launchScore}</span>
-        </div>
-      </div>
-
-      <div className="stat-row launch-stat-row">
-        <Stat
-          detail={card.launchScoreLabel}
-          label="launch"
-          value={card.launchPhase.toUpperCase()}
-        />
-        <Stat
-          detail={card.missingDataReason ?? card.priceActionSource}
-          label="data"
-          value={formatMeteredLaunchDataLabel(card)}
-        />
-        <Stat label="vol 5s" value={formatSol(card.launchVolume5sSol)} />
-        <Stat label="vol 30s" value={formatSol(card.launchVolume30sSol)} />
-        <Stat label="vol 5m" value={formatSol(card.launchVolume5mSol)} />
-        <Stat
-          label="launch txns"
-          value={`${formatCompactNumber(card.launchBuyCount10s)}/${formatCompactNumber(
-            card.launchSellCount10s
-          )}`}
-          detail="10s buy/sell"
-        />
-        <Stat
-          label="launch unique"
-          value={`${formatCompactNumber(card.launchUniqueBuyers10s)}/${formatCompactNumber(
-            card.launchUniqueSellers10s
-          )}`}
-          detail="10s buyers/sellers"
-        />
-      </div>
-
-      <div className="stat-row top-stat-row">
-        <Stat
-          detail={formatUsd(card.priceUsd)}
-          label="price"
-          value={formatSol(card.priceSol)}
-        />
-        <Stat
-          detail={`FDV ${formatUsd(card.fdvUsd)}`}
-          label="mcap"
-          value={formatUsd(card.marketCapUsd)}
-        />
-        <Stat label="liquidity" value={formatUsd(card.liquidityUsd)} />
-        <Stat
-          detail={`60s ${formatUsd(card.volume60sUsd)}`}
-          label="vol 10s"
-          value={formatUsd(card.volume10sUsd)}
-        />
-        <Stat label="holders" value={formatCompactNumber(card.holderCount)} />
-        <Stat
-          label="txns 10s"
-          value={formatCompactNumber(card.totalTradeCount10s)}
-        />
-      </div>
-
-      <div className="stat-row">
-        <Stat
-          label="buys/sells"
-          value={`${formatCompactNumber(card.buyTradeCount10s)}/${formatCompactNumber(
-            card.sellTradeCount10s
-          )}`}
-        />
-        <Stat
-          label="unique"
-          value={`${formatCompactNumber(card.uniqueBuyers10s)}/${formatCompactNumber(
-            card.uniqueSellers10s
-          )}`}
-          detail="buyers/sellers"
-        />
-        <Stat label="buy/sell" value={formatCompactNumber(card.buySellRatio)} />
-        <Stat label="net pressure" value={formatPct(card.netBuyPressure)} />
-        <Stat label="buy vol" value={formatUsd(card.buyVolume10s)} />
-        <Stat label="sell vol" value={formatUsd(card.sellVolume10s)} />
-      </div>
-
-      <div className="stat-row technical-row">
-        <Stat
-          label="dVol/dt"
-          value={formatVelocity(card.volumeVelocityUsdPerSec, "usd")}
-        />
-        <Stat
-          label="d2Vol/dt2"
-          value={formatAcceleration(card.volumeAccelerationUsdPerSec2, "usd")}
-        />
-        <Stat
-          label="dPrice/dt"
-          value={formatVelocity(card.priceVelocityPctPerSec, "pct")}
-        />
-        <Stat
-          label="d2Price/dt2"
-          value={formatAcceleration(card.priceAccelerationPctPerSec2, "pct")}
-        />
-        <Stat
-          label="dBuyers/dt"
-          value={formatVelocity(card.buyerVelocityPerSec, "buyers")}
-        />
-        <Stat
-          label="d2Buyers/dt2"
-          value={formatAcceleration(card.buyerAccelerationPerSec2, "buyers")}
-        />
-        <Stat
-          label="dHolders/dt"
-          value={formatVelocity(card.holderVelocityPerSec, "holders")}
-        />
-        <Stat
-          label="d2Holders/dt2"
-          value={formatAcceleration(card.holderAccelerationPerSec2, "holders")}
-        />
-      </div>
-
-      <div className="stat-row technical-row launch-technical-row">
-        <Stat
-          label="launch dVol/dt"
-          value={formatVelocity(card.launchVolumeVelocitySolPerSec, "sol")}
-        />
-        <Stat
-          label="launch d2Vol/dt2"
-          value={formatAcceleration(
-            card.launchVolumeAccelerationSolPerSec2,
-            "sol"
-          )}
-        />
-        <Stat
-          label="launch dPrice/dt"
-          value={formatVelocity(card.launchPriceVelocityPctPerSec, "pct")}
-        />
-        <Stat
-          label="launch d2Price/dt2"
-          value={formatAcceleration(
-            card.launchPriceAccelerationPctPerSec2,
-            "pct"
-          )}
-        />
-        <Stat
-          label="launch buyers/dt"
-          value={formatVelocity(card.launchBuyerVelocityPerSec, "buyers")}
-        />
-        <Stat
-          label="launch buyers/dt2"
-          value={formatAcceleration(
-            card.launchBuyerAccelerationPerSec2,
-            "buyers"
-          )}
-        />
-      </div>
-
-      <div className="signal-risk-strip">
-        <span className={`risk-level risk-${card.riskLevel}`}>
-          {card.riskLevel}
-        </span>
-        <span className="state">
-          {card.hardReject ? "HARD REJECT" : "PASS"}
-        </span>
-        <span>top {formatPct(card.topHolderPct)}</span>
-        <span>top10 {formatPct(card.top10HolderPct)}</span>
-        <span>mint auth {formatBool(card.mintAuthorityActive)}</span>
-        <span>freeze {formatBool(card.freezeAuthorityActive)}</span>
-      </div>
-
-      <div className="strategy-strip">
-        <div>
-          <span className="muted">signal</span>
-          <strong>{card.signalStrength}</strong>
+          <small>
+            {formatAge(row.ageSeconds)} / {row.source}
+          </small>
         </div>
         <div>
-          <span className="muted">strategy</span>
-          <strong>{card.strategyName}</strong>
+          <span className={
+            row.hardReject
+              ? "score-pill danger"
+              : row.launchPhase === "ripping"
+                ? "score-pill hot"
+                : row.launchPhase === "hot"
+                  ? "score-pill warn"
+                  : "score-pill"
+          }>
+            {row.launchScore}
+          </span>
+          <small>{formatDataQuality(row.launchPhase)}</small>
+          <small>{row.signalAction}</small>
         </div>
-        <div>
-          <span className="muted">positive</span>
-          <DriverList drivers={card.strategy.positiveDrivers} />
-        </div>
-        <div>
-          <span className="muted">negative</span>
-          <DriverList drivers={card.strategy.negativeDrivers} />
-        </div>
-        <div>
-          <span className="muted">blockers</span>
-          <DriverList drivers={card.strategy.blockers} />
-        </div>
-        <div>
-          <span className="muted">exit</span>
-          <strong>
-            {card.exitSignalSummary.hasExitSignal
-              ? card.exitSignalSummary.latestExitSignal?.blocked
-                ? "BLOCKED"
-                : `PLAN ${card.exitSignalSummary.latestExitSignal?.sellPct ?? 0}%`
-              : "NONE"}
-          </strong>
-        </div>
-        <div>
-          <span className="muted">position</span>
-          <strong>
-            {card.paperPositionSummary.hasPosition
-              ? `${formatSol(
-                  card.paperPositionSummary.remainingSizeSol
-                )} / ${formatPct(card.paperPositionSummary.unrealizedPnlPct)}`
-              : "NONE"}
-          </strong>
-        </div>
-      </div>
-
-      <footer className="token-card-footer">
-        <span>age {formatAge(card.ageSeconds)}</span>
-        <span>updated {formatTimeAgo(card.lastUpdatedAt)}</span>
-        <span>trades {formatCompactNumber(card.tradeEventCount)}</span>
-        <span>launch trades {formatCompactNumber(card.launchTradeSampleCount)}</span>
-        <span>latest trade {formatTimeAgo(card.latestTradeAt)}</span>
-        <span>{card.eventTypes.at(-1) ?? "--"}</span>
-        <span>{formatMintShort(card.latestSignature)}</span>
-        <span>
-          missing {card.missingFields.length} / unavailable{" "}
-          {card.unavailableFields.length}
-        </span>
-        <button onClick={onToggle} type="button">
-          {expanded ? "HIDE AUDIT" : "AUDIT"}
-        </button>
-      </footer>
-
-      {expanded ? <TokenAudit card={card} /> : null}
+        <MetricStack
+          primary={formatSol(row.priceSol)}
+          secondary={"MC " + formatUsd(row.marketCapUsd)}
+          tertiary={"Liq " + formatUsd(row.liquidityUsd) + " / FDV " + formatUsd(row.fdvUsd)}
+        />
+        <MetricStack
+          primary={formatSol(row.volume10sSol) + " 10s"}
+          secondary={formatSol(row.volume30sSol) + " 30s"}
+          tertiary={formatCompactNumber(row.buyCount10s) + "/" + formatCompactNumber(row.sellCount10s) + " buys/sells"}
+        />
+        <MetricStack
+          primary={formatVelocity(row.volumeVelocitySolPerSec, "sol")}
+          secondary={formatVelocity(row.priceVelocityPctPerSec, "pct")}
+          tertiary={formatVelocity(row.buyerVelocityPerSec, "buyers")}
+        />
+        <MetricStack
+          primary={String(row.riskLevel)}
+          secondary={row.hardReject ? "hard reject" : "pass"}
+          tertiary={"top " + formatPct(row.topHolderPct) + " / top10 " + formatPct(row.top10HolderPct)}
+          tone={row.hardReject ? "bad" : row.riskLevel === "low" ? "good" : "neutral"}
+        />
+        <MetricStack
+          primary={row.paperPositionStatus ?? "none"}
+          secondary={formatPct(row.unrealizedPnlPct)}
+          tertiary={formatSol(row.unrealizedPnlSol) + " unrealized"}
+          tone={getPnlTone(row.unrealizedPnlSol)}
+        />
+        <MetricStack
+          primary={formatDataQuality(row.dataQualityLabel)}
+          secondary={row.missingCriticalFields.length + " critical"}
+          tertiary={formatTimeAgo(row.lastUpdatedAt)}
+          tone={row.missingCriticalFields.length > 0 ? "warn" : "neutral"}
+        />
+      </button>
+      {expanded ? <ScannerRowAudit row={row} showUnavailable={showUnavailable} /> : null}
     </article>
   );
 }
 
-function TokenAudit({ card }: { card: LiveTokenCardViewModel }) {
+function MetricStack({
+  primary,
+  secondary,
+  tertiary,
+  tone = "neutral"
+}: {
+  primary: string;
+  secondary: string;
+  tertiary: string;
+  tone?: "good" | "bad" | "warn" | "neutral";
+}) {
   return (
-    <div className="token-audit">
+    <div className={"scanner-metric-stack metric-" + tone}>
+      <strong>{primary}</strong>
+      <span>{secondary}</span>
+      <small>{tertiary}</small>
+    </div>
+  );
+}
+
+function ScannerRowAudit({
+  row,
+  showUnavailable
+}: {
+  row: MomentumScannerRow;
+  showUnavailable: boolean;
+}) {
+  return (
+    <div className="scanner-row-audit">
       <div>
-        <h4>Calculation Inputs</h4>
+        <h4>Metric Windows</h4>
         <dl>
-          <dt>samples</dt>
-          <dd>{card.validMetricSampleCount}</dd>
-          <dt>confidence</dt>
-          <dd>{card.calculationConfidence}</dd>
-          <dt>volume velocity</dt>
+          <dt>volume 5s / 10s / 30s / 60s</dt>
           <dd>
-            {formatVelocity(
-              card.strategy.calculationInputs.volumeVelocity,
-              "usd"
-            )}
+            {formatSol(row.volume5sSol)} / {formatSol(row.volume10sSol)} / {formatSol(row.volume30sSol)} / {formatSol(row.volume60sSol)}
           </dd>
-          <dt>volume acceleration</dt>
+          <dt>buy/sell ratio</dt>
+          <dd>{formatCompactNumber(row.buySellRatio)}</dd>
+          <dt>net pressure</dt>
+          <dd>{formatPct(row.netBuyPressure)}</dd>
+          <dt>unique buyers/sellers</dt>
           <dd>
-            {formatAcceleration(
-              card.strategy.calculationInputs.volumeAcceleration,
-              "usd"
-            )}
-          </dd>
-          <dt>price velocity</dt>
-          <dd>
-            {formatVelocity(
-              card.strategy.calculationInputs.priceVelocity,
-              "pct"
-            )}
-          </dd>
-          <dt>buyer velocity</dt>
-          <dd>
-            {formatVelocity(
-              card.strategy.calculationInputs.buyerVelocity,
-              "buyers"
-            )}
-          </dd>
-          <dt>holder velocity</dt>
-          <dd>
-            {formatVelocity(
-              card.strategy.calculationInputs.holderVelocity,
-              "holders"
-            )}
-          </dd>
-        </dl>
-      </div>
-      <div>
-        <h4>Source Audit</h4>
-        <dl>
-          <dt>identity</dt>
-          <dd>
-            {card.identitySource} / {card.identityConfidence} /{" "}
-            {card.identityResolved ? "resolved" : "unresolved"}
-          </dd>
-          <dt>price source</dt>
-          <dd>
-            {card.priceSol === null && card.priceUsd === null
-              ? "UNAVAILABLE"
-              : "DERIVED"}
-          </dd>
-          <dt>volume source</dt>
-          <dd>
-            {card.volume10sUsd === null && card.volume10sSol === null
-              ? "UNAVAILABLE"
-              : "DERIVED"}
-          </dd>
-          <dt>holder source</dt>
-          <dd>{card.holderDataSource ?? "UNAVAILABLE"}</dd>
-          <dt>raw events</dt>
-          <dd>{card.rawEventCount}</dd>
-          <dt>actual trades</dt>
-          <dd>{card.actualTradeEventCount}</dd>
-          <dt>market observations</dt>
-          <dd>{card.marketObservationCount}</dd>
-          <dt>data quality</dt>
-          <dd>
-            {formatDataQuality(card.dataCompleteness.dataQualityLabel)} /{" "}
-            {card.dataCompleteness.completenessPct}%
-          </dd>
-          <dt>trade tracking</dt>
-          <dd>
-            {formatTradeTrackingState(card.tradeTrackingState)} /{" "}
-            {formatCompactNumber(card.tradeEventCount)} trades
+            {formatCompactNumber(row.uniqueBuyers10s)} / {formatCompactNumber(row.uniqueSellers10s)}
           </dd>
           <dt>latest trade</dt>
-          <dd>{formatTimeAgo(card.latestTradeAt)}</dd>
-          <dt>launch phase</dt>
-          <dd>
-            {card.launchPhase} / {card.launchScoreLabel}
-          </dd>
-          <dt>launch trades</dt>
-          <dd>{card.launchTradeSampleCount}</dd>
-          <dt>launch price</dt>
-          <dd>{formatSol(card.launchPriceSol)}</dd>
-          <dt>paper exit</dt>
-          <dd>
-            {card.exitSignalSummary.hasExitSignal
-              ? `${card.exitSignalSummary.exitSignalCount} signal(s)`
-              : "NONE"}
-          </dd>
-          <dt>paper position</dt>
-          <dd>
-            {card.paperPositionSummary.hasPosition
-              ? `${card.paperPositionSummary.status ?? "open"} / ${formatSol(
-                  card.paperPositionSummary.remainingSizeSol
-                )}`
-              : "NONE"}
-          </dd>
-          <dt>paper pnl</dt>
-          <dd>
-            {card.paperPositionSummary.hasPosition
-              ? `${formatSol(
-                  card.paperPositionSummary.unrealizedPnlSol
-                )} / ${formatPct(card.paperPositionSummary.unrealizedPnlPct)}`
-              : "--"}
-          </dd>
-          <dt>exit trigger</dt>
-          <dd>
-            {card.exitSignalSummary.watchedWalletTriggers.join(", ") || "--"}
-          </dd>
-          <dt>enrichment</dt>
-          <dd>
-            {card.enrichmentStatus}
-            {card.enrichmentSource ? ` / ${card.enrichmentSource}` : ""}
-          </dd>
-          <dt>dex pair</dt>
-          <dd>{card.dexId ?? "--"} / {formatMintShort(card.pairAddress)}</dd>
+          <dd>{formatTimeAgo(row.latestTradeAt)}</dd>
         </dl>
       </div>
       <div>
-        <h4>Reason Codes</h4>
-        <ReasonCodes codes={card.combinedReasonCodes} limit={16} />
-        <h4>Completeness</h4>
-        <ReasonCodes codes={card.dataCompleteness.reasonCodes} limit={16} />
-        <h4>Trade Tracking</h4>
-        <ReasonCodes codes={card.tradeTrackingReasonCodes} limit={16} />
-        <h4>Launch Scanner</h4>
-        <ReasonCodes codes={card.launchReasonCodes} limit={16} />
-        <h4>Launch Missing Data</h4>
-        <ReasonCodes codes={card.launchMissingDataReasons} limit={16} />
-        <h4>Paper Exit</h4>
-        <ReasonCodes
-          codes={[
-            ...(card.exitSignalSummary.latestExitSignal?.reasonCodes ?? []),
-            ...card.exitSignalSummary.exitBlockers
-          ]}
-          limit={16}
-        />
-        <h4>Paper Portfolio</h4>
-        <ReasonCodes
-          codes={[
-            ...(card.paperPositionSummary.latestPaperOrder?.reasonCodes ?? []),
-            ...(card.paperPositionSummary.latestPaperExitSignal?.reasonCodes ??
-              [])
-          ]}
-          limit={16}
-        />
-        <h4>Unavailable Fields</h4>
-        <ReasonCodes codes={card.unavailableFields} limit={16} />
-        <h4>Warnings</h4>
-        <ReasonCodes codes={card.dataSourceWarnings} limit={16} />
+        <h4>Derivatives</h4>
+        <dl>
+          <dt>dVol/dt</dt>
+          <dd>{formatVelocity(row.volumeVelocitySolPerSec, "sol")}</dd>
+          <dt>d2Vol/dt2</dt>
+          <dd>{formatAcceleration(row.volumeAccelerationSolPerSec2, "sol")}</dd>
+          <dt>dPrice/dt</dt>
+          <dd>{formatVelocity(row.priceVelocityPctPerSec, "pct")}</dd>
+          <dt>d2Price/dt2</dt>
+          <dd>{formatAcceleration(row.priceAccelerationPctPerSec2, "pct")}</dd>
+          <dt>dBuyers/dt</dt>
+          <dd>{formatVelocity(row.buyerVelocityPerSec, "buyers")}</dd>
+          <dt>d2Buyers/dt2</dt>
+          <dd>{formatAcceleration(row.buyerAccelerationPerSec2, "buyers")}</dd>
+        </dl>
+      </div>
+      <div>
+        <h4>Strategy Components</h4>
+        <dl>
+          <dt>early volume</dt>
+          <dd>{formatCompactNumber(row.scoreComponents.earlyVolumeScore)}</dd>
+          <dt>volume acceleration</dt>
+          <dd>{formatCompactNumber(row.scoreComponents.volumeAccelerationScore)}</dd>
+          <dt>price action</dt>
+          <dd>{formatCompactNumber(row.scoreComponents.priceActionScore)}</dd>
+          <dt>buyer growth</dt>
+          <dd>{formatCompactNumber(row.scoreComponents.buyerGrowthScore)}</dd>
+          <dt>buy pressure</dt>
+          <dd>{formatCompactNumber(row.scoreComponents.buyPressureScore)}</dd>
+          <dt>risk penalty</dt>
+          <dd>{formatCompactNumber(row.scoreComponents.riskPenalty)}</dd>
+          <dt>missing data penalty</dt>
+          <dd>{formatCompactNumber(row.scoreComponents.missingDataPenalty)}</dd>
+        </dl>
+      </div>
+      <div>
+        <h4>Risk / Position</h4>
+        <dl>
+          <dt>mint / freeze auth</dt>
+          <dd>
+            {formatBool(row.mintAuthorityActive)} / {formatBool(row.freezeAuthorityActive)}
+          </dd>
+          <dt>holders</dt>
+          <dd>{formatCompactNumber(row.holderCount)}</dd>
+          <dt>paper position</dt>
+          <dd>{row.paperPositionStatus ?? "none"}</dd>
+          <dt>entry / current</dt>
+          <dd>
+            {formatSol(row.entryPriceSol)} / {formatSol(row.currentPriceSol)}
+          </dd>
+          <dt>paper exit</dt>
+          <dd>{row.latestPaperExitSignal ? row.latestPaperExitSignal.sellPct + "%" : "none"}</dd>
+        </dl>
+      </div>
+      <div className="scanner-audit-wide">
+        <h4>Data Audit</h4>
+        <p>{row.fieldDiagnosticsSummary}</p>
+        <ReasonCodes codes={row.reasonCodes} limit={18} />
+        {showUnavailable ? (
+          <>
+            <h4>Unavailable Fields</h4>
+            <ReasonCodes codes={row.unavailableFields} limit={24} />
+            <h4>Missing Critical Fields</h4>
+            <ReasonCodes codes={row.missingCriticalFields} limit={12} />
+          </>
+        ) : null}
       </div>
     </div>
   );
@@ -2112,7 +1931,7 @@ function SignalsTab({
   signals: OverlaySignal[];
   strategy: StrategyStatus | null;
 }) {
-  const sortedCards = sortCards(cards, "score");
+  const sortedCards = [...cards].sort((left, right) => right.score - left.score);
 
   return (
     <section className="tab-panel" role="tabpanel">
@@ -2125,7 +1944,7 @@ function SignalsTab({
       <div className="strategy-status">
         <Stat
           label="strategy"
-          value={strategy?.strategyName ?? "--"}
+          value={strategy?.strategyName ?? "—"}
           detail="read only"
         />
         <Stat
@@ -2141,7 +1960,7 @@ function SignalsTab({
         />
         <Stat
           label="safety"
-          value={strategy?.paperOnly ? "PAPER ONLY" : "--"}
+          value={strategy?.paperOnly ? "PAPER ONLY" : "—"}
         />
         <div className="formula-list">
           {(strategy?.formula ?? []).map((line) => (
@@ -2220,7 +2039,7 @@ function PortfolioTab({
           </p>
         </div>
         <span className="table-meta">
-          {status?.liveExecutionDisabled ? "NO LIVE EXECUTION" : "--"}
+          {status?.liveExecutionDisabled ? "NO LIVE EXECUTION" : "—"}
         </span>
       </div>
       <div className="status-grid secondary-grid">
@@ -2341,7 +2160,7 @@ function PortfolioTab({
           order.side.toUpperCase(),
           order.source,
           formatSol(order.requestedSizeSol),
-          order.requestedSellPct === null ? "--" : `${order.requestedSellPct}%`,
+          order.requestedSellPct === null ? "—" : `${order.requestedSellPct}%`,
           formatCompactNumber(order.signalScore),
           <ReasonCodes codes={order.reasonCodes} key="reasons" limit={5} />
         ])}
@@ -2618,7 +2437,7 @@ function ExitTab({
           label="paper only"
           value={status?.paperOnly ? "YES" : "UNKNOWN"}
           detail={
-            status?.liveExecutionDisabled ? "live execution disabled" : "--"
+            status?.liveExecutionDisabled ? "live execution disabled" : "—"
           }
           tone="good"
         />
@@ -2631,9 +2450,9 @@ function ExitTab({
           const stats = eventStatsByWallet.get(wallet.address);
 
           return [
-            wallet.alias ?? "--",
+            wallet.alias ?? "—",
             formatMintShort(wallet.address),
-            wallet.tags.join(", ") || "--",
+            wallet.tags.join(", ") || "—",
             wallet.enabled ? "yes" : "no",
             formatTime(stats?.latestAt ?? null),
             formatCompactNumber(stats?.count ?? 0)
@@ -2718,6 +2537,7 @@ function DataTab({
   actualTrades,
   chainStatus,
   dataWalletStatus,
+  diagnostics,
   lightningStatus,
   feedStatus,
   indexerStatus,
@@ -2740,6 +2560,7 @@ function DataTab({
   actualTrades: PumpPortalTradeRow[];
   chainStatus: ChainStatus | null;
   dataWalletStatus: PumpPortalDataWalletStatus | null;
+  diagnostics: MomentumDiagnostics | null;
   lightningStatus: LightningStatus | null;
   feedStatus: FeedStatus | null;
   indexerStatus: IndexerStatus | null;
@@ -2775,6 +2596,70 @@ function DataTab({
           </p>
         </div>
       </div>
+      <DataPanel
+        ariaLabel="Momentum scanner diagnostics"
+        meta={<span>FIELD AVAILABILITY</span>}
+        title="SCANNER DIAGNOSTICS"
+      >
+        <div className="status-grid secondary-grid embedded-grid">
+          <MetricValue
+            label="rows"
+            value={formatCompactNumber(diagnostics?.rowsReturned)}
+            detail={`${formatCompactNumber(
+              diagnostics?.liveTokenCount
+            )} live tokens`}
+          />
+          <MetricValue
+            label="price"
+            value={formatCompactNumber(diagnostics?.tokensWithPrice)}
+            detail="price action"
+          />
+          <MetricValue
+            label="volume"
+            value={formatCompactNumber(diagnostics?.tokensWithVolume)}
+            detail="rolling windows"
+          />
+          <MetricValue
+            label="trades"
+            value={formatCompactNumber(diagnostics?.tokensWithTradeData)}
+            detail="metered samples"
+          />
+          <MetricValue
+            label="derivatives"
+            value={formatCompactNumber(diagnostics?.tokensWithDerivatives)}
+            detail="sample gated"
+          />
+          <MetricValue
+            label="market cap"
+            value={formatCompactNumber(diagnostics?.tokensWithMarketCap)}
+            detail="enrichment"
+          />
+          <MetricValue
+            label="liquidity"
+            value={formatCompactNumber(diagnostics?.tokensWithLiquidity)}
+            detail="enrichment"
+          />
+          <MetricValue
+            label="holders"
+            value={formatCompactNumber(diagnostics?.tokensWithHolderData)}
+            detail="chain verifier"
+          />
+          <MetricValue
+            label="positions"
+            value={formatCompactNumber(diagnostics?.tokensWithPaperPosition)}
+            detail="paper portfolio"
+          />
+        </div>
+        <div className="diagnostic-actions">
+          {(diagnostics?.recommendedNextActions ?? []).map((action) => (
+            <span key={action}>{action}</span>
+          ))}
+        </div>
+        <ReasonBlock
+          title="Momentum Diagnostics Reasons"
+          codes={diagnostics?.reasonCodes}
+        />
+      </DataPanel>
       <div className="status-grid secondary-grid">
         <MetricValue
           label="feed"
@@ -2785,7 +2670,7 @@ function DataTab({
         <MetricValue
           label="live session"
           value={formatCompactNumber(liveStatus?.liveTokenCount)}
-          detail={liveStatus?.sessionId ?? "--"}
+          detail={liveStatus?.sessionId ?? "—"}
         />
         <MetricValue
           label="launch tracking"
@@ -2816,7 +2701,7 @@ function DataTab({
           value={(dataWalletStatus?.balanceStatus ?? "unknown").toUpperCase()}
           detail={
             dataWalletStatus?.publicKeyConfigured
-              ? (dataWalletStatus.shortPublicKey ?? "--")
+              ? (dataWalletStatus.shortPublicKey ?? "—")
               : "public key missing"
           }
           tone={getDataWalletTone(dataWalletStatus?.balanceStatus)}
@@ -2843,7 +2728,7 @@ function DataTab({
         <MetricValue
           label="market"
           value={marketStatus?.enabled ? "ON" : "OFF"}
-          detail={`${marketStatus?.minConfidenceForMetrics ?? "--"} min`}
+          detail={`${marketStatus?.minConfidenceForMetrics ?? "—"} min`}
         />
         <MetricValue
           label="chain"
@@ -3030,7 +2915,7 @@ function DataTab({
       </div>
       <DataPanel
         ariaLabel="Pump.fun PumpPortal runtime control"
-        meta={<span>METERED DATA ONLY -- NO TRADING</span>}
+        meta={<span>METERED DATA ONLY — NO TRADING</span>}
         title="PUMPFUN / PUMPPORTAL CONTROL"
       >
         <div className="status-grid secondary-grid embedded-grid">
@@ -3387,7 +3272,7 @@ function DataTab({
             value={
               meteredLaunchDataStatus?.lastStopReason
                 ? meteredLaunchDataStatus.lastStopReason.toUpperCase()
-                : "--"
+                : "—"
             }
             detail={
               meteredLaunchDataStatus?.budgetReached
@@ -3464,7 +3349,7 @@ function DataTab({
           identity.dataSource,
           identity.confidence,
           identity.resolved ? "yes" : "no",
-          identity.metadataUri ? "yes" : "--",
+          identity.metadataUri ? "yes" : "—",
           formatTime(identity.updatedAt)
         ])}
         title="TOKEN IDENTITIES"
@@ -3562,7 +3447,7 @@ function DataWalletPanel({
         />
         <MetricValue
           label="funding address"
-          value={dataWalletStatus?.shortPublicKey ?? "--"}
+          value={dataWalletStatus?.shortPublicKey ?? "—"}
           detail={
             dataWalletStatus?.publicKeyConfigured
               ? "public key"
@@ -3690,12 +3575,12 @@ function PumpPortalWalletsLightningPanel({
         />
         <MetricValue
           label="slippage cap"
-          value={`${lightningStatus?.slippage ?? "--"}%`}
+          value={`${lightningStatus?.slippage ?? "—"}%`}
           detail={`${formatSol(lightningStatus?.priorityFee)} priority`}
         />
         <MetricValue
           label="pool"
-          value={lightningStatus?.pool ?? "--"}
+          value={lightningStatus?.pool ?? "—"}
           detail={`${lightningStatus?.maxOpenPositions ?? 0} max open`}
         />
         <MetricValue
@@ -3780,7 +3665,7 @@ function WalletReadinessBlock({
         />
         <MetricValue
           label="address"
-          value={wallet?.shortPublicKey ?? "--"}
+          value={wallet?.shortPublicKey ?? "—"}
           detail={wallet?.publicKeyValid ? "valid" : "missing/invalid"}
         />
       </div>
@@ -3812,7 +3697,7 @@ function StorageTab({
     <section className="tab-panel" role="tabpanel">
       <div className="panel-heading">
         <div>
-          <h2>STORAGE / DEBUG</h2>
+          <h2>Debug</h2>
           <p>
             Persisted counts, live feed rows, and read-only chain verification
             rows.
@@ -3823,7 +3708,7 @@ function StorageTab({
         {Object.entries(storageStats ?? {}).map(([key, value]) => (
           <div className="debug-row" key={key}>
             <span>{key}</span>
-            <strong>{String(value ?? "--")}</strong>
+            <strong>{String(value ?? "—")}</strong>
           </div>
         ))}
       </div>
@@ -3949,7 +3834,7 @@ function DriverList({
   drivers: LiveTokenCardViewModel["strategy"]["positiveDrivers"];
 }) {
   if (drivers.length === 0) {
-    return <span className="muted">--</span>;
+    return <span className="muted">—</span>;
   }
 
   return (
@@ -3984,28 +3869,28 @@ function ReasonBlock({
   );
 }
 
-function filterCards(
-  cards: LiveTokenCardViewModel[],
+function filterRows(
+  rows: MomentumScannerRow[],
   options: {
     actionFilter: ActionFilter;
     realOnly: boolean;
     search: string;
   }
-): LiveTokenCardViewModel[] {
+): MomentumScannerRow[] {
   const query = options.search.trim().toLowerCase();
 
-  return cards.filter((card) => {
-    if (options.realOnly && !card.realData) {
+  return rows.filter((row) => {
+    if (options.realOnly && !row.realData) {
       return false;
     }
 
     if (query.length > 0) {
       const haystack = [
-        card.mint,
-        card.name ?? "",
-        card.symbol ?? "",
-        card.title,
-        card.displayName
+        row.mint,
+        row.name ?? "",
+        row.symbol ?? "",
+        row.title,
+        row.displayName
       ]
         .join(" ")
         .toLowerCase();
@@ -4016,31 +3901,41 @@ function filterCards(
     }
 
     if (options.actionFilter === "watch") {
-      return (
-        card.action.includes("WATCH") || card.lifecycleState === "watching"
-      );
+      return row.signalAction.includes("WATCH") || row.launchPhase === "watching";
     }
 
-    if (options.actionFilter === "qualified") {
-      return card.buyReady || card.lifecycleState === "qualified";
+    if (options.actionFilter === "hot") {
+      return row.launchPhase === "hot";
+    }
+
+    if (options.actionFilter === "ripping") {
+      return row.launchPhase === "ripping";
     }
 
     if (options.actionFilter === "rejected") {
-      return (
-        card.hardReject ||
-        card.signalStrength === "reject" ||
-        card.lifecycleState === "rejected"
-      );
+      return row.hardReject || row.signalStrength === "reject" || row.launchPhase === "rejected";
+    }
+
+    if (options.actionFilter === "tradeTracked") {
+      return row.trackingState === "tracking" || row.realTradeEventCount > 0;
+    }
+
+    if (options.actionFilter === "discoveryOnly") {
+      return row.dataQualityLabel === "discovery_only";
+    }
+
+    if (options.actionFilter === "missingCritical") {
+      return row.missingCriticalFields.length > 0;
     }
 
     return true;
   });
 }
 
-function sortCards(
-  cards: LiveTokenCardViewModel[],
+function sortRows(
+  rows: MomentumScannerRow[],
   sortMode: SortMode
-): LiveTokenCardViewModel[] {
+): MomentumScannerRow[] {
   const riskWeight: Record<string, number> = {
     critical: 5,
     high: 4,
@@ -4049,29 +3944,44 @@ function sortCards(
     low: 1
   };
 
-  return [...cards].sort((left, right) => {
+  return [...rows].sort((left, right) => {
     if (sortMode === "launchScore") {
       return (
         right.launchScore - left.launchScore ||
-        Date.parse(right.lastSeenAt) - Date.parse(left.lastSeenAt)
+        parseRowTime(right.latestEventAt) - parseRowTime(left.latestEventAt)
       );
-    }
-
-    if (sortMode === "score") {
-      return right.score - left.score;
     }
 
     if (sortMode === "volumeVelocity") {
       return (
-        (right.volumeVelocityUsdPerSec ?? right.volumeVelocitySolPerSec ?? -1) -
-        (left.volumeVelocityUsdPerSec ?? left.volumeVelocitySolPerSec ?? -1)
+        (right.volumeVelocitySolPerSec ?? -1) -
+        (left.volumeVelocitySolPerSec ?? -1)
       );
     }
 
     if (sortMode === "volume10s") {
       return (
-        (right.volume10sUsd ?? right.volume10sSol ?? -1) -
-        (left.volume10sUsd ?? left.volume10sSol ?? -1)
+        (right.volume10sSol ?? right.volume10sUsd ?? -1) -
+        (left.volume10sSol ?? left.volume10sUsd ?? -1)
+      );
+    }
+
+    if (sortMode === "priceVelocity") {
+      return (
+        (right.priceVelocityPctPerSec ?? -1) -
+        (left.priceVelocityPctPerSec ?? -1)
+      );
+    }
+
+    if (sortMode === "uniqueBuyers") {
+      return (
+        (right.uniqueBuyers10s ?? -1) - (left.uniqueBuyers10s ?? -1)
+      );
+    }
+
+    if (sortMode === "buySellRatio") {
+      return (
+        (right.buySellRatio ?? -1) - (left.buySellRatio ?? -1)
       );
     }
 
@@ -4081,8 +3991,24 @@ function sortCards(
       );
     }
 
-    return Date.parse(right.latestEventAt) - Date.parse(left.latestEventAt);
+    if (sortMode === "pnl") {
+      return (
+        (right.unrealizedPnlPct ?? Number.NEGATIVE_INFINITY) -
+        (left.unrealizedPnlPct ?? Number.NEGATIVE_INFINITY)
+      );
+    }
+
+    return parseRowTime(right.latestEventAt) - parseRowTime(left.latestEventAt);
   });
+}
+
+function parseRowTime(timestamp: string | null): number {
+  if (!timestamp) {
+    return 0;
+  }
+
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function upsertSignal(
@@ -4157,83 +4083,11 @@ function activateTab(tab: TabId, setActiveTab: (tab: TabId) => void): void {
 
 function getInitialTab(): TabId {
   const hash = window.location.hash.replace("#", "");
-  return tabs.some((tab) => tab.id === hash) ? (hash as TabId) : "live";
-}
-
-function normalizeClassName(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, "_");
+  return tabs.some((tab) => tab.id === hash) ? (hash as TabId) : "scanner";
 }
 
 function formatDataQuality(value: string): string {
   return value.replaceAll("_", " ").toUpperCase();
-}
-
-function formatTradeTrackingState(value: string): string {
-  return value.replaceAll("_", " ").toUpperCase();
-}
-
-function formatMeteredLaunchDataLabel(card: LiveTokenCardViewModel): string {
-  if (card.realTimeSeriesReady) {
-    return "TIME SERIES READY";
-  }
-
-  if (card.realPriceActionReady) {
-    return "PRICE ACTION READY";
-  }
-
-  if (card.meteredLaunchDataState === "tracking") {
-    return "METERED TRACKING";
-  }
-
-  if (card.meteredLaunchDataState === "budget_reached") {
-    return "BUDGET BLOCKED";
-  }
-
-  if (card.missingDataReason?.includes("WALLET")) {
-    return "WALLET LOW";
-  }
-
-  if (card.missingDataReason?.includes("ACK")) {
-    return "ACK MISSING";
-  }
-
-  return "DISCOVERY ONLY";
-}
-
-function getMeteredLaunchDataBadgeClass(
-  card: LiveTokenCardViewModel
-): string {
-  const label = formatMeteredLaunchDataLabel(card);
-
-  if (label.includes("READY") || label === "METERED TRACKING") {
-    return "terminal-badge-online";
-  }
-
-  if (label.includes("BLOCKED") || label === "WALLET LOW") {
-    return "terminal-badge-offline";
-  }
-
-  if (label === "ACK MISSING") {
-    return "terminal-badge-warning";
-  }
-
-  return "terminal-badge-neutral";
-}
-
-function getTradeTrackingBadgeClass(value: string): string {
-  if (value === "tracking") {
-    return "terminal-badge-online";
-  }
-
-  if (value === "budget_reached" || value === "error") {
-    return "terminal-badge-offline";
-  }
-
-  if (value === "tracking_requested") {
-    return "terminal-badge-warning";
-  }
-
-  return "terminal-badge-neutral";
 }
 
 function getRuntimeLiveLabel(status: RuntimeControlStatus | null): string {
@@ -4335,7 +4189,7 @@ function copyPublicKey(publicKey: string | null): void {
 
 function formatBool(value: boolean | null | undefined): string {
   if (value === null || value === undefined) {
-    return "--";
+    return "—";
   }
 
   return value ? "yes" : "no";
@@ -4347,7 +4201,7 @@ function formatUsdOrSol(
 ): string {
   const usd = formatUsd(usdValue);
 
-  if (usd !== "--") {
+  if (usd !== "—") {
     return usd;
   }
 
