@@ -1,4 +1,8 @@
-import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
+import Fastify, {
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest
+} from "fastify";
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
 import {
@@ -190,6 +194,10 @@ import {
   type MeteredLaunchDataConfig,
   type MeteredLaunchDataService
 } from "./metered-launch-data-service";
+import {
+  createRuntimeControlService,
+  type RuntimeControlService
+} from "./runtime-control-service";
 import {
   createIndexerAdapter,
   type IndexerAdapter,
@@ -1198,6 +1206,7 @@ export type ApiServer = {
   actualData: ActualDataService;
   launchScanner: LaunchScannerService;
   meteredLaunchData: MeteredLaunchDataService;
+  runtimeControl: RuntimeControlService;
   pumpPortalDataWallet: PumpPortalDataWalletService;
   pumpPortalWallets: PumpPortalWalletsService;
   lightningReadiness: LightningReadinessService;
@@ -1585,6 +1594,25 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const wss = new WebSocketServer({ noServer: true });
   const maxSignalCacheSize = 100;
   let feedStarted = false;
+  const runtimeControl = createRuntimeControlService({
+    getDataWalletStatus: () => pumpPortalDataWallet.getStatus(),
+    getFeedStatus,
+    getMeteredLatestEventAt: () =>
+      meteredLaunchData.getRecentTradeEvents()[0]?.createdAt ?? null,
+    getMeteredLaunchDataStatus: () => meteredLaunchData.getStatus(),
+    refreshDataWallet: () => pumpPortalDataWallet.refreshBalance({ force: true }),
+    restartLiveDiscovery: async () => {
+      await stopFeed();
+      startFeed();
+    },
+    runtimeMode: dataFeedMode,
+    startLiveDiscovery: () => startFeed(),
+    startMeteredLaunchData: () => meteredLaunchData.start(),
+    stopLiveDiscovery: () => stopFeed(),
+    stopMeteredLaunchData: () => meteredLaunchData.stop(),
+    trackCurrentMeteredCandidates: (limit) =>
+      meteredLaunchData.trackCurrentCandidates(limit)
+  });
 
   app.addHook("onRequest", (request, reply, done) => {
     reply.header("Access-Control-Allow-Origin", "*");
@@ -1613,6 +1641,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const dataWalletStatus = await pumpPortalDataWallet.refreshBalance();
     const pumpPortalWalletsStatus = await pumpPortalWallets.refreshBalances();
     const meteredLaunchDataStatus = meteredLaunchData.getStatus();
+    const runtimeControlStatus = await runtimeControl.getStatus();
 
     return {
       chainEvents: chainEventsStatus,
@@ -1628,6 +1657,31 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       actualDataSubscriptionCount: stats.actualDataSubscriptionCount,
       launchScanner: launchScanner.getStatus(),
       meteredLaunchData: meteredLaunchDataStatus,
+      runtimeControl: {
+        controlPlaneEnabled: runtimeControlStatus.controlPlaneEnabled,
+        localOnly: runtimeControlStatus.localOnly,
+        liveDiscovery: runtimeControlStatus.liveDiscovery,
+        meteredLaunchData: runtimeControlStatus.meteredLaunchData,
+        dataWallet: runtimeControlStatus.dataWallet,
+        reasonCodes: runtimeControlStatus.reasonCodes,
+        paperOnly: true,
+        tradingDisabled: true
+      },
+      runtimeControlEnabled: runtimeControlStatus.controlPlaneEnabled,
+      runtimeControlLocalOnly: runtimeControlStatus.localOnly,
+      runtimeLiveDiscoveryState: runtimeControlStatus.liveDiscovery.connected
+        ? "connected"
+        : runtimeControlStatus.liveDiscovery.connecting
+          ? "connecting"
+          : runtimeControlStatus.liveDiscovery.lastError
+            ? "errored"
+            : "stopped",
+      runtimeMeteredLaunchDataState:
+        runtimeControlStatus.meteredLaunchData.active
+          ? "active"
+          : runtimeControlStatus.meteredLaunchData.blocked
+            ? "blocked"
+            : "stopped",
       meteredLaunchDataEnabled: meteredLaunchDataStatus.enabled,
       meteredLaunchDataReady: meteredLaunchDataStatus.ready,
       meteredLaunchDataTrackedCount:
@@ -1732,6 +1786,80 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       trackedTokenCount: metricsEngine.getAllMetrics().length,
       uptimeSeconds: Math.round(process.uptime())
     };
+  });
+
+  app.get("/runtime/status", async () => runtimeControl.getStatus());
+
+  app.get("/runtime/diagnostics", async () =>
+    runtimeControl.getDiagnostics()
+  );
+
+  app.post("/runtime/live-discovery/start", async (request, reply) => {
+    if (!isLocalRuntimeControlRequest(request)) {
+      return sendNonLocalRuntimeControlReply(reply);
+    }
+
+    return runtimeControl.startLiveDiscovery();
+  });
+
+  app.post("/runtime/live-discovery/stop", async (request, reply) => {
+    if (!isLocalRuntimeControlRequest(request)) {
+      return sendNonLocalRuntimeControlReply(reply);
+    }
+
+    return runtimeControl.stopLiveDiscovery();
+  });
+
+  app.post("/runtime/live-discovery/restart", async (request, reply) => {
+    if (!isLocalRuntimeControlRequest(request)) {
+      return sendNonLocalRuntimeControlReply(reply);
+    }
+
+    return runtimeControl.restartLiveDiscovery();
+  });
+
+  app.post("/runtime/metered-launch-data/start", async (request, reply) => {
+    if (!isLocalRuntimeControlRequest(request)) {
+      return sendNonLocalRuntimeControlReply(reply);
+    }
+
+    const result = await runtimeControl.startMeteredLaunchData();
+
+    if (!result.ok) {
+      return reply.code(409).send(result);
+    }
+
+    return result;
+  });
+
+  app.post("/runtime/metered-launch-data/stop", async (request, reply) => {
+    if (!isLocalRuntimeControlRequest(request)) {
+      return sendNonLocalRuntimeControlReply(reply);
+    }
+
+    return runtimeControl.stopMeteredLaunchData();
+  });
+
+  app.post("/runtime/metered-launch-data/restart", async (request, reply) => {
+    if (!isLocalRuntimeControlRequest(request)) {
+      return sendNonLocalRuntimeControlReply(reply);
+    }
+
+    const result = await runtimeControl.restartMeteredLaunchData();
+
+    if (!result.ok) {
+      return reply.code(409).send(result);
+    }
+
+    return result;
+  });
+
+  app.post("/runtime/data-wallet/refresh", async (request, reply) => {
+    if (!isLocalRuntimeControlRequest(request)) {
+      return sendNonLocalRuntimeControlReply(reply);
+    }
+
+    return runtimeControl.refreshDataWallet();
   });
 
   app.get("/signals", async () => Array.from(signals.values()));
@@ -5088,6 +5216,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     metrics: metricsEngine,
     pumpPortalDataWallet,
     pumpPortalWallets,
+    runtimeControl,
     lightningReadiness,
     watchedWalletExit,
     paperPortfolio,
@@ -5100,6 +5229,47 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     storage,
     tokenIdentity
   };
+}
+
+function isLocalRuntimeControlRequest(request: FastifyRequest): boolean {
+  const forwardedFor = request.headers["x-forwarded-for"];
+  const forwardedAddress = Array.isArray(forwardedFor)
+    ? forwardedFor[0]
+    : forwardedFor;
+  const candidates = [
+    forwardedAddress?.split(",")[0]?.trim(),
+    request.ip,
+    request.socket.remoteAddress
+  ].filter((value): value is string => Boolean(value));
+
+  return candidates.every(isLocalAddress);
+}
+
+function isLocalAddress(address: string): boolean {
+  const normalized = address.replace(/^::ffff:/, "");
+
+  return (
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized === "localhost" ||
+    normalized === ""
+  );
+}
+
+function sendNonLocalRuntimeControlReply(reply: FastifyReply) {
+  return reply.code(403).send({
+    error: "CONTROL_REQUEST_DENIED_NON_LOCAL",
+    message: "Runtime control endpoints are local/dev only.",
+    reasonCodes: [
+      "CONTROL_REQUEST_DENIED_NON_LOCAL",
+      "CONTROL_PLANE_LOCAL_ONLY",
+      "TRADING_DISABLED",
+      "LIGHTNING_DISABLED",
+      "ACCOUNT_TRADES_DISABLED"
+    ],
+    paperOnly: true,
+    tradingDisabled: true
+  });
 }
 
 function toLiveCardCompleteness(token: LiveTokenState): LiveCardDataCompleteness {

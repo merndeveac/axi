@@ -955,6 +955,11 @@ pnpm local:logs
 Live-token runtime helpers:
 
 ```bash
+pnpm axi:doctor
+pnpm axi:restart
+pnpm axi:restart:metered
+pnpm axi:logs
+pnpm axi:stop
 pnpm live:tokens
 pnpm live:tokens:metered
 pnpm setup:pumpportal-data-env
@@ -964,6 +969,23 @@ pnpm check:pumpportal-data-wallet
 pnpm live:tokens:stop
 pnpm live:tokens:logs
 ```
+
+Recommended local workflow:
+
+- `pnpm axi:doctor` diagnoses branch/dirty state, `.env.local` safety, port
+  owners, API health, dashboard reachability, data-wallet status, and metered
+  launch-data status without printing secrets.
+- `pnpm axi:restart` stops recorded local AXI processes, rebuilds, launches the
+  API and dashboard, writes `.tmp/axi-api.log`, `.tmp/axi-dashboard.log`, and
+  `.tmp/axi-dev-pids.json`, then waits for the API/dashboard.
+- `pnpm axi:restart:metered` first verifies `.env.local` and the metered gates,
+  then rebuilds and launches with metered token-trade data enabled. It does not
+  set the ACK for you and never enables trading.
+- `pnpm axi:logs` prints recent API/dashboard logs.
+- `pnpm axi:stop` stops only PIDs recorded in `.tmp/axi-dev-pids.json`. If a
+  repo-local process owns a port but is not in the PID file, it tells you to run
+  `pnpm axi:stop --adopt-repo-processes`. Unknown port owners are never killed
+  silently.
 
 The restart script only stops PIDs recorded in `.tmp/axi-dev-pids.json`. If a
 port is already used by an unknown process, it reports that instead of killing
@@ -996,6 +1018,65 @@ key, or public funding address is missing. It also refuses private-key,
 seed-phrase, or mnemonic env vars. It does not set the ACK or API key for you
 and forces live trading, Lightning execution, account-trade streams, and paper
 auto-orders off.
+
+### Runtime Control Panel
+
+The DATA tab includes `PUMPFUN / PUMPPORTAL CONTROL` for local development:
+
+- Start, stop, or restart PumpPortal live discovery
+  (`subscribeNewToken` + `subscribeMigration`).
+- Refresh the PumpPortal data-wallet balance using read-only RPC.
+- Start or stop metered launch price action (`subscribeTokenTrade`) only when
+  backend gates pass.
+- See live discovery state, metered tracking state, event usage, estimated cost,
+  cost budget remaining, public data-wallet address, SOL balance, API-key
+  configured boolean, API process uptime, paper-only state, and trading-disabled
+  state.
+
+The Start metered price-action button is disabled when the backend reports
+blockers such as ACK missing, API key missing, wallet missing, wallet low,
+budget reached, or live discovery offline. Dashboard controls do not bypass
+backend gates and cannot enable `subscribeAccountTrade`, Lightning execution,
+Local Transaction API calls, Jupiter swaps, signing, transaction sending, or
+live orders. API keys and private keys are never returned to the dashboard.
+
+Runtime-control API endpoints:
+
+- `GET /runtime/status`
+- `GET /runtime/diagnostics`
+- `POST /runtime/live-discovery/start`
+- `POST /runtime/live-discovery/stop`
+- `POST /runtime/live-discovery/restart`
+- `POST /runtime/metered-launch-data/start`
+- `POST /runtime/metered-launch-data/stop`
+- `POST /runtime/metered-launch-data/restart`
+- `POST /runtime/data-wallet/refresh`
+
+POST control endpoints are local/dev only and return `403` for non-local
+requests when the request address can be identified.
+
+If the dashboard cannot reach the API, it keeps rendering and shows `API
+OFFLINE` with:
+
+```bash
+pnpm axi:doctor
+pnpm axi:restart
+```
+
+Troubleshooting quick map:
+
+- App not loading: run `pnpm axi:doctor`, then `pnpm axi:restart`.
+- Stale port owner: run `pnpm axi:doctor`; use
+  `pnpm axi:stop --adopt-repo-processes` only for repo-local owners.
+- `.env.local` missing: run `pnpm setup:pumpportal-data-env`.
+- API key missing: fill `PUMPPORTAL_DATA_API_KEY` in `.env.local`.
+- Data wallet low: fund only the public data-wallet address with a small amount
+  of SOL.
+- Metered ACK missing: set `METERED_LAUNCH_DATA_ACK_COST=true` only after you
+  accept metered data costs.
+- PumpPortal connected but no tracked mints: check DATA tab blockers and
+  `GET /runtime/status`; metered mode may be stopped, blocked, or waiting for
+  qualifying launches.
 
 Manual API launch:
 

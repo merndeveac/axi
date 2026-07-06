@@ -1267,6 +1267,178 @@ describe("@axi/api", () => {
     }
   });
 
+  it("GET /runtime/status reports local paper-only controls without secrets", async () => {
+    const secret = "test-secret-api-key-value";
+    server = createApiServer({
+      dataFeed: "pumpportal",
+      logLevel: false,
+      pumpPortal: {
+        apiKey: secret,
+        subscribeMigration: true,
+        subscribeNewToken: true,
+        wsUrl: "wss://example.test/pumpportal"
+      },
+      pumpPortalDataWallet: {
+        apiKeyConfigured: true,
+        publicKey: "So11111111111111111111111111111111111111112"
+      },
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/runtime/status"
+    });
+    const body = response.json() as {
+      controlPlaneEnabled: boolean;
+      dataWallet: { apiKeyConfigured: boolean; publicKey: string | null };
+      liveDiscovery: { connected: boolean; reasonCodes: string[] };
+      localOnly: boolean;
+      paperOnly: boolean;
+      tradingDisabled: boolean;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.controlPlaneEnabled).toBe(true);
+    expect(body.localOnly).toBe(true);
+    expect(body.paperOnly).toBe(true);
+    expect(body.tradingDisabled).toBe(true);
+    expect(body.dataWallet.apiKeyConfigured).toBe(true);
+    expect(body.dataWallet.publicKey).toBe(
+      "So11111111111111111111111111111111111111112"
+    );
+    expect(JSON.stringify(body)).not.toContain(secret);
+    expect(findDisallowedApiKeyFields(body)).toEqual([]);
+  });
+
+  it("runtime POST controls reject non-local requests", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      headers: {
+        "x-forwarded-for": "203.0.113.10"
+      },
+      method: "POST",
+      url: "/runtime/live-discovery/stop"
+    });
+    const body = response.json() as {
+      error: string;
+      paperOnly: boolean;
+      tradingDisabled: boolean;
+    };
+
+    expect(response.statusCode).toBe(403);
+    expect(body.error).toBe("CONTROL_REQUEST_DENIED_NON_LOCAL");
+    expect(body.paperOnly).toBe(true);
+    expect(body.tradingDisabled).toBe(true);
+  });
+
+  it("runtime live discovery stop is idempotent", async () => {
+    server = createApiServer({
+      dataFeed: "pumpportal",
+      logLevel: false,
+      pumpPortal: {
+        subscribeMigration: true,
+        subscribeNewToken: true,
+        wsUrl: "wss://example.test/pumpportal"
+      },
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const first = await server.app.inject({
+      method: "POST",
+      url: "/runtime/live-discovery/stop"
+    });
+    const second = await server.app.inject({
+      method: "POST",
+      url: "/runtime/live-discovery/stop"
+    });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(first.json()).toMatchObject({
+      ok: true,
+      paperOnly: true,
+      tradingDisabled: true
+    });
+    expect(second.json()).toMatchObject({
+      ok: true,
+      paperOnly: true,
+      tradingDisabled: true
+    });
+  });
+
+  it("runtime metered launch data start refuses without ACK", async () => {
+    server = createMeteredLaunchDataTestServer({
+      acknowledgedCost: false,
+      enabled: true
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/runtime/metered-launch-data/start"
+    });
+    const body = response.json() as {
+      ok: boolean;
+      reasonCodes: string[];
+      paperOnly: boolean;
+      tradingDisabled: boolean;
+    };
+
+    expect(response.statusCode).toBe(409);
+    expect(body.ok).toBe(false);
+    expect(body.reasonCodes).toContain("METERED_DATA_ACK_MISSING");
+    expect(body.paperOnly).toBe(true);
+    expect(body.tradingDisabled).toBe(true);
+  });
+
+  it("runtime data-wallet refresh returns public status only", async () => {
+    const secret = "test-secret-api-key-value";
+    server = createApiServer({
+      dataFeed: "pumpportal",
+      logLevel: false,
+      pumpPortal: {
+        apiKey: secret,
+        subscribeMigration: false,
+        subscribeNewToken: false,
+        wsUrl: "wss://example.test/pumpportal"
+      },
+      pumpPortalDataWallet: {
+        apiKeyConfigured: true,
+        publicKey: "So11111111111111111111111111111111111111112",
+        rpcHttpUrl: "http://localhost:8899",
+        solanaClient: createDataWalletSolanaClient(0.05)
+      },
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/runtime/data-wallet/refresh"
+    });
+    const body = response.json() as {
+      status: {
+        dataWallet: {
+          apiKeyConfigured: boolean;
+          balanceSol: number | null;
+          publicKey: string | null;
+        };
+      };
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.status.dataWallet.apiKeyConfigured).toBe(true);
+    expect(body.status.dataWallet.balanceSol).toBe(0.05);
+    expect(body.status.dataWallet.publicKey).toBe(
+      "So11111111111111111111111111111111111111112"
+    );
+    expect(JSON.stringify(body)).not.toContain(secret);
+    expect(findDisallowedApiKeyFields(body)).toEqual([]);
+  });
+
   it("GET /pumpportal/wallets/status returns data and trading readiness without secrets", async () => {
     server = createTestServer();
 

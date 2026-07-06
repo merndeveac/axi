@@ -1,0 +1,77 @@
+import {
+  apiHealthUrl,
+  apiLogPath,
+  apiUrl,
+  assertPortsLaunchable,
+  dashboardLogPath,
+  dashboardUrl,
+  fetchJson,
+  loadLocalRuntimeEnv,
+  startDetached,
+  waitForUrl,
+  writePidRecord
+} from "./axi-dev-utils.mjs";
+
+const meteredMode = process.argv.includes("--metered");
+const env = loadLocalRuntimeEnv(
+  meteredMode
+    ? {
+        METERED_LAUNCH_DATA_ENABLED: "true",
+        PUMPPORTAL_TOKEN_TRADES_ENABLED: "true"
+      }
+    : {}
+);
+
+await assertPortsLaunchable();
+
+const api = startDetached({
+  args: ["--filter", "@axi/api", "dev"],
+  env,
+  expectedToken: "@axi/api",
+  logPath: apiLogPath,
+  name: "api"
+});
+const dashboard = startDetached({
+  args: ["--filter", "@axi/dashboard", "dev"],
+  env,
+  expectedToken: "@axi/dashboard",
+  logPath: dashboardLogPath,
+  name: "dashboard"
+});
+
+writePidRecord(meteredMode ? "metered" : "standard", [api, dashboard]);
+
+await waitForUrl(apiHealthUrl, 30_000);
+const dashboardReady = await waitForUrl(dashboardUrl, 30_000, {
+  optional: true
+});
+const runtime = await fetchJson(`${apiUrl}/runtime/status`);
+
+console.log("AXI launched.");
+console.log(`API URL: ${apiUrl}`);
+console.log(`Dashboard URL: ${dashboardUrl}${dashboardReady ? "" : " (still starting)"}`);
+console.log(
+  `Live discovery: ${
+    runtime.liveDiscovery.connected
+      ? "connected"
+      : runtime.liveDiscovery.connecting
+        ? "connecting"
+        : "stopped"
+  }`
+);
+console.log(
+  `Metered data: ${
+    runtime.meteredLaunchData.active
+      ? "active"
+      : runtime.meteredLaunchData.blocked
+        ? "blocked"
+        : "stopped"
+  }`
+);
+console.log(
+  `Data wallet: apiKey=${runtime.dataWallet.apiKeyConfigured ? "yes" : "no"} balance=${
+    runtime.dataWallet.balanceStatus
+  }`
+);
+console.log(`API log: ${apiLogPath}`);
+console.log(`Dashboard log: ${dashboardLogPath}`);

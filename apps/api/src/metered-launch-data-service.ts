@@ -93,6 +93,7 @@ export type MeteredLaunchDataCost = {
 
 export type MeteredLaunchDataStatus = {
   enabled: boolean;
+  active: boolean;
   acknowledgedCost: boolean;
   requireDataWalletReady: boolean;
   ready: boolean;
@@ -118,6 +119,7 @@ export type MeteredLaunchDataStatus = {
   reasonCodes: string[];
   trackedMints: string[];
   lastStopReason: string | null;
+  startedAt: string | null;
   paperOnly: true;
   dataOnly: true;
   tradingDisabled: true;
@@ -206,6 +208,7 @@ export class MeteredLaunchDataService {
   private readonly rateEventTimestamps: number[] = [];
   private budgetReached = false;
   private lastStopReason: string | null = null;
+  private runtimeStopped = false;
   private startedAt: string | null = null;
   private totalEventsThisSession = 0;
 
@@ -220,6 +223,8 @@ export class MeteredLaunchDataService {
   }
 
   start(): void {
+    this.runtimeStopped = false;
+
     if (this.startedAt) {
       return;
     }
@@ -245,6 +250,8 @@ export class MeteredLaunchDataService {
   }
 
   stop(): void {
+    this.runtimeStopped = true;
+
     for (const mint of this.getTrackedMints()) {
       this.untrackMint(mint, "service_stop");
     }
@@ -325,6 +332,12 @@ export class MeteredLaunchDataService {
   evaluateCurrentCandidates(limit = 50): MeteredLaunchDataDecision[] {
     return (this.getLaunchCandidates?.(limit) ?? []).map((candidate) =>
       this.evaluateNewLaunchCandidate(candidate, { dryRun: true })
+    );
+  }
+
+  trackCurrentCandidates(limit = 50): MeteredLaunchDataDecision[] {
+    return (this.getLaunchCandidates?.(limit) ?? []).map((candidate) =>
+      this.evaluateNewLaunchCandidate(candidate)
     );
   }
 
@@ -517,6 +530,7 @@ export class MeteredLaunchDataService {
 
     return {
       enabled: this.config.enabled,
+      active: this.config.enabled && !this.runtimeStopped,
       acknowledgedCost: this.config.acknowledgedCost,
       requireDataWalletReady: this.config.requireDataWalletReady,
       ready: this.isReady(),
@@ -543,6 +557,7 @@ export class MeteredLaunchDataService {
       reasonCodes: this.getReasonCodes(),
       trackedMints: this.getTrackedMints(),
       lastStopReason: this.lastStopReason,
+      startedAt: this.startedAt,
       paperOnly: true,
       dataOnly: true,
       tradingDisabled: true
@@ -798,6 +813,10 @@ export class MeteredLaunchDataService {
 
     if (!this.config.enabled) {
       reasonCodes.push("METERED_LAUNCH_DATA_DISABLED");
+    }
+
+    if (this.runtimeStopped) {
+      reasonCodes.push("METERED_LAUNCH_DATA_STOPPED");
     }
 
     if (!this.config.acknowledgedCost) {

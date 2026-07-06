@@ -301,6 +301,7 @@ type LaunchScannerStatus = {
 
 type MeteredLaunchDataStatus = {
   enabled: boolean;
+  active: boolean;
   acknowledgedCost: boolean;
   requireDataWalletReady: boolean;
   ready: boolean;
@@ -326,8 +327,70 @@ type MeteredLaunchDataStatus = {
   reasonCodes: string[];
   trackedMints: string[];
   lastStopReason: string | null;
+  startedAt: string | null;
   paperOnly: true;
   dataOnly: true;
+  tradingDisabled: true;
+};
+
+type RuntimeControlStatus = {
+  controlPlaneEnabled: boolean;
+  localOnly: boolean;
+  runtimeMode: string;
+  paperOnly: true;
+  tradingDisabled: true;
+  liveDiscovery: {
+    enabled: boolean;
+    connected: boolean;
+    connecting: boolean;
+    stopped: boolean;
+    lastStartedAt: string | null;
+    lastStoppedAt: string | null;
+    lastEventAt: string | null;
+    newTokenEventCount: number;
+    migrationEventCount: number;
+    errorCount: number;
+    lastError: string | null;
+    reasonCodes: string[];
+  };
+  meteredLaunchData: {
+    enabled: boolean;
+    active: boolean;
+    blocked: boolean;
+    trackedMintCount: number;
+    eventCount: number;
+    estimatedCostSol: number;
+    sessionCostCapSol: number;
+    budgetRemainingSol: number;
+    latestEventAt: string | null;
+    reasonCodes: string[];
+  };
+  dataWallet: {
+    publicKeyConfigured: boolean;
+    publicKey: string | null;
+    shortPublicKey: string | null;
+    apiKeyConfigured: boolean;
+    balanceSol: number | null;
+    balanceStatus: string;
+    estimatedEventsRemaining: number | null;
+    lastBalanceCheckAt: string | null;
+    reasonCodes: string[];
+  };
+  process: {
+    pid: number;
+    uptimeSeconds: number;
+    ports: number[];
+    startedAt: string;
+  };
+  reasonCodes: string[];
+};
+
+type RuntimeControlResult = {
+  ok: boolean;
+  message: string;
+  status: RuntimeControlStatus;
+  reasonCodes: string[];
+  paperOnly: true;
   tradingDisabled: true;
 };
 
@@ -489,6 +552,11 @@ type HealthStatus = {
   liveTokenCount: number;
   launchScanner: LaunchScannerStatus;
   meteredLaunchData: MeteredLaunchDataStatus;
+  runtimeControl: RuntimeControlStatus;
+  runtimeControlEnabled: boolean;
+  runtimeControlLocalOnly: boolean;
+  runtimeLiveDiscoveryState: string;
+  runtimeMeteredLaunchDataState: string;
   meteredLaunchDataEnabled: boolean;
   meteredLaunchDataReady: boolean;
   meteredLaunchDataTrackedCount: number;
@@ -904,6 +972,10 @@ export function App() {
   const [meteredLaunchDataTracked, setMeteredLaunchDataTracked] = useState<
     MeteredLaunchDataTrackedMint[]
   >([]);
+  const [runtimeControlStatus, setRuntimeControlStatus] =
+    useState<RuntimeControlStatus | null>(null);
+  const [runtimeActionStatus, setRuntimeActionStatus] =
+    useState<string>("ready");
   const [liveCardEnrichmentStatus, setLiveCardEnrichmentStatus] =
     useState<LiveCardEnrichmentStatus | null>(null);
   const [indexerStatus, setIndexerStatus] = useState<IndexerStatus | null>(
@@ -1030,6 +1102,7 @@ export function App() {
           nextLaunchScannerStatus,
           nextMeteredLaunchDataStatus,
           nextMeteredLaunchDataTracked,
+          nextRuntimeControlStatus,
           nextActualTrades,
           nextLiveCardEnrichmentStatus,
           nextMarketStatus,
@@ -1081,6 +1154,7 @@ export function App() {
           fetchJson<MeteredLaunchDataTrackedResponse>(
             "/metered-launch-data/tracked?limit=25"
           ),
+          fetchJson<RuntimeControlStatus>("/runtime/status"),
           fetchJson<PumpPortalTradeRow[]>("/actual-data/trades?limit=10"),
           fetchJson<LiveCardEnrichmentStatus>("/enrichment/status"),
           fetchJson<MarketStatus>("/market/status"),
@@ -1123,6 +1197,7 @@ export function App() {
           setLaunchScannerStatus(nextLaunchScannerStatus);
           setMeteredLaunchDataStatus(nextMeteredLaunchDataStatus);
           setMeteredLaunchDataTracked(nextMeteredLaunchDataTracked.current);
+          setRuntimeControlStatus(nextRuntimeControlStatus);
           setActualTrades(nextActualTrades);
           setLiveCardEnrichmentStatus(nextLiveCardEnrichmentStatus);
           setMarketStatus(nextMarketStatus);
@@ -1133,11 +1208,15 @@ export function App() {
           setTokenIdentities(nextTokenIdentities);
           setIndexerStatus(nextIndexerStatus);
           setLiveEvents(nextLiveEvents);
+          if (runtimeActionStatus === "API OFFLINE") {
+            setRuntimeActionStatus("ready");
+          }
           setLastUpdated(new Date().toLocaleTimeString());
         }
       } catch {
         if (!cancelled) {
           setApiStatus("disconnected");
+          setRuntimeActionStatus("API OFFLINE");
         }
       }
     };
@@ -1161,6 +1240,19 @@ export function App() {
       ),
     [actionFilter, cards, realOnly, search, sortMode]
   );
+  const runRuntimeAction = async (path: string, label: string) => {
+    setRuntimeActionStatus(`${label}...`);
+
+    try {
+      const result = await postJson<RuntimeControlResult>(path);
+      setRuntimeControlStatus(result.status);
+      setRuntimeActionStatus(result.message);
+    } catch (error) {
+      setRuntimeActionStatus(
+        error instanceof Error ? error.message : `${label} failed`
+      );
+    }
+  };
   const hotLaunchCount = cards.filter((card) =>
     ["hot", "ripping"].includes(card.launchPhase)
   ).length;
@@ -1322,6 +1414,8 @@ export function App() {
         />
       </section>
 
+      {apiStatus === "disconnected" ? <ApiOfflineNotice /> : null}
+
       <nav className="tab-bar" role="tablist" aria-label="Dashboard tabs">
         {tabs.map((tab) => (
           <button
@@ -1400,6 +1494,9 @@ export function App() {
           meteredLaunchDataStatus={meteredLaunchDataStatus}
           meteredLaunchDataTracked={meteredLaunchDataTracked}
           pumpPortalWalletsStatus={pumpPortalWalletsStatus}
+          runtimeActionStatus={runtimeActionStatus}
+          runtimeControlStatus={runtimeControlStatus}
+          runRuntimeAction={runRuntimeAction}
           tokenIdentities={tokenIdentities}
           tokenIdentityStatus={tokenIdentityStatus}
         />
@@ -1412,6 +1509,21 @@ export function App() {
         />
       ) : null}
     </main>
+  );
+}
+
+function ApiOfflineNotice() {
+  return (
+    <section className="offline-notice" role="status">
+      <div>
+        <strong>API OFFLINE</strong>
+        <span>Dashboard shell is still running.</span>
+      </div>
+      <div className="offline-commands">
+        <code>pnpm axi:doctor</code>
+        <code>pnpm axi:restart</code>
+      </div>
+    </section>
   );
 }
 
@@ -2618,6 +2730,9 @@ function DataTab({
   meteredLaunchDataStatus,
   meteredLaunchDataTracked,
   pumpPortalWalletsStatus,
+  runtimeActionStatus,
+  runtimeControlStatus,
+  runRuntimeAction,
   tokenIdentities,
   tokenIdentityStatus
 }: {
@@ -2637,10 +2752,18 @@ function DataTab({
   meteredLaunchDataStatus: MeteredLaunchDataStatus | null;
   meteredLaunchDataTracked: MeteredLaunchDataTrackedMint[];
   pumpPortalWalletsStatus: PumpPortalWalletsStatus | null;
+  runtimeActionStatus: string;
+  runtimeControlStatus: RuntimeControlStatus | null;
+  runRuntimeAction: (path: string, label: string) => Promise<void>;
   tokenIdentities: TokenIdentityRow[];
   tokenIdentityStatus: TokenIdentityStatus | null;
 }) {
   const realManagedStreamState = getRealManagedStreamState(indexerStatus);
+  const meteredBlockers = getMeteredRuntimeBlockers(runtimeControlStatus);
+  const canStartMetered =
+    Boolean(runtimeControlStatus) &&
+    runtimeControlStatus?.meteredLaunchData.enabled === true &&
+    runtimeControlStatus?.meteredLaunchData.blocked === false;
 
   return (
     <section className="tab-panel" role="tabpanel">
@@ -2905,6 +3028,214 @@ function DataTab({
           }
         />
       </div>
+      <DataPanel
+        ariaLabel="Pump.fun PumpPortal runtime control"
+        meta={<span>METERED DATA ONLY -- NO TRADING</span>}
+        title="PUMPFUN / PUMPPORTAL CONTROL"
+      >
+        <div className="status-grid secondary-grid embedded-grid">
+          <MetricValue
+            label="live discovery"
+            value={getRuntimeLiveLabel(runtimeControlStatus)}
+            detail={formatTimeAgo(
+              runtimeControlStatus?.liveDiscovery.lastEventAt
+            )}
+            tone={
+              runtimeControlStatus?.liveDiscovery.connected
+                ? "good"
+                : runtimeControlStatus?.liveDiscovery.connecting
+                  ? "warn"
+                  : runtimeControlStatus?.liveDiscovery.lastError
+                    ? "bad"
+                    : "neutral"
+            }
+          />
+          <MetricValue
+            label="new tokens"
+            value={formatCompactNumber(
+              runtimeControlStatus?.liveDiscovery.newTokenEventCount
+            )}
+            detail={`${formatCompactNumber(
+              runtimeControlStatus?.liveDiscovery.migrationEventCount
+            )} migrations`}
+          />
+          <MetricValue
+            label="metered price"
+            value={getRuntimeMeteredLabel(runtimeControlStatus)}
+            detail={`${formatCompactNumber(
+              runtimeControlStatus?.meteredLaunchData.trackedMintCount
+            )} tracked`}
+            tone={
+              runtimeControlStatus?.meteredLaunchData.active
+                ? "good"
+                : runtimeControlStatus?.meteredLaunchData.blocked
+                  ? "bad"
+                  : "neutral"
+            }
+          />
+          <MetricValue
+            label="events"
+            value={formatCompactNumber(
+              runtimeControlStatus?.meteredLaunchData.eventCount
+            )}
+            detail={`${formatSol(
+              runtimeControlStatus?.meteredLaunchData.estimatedCostSol
+            )} cost`}
+          />
+          <MetricValue
+            label="budget left"
+            value={formatSol(
+              runtimeControlStatus?.meteredLaunchData.budgetRemainingSol
+            )}
+            detail={`${formatSol(
+              runtimeControlStatus?.meteredLaunchData.sessionCostCapSol
+            )} cap`}
+          />
+          <MetricValue
+            label="data wallet"
+            value={(
+              runtimeControlStatus?.dataWallet.balanceStatus ?? "unknown"
+            ).toUpperCase()}
+            detail={
+              runtimeControlStatus?.dataWallet.shortPublicKey ??
+              "public address"
+            }
+            tone={getDataWalletTone(
+              runtimeControlStatus?.dataWallet.balanceStatus
+            )}
+          />
+          <MetricValue
+            label="api key"
+            value={
+              runtimeControlStatus?.dataWallet.apiKeyConfigured ? "YES" : "NO"
+            }
+            detail="backend only"
+            tone={
+              runtimeControlStatus?.dataWallet.apiKeyConfigured
+                ? "good"
+                : "bad"
+            }
+          />
+          <MetricValue
+            label="runtime"
+            value={`${formatCompactNumber(
+              runtimeControlStatus?.process.uptimeSeconds
+            )}s`}
+            detail={
+              runtimeControlStatus?.paperOnly &&
+              runtimeControlStatus.tradingDisabled
+                ? "paper only"
+                : "check gates"
+            }
+          />
+        </div>
+        <div className="runtime-actions">
+          <button
+            className="control-button"
+            onClick={() =>
+              void runRuntimeAction(
+                "/runtime/live-discovery/start",
+                "Starting discovery"
+              )
+            }
+            type="button"
+          >
+            Start live discovery
+          </button>
+          <button
+            className="control-button"
+            onClick={() =>
+              void runRuntimeAction(
+                "/runtime/live-discovery/stop",
+                "Stopping discovery"
+              )
+            }
+            type="button"
+          >
+            Stop live discovery
+          </button>
+          <button
+            className="control-button"
+            onClick={() =>
+              void runRuntimeAction(
+                "/runtime/live-discovery/restart",
+                "Restarting discovery"
+              )
+            }
+            type="button"
+          >
+            Restart live discovery
+          </button>
+          <button
+            className="control-button"
+            onClick={() =>
+              void runRuntimeAction(
+                "/runtime/data-wallet/refresh",
+                "Refreshing wallet"
+              )
+            }
+            type="button"
+          >
+            Refresh wallet balance
+          </button>
+          <button
+            className="control-button metered"
+            disabled={!canStartMetered}
+            onClick={() =>
+              void runRuntimeAction(
+                "/runtime/metered-launch-data/start",
+                "Starting metered price action"
+              )
+            }
+            type="button"
+          >
+            Start metered price action
+          </button>
+          <button
+            className="control-button"
+            onClick={() =>
+              void runRuntimeAction(
+                "/runtime/metered-launch-data/stop",
+                "Stopping metered price action"
+              )
+            }
+            type="button"
+          >
+            Stop metered price action
+          </button>
+        </div>
+        <div className="runtime-action-status">{runtimeActionStatus}</div>
+        {meteredBlockers.length > 0 ? (
+          <div className="signal-risk-strip data-wallet-warnings">
+            {meteredBlockers.map((blocker) => (
+              <span key={blocker}>{blocker}</span>
+            ))}
+          </div>
+        ) : null}
+        <div className="data-wallet-address-row">
+          <span className="mono">
+            {runtimeControlStatus?.dataWallet.publicKey ??
+              "data wallet public address unavailable"}
+          </span>
+          {runtimeControlStatus?.dataWallet.publicKey ? (
+            <button
+              className="copy-button"
+              onClick={() =>
+                void navigator.clipboard.writeText(
+                  runtimeControlStatus.dataWallet.publicKey ?? ""
+                )
+              }
+              type="button"
+            >
+              copy
+            </button>
+          ) : null}
+        </div>
+        <ReasonBlock
+          title="Runtime Control Reasons"
+          codes={runtimeControlStatus?.reasonCodes}
+        />
+      </DataPanel>
       <ReasonBlock title="Feed Reasons" codes={feedStatus?.reasonCodes} />
       <ReasonBlock
         title="Launch Scanner Reasons"
@@ -3905,6 +4236,67 @@ function getTradeTrackingBadgeClass(value: string): string {
   return "terminal-badge-neutral";
 }
 
+function getRuntimeLiveLabel(status: RuntimeControlStatus | null): string {
+  if (status?.liveDiscovery.connected) {
+    return "CONNECTED";
+  }
+
+  if (status?.liveDiscovery.connecting) {
+    return "CONNECTING";
+  }
+
+  if (status?.liveDiscovery.lastError) {
+    return "ERROR";
+  }
+
+  return "STOPPED";
+}
+
+function getRuntimeMeteredLabel(status: RuntimeControlStatus | null): string {
+  if (status?.meteredLaunchData.active) {
+    return "ACTIVE";
+  }
+
+  if (status?.meteredLaunchData.blocked) {
+    return "BLOCKED";
+  }
+
+  return "STOPPED";
+}
+
+function getMeteredRuntimeBlockers(
+  status: RuntimeControlStatus | null
+): string[] {
+  const codes = status?.meteredLaunchData.reasonCodes ?? [];
+  const blockers: string[] = [];
+
+  if (codes.some((code) => code.includes("ACK"))) {
+    blockers.push("ACK missing");
+  }
+
+  if (codes.some((code) => code.includes("API_KEY"))) {
+    blockers.push("API key missing");
+  }
+
+  if (codes.some((code) => code.includes("WALLET"))) {
+    blockers.push("wallet missing");
+  }
+
+  if (codes.some((code) => code.includes("BALANCE"))) {
+    blockers.push("wallet low");
+  }
+
+  if (codes.some((code) => code.includes("BUDGET") || code.includes("CAP"))) {
+    blockers.push("budget reached");
+  }
+
+  if (codes.some((code) => code.includes("OFFLINE"))) {
+    blockers.push("live discovery offline");
+  }
+
+  return Array.from(new Set(blockers));
+}
+
 function getDataWalletTone(
   balanceStatus: string | null | undefined
 ): "good" | "bad" | "warn" | "neutral" {
@@ -3970,4 +4362,25 @@ async function fetchJson<T>(path: string): Promise<T> {
   }
 
   return (await response.json()) as T;
+}
+
+async function postJson<T>(path: string): Promise<T> {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    method: "POST"
+  });
+  const payload = (await response.json()) as T;
+
+  if (!response.ok) {
+    const message =
+      typeof payload === "object" &&
+      payload !== null &&
+      "message" in payload &&
+      typeof payload.message === "string"
+        ? payload.message
+        : `POST ${path} failed with ${response.status}`;
+
+    throw new Error(message);
+  }
+
+  return payload;
 }

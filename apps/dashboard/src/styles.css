@@ -84,6 +84,13 @@ button {
   text-transform: uppercase;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  color: var(--muted);
+  border-color: var(--line-dim);
+  background: #030504;
+}
+
 button:hover,
 a:hover {
   border-color: var(--green);
@@ -119,6 +126,34 @@ a:focus-visible {
   width: min(1760px, calc(100vw - 28px));
   margin: 0 auto;
   padding: 18px 0 26px;
+}
+
+.offline-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(255, 77, 90, 0.5);
+  background: rgba(255, 77, 90, 0.08);
+  margin-bottom: 10px;
+  padding: 10px;
+}
+
+.offline-notice div,
+.offline-commands {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.offline-notice strong {
+  color: var(--red);
+}
+
+.offline-notice span,
+.offline-notice code {
+  color: var(--muted);
 }
 
 .command-bar {
@@ -690,6 +725,31 @@ dd {
 
 .data-wallet-warnings {
   border-bottom: 1px solid var(--line-dim);
+}
+
+.runtime-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 1px;
+  border-top: 1px solid var(--line-dim);
+  background: var(--line-dim);
+}
+
+.control-button {
+  min-height: 40px;
+  padding: 0 10px;
+  background: var(--panel);
+}
+
+.control-button.metered {
+  color: var(--amber);
+}
+
+.runtime-action-status {
+  border-top: 1px solid var(--line-dim);
+  padding: 8px 10px;
+  color: var(--muted);
+  text-transform: uppercase;
 }
 
 .lightning-panel {
