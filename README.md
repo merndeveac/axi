@@ -252,6 +252,34 @@ METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION=1000
 METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL=0.001
 ```
 
+Safe local setup:
+
+```bash
+pnpm setup:pumpportal-data-env
+```
+
+Then edit `.env.local` and fill only these user-specific values:
+
+```bash
+PUMPPORTAL_DATA_WALLET_PUBLIC_KEY=<PUBLIC_FUNDING_ADDRESS>
+PUMPPORTAL_DATA_API_KEY=<PUMPPORTAL_DATA_API_KEY>
+SOLANA_RPC_HTTP=<RPC_HTTP_URL>
+```
+
+Do not paste a PumpPortal private key, seed phrase, mnemonic, or wallet secret
+into AXI. Verify the local file without printing secret values:
+
+```bash
+pnpm verify:pumpportal-data-env
+pnpm smoke:pumpportal-metered-config
+```
+
+Optional read-only balance check:
+
+```bash
+pnpm check:pumpportal-data-wallet
+```
+
 Start:
 
 ```bash
@@ -929,6 +957,10 @@ Live-token runtime helpers:
 ```bash
 pnpm live:tokens
 pnpm live:tokens:metered
+pnpm setup:pumpportal-data-env
+pnpm verify:pumpportal-data-env
+pnpm smoke:pumpportal-metered-config
+pnpm check:pumpportal-data-wallet
 pnpm live:tokens:stop
 pnpm live:tokens:logs
 ```
@@ -954,16 +986,15 @@ Start the same runtime with capped metered launch data enabled only after you
 set the explicit data-wallet gates in your shell or `.env.local`:
 
 ```bash
-METERED_LAUNCH_DATA_ENABLED=true
-METERED_LAUNCH_DATA_ACK_COST=true
-PUMPPORTAL_DATA_API_KEY=<PUMPPORTAL_DATA_API_KEY>
-PUMPPORTAL_DATA_WALLET_PUBLIC_KEY=<PUBLIC_FUNDING_ADDRESS>
+pnpm setup:pumpportal-data-env
+pnpm verify:pumpportal-data-env
 pnpm live:tokens:metered
 ```
 
 The metered launcher refuses to start if the enable flag, cost ACK, data API
-key, or public funding address is missing. It does not set the ACK for you and
-forces live trading, Lightning execution, account-trade streams, and paper
+key, or public funding address is missing. It also refuses private-key,
+seed-phrase, or mnemonic env vars. It does not set the ACK or API key for you
+and forces live trading, Lightning execution, account-trade streams, and paper
 auto-orders off.
 
 Manual API launch:
@@ -1278,14 +1309,35 @@ least `0.02 SOL` of data-billing balance, and metered websocket messages are
 modeled at `0.01 SOL / 10,000 events`. New-token and migration streams do not
 require this metered data-wallet funding.
 
-Manual setup:
+Safe local setup:
+
+```bash
+pnpm setup:pumpportal-data-env
+```
+
+Then edit `.env.local` and paste only:
+
+```bash
+PUMPPORTAL_DATA_WALLET_PUBLIC_KEY=<PUBLIC_FUNDING_ADDRESS>
+PUMPPORTAL_DATA_API_KEY=<PUMPPORTAL_DATA_API_KEY>
+SOLANA_RPC_HTTP=<RPC_HTTP_URL>
+```
+
+Do not paste a PumpPortal private key, seed phrase, mnemonic, or wallet secret.
+`.env.local` is gitignored; `.env.pumpportal-data.example` is placeholder-only
+and safe to commit.
+
+Recommended flow:
 
 1. Create a PumpPortal wallet/API key on PumpPortal.
 2. Save the private key yourself outside AXI.
-3. Add only the public key and API key to `.env.local`.
-4. Fund the public key with a small amount of SOL.
-5. Start the app.
-6. Check `/pumpportal/data-wallet/status`.
+3. Run `pnpm setup:pumpportal-data-env`.
+4. Add only the public key, API key, and RPC URL to `.env.local`.
+5. Run `pnpm verify:pumpportal-data-env`.
+6. Fund the public key with a small amount of SOL.
+7. Optionally run `pnpm check:pumpportal-data-wallet`.
+8. Start with `pnpm live:tokens:metered`.
+9. Check `/pumpportal/data-wallet/status`.
 
 `.env.local` values:
 

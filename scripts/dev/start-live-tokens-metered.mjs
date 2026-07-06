@@ -1,13 +1,21 @@
-import { existsSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { join } from "node:path";
+import {
+  findForbiddenEnvKeys,
+  formatYesNo,
+  isFilled,
+  readDotEnvFile
+} from "../setup/pumpportal-data-env-utils.mjs";
 
 const root = process.cwd();
 const env = {
-  ...readDotEnvFile(join(root, ".env.local")),
+  ...readDotEnvFile(`${root}/.env.local`),
   ...process.env
 };
 const missing = [];
+const forbiddenKeys = findForbiddenEnvKeys(env);
+const dataApiKeyConfigured = isFilled(env.PUMPPORTAL_DATA_API_KEY);
+const fallbackApiKeyConfigured = isFilled(env.PUMPPORTAL_API_KEY);
+const publicKeyConfigured = isFilled(env.PUMPPORTAL_DATA_WALLET_PUBLIC_KEY);
 
 if (env.METERED_LAUNCH_DATA_ENABLED !== "true") {
   missing.push("METERED_LAUNCH_DATA_ENABLED=true");
@@ -17,26 +25,53 @@ if (env.METERED_LAUNCH_DATA_ACK_COST !== "true") {
   missing.push("METERED_LAUNCH_DATA_ACK_COST=true");
 }
 
-if (!env.PUMPPORTAL_DATA_API_KEY && !env.PUMPPORTAL_API_KEY) {
-  missing.push("PUMPPORTAL_DATA_API_KEY or PUMPPORTAL_API_KEY");
+if (!dataApiKeyConfigured && !fallbackApiKeyConfigured) {
+  missing.push("PUMPPORTAL_DATA_API_KEY");
 }
 
-if (!env.PUMPPORTAL_DATA_WALLET_PUBLIC_KEY) {
+if (!publicKeyConfigured) {
   missing.push("PUMPPORTAL_DATA_WALLET_PUBLIC_KEY");
+}
+
+if (forbiddenKeys.length > 0) {
+  console.error("Metered launch data refused to start.");
+  console.error(
+    `Forbidden private-key or seed variable present: ${forbiddenKeys.join(", ")}`
+  );
+  console.error("Do NOT paste private keys, seed phrases, or mnemonics into .env.local.");
+  process.exit(1);
 }
 
 if (missing.length > 0) {
   console.error("Metered launch data gates are not ready.");
-  console.error("Set these in your shell or .env.local:");
+  console.error("Set these in .env.local:");
 
   for (const item of missing) {
     console.error(`- ${item}`);
   }
 
   console.error("");
-  console.error("This script does not set the metered cost ACK for you.");
+  console.error("Run pnpm setup:pumpportal-data-env, then edit .env.local.");
+  console.error("This script does not set the metered cost ACK or API key for you.");
   process.exit(1);
 }
+
+console.log("Metered launch data preflight:");
+console.log(`- data wallet public key configured: ${formatYesNo(publicKeyConfigured)}`);
+console.log(
+  `- PumpPortal data API key configured: ${formatYesNo(
+    dataApiKeyConfigured || fallbackApiKeyConfigured
+  )}`
+);
+console.log(`- metered launch ACK: ${formatYesNo(env.METERED_LAUNCH_DATA_ACK_COST === "true")}`);
+console.log(
+  `- session cost cap SOL: ${env.METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL ?? "0.001"}`
+);
+console.log(
+  `- max tracked mints: ${env.METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS ?? "3"}`
+);
+console.log("- private key present: no");
+console.log("- live trading: disabled");
 
 const childEnv = {
   ...env,
@@ -51,6 +86,10 @@ const childEnv = {
   PUMPPORTAL_LIGHTNING_MANUAL_ARMED: "false",
   EXIT_STRATEGY_ACCOUNT_TRADES_ENABLED: "false",
   EXIT_STRATEGY_ACCOUNT_TRADES_ACK_METERED: "false",
+  PUMPPORTAL_API_KEY:
+    isFilled(env.PUMPPORTAL_API_KEY)
+      ? env.PUMPPORTAL_API_KEY
+      : env.PUMPPORTAL_DATA_API_KEY,
   PAPER_AUTO_ORDER: "false"
 };
 
@@ -71,32 +110,3 @@ await new Promise((resolve, reject) => {
     reject(new Error(`pnpm live:tokens failed with ${code}`));
   });
 });
-
-function readDotEnvFile(path) {
-  if (!existsSync(path)) {
-    return {};
-  }
-
-  const parsed = {};
-  const text = readFileSync(path, "utf8");
-
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim();
-
-    if (!line || line.startsWith("#")) {
-      continue;
-    }
-
-    const separator = line.indexOf("=");
-
-    if (separator <= 0) {
-      continue;
-    }
-
-    const key = line.slice(0, separator).trim();
-    const rawValue = line.slice(separator + 1).trim();
-    parsed[key] = rawValue.replace(/^['"]|['"]$/g, "");
-  }
-
-  return parsed;
-}

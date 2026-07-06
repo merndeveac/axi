@@ -1206,6 +1206,67 @@ describe("@axi/api", () => {
     expect(serialized).not.toContain("api-key-value");
   });
 
+  it("status endpoints expose only API key configured booleans", async () => {
+    const secret = "test-secret-api-key-value";
+    server = createApiServer({
+      actualData: createActualDataConfig({
+        acknowledgedMetered: true,
+        apiKeyConfigured: true,
+        enabled: true,
+        maxEventsPerMint: 200,
+        maxEventsPerSession: 500,
+        maxSubscribedTokens: 3,
+        requireApiKey: true
+      }),
+      dataFeed: "pumpportal",
+      logLevel: false,
+      meteredLaunchData: {
+        acknowledgedCost: true,
+        apiKeyConfigured: true,
+        dataWalletPublicKeyConfigured: true,
+        enabled: true,
+        maxConcurrentMints: 3,
+        maxEventsPerMint: 250,
+        maxEventsPerSession: 1000,
+        maxSessionCostSol: 0.001
+      },
+      pumpPortal: {
+        apiKey: secret,
+        maxTokenTradeEventsPerMint: 250,
+        maxTokenTradeEventsPerSession: 1000,
+        maxTokenTradeSubscriptions: 3,
+        subscribeMigration: false,
+        subscribeNewToken: false,
+        wsUrl: "wss://example.test/pumpportal"
+      },
+      pumpPortalDataWallet: {
+        apiKeyConfigured: true,
+        publicKey: "So11111111111111111111111111111111111111112",
+        rpcHttpUrl: "http://localhost:8899",
+        solanaClient: createDataWalletSolanaClient(0.05)
+      },
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    for (const url of [
+      "/health",
+      "/actual-data/status",
+      "/metered-launch-data/status",
+      "/pumpportal/data-wallet/status"
+    ]) {
+      const response = await server.app.inject({
+        method: "GET",
+        url
+      });
+      const body = response.json() as unknown;
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.stringify(body)).not.toContain(secret);
+      expect(findDisallowedApiKeyFields(body)).toEqual([]);
+    }
+  });
+
   it("GET /pumpportal/wallets/status returns data and trading readiness without secrets", async () => {
     server = createTestServer();
 
@@ -3245,6 +3306,36 @@ function createTestServer(): ApiServer {
     startFeed: true,
     storageDatabasePath: databasePath
   });
+}
+
+function findDisallowedApiKeyFields(
+  value: unknown,
+  path = "$"
+): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) =>
+      findDisallowedApiKeyFields(item, `${path}[${index}]`)
+    );
+  }
+
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+
+  return Object.entries(value as Record<string, unknown>).flatMap(
+    ([key, child]) => {
+      const currentPath = `${path}.${key}`;
+      const offenders =
+        /apiKey/i.test(key) && !/ApiKeyConfigured$/i.test(key)
+          ? [currentPath]
+          : [];
+
+      return [
+        ...offenders,
+        ...findDisallowedApiKeyFields(child, currentPath)
+      ];
+    }
+  );
 }
 
 function createActualDataTestServer(options: {

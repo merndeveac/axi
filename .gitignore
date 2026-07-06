@@ -22,6 +22,9 @@ packages/*/src/**/*.d.ts.map
 .env
 .env.*
 !.env.example
+!.env.local.example
+!.env.metered.example
+!.env.pumpportal-data.example
 secrets/
 secret/
 private/
