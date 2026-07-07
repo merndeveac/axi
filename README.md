@@ -56,19 +56,50 @@ by default and remains paper-only.
 
 ## Modern Momentum Scanner UI
 
-Branch `dev/scanner-ui-v2-field-correctness` rebuilds the row-based dashboard
-scanner surface into Scanner UI v3: compact Axiom-inspired token rows with
+Branch `dev/header-controls-axiom-card-scanner` adds Scanner UI v4: a real
+dashboard control header plus compact Axiom-inspired token row/cards with
 correct unavailable/zero handling and Pump.fun curve-derived fields. The
 screenshot reference is used only for visual/information hierarchy. AXI does
 not call Axiom APIs, scrape Axiom, or reverse engineer Axiom.
+
+The top header is now the operational control center for local paper-mode
+runtime work. It shows paper-only mode, PumpPortal live-feed state, API and
+dashboard WebSocket state, data-wallet balance/status, metered price-action
+state, tracked mints, event usage, estimated SOL cost, session cap, budget
+remaining, and last update time. Header buttons call backend runtime endpoints:
+
+- `POST /runtime/live-discovery/start`
+- `POST /runtime/live-discovery/stop`
+- `POST /runtime/live-discovery/restart`
+- `POST /runtime/metered-launch-data/start`
+- `POST /runtime/metered-launch-data/stop`
+- `POST /runtime/metered-launch-data/restart`
+- `POST /runtime/data-wallet/refresh`
+
+These endpoints are local-control-plane endpoints only. Responses keep
+`paperOnly: true` and `tradingDisabled: true`. They never expose API keys,
+private keys, seed phrases, auth tokens, or wallet secrets. The dashboard can
+show the public data-wallet address in short form and copy the public address,
+but it never shows the PumpPortal API key. It does not add buy/sell buttons,
+Lightning controls, account-trade controls, signing controls, or transaction
+sending.
+
+Metered price action has an explicit UI state machine: `OFF`, `BLOCKED`,
+`READY`, `STARTING`, `ACTIVE`, `STOPPING`, `BUDGET_REACHED`, and `ERROR`.
+`Start Metered` is disabled unless the backend says gates pass. When blocked,
+the header shows the first blocker and the diagnostics drawer shows exact gate
+reasons such as ACK missing, API key missing, wallet missing, wallet low,
+balance unknown, budget reached, or live feed offline. The frontend does not
+write `.env.local` and cannot force metered acknowledgement.
 
 The Scanner tab is the default product view: one current-session token per
 compact horizontal card row. Collapsed rows group pair/token identity, actual
 token image when a safe `imageUri` is available, age, short mint,
 source/event badges, inline sparkline, market cap, price, DEX/pool or curve
-liquidity, volume/flow, transactions, momentum derivatives, risk stats, AXI
-signal/action, and paper position/PnL. Clicking a row opens a four-column shelf
-for metric windows, derivatives, strategy explanation, and data audit/risk.
+liquidity, volume, transactions/flow, risk/token info, AXI signal, momentum
+derivatives, and paper position/PnL. Clicking a row opens a compact shelf for
+strategy components, derivatives, metric windows, risk and holder data, data
+audit, and paper position / exit signal details.
 
 The Scanner tab is backed by:
 
@@ -136,6 +167,15 @@ implemented unless a provider exists and report `SOCIAL_PROVIDER_NOT_CONFIGURED`
 
 The dashboard has no buy/sell/execute buttons, wallet import, signing controls,
 or live-transaction controls. AXI remains paper-only.
+
+Useful local commands:
+
+```bash
+pnpm axi:restart
+pnpm axi:restart:metered
+pnpm axi:doctor
+pnpm axi:stop
+```
 
 ## Watched Wallet Paper Exit Strategy
 
@@ -2029,17 +2069,22 @@ pnpm --filter @axi/dashboard dev
 The dashboard connects to `ws://localhost:8787/ws/signals`.
 
 The dashboard uses a modern dark scanner UI with PAPER mode kept visible in the
-top status bar. It is organized into Scanner, Signals, Portfolio, Metrics,
-Risk, Exit, Data, and Debug tabs. The Scanner tab is the default and renders one
-compact Axiom-style row per live token backed by `/ui/momentum-rows`: thumbnail,
-pair metadata, sparkline, market cap, curve/pool liquidity, volume,
-transactions, momentum derivatives, token risk, and AXI signal/action. Rows
-expand into a four-column details shelf with metric windows, derivatives,
-strategy explanation, migration, curve reserves, and data-source audit details.
+top control header. It is organized into Scanner, Signals, Portfolio, Metrics,
+Risk, Exit, Data, and Debug tabs. The header can locally start/stop/restart
+PumpPortal live discovery, request gated metered price action only when backend
+gates pass, stop metered tracking, refresh the data-wallet balance, and open a
+diagnostics drawer. It shows only public wallet/address data and configured
+booleans; API keys are never rendered.
+
+The Scanner tab is the default and renders one compact Axiom-style row per live
+token backed by `/ui/momentum-rows`: thumbnail, pair metadata, sparkline, market
+cap, curve/pool liquidity, volume, transactions/flow, token risk, launch score,
+AXI signal/action, and paper position/PnL. Rows expand into a compact details
+shelf with strategy components, derivatives, metric windows, risk and holder
+data, data audit, and paper position / exit-signal details.
 Unknown/unavailable values render as `—` with reason-code audit visibility from
-`/ui/momentum-diagnostics`. The Data tab includes scanner diagnostics and a
-PumpPortal metered data-wallet panel showing the public funding address,
-read-only balance, budget estimates, and safety warnings. It has no wallet
+`/ui/momentum-diagnostics`. The Data tab still includes deeper scanner
+diagnostics and PumpPortal data-wallet panels. The dashboard has no wallet
 signing controls, buy/sell buttons, withdrawal/import actions, or live-trading
 controls.
 
@@ -2154,6 +2199,10 @@ docker compose --profile indexer up -d
 - `dev/scanner-ui-v2-field-correctness` contains Scanner UI v3: compact row
   cards, curve-derived price/liquidity fields, normalized signal display,
   image URI safety, and richer `/ui/momentum-diagnostics` coverage.
+- `dev/header-controls-axiom-card-scanner` contains Scanner UI v4: the
+  interactive control header, live discovery and gated metered price-action
+  controls, data-wallet balance/usage visibility, and cleaner compact
+  Axiom-style token row/cards.
 - `dev/pumpportal-data-wallet-readiness` contains PumpPortal data-wallet
   readiness for metered data billing.
 - `dev/pumpportal-lightning-readiness` contains PumpPortal wallet readiness,
