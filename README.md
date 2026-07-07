@@ -56,19 +56,19 @@ by default and remains paper-only.
 
 ## Modern Momentum Scanner UI
 
-Branch `dev/axiom-style-momentum-scanner-ui` refines the row-based dashboard
-scanner surface into an Axiom-inspired scanner layout. The screenshot reference
-is used only for visual/information hierarchy. AXI does not call Axiom APIs,
-scrape Axiom, or reverse engineer Axiom.
+Branch `dev/scanner-ui-v2-field-correctness` rebuilds the row-based dashboard
+scanner surface into Scanner UI v3: compact Axiom-inspired token rows with
+correct unavailable/zero handling and Pump.fun curve-derived fields. The
+screenshot reference is used only for visual/information hierarchy. AXI does
+not call Axiom APIs, scrape Axiom, or reverse engineer Axiom.
 
 The Scanner tab is the default product view: one current-session token per
-compact horizontal card row. Collapsed rows group pair/token identity, thumbnail,
-age, short mint, source/event badges, inline sparkline, market cap, liquidity,
-volume, transactions, token/risk stats, AXI launch signal, tracking state, and
-paper position/PnL. Clicking a row opens an audit shelf for metric windows,
-derivatives, strategy components, market/reserve fields, migration state,
-adaptive tracking reasons, data-source audit, missing/unavailable reasons, risk,
-paper portfolio state, and exit-signal details.
+compact horizontal card row. Collapsed rows group pair/token identity, actual
+token image when a safe `imageUri` is available, age, short mint,
+source/event badges, inline sparkline, market cap, price, DEX/pool or curve
+liquidity, volume/flow, transactions, momentum derivatives, risk stats, AXI
+signal/action, and paper position/PnL. Clicking a row opens a four-column shelf
+for metric windows, derivatives, strategy explanation, and data audit/risk.
 
 The Scanner tab is backed by:
 
@@ -77,22 +77,29 @@ The Scanner tab is backed by:
 
 `/ui/momentum-rows` composes one `MomentumScannerRow` per live/session token on
 the API side. The dashboard does not join the main row from many endpoints in
-React. Rows include identity, age, launch phase/score, price, market cap, FDV,
-liquidity, rolling volume/flow, buy/sell ratio, net pressure, derivatives,
-risk/holder fields, paper position/PnL, data quality, migration status,
-sparkline samples, missing/unavailable field reasons, and strategy
-drivers/blockers.
+React. Rows include identity, image URI, age, launch phase/score, normalized
+`signalDisplay`, price, market cap, FDV, liquidity, curve data, rolling
+volume/flow, buy/sell ratio, net pressure, derivatives, risk/holder fields,
+paper position/PnL, `dataQuality`, migration status, sparkline samples,
+missing/unavailable field reasons, and strategy drivers/blockers.
 
-Sparkline data is built only from real token-trade samples already present in
-the metered/metrics path. Discovery-only tokens return
-`sparkline.direction: "unavailable"`, no points, and
-`INSUFFICIENT_PRICE_SAMPLES`; AXI does not fake charts from new-token events.
+Sparkline source priority is `trade_samples`, then `curve_marks`, then
+`unavailable`. Trade samples come from the metered/metrics PumpPortal token
+trade path. Curve marks are derived only from successive Pump.fun reserve
+payloads; a single curve mark is not enough to draw a line. Discovery-only rows
+with no usable price series return `sparkline.direction: "unavailable"`, no
+points, and `INSUFFICIENT_PRICE_SAMPLES`.
 
-Market cap and liquidity stay source-aware. `marketCapSol` from PumpPortal
-payloads is preserved as SOL when present. `marketCapUsd` remains `null` unless
-an explicit USD source/enrichment exists. Bonding-curve reserve hints such as
-`vSolInBondingCurve`, `vTokensInBondingCurve`, `bondingCurveKey`, `pool`, and
-`raydiumPool` are shown only when payloads provide them.
+Market cap, price, and liquidity stay source-aware. `marketCapSol` from
+PumpPortal payloads is preserved as SOL when present. `marketCapUsd` remains
+`null` unless an explicit USD source/enrichment exists. When trade price is
+missing but positive curve reserves are available, AXI derives
+`curve.curvePriceSol = curveSol / curveTokens` and uses it as a conservative
+curve mark. `curve.curveLiquiditySol` displays as `curve X SOL` and is not
+labeled as DEX liquidity. DEX/pool liquidity still requires a pair/pool or
+enrichment source. Invalid reserves return `null` with reason codes such as
+`CURVE_RESERVES_UNAVAILABLE`, `CURVE_RESERVES_INVALID`, or
+`CURVE_DECIMALS_UNKNOWN`; no NaN/Infinity is returned.
 
 Migration continuity keeps the same mint in the same row when a migration event
 arrives. The row records `eventTypes`, `latestEventType`, `migrationStatus`,
@@ -114,17 +121,18 @@ MOMENTUM_KEEP_MIGRATED_TOKENS_VISIBLE_MS=1800000
 ```
 
 Unavailable data stays `null` and renders as `—`; it is not displayed as zero.
-Zero is reserved for true observed zero values. `/ui/momentum-diagnostics`
-explains blanks with field counts, top missing reasons, source status, reason
-codes, and recommended next actions such as
+Zero is reserved for true observed numeric zero values. `/ui/momentum-diagnostics`
+explains blanks with field counts, top missing/unavailable reasons,
+curve/trade coverage counters, source status, reason codes, and recommended next
+actions such as
 `ENABLE_METERED_TOKEN_TRADES_FOR_PRICE_ACTION`,
 `ENABLE_ENRICHMENT_FOR_MCAP_LIQUIDITY`, `ENABLE_CHAIN_VERIFY_FOR_HOLDER_DATA`,
 `WAIT_FOR_MORE_TRADE_SAMPLES`, `CHECK_DATA_WALLET_BALANCE`,
-`CHECK_PUMPPORTAL_API_KEY`, and `CHECK_METERED_ACK`. Market cap, FDV, and
-liquidity require PumpPortal payload hints or enrichment. Price action requires
-metered PumpPortal token-trade samples. Holder derivatives require a real holder
-time series. Social/tweet signals are not implemented unless a provider exists
-and report `SOCIAL_PROVIDER_NOT_CONFIGURED`.
+`CHECK_PUMPPORTAL_API_KEY`, and `CHECK_METERED_ACK`. Market cap USD needs
+SOL/USD conversion or enrichment. DEX liquidity needs pair/pool/enrichment.
+Holder count needs chain verification or another holder source. Price action
+needs trade samples or a curve mark series. Social/tweet signals are not
+implemented unless a provider exists and report `SOCIAL_PROVIDER_NOT_CONFIGURED`.
 
 The dashboard has no buy/sell/execute buttons, wallet import, signing controls,
 or live-transaction controls. AXI remains paper-only.
@@ -1785,14 +1793,17 @@ compact `MomentumScannerRow` objects for current-session tokens only, excluding
 historical mock/replay rows. It preserves true zeros, returns `null` for missing
 fields, gates derivatives behind enough trade samples, includes source-aware
 field-diagnostic reason codes, and exposes an inline `sparkline` object built
-only from real trade samples. PumpPortal `marketCapSol` payload values are
-preserved without inventing USD conversion.
+from trade samples or successive curve marks. PumpPortal `marketCapSol` payload
+values are preserved without inventing USD conversion, and
+`curve.curveLiquiditySol` stays labeled as curve liquidity rather than DEX
+liquidity.
 
 `GET /ui/momentum-diagnostics` summarizes scanner data coverage: tokens with
 price, volume, market cap, liquidity, trade samples, derivatives, risk, holder
-data, and paper positions. It also returns unavailable/missing field counts,
-top missing reasons, data-source readiness, reason codes, and recommended next
-actions.
+data, paper positions, curve price, trade price, curve liquidity, DEX liquidity,
+SOL/USD market cap, real trade volume, and derived curve data. It also returns
+unavailable/missing field counts, top missing/unavailable reasons, data-source
+readiness, reason codes, and recommended next actions.
 
 `GET /launch/status` reports PumpPortal-first discovery and launch-tracking
 gates. `GET /launch/cards`, `/launch/candidates`, and `/launch/scores` expose
@@ -2021,9 +2032,10 @@ The dashboard uses a modern dark scanner UI with PAPER mode kept visible in the
 top status bar. It is organized into Scanner, Signals, Portfolio, Metrics,
 Risk, Exit, Data, and Debug tabs. The Scanner tab is the default and renders one
 compact Axiom-style row per live token backed by `/ui/momentum-rows`: thumbnail,
-pair metadata, sparkline, market cap, liquidity, volume, transactions, token
-risk, and AXI signal/action. Rows expand into a details shelf with strategy,
-derivative, migration, adaptive tracking, and data-source audit details.
+pair metadata, sparkline, market cap, curve/pool liquidity, volume,
+transactions, momentum derivatives, token risk, and AXI signal/action. Rows
+expand into a four-column details shelf with metric windows, derivatives,
+strategy explanation, migration, curve reserves, and data-source audit details.
 Unknown/unavailable values render as `—` with reason-code audit visibility from
 `/ui/momentum-diagnostics`. The Data tab includes scanner diagnostics and a
 PumpPortal metered data-wallet panel showing the public funding address,
@@ -2139,6 +2151,9 @@ docker compose --profile indexer up -d
 - `dev/axiom-style-momentum-scanner-ui` contains the Axiom-inspired scanner row
   v2, real-trade sparklines, source-aware missing reasons, SOL market-cap
   payload wiring, migration continuity, and adaptive tracking visibility.
+- `dev/scanner-ui-v2-field-correctness` contains Scanner UI v3: compact row
+  cards, curve-derived price/liquidity fields, normalized signal display,
+  image URI safety, and richer `/ui/momentum-diagnostics` coverage.
 - `dev/pumpportal-data-wallet-readiness` contains PumpPortal data-wallet
   readiness for metered data billing.
 - `dev/pumpportal-lightning-readiness` contains PumpPortal wallet readiness,

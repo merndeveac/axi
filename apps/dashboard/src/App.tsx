@@ -31,6 +31,12 @@ import {
   formatUsd,
   formatVelocity
 } from "./formatters";
+import {
+  getLiquidityDisplay,
+  getMarketCapDisplay,
+  getTokenInitials,
+  sanitizeDashboardImageUri
+} from "./scanner-view";
 
 type ConnectionStatus = "connecting" | "open" | "closed";
 type ApiStatus = "checking" | "connected" | "disconnected";
@@ -47,6 +53,7 @@ type SortMode =
   | "newest"
   | "launchScore"
   | "marketCap"
+  | "curveLiquidity"
   | "liquidity"
   | "volume10s"
   | "txns10s"
@@ -60,15 +67,18 @@ type SortMode =
   | "pnl";
 type ActionFilter =
   | "all"
+  | "discovery"
   | "watch"
   | "hot"
   | "ripping"
   | "rejected"
   | "tradeTracked"
   | "priceActionReady"
+  | "curvePrice"
   | "discoveryOnly"
   | "migrated"
   | "paperPosition"
+  | "missingData"
   | "missingCritical";
 
 type StorageStats = {
@@ -1675,6 +1685,7 @@ function ScannerTab({
             <option value="newest">newest</option>
             <option value="launchScore">launch score</option>
             <option value="marketCap">market cap</option>
+            <option value="curveLiquidity">curve liquidity</option>
             <option value="liquidity">liquidity</option>
             <option value="volume10s">volume 10s</option>
             <option value="txns10s">txns 10s</option>
@@ -1697,15 +1708,18 @@ function ScannerTab({
             value={actionFilter}
           >
             <option value="all">all</option>
+            <option value="discovery">discovery</option>
             <option value="watch">watch</option>
             <option value="hot">hot</option>
             <option value="ripping">ripping</option>
             <option value="rejected">rejected</option>
             <option value="tradeTracked">trade tracked</option>
             <option value="priceActionReady">price action ready</option>
+            <option value="curvePrice">curve price</option>
             <option value="discoveryOnly">discovery only</option>
             <option value="migrated">migrated</option>
             <option value="paperPosition">paper position</option>
+            <option value="missingData">missing data</option>
             <option value="missingCritical">missing critical</option>
           </select>
         </label>
@@ -1761,11 +1775,13 @@ function ScannerTab({
 
       <div className="scanner-summary-strip" aria-label="Scanner diagnostics summary">
         <span>price {formatCompactNumber(diagnostics?.tokensWithPrice)}</span>
+        <span>curve price {formatCompactNumber(diagnostics?.rowsWithCurvePrice)}</span>
         <span>volume {formatCompactNumber(diagnostics?.tokensWithVolume)}</span>
         <span>trades {formatCompactNumber(diagnostics?.tokensWithTradeData)}</span>
         <span>derivatives {formatCompactNumber(diagnostics?.tokensWithDerivatives)}</span>
         <span>mcap {formatCompactNumber(diagnostics?.tokensWithMarketCap)}</span>
-        <span>liquidity {formatCompactNumber(diagnostics?.tokensWithLiquidity)}</span>
+        <span>curve liq {formatCompactNumber(diagnostics?.rowsWithCurveLiquidity)}</span>
+        <span>dex liq {formatCompactNumber(diagnostics?.rowsWithDexLiquidity)}</span>
         <span>holders {formatCompactNumber(diagnostics?.tokensWithHolderData)}</span>
       </div>
 
@@ -1774,11 +1790,12 @@ function ScannerTab({
           <div className="scanner-table-header" role="row">
             <span>Pair / Token</span>
             <span>Sparkline</span>
-            <span>Market Cap</span>
-            <span>Liquidity</span>
-            <span>Volume</span>
+            <span>Market</span>
+            <span>Liquidity / Curve</span>
+            <span>Volume / Flow</span>
             <span>TXNS</span>
-            <span>Token Info / Risk</span>
+            <span>Momentum</span>
+            <span>Risk</span>
             <span>AXI Signal</span>
           </div>
           {rows.map((row) => (
@@ -1813,13 +1830,28 @@ function ScannerRow({
   row: MomentumScannerRow;
   showUnavailable: boolean;
 }) {
+  const market = getMarketCapDisplay(row);
+  const liquidity = getLiquidityDisplay(row);
+  const signal = row.signalDisplay;
   const rowClass = [
     "scanner-row",
     expanded ? "expanded" : "",
-    "spark-" + row.sparkline.direction
+    "spark-" + row.sparkline.direction,
+    "signal-" + signal.color
   ]
     .filter(Boolean)
     .join(" ");
+  const eventLabel = row.migrationStatus === "migrated" ? "Migrated" : "New Token";
+  const metadataLabel = row.hasMetadata ? "metadata" : "metadata pending";
+  const linkLabel = row.hasSocialLinks ? "links" : "social n/a";
+  const liquidityLabel =
+    liquidity.source === "curve"
+      ? "curve"
+      : liquidity.source === "pool"
+        ? "pool"
+        : liquidity.source === "dex"
+          ? "dex"
+          : "unavailable";
 
   return (
     <article className={rowClass}>
@@ -1828,77 +1860,85 @@ function ScannerRow({
           <TokenThumbnail row={row} />
           <div className="scanner-token-copy">
             <strong title={row.mint}>{row.displayName}</strong>
-            <span>
-              {row.symbol ?? "UNKNOWN"} / {formatAge(row.ageSeconds)} /{" "}
-              <span className="mono" title={row.mint}>{row.shortMint}</span>
+            <span className="scanner-token-subline">
+              {row.symbol ?? "UNKNOWN"} · {formatAge(row.ageSeconds)} ·{" "}
+              <span className="mono" title={row.mint}>
+                {row.shortMint}
+              </span>
             </span>
-            <small>
+            <small className="scanner-token-badges">
               <span>{row.source}</span>
-              <span>{formatDataQuality(row.latestEventType ?? row.eventType ?? "new_token")}</span>
-              {row.migrationStatus === "migrated" ? <span>migrated</span> : null}
-            </small>
-            <small className="scanner-token-flags">
-              <span>{row.hasMetadata ? "metadata" : "metadata pending"}</span>
-              <span>{row.hasSocialLinks ? "links" : "no social provider"}</span>
+              <span>{eventLabel}</span>
+              {row.trackingState === "tracking" ? <span>Trade Tracked</span> : null}
+              <span>{metadataLabel}</span>
+              <span>{linkLabel}</span>
             </small>
           </div>
         </div>
         <div className="scanner-spark-cell">
           <Sparkline sparkline={row.sparkline} />
-          <span className={"sparkline-change " + row.sparkline.direction}>
-            {formatPct(row.sparkline.priceChangePct)}
-          </span>
-          <small>{row.sparkline.source ?? "no trade samples"}</small>
+          <div className="sparkline-meta">
+            <span className={"sparkline-change " + row.sparkline.direction}>
+              {formatPct(row.sparkline.priceChangePct)}
+            </span>
+            <small>{row.sparkline.label}</small>
+          </div>
         </div>
-        <MetricStack
-          primary={formatMarketCap(row)}
-          secondary={"FDV " + formatUsd(row.fdvUsd)}
-          tertiary={row.marketDataSource ?? row.priceSource ?? "payload/enrichment pending"}
-        />
-        <MetricStack
-          primary={formatUsd(row.liquidityUsd)}
-          secondary={row.poolAddress ?? row.raydiumPool ?? "pool pending"}
-          tertiary={"curve " + formatSol(row.vSolInBondingCurve)}
-        />
-        <MetricStack
-          primary={formatSol(row.volume10sSol) + " 10s"}
-          secondary={formatSol(row.volume30sSol) + " 30s"}
-          tertiary={"net " + formatSol(row.netVolume10sSol)}
-        />
-        <MetricStack
-          primary={formatCompactNumber(row.tradeCount10s) + " / 10s"}
-          secondary={
-            formatCompactNumber(row.buyCount10s) +
-            " / " +
-            formatCompactNumber(row.sellCount10s)
-          }
-          tertiary={
-            "buyers " +
-            formatCompactNumber(row.uniqueBuyers10s) +
-            " / ratio " +
-            formatCompactNumber(row.buySellRatio)
-          }
-        />
-        <MetricStack
-          primary={String(row.riskLevel)}
-          secondary={row.hardReject ? "hard reject" : "risk pass"}
-          tertiary={
-            "top " +
-            formatPct(row.topHolderPct) +
-            " / top10 " +
-            formatPct(row.top10HolderPct)
-          }
-          tone={row.hardReject ? "bad" : row.riskLevel === "low" ? "good" : "neutral"}
-        />
-        <div className="scanner-signal-cell">
-          <span className={getScorePillClass(row)}>{row.launchScore}</span>
-          <strong>{formatDataQuality(row.launchPhase)}</strong>
-          <span>{row.signalAction}</span>
+        <div className="scanner-market-cell">
+          <span>{market.label}</span>
+          <strong>{market.primary}</strong>
+          <small>{market.secondary}</small>
+          <small>price {formatSol(row.priceSol)}</small>
+        </div>
+        <div className="scanner-liquidity-cell">
+          <span className={"liquidity-source source-" + liquidity.source}>
+            {liquidityLabel}
+          </span>
+          <strong>{liquidity.primary}</strong>
+          <small title={liquidity.secondary}>{formatMintShort(liquidity.secondary)}</small>
+          <small>mark {formatSol(row.curve.curvePriceSol)}</small>
+        </div>
+        <div className="scanner-flow-cell">
+          <strong>{formatSol(row.volume10sSol)}</strong>
+          <span>10s volume</span>
+          <small>{formatSol(row.volume30sSol)} 30s / {formatSol(row.volume60sSol)} 60s</small>
           <small>
-            {row.signalStrength} / {row.buyReadyPaper ? "paper ready" : "paper blocked"}
+            {formatCompactNumber(row.buyCount10s)} buy /{" "}
+            {formatCompactNumber(row.sellCount10s)} sell
           </small>
+        </div>
+        <div className="scanner-tx-cell">
+          <strong>{formatCompactNumber(row.tradeCount10s)}</strong>
+          <span>TXNS 10s</span>
           <small>
-            {row.trackingState} / {formatDataQuality(row.dataQualityLabel)}
+            buyers {formatCompactNumber(row.uniqueBuyers10s)} / sellers{" "}
+            {formatCompactNumber(row.uniqueSellers10s)}
+          </small>
+          <small>ratio {formatCompactNumber(row.buySellRatio)}</small>
+        </div>
+        <div className="scanner-momentum-cell">
+          <div>
+            <strong>{row.launchScore}</strong>
+            <span>{formatDataQuality(row.launchPhase)}</span>
+          </div>
+          <small>dVol {formatVelocity(row.volumeVelocitySolPerSec, "sol")}</small>
+          <small>dPrice {formatVelocity(row.priceVelocityPctPerSec, "pct")}</small>
+          <small>dBuyers {formatVelocity(row.buyerVelocityPerSec, "buyers")}</small>
+        </div>
+        <div className="scanner-risk-cell">
+          <strong>{String(row.riskLevel)}</strong>
+          <span>{row.hardReject ? "hard reject" : "risk pass"}</span>
+          <small>holders {formatCompactNumber(row.holderCount)}</small>
+          <small>
+            top {formatPct(row.topHolderPct)} / top10 {formatPct(row.top10HolderPct)}
+          </small>
+        </div>
+        <div className="scanner-signal-cell">
+          <span className={getScorePillClass(row)}>{signal.label}</span>
+          <strong>{signal.buyReadyPaper ? "paper ready" : "paper blocked"}</strong>
+          <span>{signal.topDriver ?? signal.topBlocker ?? row.signalAction}</span>
+          <small>
+            {signal.strength} / {formatDataQuality(row.dataQualityLabel)}
           </small>
           {row.hasPaperPosition ? (
             <small className={"pnl-" + getPnlTone(row.unrealizedPnlSol)}>
@@ -1913,20 +1953,26 @@ function ScannerRow({
 }
 
 function TokenThumbnail({ row }: { row: MomentumScannerRow }) {
-  if (row.imageUri) {
+  const [failed, setFailed] = useState(false);
+  const imageUri = failed ? null : sanitizeDashboardImageUri(row.imageUri);
+
+  if (imageUri) {
     return (
       <img
         alt=""
         className="scanner-token-image"
+        decoding="async"
         loading="lazy"
-        src={row.imageUri}
+        onError={() => setFailed(true)}
+        referrerPolicy="no-referrer"
+        src={imageUri}
       />
     );
   }
 
   return (
     <span className="scanner-token-image fallback" aria-hidden="true">
-      {(row.symbol ?? row.displayName).slice(0, 2).toUpperCase()}
+      {getTokenInitials(row.symbol, row.displayName)}
     </span>
   );
 }
@@ -1937,7 +1983,13 @@ function Sparkline({
   sparkline: MomentumScannerRow["sparkline"];
 }) {
   if (sparkline.points.length < 2) {
-    return <div className="sparkline-empty">no trade samples</div>;
+    return (
+      <div
+        aria-label={sparkline.reasonCodes.join(", ")}
+        className="sparkline-empty"
+        title={sparkline.reasonCodes.join(", ")}
+      />
+    );
   }
 
   const prices = sparkline.points.map((point) => point.priceSol);
@@ -1970,37 +2022,21 @@ function Sparkline({
   );
 }
 
-function MetricStack({
-  primary,
-  secondary,
-  tertiary,
-  tone = "neutral"
-}: {
-  primary: string;
-  secondary: string;
-  tertiary: string;
-  tone?: "good" | "bad" | "warn" | "neutral";
-}) {
-  return (
-    <div className={"scanner-metric-stack metric-" + tone}>
-      <strong>{primary}</strong>
-      <span>{secondary}</span>
-      <small>{tertiary}</small>
-    </div>
-  );
-}
-
 function getScorePillClass(row: MomentumScannerRow): string {
-  if (row.hardReject || row.launchPhase === "rejected") {
+  if (row.signalDisplay.color === "danger") {
     return "score-pill danger";
   }
 
-  if (row.launchPhase === "ripping") {
+  if (row.signalDisplay.color === "success") {
     return "score-pill hot";
   }
 
-  if (row.launchPhase === "hot") {
+  if (row.signalDisplay.color === "warning") {
     return "score-pill warn";
+  }
+
+  if (row.signalDisplay.color === "info") {
+    return "score-pill info";
   }
 
   return "score-pill";
@@ -2025,18 +2061,23 @@ function ScannerRowAudit({
   row: MomentumScannerRow;
   showUnavailable: boolean;
 }) {
+  const liquidity = getLiquidityDisplay(row);
   return (
     <div className="scanner-row-audit">
-      <div>
+      <div className="scanner-audit-panel">
         <h4>Metric Windows</h4>
         <dl>
           <dt>sparkline</dt>
           <dd>
-            {row.sparkline.direction} / {formatPct(row.sparkline.priceChangePct)}
+            {row.sparkline.label} / {formatPct(row.sparkline.priceChangePct)}
           </dd>
-          <dt>volume 5s / 10s / 30s / 60s</dt>
+          <dt>volume 5s</dt>
+          <dd>{formatSol(row.volume5sSol)}</dd>
+          <dt>volume 10s</dt>
+          <dd>{formatSol(row.volume10sSol)}</dd>
+          <dt>volume 30s / 60s</dt>
           <dd>
-            {formatSol(row.volume5sSol)} / {formatSol(row.volume10sSol)} / {formatSol(row.volume30sSol)} / {formatSol(row.volume60sSol)}
+            {formatSol(row.volume30sSol)} / {formatSol(row.volume60sSol)}
           </dd>
           <dt>buy/sell ratio</dt>
           <dd>{formatCompactNumber(row.buySellRatio)}</dd>
@@ -2052,7 +2093,7 @@ function ScannerRowAudit({
           <dd>{formatCompactNumber(row.realTradeEventCount)}</dd>
         </dl>
       </div>
-      <div>
+      <div className="scanner-audit-panel">
         <h4>Derivatives</h4>
         <dl>
           <dt>dVol/dt</dt>
@@ -2069,9 +2110,15 @@ function ScannerRowAudit({
           <dd>{formatAcceleration(row.buyerAccelerationPerSec2, "buyers")}</dd>
         </dl>
       </div>
-      <div>
-        <h4>Strategy Components</h4>
+      <div className="scanner-audit-panel">
+        <h4>Strategy Explanation</h4>
         <dl>
+          <dt>signal</dt>
+          <dd>{row.signalDisplay.label}</dd>
+          <dt>top driver</dt>
+          <dd>{row.signalDisplay.topDriver ?? "—"}</dd>
+          <dt>top blocker</dt>
+          <dd>{row.signalDisplay.topBlocker ?? "—"}</dd>
           <dt>early volume</dt>
           <dd>{formatCompactNumber(row.scoreComponents.earlyVolumeScore)}</dd>
           <dt>volume acceleration</dt>
@@ -2088,33 +2135,32 @@ function ScannerRowAudit({
           <dd>{formatCompactNumber(row.scoreComponents.missingDataPenalty)}</dd>
         </dl>
       </div>
-      <div>
-        <h4>Market / Migration</h4>
+      <div className="scanner-audit-panel">
+        <h4>Data Audit / Risk</h4>
         <dl>
           <dt>market cap</dt>
           <dd>{formatMarketCap(row)}</dd>
-          <dt>liquidity / fdv</dt>
+          <dt>liquidity</dt>
           <dd>
-            {formatUsd(row.liquidityUsd)} / {formatUsd(row.fdvUsd)}
+            {liquidity.label} / {liquidity.primary}
+          </dd>
+          <dt>price / source</dt>
+          <dd>
+            {formatSol(row.priceSol)} / {row.priceSource ?? "—"}
           </dd>
           <dt>curve reserves</dt>
           <dd>
-            {formatSol(row.vSolInBondingCurve)} /{" "}
-            {formatCompactNumber(row.vTokensInBondingCurve)} tokens
+            {formatSol(row.curve.curveSol)} /{" "}
+            {formatCompactNumber(row.curve.curveTokens)} tokens
           </dd>
           <dt>bonding curve</dt>
-          <dd>{row.bondingCurveKey ?? "—"}</dd>
+          <dd>{row.curve.bondingCurve ?? "—"}</dd>
           <dt>pool</dt>
           <dd>{row.poolAddress ?? row.raydiumPool ?? "—"}</dd>
           <dt>migration</dt>
           <dd>
             {row.migrationStatus} / {formatTimeAgo(row.migratedAt)}
           </dd>
-        </dl>
-      </div>
-      <div>
-        <h4>Risk / Position</h4>
-        <dl>
           <dt>mint / freeze auth</dt>
           <dd>
             {formatBool(row.mintAuthorityActive)} / {formatBool(row.freezeAuthorityActive)}
@@ -2133,29 +2179,16 @@ function ScannerRowAudit({
           <dd>
             {formatPct(row.unrealizedPnlPct)} / {formatSol(row.unrealizedPnlSol)}
           </dd>
+          <dt>audit</dt>
+          <dd>{row.fieldDiagnosticsSummary}</dd>
+          <dt>top missing</dt>
+          <dd>{row.dataQuality.topMissingReasons.join(", ") || "—"}</dd>
         </dl>
-      </div>
-      <div className="scanner-audit-wide">
-        <h4>Data Audit</h4>
-        <p>{row.fieldDiagnosticsSummary}</p>
-        <div className="audit-reason-grid">
-          {Object.entries(row.missingFieldReasons).map(([field, reasons]) => (
-            <span key={field}>
-              <strong>{field}</strong>
-              {reasons.length > 0 ? reasons.join(", ") : "available"}
-            </span>
-          ))}
-        </div>
-        <ReasonCodes codes={row.reasonCodes} limit={18} />
-        <h4>Adaptive Tracking</h4>
-        <ReasonCodes codes={row.adaptiveTrackingReasonCodes} limit={12} />
         {showUnavailable ? (
-          <>
-            <h4>Unavailable Fields</h4>
-            <ReasonCodes codes={row.unavailableFields} limit={24} />
-            <h4>Missing Critical Fields</h4>
-            <ReasonCodes codes={row.missingCriticalFields} limit={12} />
-          </>
+          <div className="scanner-audit-reasons">
+            <ReasonCodes codes={row.unavailableFields} limit={18} />
+            <ReasonCodes codes={row.reasonCodes} limit={18} />
+          </div>
         ) : null}
       </div>
     </div>
@@ -4158,6 +4191,13 @@ function filterRows(
       }
     }
 
+    if (
+      options.actionFilter === "discovery" ||
+      options.actionFilter === "discoveryOnly"
+    ) {
+      return row.dataQualityLabel === "discovery_only";
+    }
+
     if (options.actionFilter === "watch") {
       return row.signalAction.includes("WATCH") || row.launchPhase === "watching";
     }
@@ -4185,8 +4225,8 @@ function filterRows(
       );
     }
 
-    if (options.actionFilter === "discoveryOnly") {
-      return row.dataQualityLabel === "discovery_only";
+    if (options.actionFilter === "curvePrice") {
+      return row.curve.curvePriceSol !== null;
     }
 
     if (options.actionFilter === "migrated") {
@@ -4195,6 +4235,10 @@ function filterRows(
 
     if (options.actionFilter === "paperPosition") {
       return row.hasPaperPosition;
+    }
+
+    if (options.actionFilter === "missingData") {
+      return row.unavailableFields.length > 0 || row.dataQuality.missingCriticalCount > 0;
     }
 
     if (options.actionFilter === "missingCritical") {
@@ -4240,7 +4284,17 @@ function sortRows(
     }
 
     if (sortMode === "liquidity") {
-      return (right.liquidityUsd ?? -1) - (left.liquidityUsd ?? -1);
+      return (
+        (right.liquidityUsd ?? right.curve.curveLiquiditySol ?? -1) -
+        (left.liquidityUsd ?? left.curve.curveLiquiditySol ?? -1)
+      );
+    }
+
+    if (sortMode === "curveLiquidity") {
+      return (
+        (right.curve.curveLiquiditySol ?? -1) -
+        (left.curve.curveLiquiditySol ?? -1)
+      );
     }
 
     if (sortMode === "volume10s") {

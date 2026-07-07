@@ -16,7 +16,17 @@ describe("dashboard formatters", () => {
     expect(formatUnknown(null)).toBe("—");
     expect(formatUsd(Number.NaN)).toBe("—");
     expect(formatSol(Number.POSITIVE_INFINITY)).toBe("—");
+    expect(formatSol(null)).toBe("—");
+    expect(formatUsd(undefined)).toBe("—");
     expect(formatVelocity(undefined, "usd")).toBe("—");
+    expect(formatAcceleration(null, "sol")).toBe("—");
+  });
+
+  it("renders explicit numeric zero as zero", () => {
+    expect(formatSol(0)).toBe("0 SOL");
+    expect(formatUsd(0)).toBe("$0");
+    expect(formatVelocity(0, "sol")).toBe("0 SOL/s");
+    expect(formatAcceleration(0, "pct")).toBe("0%/s²");
   });
 
   it("formats compact numbers and money", () => {

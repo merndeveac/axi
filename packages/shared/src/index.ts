@@ -97,6 +97,11 @@ export const TokenCandidateSchema = z.object({
   vSolInBondingCurve: z.number().nonnegative().nullable().optional(),
   vTokensInBondingCurve: z.number().nonnegative().nullable().optional(),
   bondingCurveKey: z.string().nullable().optional(),
+  associatedBondingCurve: z.string().nullable().optional(),
+  virtualSolReserves: z.number().nonnegative().nullable().optional(),
+  virtualTokenReserves: z.number().nonnegative().nullable().optional(),
+  realSolReserves: z.number().nonnegative().nullable().optional(),
+  realTokenReserves: z.number().nonnegative().nullable().optional(),
   pool: z.string().nullable().optional(),
   raydiumPool: z.string().nullable().optional(),
   source: z.string().min(1),
@@ -721,8 +726,48 @@ export type MomentumSparkline = {
   direction: "up" | "down" | "flat" | "unavailable";
   priceChangePct: number | null;
   windowSeconds: number;
-  source: string | null;
+  source: "trade_samples" | "curve_marks" | "unavailable";
+  label: string;
   reasonCodes: string[];
+};
+
+export type MomentumCurveData = {
+  bondingCurve: string | null;
+  associatedBondingCurve: string | null;
+  virtualSolReserves: number | null;
+  virtualTokenReserves: number | null;
+  realSolReserves: number | null;
+  realTokenReserves: number | null;
+  curveSol: number | null;
+  curveTokens: number | null;
+  curvePriceSol: number | null;
+  curveMarketCapSol: number | null;
+  curveLiquiditySol: number | null;
+  curveSource: string | null;
+  curveReasonCodes: string[];
+};
+
+export type MomentumSignalDisplay = {
+  label: "DISCOVERY" | "WATCH" | "HOT" | "RIPPING" | "REJECT";
+  color: "neutral" | "info" | "warning" | "success" | "danger";
+  score: number;
+  scorePct: number;
+  strength: string;
+  topDriver: string | null;
+  topBlocker: string | null;
+  buyReadyPaper: boolean;
+  reasonCodes: string[];
+};
+
+export type MomentumRowDataQuality = {
+  discoveryOnly: boolean;
+  hasCurveData: boolean;
+  hasTradeData: boolean;
+  hasMarketData: boolean;
+  hasRiskData: boolean;
+  hasSignal: boolean;
+  missingCriticalCount: number;
+  topMissingReasons: string[];
 };
 
 export type LiveTokenCardViewModel = {
@@ -758,9 +803,15 @@ export type LiveTokenCardViewModel = {
   marketCapSol: number | null;
   fdvUsd: number | null;
   liquidityUsd: number | null;
+  curve: MomentumCurveData;
   vSolInBondingCurve: number | null;
   vTokensInBondingCurve: number | null;
   bondingCurveKey: string | null;
+  associatedBondingCurve: string | null;
+  virtualSolReserves: number | null;
+  virtualTokenReserves: number | null;
+  realSolReserves: number | null;
+  realTokenReserves: number | null;
   poolAddress: string | null;
   raydiumPool: string | null;
   volume1sUsd: number | null;
@@ -837,7 +888,11 @@ export type LiveTokenCardViewModel = {
   rawEventCount: number;
   actualTradeEventCount: number;
   meteredLaunchDataState: LiveLaunchTrackingState;
-  priceActionSource: "PumpPortal subscribeTokenTrade" | "unavailable";
+  priceActionSource:
+    | "PumpPortal subscribeTokenTrade"
+    | "market_observation"
+    | "curve_marks"
+    | "unavailable";
   realTradeEventCount: number;
   realPriceActionReady: boolean;
   realTimeSeriesReady: boolean;
@@ -989,9 +1044,15 @@ export type MomentumScannerRow = {
   marketCapSol: number | null;
   fdvUsd: number | null;
   liquidityUsd: number | null;
+  curve: MomentumCurveData;
   vSolInBondingCurve: number | null;
   vTokensInBondingCurve: number | null;
   bondingCurveKey: string | null;
+  associatedBondingCurve: string | null;
+  virtualSolReserves: number | null;
+  virtualTokenReserves: number | null;
+  realSolReserves: number | null;
+  realTokenReserves: number | null;
   poolAddress: string | null;
   raydiumPool: string | null;
   priceSource: string | null;
@@ -1053,9 +1114,11 @@ export type MomentumScannerRow = {
   migrationPool: string | null;
   adaptiveTrackingReasonCodes: string[];
   sparkline: MomentumSparkline;
+  signalDisplay: MomentumSignalDisplay;
   realData: boolean;
   source: string;
   dataQualityLabel: MomentumDataQualityLabel;
+  dataQuality: MomentumRowDataQuality;
   missingCriticalFields: string[];
   unavailableFields: string[];
   staleFields: string[];
@@ -1082,9 +1145,18 @@ export type MomentumDiagnostics = {
   tokensWithRiskData: number;
   tokensWithHolderData: number;
   tokensWithPaperPosition: number;
+  rowsWithCurvePrice: number;
+  rowsWithTradePrice: number;
+  rowsWithCurveLiquidity: number;
+  rowsWithDexLiquidity: number;
+  rowsWithMarketCapSol: number;
+  rowsWithMarketCapUsd: number;
+  rowsWithRealTradeVolume: number;
+  rowsWithDerivedCurveData: number;
   unavailableFieldCounts: Record<string, number>;
   missingCriticalFieldCounts: Record<string, number>;
   topMissingReasons: Array<{ reasonCode: string; count: number }>;
+  topUnavailableReasons: Array<{ reasonCode: string; count: number }>;
   dataSources: {
     pumpportalLiveDiscovery: {
       enabled: boolean;

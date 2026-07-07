@@ -1179,6 +1179,11 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       "bondingCurveKey",
       "bondingCurveAddress"
     ]);
+    const associatedBondingCurve = readString(payload, [
+      "associatedBondingCurve",
+      "associatedBondingCurveKey",
+      "associated_bonding_curve"
+    ]);
     const marketCapSol = readNumber(payload, ["marketCapSol", "market_cap_sol"]);
     const vSolInBondingCurve = readNumber(payload, [
       "vSolInBondingCurve",
@@ -1189,6 +1194,26 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       "vTokensInBondingCurve",
       "virtualTokenReserves",
       "virtualTokenReserve"
+    ]);
+    const virtualSolReserves = readNumber(payload, [
+      "virtualSolReserves",
+      "virtualSolReserve",
+      "vSolInBondingCurve"
+    ]);
+    const virtualTokenReserves = readNumber(payload, [
+      "virtualTokenReserves",
+      "virtualTokenReserve",
+      "vTokensInBondingCurve"
+    ]);
+    const realSolReserves = readNumber(payload, [
+      "realSolReserves",
+      "realSolReserve",
+      "realSolInBondingCurve"
+    ]);
+    const realTokenReserves = readNumber(payload, [
+      "realTokenReserves",
+      "realTokenReserve",
+      "realTokensInBondingCurve"
     ]);
     const pool = readString(payload, ["pool", "pair", "newPool"]);
     const raydiumPool = readString(payload, ["raydiumPool", "raydium_pool"]);
@@ -1222,6 +1247,11 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
         ...(vSolInBondingCurve !== null ? { vSolInBondingCurve } : {}),
         ...(vTokensInBondingCurve !== null ? { vTokensInBondingCurve } : {}),
         ...(bondingCurve ? { bondingCurveKey: bondingCurve } : {}),
+        ...(associatedBondingCurve ? { associatedBondingCurve } : {}),
+        ...(virtualSolReserves !== null ? { virtualSolReserves } : {}),
+        ...(virtualTokenReserves !== null ? { virtualTokenReserves } : {}),
+        ...(realSolReserves !== null ? { realSolReserves } : {}),
+        ...(realTokenReserves !== null ? { realTokenReserves } : {}),
         ...(pool ? { pool } : {}),
         ...(raydiumPool ? { raydiumPool } : {}),
         source: "pumpportal",

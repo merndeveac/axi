@@ -3308,7 +3308,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   }
 
   function buildMomentumSparkline(
-    mint: string
+    mint: string,
+    curveSamples: Array<{
+      priceSol: number | null;
+      t: string;
+      volumeSol: number | null;
+    }> = []
   ): MomentumScannerRow["sparkline"] {
     const meteredSamples = meteredLaunchData
       .getRecentTradeEvents()
@@ -3325,7 +3330,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
     if (meteredSamples.length >= 2) {
       return createMomentumSparkline(meteredSamples, {
-        source: "PumpPortal subscribeTokenTrade",
+        label: "trade samples",
+        source: "trade_samples",
         windowSeconds: 60
       });
     }
@@ -3342,8 +3348,41 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           sample.priceSol !== null && sample.priceSol > 0
       );
 
-    return createMomentumSparkline(metricSamples, {
-      source: metricSamples.length > 0 ? "rolling_metrics_trade_samples" : null,
+    if (metricSamples.length >= 2) {
+      return createMomentumSparkline(metricSamples, {
+        label: "trade samples",
+        source: "trade_samples",
+        windowSeconds: 60
+      });
+    }
+
+    const curveMarkSamples = curveSamples
+      .map((sample) => ({
+        priceSol: finiteOrNull(sample.priceSol),
+        t: sample.t,
+        volumeSol: finiteOrNull(sample.volumeSol)
+      }))
+      .filter(
+        (sample): sample is { priceSol: number; t: string; volumeSol: number | null } =>
+          sample.priceSol !== null && sample.priceSol > 0
+      );
+
+    if (curveMarkSamples.length >= 2) {
+      return createMomentumSparkline(curveMarkSamples, {
+        label: "curve mark",
+        source: "curve_marks",
+        windowSeconds: 60
+      });
+    }
+
+    return createMomentumSparkline([], {
+      label:
+        meteredSamples.length > 0 ||
+        metricSamples.length > 0 ||
+        curveMarkSamples.length > 0
+          ? "one sample"
+          : "unavailable",
+      source: curveMarkSamples.length > 0 ? "curve_marks" : "unavailable",
       windowSeconds: 60
     });
   }
@@ -3367,10 +3406,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       hasTradeSamples
     });
     const marketUnavailable = [
-      ...(card.marketCapUsd === null && card.marketCapSol === null
+      ...(card.marketCapUsd === null &&
+      card.marketCapSol === null &&
+      card.curve.curveMarketCapSol === null
         ? (missingFieldReasons.marketCap ?? [])
         : []),
-      ...(card.liquidityUsd === null ? (missingFieldReasons.liquidity ?? []) : []),
+      ...(card.liquidityUsd === null && card.curve.curveLiquiditySol === null
+        ? (missingFieldReasons.liquidity ?? [])
+        : []),
       ...(card.fdvUsd === null ? ["FDV_UNAVAILABLE"] : []),
       ...(card.enrichmentStatus === "disabled" ? ["ENRICHMENT_DISABLED"] : [])
     ];
@@ -3389,6 +3432,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     ]);
     const staleFields = card.stale ? ["latestEventAt"] : [];
     const qualityLabel = getMomentumDataQualityLabel(card);
+    const displayPriceSol = finiteOrNull(
+      card.priceSol ?? card.launchPriceSol ?? card.curve.curvePriceSol
+    );
+    const displayMarketCapSol = finiteOrNull(
+      card.marketCapSol ?? card.curve.curveMarketCapSol
+    );
     const volume5sSol =
       finiteOrNull(card.volume5sSol) ??
       (hasTradeSamples ? finiteOrNull(card.launchVolume5sSol) : null);
@@ -3440,6 +3489,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       ...card.tradeTrackingReasonCodes,
       ...card.launchReasonCodes,
       ...card.launchMissingDataReasons,
+      ...card.curve.curveReasonCodes,
       ...card.dataSourceWarnings,
       ...Object.values(missingFieldReasons).flat(),
       ...marketUnavailable,
@@ -3473,19 +3523,25 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       signalStrength: card.signalStrength,
       buyReadyPaper: card.launchBuyReadyPaper || card.buyReady,
       trackingState: card.meteredLaunchDataState,
-      priceSol: finiteOrNull(card.priceSol ?? card.launchPriceSol),
+      priceSol: displayPriceSol,
       priceUsd: finiteOrNull(card.priceUsd),
       marketCapUsd: finiteOrNull(card.marketCapUsd),
-      marketCapSol: finiteOrNull(card.marketCapSol),
+      marketCapSol: displayMarketCapSol,
       fdvUsd: finiteOrNull(card.fdvUsd),
       liquidityUsd: finiteOrNull(card.liquidityUsd),
+      curve: card.curve,
       vSolInBondingCurve: finiteOrNull(card.vSolInBondingCurve),
       vTokensInBondingCurve: finiteOrNull(card.vTokensInBondingCurve),
       bondingCurveKey: card.bondingCurveKey,
+      associatedBondingCurve: card.associatedBondingCurve,
+      virtualSolReserves: finiteOrNull(card.virtualSolReserves),
+      virtualTokenReserves: finiteOrNull(card.virtualTokenReserves),
+      realSolReserves: finiteOrNull(card.realSolReserves),
+      realTokenReserves: finiteOrNull(card.realTokenReserves),
       poolAddress: card.poolAddress,
       raydiumPool: card.raydiumPool,
       priceSource:
-        card.priceSol !== null || card.priceUsd !== null
+        displayPriceSol !== null || card.priceUsd !== null
           ? card.priceActionSource
           : null,
       marketDataSource: card.enrichmentSource,
@@ -3569,9 +3625,19 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       migrationPool: card.migrationPool,
       adaptiveTrackingReasonCodes: card.adaptiveTrackingReasonCodes,
       sparkline: card.sparkline,
+      signalDisplay: createMomentumSignalDisplay(card, {
+        hasValidTradeSamples:
+          card.realTradeEventCount >= 3 || card.launchTradeSampleCount >= 3
+      }),
       realData: card.realData,
       source: card.source,
       dataQualityLabel: qualityLabel,
+      dataQuality: createMomentumRowDataQuality({
+        card,
+        missingCriticalFields: card.missingCriticalFields,
+        missingFieldReasons,
+        rowPriceSol: displayPriceSol
+      }),
       missingCriticalFields: card.missingCriticalFields,
       unavailableFields,
       staleFields,
@@ -3653,8 +3719,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       tokensWithMarketCap: rows.filter(
         (row) => row.marketCapUsd !== null || row.marketCapSol !== null
       ).length,
-      tokensWithLiquidity: rows.filter((row) => row.liquidityUsd !== null)
-        .length,
+      tokensWithLiquidity: rows.filter(
+        (row) => row.liquidityUsd !== null || row.curve.curveLiquiditySol !== null
+      ).length,
       tokensWithTradeData: rows.filter((row) => row.realTradeEventCount > 0)
         .length,
       tokensWithDerivatives: rows.filter(
@@ -3668,10 +3735,33 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         .length,
       tokensWithPaperPosition: rows.filter((row) => row.hasPaperPosition)
         .length,
+      rowsWithCurvePrice: rows.filter((row) => row.curve.curvePriceSol !== null)
+        .length,
+      rowsWithTradePrice: rows.filter(
+        (row) => row.priceSource === "PumpPortal subscribeTokenTrade"
+      ).length,
+      rowsWithCurveLiquidity: rows.filter(
+        (row) => row.curve.curveLiquiditySol !== null
+      ).length,
+      rowsWithDexLiquidity: rows.filter((row) => row.liquidityUsd !== null)
+        .length,
+      rowsWithMarketCapSol: rows.filter((row) => row.marketCapSol !== null)
+        .length,
+      rowsWithMarketCapUsd: rows.filter((row) => row.marketCapUsd !== null)
+        .length,
+      rowsWithRealTradeVolume: rows.filter(
+        (row) => row.volume10sSol !== null || row.volume10sUsd !== null
+      ).length,
+      rowsWithDerivedCurveData: rows.filter((row) =>
+        row.curve.curveReasonCodes.some((code) => code.includes("DERIVED"))
+      ).length,
       unavailableFieldCounts,
       missingCriticalFieldCounts,
       topMissingReasons: getTopMissingReasons(
         rows.flatMap((row) => Object.values(row.missingFieldReasons).flat())
+      ),
+      topUnavailableReasons: getTopMissingReasons(
+        rows.flatMap((row) => row.unavailableFields)
       ),
       dataSources: {
         pumpportalLiveDiscovery: {
@@ -3751,7 +3841,27 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       const tokenEvents = liveEvents.filter(
         (event) => event.mint === token.mint
       );
+      const tokenCreatedEvents = tokenEvents.filter(
+        (event) => event.payload.type === "token_created"
+      );
+      const eventImageUri =
+        tokenCreatedEvents
+          .map((event) =>
+            event.payload.type === "token_created"
+              ? (event.payload.candidate.imageUri ?? null)
+              : null
+          )
+          .find((value): value is string => Boolean(value)) ?? null;
+      const eventMetadataUri =
+        tokenCreatedEvents
+          .map((event) =>
+            event.payload.type === "token_created"
+              ? (event.payload.candidate.metadataUri ?? null)
+              : null
+          )
+          .find((value): value is string => Boolean(value)) ?? null;
       const marketHints = getLiveTokenMarketHints(tokenEvents);
+      const curve = buildMomentumCurveData(marketHints);
       const migrationState = getLiveTokenMigrationState({
         eventTypes: token.eventTypes,
         latestEventAt: token.latestEventAt,
@@ -3777,7 +3887,13 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       const missingFields = getMissingCardFields({ identity, token });
       const latestPriceSol =
         positiveOrNull(metrics?.latestPriceSol) ??
-        positiveOrNull(actualDataSummary?.latestPriceSol);
+        positiveOrNull(actualDataSummary?.latestPriceSol) ??
+        positiveOrNull(
+          marketObservations.find(
+            (observation) => positiveOrNull(observation.priceSol) !== null
+          )?.priceSol
+        ) ??
+        positiveOrNull(curve.curvePriceSol);
       const latestPriceUsd =
         positiveOrNull(metrics?.latestPriceUsd) ??
         positiveOrNull(enrichment?.priceUsd);
@@ -3905,9 +4021,17 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
                 code.includes("TRADE")
             ) ?? "DISCOVERY_ONLY");
       const priceActionSource =
-        realTradeEventCount > 0
+        realTradeEventCount > 0 || positiveOrNull(metrics?.latestPriceSol) !== null
           ? "PumpPortal subscribeTokenTrade"
-          : "unavailable";
+          : positiveOrNull(
+                marketObservations.find(
+                  (observation) => positiveOrNull(observation.priceSol) !== null
+                )?.priceSol
+              ) !== null
+            ? "market_observation"
+            : curve.curvePriceSol !== null
+              ? "curve_marks"
+              : "unavailable";
       const signalStrength = getSignalStrength({
         action,
         hardReject,
@@ -3966,12 +4090,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           identity?.displayName ??
           token.displayName ??
           createTokenTitle(token.symbol, token.name, token.mint),
-        imageUri: identity?.imageUri ?? null,
+        imageUri: sanitizeScannerImageUri(
+          identity?.imageUri ?? candidate?.imageUri ?? eventImageUri ?? null
+        ),
         identityConfidence:
           identity?.confidence ?? token.identityConfidence ?? "none",
         identitySource: identity?.dataSource ?? "unknown",
         identityResolved: identity?.resolved ?? false,
-        metadataUri: identity?.metadataUri ?? null,
+        metadataUri:
+          identity?.metadataUri ?? candidate?.metadataUri ?? eventMetadataUri ?? null,
         source: token.source,
         sourceMode: token.sourceMode,
         realData: token.realData,
@@ -3995,9 +4122,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         marketCapSol: marketHints.marketCapSol,
         fdvUsd,
         liquidityUsd,
+        curve,
         vSolInBondingCurve: marketHints.vSolInBondingCurve,
         vTokensInBondingCurve: marketHints.vTokensInBondingCurve,
         bondingCurveKey: marketHints.bondingCurveKey,
+        associatedBondingCurve: marketHints.associatedBondingCurve,
+        virtualSolReserves: marketHints.virtualSolReserves,
+        virtualTokenReserves: marketHints.virtualTokenReserves,
+        realSolReserves: marketHints.realSolReserves,
+        realTokenReserves: marketHints.realTokenReserves,
         poolAddress: marketHints.poolAddress,
         raydiumPool: marketHints.raydiumPool,
         volume1sUsd: metricsAvailable
@@ -4261,7 +4394,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           migrationStatus: migrationState.status,
           trackingState: meteredLaunchDataState
         }),
-        sparkline: buildMomentumSparkline(token.mint),
+        sparkline: buildMomentumSparkline(token.mint, marketHints.curveMarks),
         exitSignalSummary,
         paperPositionSummary,
         dataCompletenessLabel: dataCompleteness.dataQualityLabel,
@@ -4308,6 +4441,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       const latestPriceSol = numberOrNull(token.market.priceSol);
       const latestPriceUsd = numberOrNull(token.market.priceUsd);
       const strategy = createIndexerStrategyExplanation(token);
+      const curve = emptyMomentumCurveData();
 
       return {
         mint: token.mint,
@@ -4316,7 +4450,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         symbol: token.symbol,
         title: token.title ?? token.displayName,
         displayName: token.displayName,
-        imageUri: token.identity.imageUri,
+        imageUri: sanitizeScannerImageUri(token.identity.imageUri),
         identityConfidence: token.name || token.symbol ? "low" : "none",
         identitySource: toTokenIdentityDataSource(token.identity.source),
         identityResolved: Boolean(token.name || token.symbol),
@@ -4342,9 +4476,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         marketCapSol: null,
         fdvUsd: token.market.fdvUsd,
         liquidityUsd: token.market.liquidityUsd,
+        curve,
         vSolInBondingCurve: null,
         vTokensInBondingCurve: null,
         bondingCurveKey: null,
+        associatedBondingCurve: null,
+        virtualSolReserves: null,
+        virtualTokenReserves: null,
+        realSolReserves: null,
+        realTokenReserves: null,
         poolAddress: null,
         raydiumPool: null,
         volume1sUsd: numberOrNull(token.market.volumeUsd1s),
@@ -7022,7 +7162,11 @@ function chooseDerivativeValue(
 
 function createMomentumSparkline(
   samples: Array<{ priceSol: number; t: string; volumeSol: number | null }>,
-  options: { source: string | null; windowSeconds: number }
+  options: {
+    label: string;
+    source: MomentumScannerRow["sparkline"]["source"];
+    windowSeconds: number;
+  }
 ): MomentumScannerRow["sparkline"] {
   const sorted = [...samples]
     .filter(
@@ -7041,8 +7185,12 @@ function createMomentumSparkline(
       priceChangePct: null,
       windowSeconds: options.windowSeconds,
       source: options.source,
+      label: options.label,
       reasonCodes: uniqueReasonCodes([
         "INSUFFICIENT_PRICE_SAMPLES",
+        ...(options.source === "curve_marks"
+          ? ["INSUFFICIENT_CURVE_MARK_SAMPLES"]
+          : []),
         ...(sorted.length === 0 ? ["NO_TRADE_EVENTS"] : [])
       ])
     };
@@ -7074,30 +7222,186 @@ function createMomentumSparkline(
     priceChangePct: roundedChange,
     windowSeconds: options.windowSeconds,
     source: options.source,
+    label: options.label,
     reasonCodes: uniqueReasonCodes([
-      "SPARKLINE_REAL_TRADE_SAMPLES",
-      ...(options.source ? [options.source.toUpperCase().replaceAll(" ", "_")] : [])
+      options.source === "curve_marks"
+        ? "SPARKLINE_CURVE_MARKS"
+        : "SPARKLINE_REAL_TRADE_SAMPLES"
     ])
   };
 }
 
-function getLiveTokenMarketHints(
-  tokenEvents: Array<{ payload: FeedEvent }>
-): {
+function emptyMomentumCurveData(): MomentumScannerRow["curve"] {
+  return {
+    associatedBondingCurve: null,
+    bondingCurve: null,
+    curveLiquiditySol: null,
+    curveMarketCapSol: null,
+    curvePriceSol: null,
+    curveReasonCodes: ["CURVE_RESERVES_UNAVAILABLE"],
+    curveSol: null,
+    curveSource: null,
+    curveTokens: null,
+    realSolReserves: null,
+    realTokenReserves: null,
+    virtualSolReserves: null,
+    virtualTokenReserves: null
+  };
+}
+
+function buildMomentumCurveData(input: {
+  associatedBondingCurve: string | null;
   bondingCurveKey: string | null;
+  marketCapSol: number | null;
+  realSolReserves: number | null;
+  realTokenReserves: number | null;
+  vSolInBondingCurve: number | null;
+  vTokensInBondingCurve: number | null;
+  virtualSolReserves: number | null;
+  virtualTokenReserves: number | null;
+}): MomentumScannerRow["curve"] {
+  const reasonCodes: string[] = [];
+  const virtualSolReserves =
+    finiteOrNull(input.virtualSolReserves) ??
+    finiteOrNull(input.vSolInBondingCurve);
+  const virtualTokenReserves =
+    finiteOrNull(input.virtualTokenReserves) ??
+    finiteOrNull(input.vTokensInBondingCurve);
+  const realSolReserves = finiteOrNull(input.realSolReserves);
+  const realTokenReserves = finiteOrNull(input.realTokenReserves);
+  const curveSol = normalizeCurveSolReserve(
+    virtualSolReserves ?? realSolReserves,
+    reasonCodes
+  );
+  const curveTokens = normalizeCurveTokenReserve(
+    virtualTokenReserves ?? realTokenReserves,
+    reasonCodes
+  );
+  const curveLiquiditySol = curveSol;
+  const curvePriceSol =
+    curveSol !== null && curveTokens !== null && curveTokens > 0
+      ? roundFinite(curveSol / curveTokens, 15)
+      : null;
+  const curveMarketCapSol = finiteOrNull(input.marketCapSol);
+
+  if (curvePriceSol !== null) {
+    reasonCodes.push("CURVE_PRICE_DERIVED", "CURVE_DECIMALS_UNKNOWN");
+  }
+
+  if (curveLiquiditySol !== null) {
+    reasonCodes.push("CURVE_LIQUIDITY_DERIVED");
+  }
+
+  if (curveMarketCapSol !== null) {
+    reasonCodes.push("CURVE_MARKET_CAP_FROM_PAYLOAD");
+  }
+
+  if (curveSol === null || curveTokens === null) {
+    reasonCodes.push(
+      curveSol === null && curveTokens === null
+        ? "CURVE_RESERVES_UNAVAILABLE"
+        : "CURVE_RESERVES_INVALID"
+    );
+  }
+
+  return {
+    associatedBondingCurve: input.associatedBondingCurve,
+    bondingCurve: input.bondingCurveKey,
+    curveLiquiditySol,
+    curveMarketCapSol,
+    curvePriceSol,
+    curveReasonCodes: uniqueReasonCodes(reasonCodes),
+    curveSol,
+    curveSource:
+      curvePriceSol !== null || curveLiquiditySol !== null || curveMarketCapSol !== null
+        ? "pumpportal_payload"
+        : null,
+    curveTokens,
+    realSolReserves,
+    realTokenReserves,
+    virtualSolReserves,
+    virtualTokenReserves
+  };
+}
+
+function normalizeCurveSolReserve(
+  value: number | null,
+  reasonCodes: string[]
+): number | null {
+  const reserve = positiveOrNull(value);
+
+  if (reserve === null) {
+    return null;
+  }
+
+  if (reserve > 1_000_000) {
+    reasonCodes.push("CURVE_SOL_RESERVE_LAMPORTS_NORMALIZED");
+    return roundFinite(reserve / 1_000_000_000, 12);
+  }
+
+  return reserve;
+}
+
+function normalizeCurveTokenReserve(
+  value: number | null,
+  reasonCodes: string[]
+): number | null {
+  const reserve = positiveOrNull(value);
+
+  if (reserve === null) {
+    return null;
+  }
+
+  if (reserve > 1_000_000_000_000) {
+    reasonCodes.push("CURVE_DECIMALS_UNKNOWN", "CURVE_RESERVES_INVALID");
+    return null;
+  }
+
+  return reserve;
+}
+
+function roundFinite(value: number, digits: number): number | null {
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+
+  const scale = 10 ** digits;
+  return Math.round(value * scale) / scale;
+}
+
+function getLiveTokenMarketHints(
+  tokenEvents: Array<{ createdAt: string; payload: FeedEvent }>
+): {
+  associatedBondingCurve: string | null;
+  bondingCurveKey: string | null;
+  curveMarks: Array<{ priceSol: number | null; t: string; volumeSol: number | null }>;
   marketCapSol: number | null;
   poolAddress: string | null;
   raydiumPool: string | null;
+  realSolReserves: number | null;
+  realTokenReserves: number | null;
   vSolInBondingCurve: number | null;
   vTokensInBondingCurve: number | null;
+  virtualSolReserves: number | null;
+  virtualTokenReserves: number | null;
 } {
   const hints = {
+    associatedBondingCurve: null as string | null,
     bondingCurveKey: null as string | null,
+    curveMarks: [] as Array<{
+      priceSol: number | null;
+      t: string;
+      volumeSol: number | null;
+    }>,
     marketCapSol: null as number | null,
     poolAddress: null as string | null,
     raydiumPool: null as string | null,
+    realSolReserves: null as number | null,
+    realTokenReserves: null as number | null,
     vSolInBondingCurve: null as number | null,
-    vTokensInBondingCurve: null as number | null
+    vTokensInBondingCurve: null as number | null,
+    virtualSolReserves: null as number | null,
+    virtualTokenReserves: null as number | null
   };
 
   for (const event of tokenEvents) {
@@ -7119,11 +7423,36 @@ function getLiveTokenMarketHints(
     hints.vTokensInBondingCurve ??=
       finiteOrNull(event.payload.candidate.vTokensInBondingCurve) ??
       positiveOrNull(readNumber(raw.vTokensInBondingCurve));
+    hints.virtualSolReserves ??=
+      finiteOrNull(event.payload.candidate.virtualSolReserves) ??
+      positiveOrNull(readNumber(raw.virtualSolReserves)) ??
+      positiveOrNull(readNumber(raw.virtualSolReserve)) ??
+      hints.vSolInBondingCurve;
+    hints.virtualTokenReserves ??=
+      finiteOrNull(event.payload.candidate.virtualTokenReserves) ??
+      positiveOrNull(readNumber(raw.virtualTokenReserves)) ??
+      positiveOrNull(readNumber(raw.virtualTokenReserve)) ??
+      hints.vTokensInBondingCurve;
+    hints.realSolReserves ??=
+      finiteOrNull(event.payload.candidate.realSolReserves) ??
+      positiveOrNull(readNumber(raw.realSolReserves)) ??
+      positiveOrNull(readNumber(raw.realSolReserve)) ??
+      positiveOrNull(readNumber(raw.realSolInBondingCurve));
+    hints.realTokenReserves ??=
+      finiteOrNull(event.payload.candidate.realTokenReserves) ??
+      positiveOrNull(readNumber(raw.realTokenReserves)) ??
+      positiveOrNull(readNumber(raw.realTokenReserve)) ??
+      positiveOrNull(readNumber(raw.realTokensInBondingCurve));
     hints.bondingCurveKey ??=
       event.payload.candidate.bondingCurveKey ??
       event.payload.bondingCurve ??
       readString(raw.bondingCurveKey) ??
       readString(raw.bondingCurve);
+    hints.associatedBondingCurve ??=
+      event.payload.candidate.associatedBondingCurve ??
+      readString(raw.associatedBondingCurve) ??
+      readString(raw.associatedBondingCurveKey) ??
+      readString(raw.associated_bonding_curve);
     hints.poolAddress ??=
       event.payload.candidate.pool ??
       readString(raw.pool) ??
@@ -7131,6 +7460,42 @@ function getLiveTokenMarketHints(
       readString(raw.newPool);
     hints.raydiumPool ??=
       event.payload.candidate.raydiumPool ?? readString(raw.raydiumPool);
+
+    const curve = buildMomentumCurveData({
+      associatedBondingCurve: hints.associatedBondingCurve,
+      bondingCurveKey: hints.bondingCurveKey,
+      marketCapSol: hints.marketCapSol,
+      realSolReserves:
+        finiteOrNull(event.payload.candidate.realSolReserves) ??
+        positiveOrNull(readNumber(raw.realSolReserves)) ??
+        hints.realSolReserves,
+      realTokenReserves:
+        finiteOrNull(event.payload.candidate.realTokenReserves) ??
+        positiveOrNull(readNumber(raw.realTokenReserves)) ??
+        hints.realTokenReserves,
+      vSolInBondingCurve:
+        finiteOrNull(event.payload.candidate.vSolInBondingCurve) ??
+        positiveOrNull(readNumber(raw.vSolInBondingCurve)),
+      vTokensInBondingCurve:
+        finiteOrNull(event.payload.candidate.vTokensInBondingCurve) ??
+        positiveOrNull(readNumber(raw.vTokensInBondingCurve)),
+      virtualSolReserves:
+        finiteOrNull(event.payload.candidate.virtualSolReserves) ??
+        positiveOrNull(readNumber(raw.virtualSolReserves)) ??
+        positiveOrNull(readNumber(raw.virtualSolReserve)),
+      virtualTokenReserves:
+        finiteOrNull(event.payload.candidate.virtualTokenReserves) ??
+        positiveOrNull(readNumber(raw.virtualTokenReserves)) ??
+        positiveOrNull(readNumber(raw.virtualTokenReserve))
+    });
+
+    if (curve.curvePriceSol !== null) {
+      hints.curveMarks.push({
+        priceSol: curve.curvePriceSol,
+        t: event.createdAt,
+        volumeSol: curve.curveLiquiditySol
+      });
+    }
   }
 
   return hints;
@@ -7213,6 +7578,150 @@ function getAdaptiveTrackingReasonCodes(options: {
   return uniqueReasonCodes(reasonCodes);
 }
 
+function createMomentumSignalDisplay(
+  card: LiveTokenCardViewModel,
+  options: { hasValidTradeSamples: boolean }
+): MomentumScannerRow["signalDisplay"] {
+  const score = Math.max(0, Math.min(100, Math.round(card.launchScore)));
+  const topDriver = card.launchDrivers[0] ?? card.strategy.positiveDrivers[0]?.label ?? null;
+  const topBlocker =
+    card.rejectReason ??
+    card.launchBlockers[0] ??
+    card.strategy.blockers[0]?.label ??
+    card.launchMissingDataReasons[0] ??
+    null;
+  const reasonCodes = uniqueReasonCodes([
+    "SIGNAL_DISPLAY_READY",
+    ...(card.hardReject ? ["RISK_HARD_REJECT"] : []),
+    ...(!options.hasValidTradeSamples
+      ? ["INSUFFICIENT_TRADE_SAMPLES", "HOT_RIPPING_REQUIRES_TRADE_SAMPLES"]
+      : []),
+    ...(card.launchBuyReadyPaper || card.buyReady
+      ? ["PAPER_BUY_READY"]
+      : ["PAPER_BUY_BLOCKED"])
+  ]);
+
+  if (card.hardReject || card.launchPhase === "rejected") {
+    return {
+      buyReadyPaper: false,
+      color: "danger",
+      label: "REJECT",
+      reasonCodes,
+      score,
+      scorePct: score / 100,
+      strength: card.signalStrength,
+      topBlocker,
+      topDriver
+    };
+  }
+
+  if (options.hasValidTradeSamples && card.launchPhase === "ripping") {
+    return {
+      buyReadyPaper: card.launchBuyReadyPaper || card.buyReady,
+      color: "success",
+      label: "RIPPING",
+      reasonCodes,
+      score,
+      scorePct: score / 100,
+      strength: card.signalStrength,
+      topBlocker,
+      topDriver
+    };
+  }
+
+  if (options.hasValidTradeSamples && card.launchPhase === "hot") {
+    return {
+      buyReadyPaper: card.launchBuyReadyPaper || card.buyReady,
+      color: "warning",
+      label: "HOT",
+      reasonCodes,
+      score,
+      scorePct: score / 100,
+      strength: card.signalStrength,
+      topBlocker,
+      topDriver
+    };
+  }
+
+  if (
+    card.action.includes("WATCH") ||
+    card.launchPhase === "watching" ||
+    score >= 25
+  ) {
+    return {
+      buyReadyPaper: false,
+      color: "info",
+      label: "WATCH",
+      reasonCodes,
+      score,
+      scorePct: score / 100,
+      strength: card.signalStrength,
+      topBlocker,
+      topDriver
+    };
+  }
+
+  return {
+    buyReadyPaper: false,
+    color: "neutral",
+    label: "DISCOVERY",
+    reasonCodes,
+    score,
+    scorePct: score / 100,
+    strength: card.signalStrength,
+    topBlocker,
+    topDriver
+  };
+}
+
+function createMomentumRowDataQuality(options: {
+  card: LiveTokenCardViewModel;
+  missingCriticalFields: string[];
+  missingFieldReasons: Record<string, string[]>;
+  rowPriceSol: number | null;
+}): MomentumScannerRow["dataQuality"] {
+  const missingReasons = getTopMissingReasons(
+    Object.values(options.missingFieldReasons).flat()
+  ).map((item) => item.reasonCode);
+
+  return {
+    discoveryOnly: options.card.dataCompletenessLabel === "discovery_only",
+    hasCurveData:
+      options.card.curve.curvePriceSol !== null ||
+      options.card.curve.curveLiquiditySol !== null ||
+      options.card.curve.curveMarketCapSol !== null,
+    hasMarketData:
+      options.card.marketCapUsd !== null ||
+      options.card.marketCapSol !== null ||
+      options.card.liquidityUsd !== null ||
+      options.rowPriceSol !== null,
+    hasRiskData:
+      options.card.riskScore !== null ||
+      options.card.riskReasonCodes.length > 0,
+    hasSignal: options.card.launchScore > 0 || options.card.action !== "IGNORE",
+    hasTradeData:
+      options.card.realTradeEventCount > 0 ||
+      options.card.launchTradeSampleCount > 0,
+    missingCriticalCount: options.missingCriticalFields.length,
+    topMissingReasons: missingReasons.slice(0, 4)
+  };
+}
+
+function sanitizeScannerImageUri(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" || parsed.protocol === "http:"
+      ? parsed.toString()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function buildMomentumMissingFieldReasons(
   card: LiveTokenCardViewModel,
   options: { hasDerivativeSamples: boolean; hasTradeSamples: boolean }
@@ -7222,7 +7731,11 @@ function buildMomentumMissingFieldReasons(
     card.meteredLaunchDataState === "not_tracked" ||
     card.meteredLaunchDataState === "unsubscribed";
   const marketCapAvailable =
-    card.marketCapUsd !== null || card.marketCapSol !== null;
+    card.marketCapUsd !== null ||
+    card.marketCapSol !== null ||
+    card.curve.curveMarketCapSol !== null;
+  const curveLiquidityAvailable = card.curve.curveLiquiditySol !== null;
+  const curvePriceAvailable = card.curve.curvePriceSol !== null;
 
   return {
     marketCap: marketCapAvailable
@@ -7232,22 +7745,24 @@ function buildMomentumMissingFieldReasons(
           card.ageSeconds < 300 ? "TOKEN_TOO_NEW" : "MARKET_CAP_UNAVAILABLE"
         ]),
     liquidity:
-      card.liquidityUsd !== null
+      card.liquidityUsd !== null || curveLiquidityAvailable
         ? []
         : uniqueReasonCodes([
             ...(card.enrichmentStatus === "disabled" ? ["ENRICHMENT_DISABLED"] : []),
             "LIQUIDITY_UNAVAILABLE",
+            "CURVE_RESERVES_UNAVAILABLE",
             card.migrationStatus === "not_migrated"
               ? "TOKEN_NOT_MIGRATED"
               : "POOL_NOT_DETECTED"
           ]),
     price:
-      card.priceSol !== null || card.priceUsd !== null
+      card.priceSol !== null || card.priceUsd !== null || curvePriceAvailable
         ? []
         : uniqueReasonCodes([
             tokenTradeTrackingUnavailable
               ? "TOKEN_TRADE_TRACKING_DISABLED"
               : "INSUFFICIENT_TRADE_SAMPLES",
+            "CURVE_RESERVES_UNAVAILABLE",
             "PRICE_UNAVAILABLE"
           ]),
     volume:
