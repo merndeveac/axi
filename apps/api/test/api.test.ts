@@ -2,7 +2,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { TokenCreatedEvent, TokenTradeEvent } from "@axi/data-feeds";
+import type {
+  TokenCreatedEvent,
+  TokenTradeEvent,
+  WebSocketLike
+} from "@axi/data-feeds";
 import type { ExitSignal } from "@axi/exit-strategy";
 import type { NormalizedIndexerEvent } from "@axi/indexer-core";
 import type { SolanaChainClient } from "@axi/solana-chain";
@@ -20,7 +24,39 @@ let server: ApiServer | undefined;
 let testDirectory: string;
 let databasePath: string;
 
+class FakeWebSocket implements WebSocketLike {
+  static instances: FakeWebSocket[] = [];
+  readonly sent: string[] = [];
+  private readonly handlers = new Map<string, Array<(...args: unknown[]) => void>>();
+
+  constructor(readonly url: string) {
+    FakeWebSocket.instances.push(this);
+  }
+
+  on(event: string, handler: (...args: unknown[]) => void): WebSocketLike {
+    const handlers = this.handlers.get(event) ?? [];
+    handlers.push(handler);
+    this.handlers.set(event, handlers);
+    return this;
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+  }
+
+  close(): void {
+    this.emit("close");
+  }
+
+  emit(event: string, ...args: unknown[]): void {
+    for (const handler of this.handlers.get(event) ?? []) {
+      handler(...args);
+    }
+  }
+}
+
 beforeEach(() => {
+  FakeWebSocket.instances = [];
   testDirectory = mkdtempSync(join(tmpdir(), "axi-api-"));
   databasePath = join(testDirectory, "axi.sqlite");
 });
@@ -1296,11 +1332,28 @@ describe("@axi/api", () => {
       url: "/runtime/status"
     });
     const body = response.json() as {
+      api: { online: boolean; wsOnline: boolean };
       controlPlaneEnabled: boolean;
       dataWallet: { apiKeyConfigured: boolean; publicKey: string | null };
+      meteredPriceAction: {
+        blockers: string[];
+        state: string;
+      };
       liveDiscovery: { connected: boolean; reasonCodes: string[] };
       localOnly: boolean;
       paperOnly: boolean;
+      runtime: { paperOnly: boolean; tradingDisabled: boolean };
+      safety: {
+        accountTradesEnabled: boolean;
+        lightningExecutionEnabled: boolean;
+        liveTradingEnabled: boolean;
+        privateKeysLoaded: boolean;
+      };
+      tradingWallet: {
+        liveTradingAllowed: boolean;
+        manualArmed: boolean;
+        purpose: string;
+      };
       tradingDisabled: boolean;
     };
 
@@ -1309,10 +1362,22 @@ describe("@axi/api", () => {
     expect(body.localOnly).toBe(true);
     expect(body.paperOnly).toBe(true);
     expect(body.tradingDisabled).toBe(true);
+    expect(body.api.online).toBe(true);
+    expect(body.api.wsOnline).toBe(true);
+    expect(body.runtime.paperOnly).toBe(true);
+    expect(body.runtime.tradingDisabled).toBe(true);
     expect(body.dataWallet.apiKeyConfigured).toBe(true);
     expect(body.dataWallet.publicKey).toBe(
       "So11111111111111111111111111111111111111112"
     );
+    expect(body.meteredPriceAction.state).toEqual(expect.any(String));
+    expect(body.tradingWallet.purpose).toBe("future_lightning_execution");
+    expect(body.tradingWallet.liveTradingAllowed).toBe(false);
+    expect(body.tradingWallet.manualArmed).toBe(false);
+    expect(body.safety.accountTradesEnabled).toBe(false);
+    expect(body.safety.lightningExecutionEnabled).toBe(false);
+    expect(body.safety.liveTradingEnabled).toBe(false);
+    expect(body.safety.privateKeysLoaded).toBe(false);
     expect(JSON.stringify(body)).not.toContain(secret);
     expect(findDisallowedApiKeyFields(body)).toEqual([]);
   });
@@ -1378,6 +1443,7 @@ describe("@axi/api", () => {
   it("runtime metered launch data start refuses without ACK", async () => {
     server = createMeteredLaunchDataTestServer({
       acknowledgedCost: false,
+      dataWalletBalanceSol: 0.05,
       enabled: true
     });
 
@@ -1397,6 +1463,218 @@ describe("@axi/api", () => {
     expect(body.reasonCodes).toContain("METERED_DATA_ACK_MISSING");
     expect(body.paperOnly).toBe(true);
     expect(body.tradingDisabled).toBe(true);
+  });
+
+  it("runtime status reports ACK missing without inventing wallet blockers", async () => {
+    server = createMeteredLaunchDataTestServer({
+      acknowledgedCost: false,
+      dataWalletBalanceSol: 0.05,
+      enabled: true,
+      liveDiscoveryConnected: true
+    });
+
+    await server.app.inject({
+      method: "POST",
+      url: "/runtime/data-wallet/refresh"
+    });
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/runtime/status"
+    });
+    const body = response.json() as {
+      meteredPriceAction: {
+        blockers: string[];
+        state: string;
+        warnings: string[];
+      };
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.meteredPriceAction.state).toBe("ARM_REQUIRED");
+    expect(body.meteredPriceAction.blockers).toEqual([
+      "METERED_DATA_ACK_MISSING"
+    ]);
+    expect(body.meteredPriceAction.warnings).toEqual([]);
+  });
+
+  it("runtime status treats unknown data-wallet balance as a warning", async () => {
+    server = createMeteredLaunchDataTestServer({
+      acknowledgedCost: false,
+      enabled: true,
+      liveDiscoveryConnected: true
+    });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/runtime/status"
+    });
+    const body = response.json() as {
+      meteredPriceAction: {
+        blockers: string[];
+        warnings: string[];
+      };
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.meteredPriceAction.blockers).not.toContain(
+      "METERED_DATA_WALLET_NOT_READY"
+    );
+    expect(body.meteredPriceAction.blockers).not.toContain(
+      "METERED_DATA_WALLET_LOW"
+    );
+    expect(body.meteredPriceAction.warnings).toContain(
+      "METERED_DATA_BALANCE_UNKNOWN"
+    );
+  });
+
+  it("runtime session ACK arms then starts metered launch data with mocked gates", async () => {
+    server = createMeteredLaunchDataTestServer({
+      acknowledgedCost: false,
+      dataWalletBalanceSol: 0.05,
+      enabled: true,
+      liveDiscoveryConnected: true
+    });
+
+    const ackResponse = await server.app.inject({
+      method: "POST",
+      url: "/runtime/metered-launch-data/ack-session",
+      payload: {
+        ackCost: true,
+        maxSessionCostSol: 0.001,
+        maxConcurrentMints: 2,
+        maxEventsPerSession: 100
+      }
+    });
+    const ackBody = ackResponse.json() as {
+      status: {
+        meteredPriceAction: {
+          canStart: boolean;
+          sessionAck: boolean;
+          state: string;
+        };
+      };
+    };
+    const startResponse = await server.app.inject({
+      method: "POST",
+      url: "/runtime/metered-launch-data/start"
+    });
+    const startBody = startResponse.json() as {
+      status: {
+        meteredPriceAction: {
+          active: boolean;
+          maxConcurrentMints: number;
+          maxEventsPerSession: number;
+          sessionCostCapSol: number;
+          state: string;
+        };
+      };
+    };
+
+    expect(ackResponse.statusCode).toBe(200);
+    expect(ackBody.status.meteredPriceAction.sessionAck).toBe(true);
+    expect(ackBody.status.meteredPriceAction.canStart).toBe(true);
+    expect(ackBody.status.meteredPriceAction.state).toBe("STOPPED");
+    expect(startResponse.statusCode).toBe(200);
+    expect(startBody.status.meteredPriceAction.state).toBe("ACTIVE");
+    expect(startBody.status.meteredPriceAction.active).toBe(true);
+    expect(startBody.status.meteredPriceAction.maxConcurrentMints).toBe(2);
+    expect(startBody.status.meteredPriceAction.maxEventsPerSession).toBe(100);
+    expect(startBody.status.meteredPriceAction.sessionCostCapSol).toBe(0.001);
+  });
+
+  it("runtime session ACK rejects caps above configured ceilings", async () => {
+    server = createMeteredLaunchDataTestServer({
+      acknowledgedCost: false,
+      dataWalletBalanceSol: 0.05,
+      enabled: true,
+      liveDiscoveryConnected: true
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/runtime/metered-launch-data/ack-session",
+      payload: {
+        ackCost: true,
+        maxSessionCostSol: 0.01,
+        maxConcurrentMints: 2,
+        maxEventsPerSession: 100
+      }
+    });
+    const body = response.json() as {
+      error: string;
+      status: {
+        meteredPriceAction: {
+          sessionAck: boolean;
+        };
+      };
+    };
+
+    expect(response.statusCode).toBe(400);
+    expect(body.error).toBe("METERED_LAUNCH_DATA_SESSION_COST_EXCEEDS_CONFIG");
+    expect(body.status.meteredPriceAction.sessionAck).toBe(false);
+  });
+
+  it("runtime stop unsubscribes metered launch-data subscriptions", async () => {
+    server = createMeteredLaunchDataTestServer({
+      acknowledgedCost: false,
+      dataWalletBalanceSol: 0.05,
+      enabled: true,
+      liveDiscoveryConnected: true
+    });
+    const event = createPumpPortalEvent({
+      mint: "So11111111111111111111111111111111111111112"
+    });
+
+    server.emitFeedEvent(event);
+    await server.app.inject({
+      method: "POST",
+      url: "/runtime/metered-launch-data/ack-session",
+      payload: {
+        ackCost: true,
+        maxSessionCostSol: 0.001,
+        maxConcurrentMints: 2,
+        maxEventsPerSession: 100
+      }
+    });
+    const startResponse = await server.app.inject({
+      method: "POST",
+      url: "/runtime/metered-launch-data/start"
+    });
+    const trackResponse = await server.app.inject({
+      method: "POST",
+      url: "/metered-launch-data/track",
+      payload: {
+        mint: event.candidate.mint,
+        reason: "test"
+      }
+    });
+
+    expect(startResponse.statusCode).toBe(200);
+    expect(trackResponse.statusCode).toBe(200);
+    expect(server.meteredLaunchData.getTrackedMints()).toContain(
+      event.candidate.mint
+    );
+
+    const stopResponse = await server.app.inject({
+      method: "POST",
+      url: "/runtime/metered-launch-data/stop"
+    });
+    const stopBody = stopResponse.json() as {
+      status: {
+        meteredPriceAction: {
+          state: string;
+          trackedMintCount: number;
+        };
+      };
+    };
+
+    expect(stopResponse.statusCode).toBe(200);
+    expect(stopBody.status.meteredPriceAction.state).toBe("STOPPED");
+    expect(stopBody.status.meteredPriceAction.trackedMintCount).toBe(0);
+    expect(server.meteredLaunchData.getTrackedMints()).toEqual([]);
+    expect(server.actualData.getSubscriptions().filter(
+      (subscription) => subscription.status === "subscribed"
+    )).toEqual([]);
   });
 
   it("runtime data-wallet refresh returns public status only", async () => {
@@ -4137,8 +4415,9 @@ function createMeteredLaunchDataTestServer(options: {
   acknowledgedCost: boolean;
   dataWalletBalanceSol?: number;
   enabled: boolean;
+  liveDiscoveryConnected?: boolean;
 }): ApiServer {
-  return createApiServer({
+  const apiServer = createApiServer({
     actualData: createActualDataConfig({
       acknowledgedMetered: options.acknowledgedCost,
       apiKeyConfigured: true,
@@ -4168,6 +4447,9 @@ function createMeteredLaunchDataTestServer(options: {
       maxTokenTradeSubscriptions: 3,
       subscribeMigration: false,
       subscribeNewToken: true,
+      ...(options.liveDiscoveryConnected
+        ? { webSocketConstructor: FakeWebSocket }
+        : {}),
       wsUrl: "wss://example.test/pumpportal"
     },
     pumpPortalDataWallet: {
@@ -4182,9 +4464,15 @@ function createMeteredLaunchDataTestServer(options: {
           }
         : {})
     },
-    startFeed: false,
+    startFeed: options.liveDiscoveryConnected ?? false,
     storageDatabasePath: databasePath
   });
+
+  if (options.liveDiscoveryConnected) {
+    FakeWebSocket.instances[0]?.emit("open");
+  }
+
+  return apiServer;
 }
 
 function createExitTestServer(options: {

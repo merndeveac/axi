@@ -344,7 +344,7 @@ h1 {
 
 .control-diagnostics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 8px;
   border-top: 1px solid rgba(148, 163, 184, 0.1);
   padding-top: 10px;
@@ -393,6 +393,7 @@ h1 {
 }
 
 .control-blockers,
+.control-warnings,
 .control-commands {
   display: flex;
   flex-wrap: wrap;
@@ -406,6 +407,91 @@ h1 {
   color: var(--amber);
   padding: 3px 7px;
   font-size: 0.7rem;
+}
+
+.control-warnings {
+  margin-top: 8px;
+}
+
+.control-warnings span {
+  border: 1px solid rgba(92, 200, 255, 0.22);
+  border-radius: 999px;
+  background: rgba(92, 200, 255, 0.055);
+  color: #a9d7ff;
+  padding: 3px 7px;
+  font-size: 0.7rem;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.62);
+  padding: 16px;
+}
+
+.arm-metered-modal {
+  width: min(520px, 100%);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 8px;
+  background: #0d1117;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+}
+
+.modal-heading,
+.modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--line-dim);
+  padding: 10px;
+}
+
+.modal-heading h2 {
+  color: var(--text);
+  font-size: 0.92rem;
+}
+
+.modal-heading button {
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+}
+
+.arm-form {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.arm-form label {
+  display: grid;
+  gap: 5px;
+}
+
+.arm-form label span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.arm-form input {
+  width: 100%;
+}
+
+.arm-form .arm-ack {
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+}
+
+.modal-actions {
+  justify-content: flex-end;
+  border-top: 1px solid var(--line-dim);
+  border-bottom: 0;
 }
 
 .last-update,

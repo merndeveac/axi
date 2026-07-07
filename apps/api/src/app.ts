@@ -1341,6 +1341,12 @@ const meteredLaunchDataEvaluateBodySchema = z
     limit: z.coerce.number().int().positive().max(1000).optional()
   })
   .default({});
+const runtimeMeteredLaunchDataAckBodySchema = z.object({
+  ackCost: z.literal(true),
+  maxSessionCostSol: z.coerce.number().positive(),
+  maxConcurrentMints: z.coerce.number().int().positive(),
+  maxEventsPerSession: z.coerce.number().int().positive()
+});
 const launchCostQuerySchema = z.object({
   avgEventsPerToken: z.coerce.number().positive().default(20),
   tokensPerHour: z.coerce.number().positive().default(500)
@@ -1624,7 +1630,13 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     getMeteredLatestEventAt: () =>
       meteredLaunchData.getRecentTradeEvents()[0]?.createdAt ?? null,
     getMeteredLaunchDataStatus: () => meteredLaunchData.getStatus(),
+    getTradingWalletsStatus: () => pumpPortalWallets.getStatus(),
+    ackMeteredLaunchDataSession: (input) => {
+      actualData.acknowledgeMeteredSession();
+      return meteredLaunchData.acknowledgeSession(input);
+    },
     refreshDataWallet: () => pumpPortalDataWallet.refreshBalance({ force: true }),
+    refreshTradingWallet: () => pumpPortalWallets.refreshBalances({ force: true }),
     restartLiveDiscovery: async () => {
       await stopFeed();
       startFeed();
@@ -1856,6 +1868,33 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     return result;
   });
 
+  app.post(
+    "/runtime/metered-launch-data/ack-session",
+    async (request, reply) => {
+      if (!isLocalRuntimeControlRequest(request)) {
+        return sendNonLocalRuntimeControlReply(reply);
+      }
+
+      try {
+        const body = runtimeMeteredLaunchDataAckBodySchema.parse(request.body);
+        return await runtimeControl.ackMeteredLaunchDataSession(body);
+      } catch (error) {
+        if (error instanceof MeteredLaunchDataServiceError) {
+          return reply.code(error.statusCode).send({
+            ok: false,
+            error: error.code,
+            message: error.message,
+            status: await runtimeControl.getStatus(),
+            paperOnly: true,
+            tradingDisabled: true
+          });
+        }
+
+        throw error;
+      }
+    }
+  );
+
   app.post("/runtime/metered-launch-data/stop", async (request, reply) => {
     if (!isLocalRuntimeControlRequest(request)) {
       return sendNonLocalRuntimeControlReply(reply);
@@ -1884,6 +1923,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     }
 
     return runtimeControl.refreshDataWallet();
+  });
+
+  app.post("/runtime/trading-wallet/refresh", async (request, reply) => {
+    if (!isLocalRuntimeControlRequest(request)) {
+      return sendNonLocalRuntimeControlReply(reply);
+    }
+
+    return runtimeControl.refreshTradingWallet();
   });
 
   app.get("/signals", async () => Array.from(signals.values()));

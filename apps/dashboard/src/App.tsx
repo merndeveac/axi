@@ -338,6 +338,7 @@ type MeteredLaunchDataStatus = {
   enabled: boolean;
   active: boolean;
   acknowledgedCost: boolean;
+  sessionAcknowledgedCost: boolean;
   requireDataWalletReady: boolean;
   ready: boolean;
   mode: string;
@@ -374,8 +375,23 @@ type RuntimeControlStatus = {
   runtimeMode: string;
   paperOnly: true;
   tradingDisabled: true;
+  runtime: {
+    mode: string;
+    paperOnly: true;
+    tradingDisabled: true;
+    startedAt: string;
+    uptimeSeconds: number;
+  };
+  api: {
+    online: boolean;
+    wsOnline: boolean;
+    pid: number;
+    ports: number[];
+    lastUpdatedAt: string;
+  };
   liveDiscovery: {
     enabled: boolean;
+    provider: string;
     connected: boolean;
     connecting: boolean;
     stopped: boolean;
@@ -386,6 +402,39 @@ type RuntimeControlStatus = {
     migrationEventCount: number;
     errorCount: number;
     lastError: string | null;
+    reasonCodes: string[];
+  };
+  meteredPriceAction: {
+    state:
+      | "OFF"
+      | "ARM_REQUIRED"
+      | "READY"
+      | "ACTIVE"
+      | "STOPPED"
+      | "BLOCKED"
+      | "BUDGET_REACHED";
+    enabled: boolean;
+    active: boolean;
+    canStart: boolean;
+    canStop: boolean;
+    requiresAck: boolean;
+    sessionAck: boolean;
+    acknowledgedCost: boolean;
+    provider: string;
+    apiKeyConfigured: boolean;
+    dataWalletPublicKeyConfigured: boolean;
+    dataWalletBalanceStatus: string;
+    trackedMintCount: number;
+    eventCount: number;
+    estimatedCostSol: number;
+    sessionCostCapSol: number;
+    budgetRemainingSol: number;
+    maxConcurrentMints: number;
+    maxEventsPerSession: number;
+    budgetReached: boolean;
+    latestEventAt: string | null;
+    blockers: string[];
+    warnings: string[];
     reasonCodes: string[];
   };
   meteredLaunchData: {
@@ -409,6 +458,38 @@ type RuntimeControlStatus = {
     balanceStatus: string;
     estimatedEventsRemaining: number | null;
     lastBalanceCheckAt: string | null;
+    reasonCodes: string[];
+  };
+  tradingWallet: {
+    purpose: "future_lightning_execution";
+    enabledReadiness: true;
+    publicKeyConfigured: boolean;
+    publicKey: string | null;
+    shortPublicKey: string | null;
+    apiKeyConfigured: boolean;
+    balanceSol: number | null;
+    balanceStatus: string;
+    lastBalanceCheckAt: string | null;
+    reasonCodes: string[];
+    sameAsDataWallet: boolean;
+    liveTradingAllowed: false;
+    manualArmed: false;
+    warning: string;
+  };
+  usage: {
+    meteredEventCount: number;
+    estimatedCostSol: number;
+    maxSessionCostSol: number;
+    remainingBudgetSol: number;
+    projectedCostPerHourSol: number;
+    trackedMintCount: number;
+  };
+  safety: {
+    accountTradesEnabled: false;
+    lightningExecutionEnabled: false;
+    localTransactionApiEnabled: false;
+    privateKeysLoaded: false;
+    liveTradingEnabled: false;
     reasonCodes: string[];
   };
   process: {
@@ -1413,6 +1494,13 @@ export function App() {
     setDataWalletStatus(nextDataWalletStatus);
   };
 
+  const refreshPumpPortalWalletsStatus = async () => {
+    const nextWalletsStatus = await fetchJson<PumpPortalWalletsStatus>(
+      "/pumpportal/wallets/status"
+    );
+    setPumpPortalWalletsStatus(nextWalletsStatus);
+  };
+
   const refreshRuntimeControlSurfaces = async () => {
     const [nextRuntimeControlStatus, nextMeteredStatus, nextFeedStatus] =
       await Promise.all([
@@ -1428,17 +1516,22 @@ export function App() {
     setLastUpdated(new Date().toLocaleTimeString());
   };
 
-  const runRuntimeAction = async (path: string, label: string) => {
+  const runRuntimeAction = async (
+    path: string,
+    label: string,
+    body?: unknown
+  ) => {
     setRuntimeActionStatus(`${label}...`);
 
     try {
-      const result = await postJson<RuntimeControlResult>(path);
+      const result = await postJson<RuntimeControlResult>(path, body);
       setRuntimeControlStatus(result.status);
       setRuntimeActionStatus(result.message);
       await refreshRuntimeControlSurfaces();
 
-      if (path.includes("data-wallet")) {
+      if (path.includes("data-wallet") || path.includes("trading-wallet")) {
         await refreshDataWalletStatus();
+        await refreshPumpPortalWalletsStatus();
       }
     } catch (error) {
       setRuntimeActionStatus(
@@ -1678,17 +1771,23 @@ function HeaderControlCenter({
   rippingLaunchCount: number;
   runtimeActionStatus: string;
   runtimeControlStatus: RuntimeControlStatus | null;
-  runRuntimeAction: (path: string, label: string) => Promise<void>;
+  runRuntimeAction: (path: string, label: string, body?: unknown) => Promise<void>;
   trackedCardCount: number;
   unavailableFieldCount: number;
   websocketLabel: string;
 }) {
+  const [armModalOpen, setArmModalOpen] = useState(false);
+  const [armCostAck, setArmCostAck] = useState(false);
+  const [armMaxSessionCostSol, setArmMaxSessionCostSol] = useState("0.001");
+  const [armMaxConcurrentMints, setArmMaxConcurrentMints] = useState("3");
+  const [armMaxEventsPerSession, setArmMaxEventsPerSession] = useState("1000");
   const meteredControl = getMeteredControlView({
     apiStatus,
     meteredStatus: meteredLaunchDataStatus,
     pendingAction: runtimeActionStatus,
     runtimeStatus: runtimeControlStatus
   });
+  const meteredPriceAction = runtimeControlStatus?.meteredPriceAction ?? null;
   const meteredBlockers = getHeaderMeteredRuntimeBlockers(
     runtimeControlStatus,
     meteredLaunchDataStatus
@@ -1709,11 +1808,62 @@ function HeaderControlCenter({
     !runtimeControlStatus?.liveDiscovery.connected &&
     !runtimeControlStatus?.liveDiscovery.connecting;
   const projectedCostPerHour =
-    meteredLaunchDataStatus?.projectedCostPerHourSol ?? null;
+    runtimeControlStatus?.usage.projectedCostPerHourSol ??
+    meteredLaunchDataStatus?.projectedCostPerHourSol ??
+    null;
   const latestMeteredAt =
+    meteredPriceAction?.latestEventAt ??
     runtimeControlStatus?.meteredLaunchData.latestEventAt ??
     meteredLaunchDataStatus?.startedAt ??
     null;
+  const tradingWallet = runtimeControlStatus?.tradingWallet ?? null;
+  const tradingWalletShort =
+    tradingWallet?.shortPublicKey ?? "public address pending";
+  const tradingBalanceStatus = tradingWallet?.balanceStatus ?? "unknown";
+  const canArmMetered =
+    !apiOffline &&
+    meteredPriceAction?.enabled === true &&
+    meteredPriceAction.active !== true;
+  const parsedArmCost = Number(armMaxSessionCostSol);
+  const parsedArmMints = Number(armMaxConcurrentMints);
+  const parsedArmEvents = Number(armMaxEventsPerSession);
+  const armSubmitDisabled =
+    !armCostAck ||
+    !Number.isFinite(parsedArmCost) ||
+    parsedArmCost <= 0 ||
+    parsedArmCost > (meteredPriceAction?.sessionCostCapSol ?? 0.001) ||
+    !Number.isInteger(parsedArmMints) ||
+    parsedArmMints <= 0 ||
+    parsedArmMints > (meteredPriceAction?.maxConcurrentMints ?? 3) ||
+    !Number.isInteger(parsedArmEvents) ||
+    parsedArmEvents <= 0 ||
+    parsedArmEvents > (meteredPriceAction?.maxEventsPerSession ?? 1000);
+
+  const submitArmMetered = () => {
+    if (armSubmitDisabled) {
+      return;
+    }
+
+    setArmModalOpen(false);
+    void runRuntimeAction(
+      "/runtime/metered-launch-data/ack-session",
+      "Arming metered price action",
+      {
+        ackCost: true,
+        maxSessionCostSol: parsedArmCost,
+        maxConcurrentMints: parsedArmMints,
+        maxEventsPerSession: parsedArmEvents
+      }
+    );
+  };
+
+  const refreshWallets = async () => {
+    await runRuntimeAction("/runtime/data-wallet/refresh", "Refreshing data wallet");
+    await runRuntimeAction(
+      "/runtime/trading-wallet/refresh",
+      "Refreshing trading wallet"
+    );
+  };
 
   return (
     <header className="control-header">
@@ -1739,21 +1889,29 @@ function HeaderControlCenter({
           <StatusChip
             label="METERED PRICE"
             tone={
-              meteredControl.state === "ACTIVE"
+              (meteredPriceAction?.state ?? meteredControl.state) === "ACTIVE"
                 ? "good"
-                : meteredControl.state === "READY"
+                : (meteredPriceAction?.state ?? meteredControl.state) === "READY" ||
+                    (meteredPriceAction?.state ?? meteredControl.state) === "STOPPED"
                   ? "warn"
-                  : meteredControl.state === "BLOCKED" ||
-                      meteredControl.state === "BUDGET_REACHED"
+                  : (meteredPriceAction?.state ?? meteredControl.state) ===
+                        "BLOCKED" ||
+                      (meteredPriceAction?.state ?? meteredControl.state) ===
+                        "BUDGET_REACHED"
                     ? "bad"
                     : "neutral"
             }
-            value={meteredControl.state}
+            value={meteredPriceAction?.state ?? meteredControl.state}
           />
           <StatusChip
             label="DATA WALLET"
             tone={getDataWalletTone(balanceStatus)}
             value={balanceStatus.toUpperCase()}
+          />
+          <StatusChip
+            label="TRADING WALLET"
+            tone={getDataWalletTone(tradingBalanceStatus)}
+            value={tradingBalanceStatus.toUpperCase()}
           />
           <StatusChip
             label="API"
@@ -1792,24 +1950,33 @@ function HeaderControlCenter({
           detail={dataWalletShort}
         />
         <HeaderMetric
+          label="Trading"
+          value={formatSol(tradingWallet?.balanceSol)}
+          detail={tradingWalletShort}
+        />
+        <HeaderMetric
           label="Events"
           value={formatCompactNumber(
-            meteredLaunchDataStatus?.totalEventsThisSession ??
+            meteredPriceAction?.eventCount ??
+              meteredLaunchDataStatus?.totalEventsThisSession ??
               runtimeControlStatus?.meteredLaunchData.eventCount
           )}
           detail={`${formatSol(
-            meteredLaunchDataStatus?.estimatedCostSol ??
+            meteredPriceAction?.estimatedCostSol ??
+              meteredLaunchDataStatus?.estimatedCostSol ??
               runtimeControlStatus?.meteredLaunchData.estimatedCostSol
           )} est`}
         />
         <HeaderMetric
           label="Budget"
           value={formatSol(
-            meteredLaunchDataStatus?.remainingBudgetSol ??
+            meteredPriceAction?.budgetRemainingSol ??
+              meteredLaunchDataStatus?.remainingBudgetSol ??
               runtimeControlStatus?.meteredLaunchData.budgetRemainingSol
           )}
           detail={`${formatSol(
-            meteredLaunchDataStatus?.maxSessionCostSol ??
+            meteredPriceAction?.sessionCostCapSol ??
+              meteredLaunchDataStatus?.maxSessionCostSol ??
               runtimeControlStatus?.meteredLaunchData.sessionCostCapSol
           )} cap`}
         />
@@ -1858,26 +2025,32 @@ function HeaderControlCenter({
           Restart Live Feed
         </button>
         <button
-          className="metered-action"
-          disabled={apiOffline || meteredControl.disabled}
+          disabled={!canArmMetered}
           onClick={() => {
-            if (meteredControl.disabled) {
-              onToggleDiagnostics();
-              return;
-            }
-
+            setArmCostAck(false);
+            setArmModalOpen(true);
+          }}
+          title="Arm this browser session for metered price action."
+          type="button"
+        >
+          Arm Metered
+        </button>
+        <button
+          className="metered-action"
+          disabled={apiOffline || meteredPriceAction?.canStart !== true}
+          onClick={() =>
             void runRuntimeAction(
               "/runtime/metered-launch-data/start",
               "Starting metered price action"
-            );
-          }}
+            )
+          }
           title={meteredControl.helper}
           type="button"
         >
-          {meteredControl.buttonLabel}
+          Start Metered
         </button>
         <button
-          disabled={apiOffline}
+          disabled={apiOffline || meteredPriceAction?.canStop !== true}
           onClick={() =>
             void runRuntimeAction(
               "/runtime/metered-launch-data/stop",
@@ -1890,15 +2063,10 @@ function HeaderControlCenter({
         </button>
         <button
           disabled={apiOffline}
-          onClick={() =>
-            void runRuntimeAction(
-              "/runtime/data-wallet/refresh",
-              "Refreshing wallet"
-            )
-          }
+          onClick={() => void refreshWallets()}
           type="button"
         >
-          Refresh Wallet
+          Refresh Wallets
         </button>
         <button onClick={onToggleDiagnostics} type="button">
           {controlPanelOpen ? "Close Diagnostics" : "Open Diagnostics"}
@@ -1909,10 +2077,90 @@ function HeaderControlCenter({
         <span>{runtimeActionStatus}</span>
         {meteredBlockers.length > 0 ? (
           <strong>{meteredBlockers[0]}</strong>
+        ) : meteredPriceAction?.warnings.length ? (
+          <strong>{meteredPriceAction.warnings[0]}</strong>
         ) : (
           <strong>{meteredControl.helper}</strong>
         )}
       </div>
+
+      {armModalOpen ? (
+        <div className="modal-backdrop">
+          <div
+            aria-label="Arm metered price action"
+            aria-modal="true"
+            className="arm-metered-modal"
+            role="dialog"
+          >
+            <div className="modal-heading">
+              <h2>Arm Metered</h2>
+              <button
+                aria-label="Close"
+                onClick={() => setArmModalOpen(false)}
+                type="button"
+              >
+                x
+              </button>
+            </div>
+            <div className="arm-form">
+              <label>
+                <span>Session SOL cap</span>
+                <input
+                  max={meteredPriceAction?.sessionCostCapSol ?? 0.001}
+                  min="0.000001"
+                  onChange={(event) => setArmMaxSessionCostSol(event.target.value)}
+                  step="0.000001"
+                  type="number"
+                  value={armMaxSessionCostSol}
+                />
+              </label>
+              <label>
+                <span>Concurrent mints</span>
+                <input
+                  max={meteredPriceAction?.maxConcurrentMints ?? 3}
+                  min="1"
+                  onChange={(event) => setArmMaxConcurrentMints(event.target.value)}
+                  step="1"
+                  type="number"
+                  value={armMaxConcurrentMints}
+                />
+              </label>
+              <label>
+                <span>Session events</span>
+                <input
+                  max={meteredPriceAction?.maxEventsPerSession ?? 1000}
+                  min="1"
+                  onChange={(event) => setArmMaxEventsPerSession(event.target.value)}
+                  step="1"
+                  type="number"
+                  value={armMaxEventsPerSession}
+                />
+              </label>
+              <label className="check-control arm-ack">
+                <input
+                  checked={armCostAck}
+                  onChange={(event) => setArmCostAck(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>Metered PumpPortal token-trade data can spend SOL.</span>
+              </label>
+            </div>
+            <div className="modal-actions">
+              <button onClick={() => setArmModalOpen(false)} type="button">
+                Cancel
+              </button>
+              <button
+                className="metered-action"
+                disabled={armSubmitDisabled}
+                onClick={submitArmMetered}
+                type="button"
+              >
+                Arm Session
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {controlPanelOpen ? (
         <div className="control-diagnostics">
@@ -1957,18 +2205,46 @@ function HeaderControlCenter({
             </dl>
           </section>
           <section>
+            <h2>Trading Wallet</h2>
+            <dl>
+              <dt>public address</dt>
+              <dd>
+                <span className="mono">{tradingWalletShort}</span>
+                {tradingWallet?.publicKey ? (
+                  <button
+                    className="inline-copy-button"
+                    onClick={() => copyPublicKey(tradingWallet.publicKey)}
+                    type="button"
+                  >
+                    copy
+                  </button>
+                ) : null}
+              </dd>
+              <dt>API key configured</dt>
+              <dd>{String(tradingWallet?.apiKeyConfigured ?? false)}</dd>
+              <dt>balance</dt>
+              <dd>{formatSol(tradingWallet?.balanceSol)}</dd>
+              <dt>status</dt>
+              <dd>{tradingBalanceStatus}</dd>
+              <dt>live trading</dt>
+              <dd>{String(tradingWallet?.liveTradingAllowed ?? false)}</dd>
+              <dt>armed</dt>
+              <dd>{String(tradingWallet?.manualArmed ?? false)}</dd>
+            </dl>
+          </section>
+          <section>
             <h2>Metered Usage</h2>
             <dl>
               <dt>tracked mints</dt>
-              <dd>{formatCompactNumber(meteredLaunchDataStatus?.trackedMintCount ?? runtimeControlStatus?.meteredLaunchData.trackedMintCount)}</dd>
+              <dd>{formatCompactNumber(meteredPriceAction?.trackedMintCount ?? meteredLaunchDataStatus?.trackedMintCount ?? runtimeControlStatus?.meteredLaunchData.trackedMintCount)}</dd>
               <dt>events this session</dt>
-              <dd>{formatCompactNumber(meteredLaunchDataStatus?.totalEventsThisSession ?? runtimeControlStatus?.meteredLaunchData.eventCount)}</dd>
+              <dd>{formatCompactNumber(meteredPriceAction?.eventCount ?? meteredLaunchDataStatus?.totalEventsThisSession ?? runtimeControlStatus?.meteredLaunchData.eventCount)}</dd>
               <dt>estimated spent</dt>
-              <dd>{formatSol(meteredLaunchDataStatus?.estimatedCostSol ?? runtimeControlStatus?.meteredLaunchData.estimatedCostSol)}</dd>
+              <dd>{formatSol(meteredPriceAction?.estimatedCostSol ?? meteredLaunchDataStatus?.estimatedCostSol ?? runtimeControlStatus?.meteredLaunchData.estimatedCostSol)}</dd>
               <dt>session cap</dt>
-              <dd>{formatSol(meteredLaunchDataStatus?.maxSessionCostSol ?? runtimeControlStatus?.meteredLaunchData.sessionCostCapSol)}</dd>
+              <dd>{formatSol(meteredPriceAction?.sessionCostCapSol ?? meteredLaunchDataStatus?.maxSessionCostSol ?? runtimeControlStatus?.meteredLaunchData.sessionCostCapSol)}</dd>
               <dt>budget remaining</dt>
-              <dd>{formatSol(meteredLaunchDataStatus?.remainingBudgetSol ?? runtimeControlStatus?.meteredLaunchData.budgetRemainingSol)}</dd>
+              <dd>{formatSol(meteredPriceAction?.budgetRemainingSol ?? meteredLaunchDataStatus?.remainingBudgetSol ?? runtimeControlStatus?.meteredLaunchData.budgetRemainingSol)}</dd>
               <dt>projected / hour</dt>
               <dd>{formatSol(projectedCostPerHour)}</dd>
               <dt>latest metered event</dt>
@@ -2003,6 +2279,13 @@ function HeaderControlCenter({
             ) : (
               <p>Metered price action gates are clear.</p>
             )}
+            {meteredPriceAction?.warnings.length ? (
+              <div className="control-warnings">
+                {meteredPriceAction.warnings.map((warning) => (
+                  <span key={warning}>{warning}</span>
+                ))}
+              </div>
+            ) : null}
             <div className="offline-commands control-commands">
               <code>pnpm axi:doctor</code>
               <code>pnpm axi:restart</code>
@@ -3345,7 +3628,7 @@ function DataTab({
   pumpPortalWalletsStatus: PumpPortalWalletsStatus | null;
   runtimeActionStatus: string;
   runtimeControlStatus: RuntimeControlStatus | null;
-  runRuntimeAction: (path: string, label: string) => Promise<void>;
+  runRuntimeAction: (path: string, label: string, body?: unknown) => Promise<void>;
   tokenIdentities: TokenIdentityRow[];
   tokenIdentityStatus: TokenIdentityStatus | null;
 }) {
@@ -5033,7 +5316,11 @@ function getDataWalletTone(
     return "good";
   }
 
-  if (balanceStatus === "critical" || balanceStatus === "missing_config") {
+  if (
+    balanceStatus === "critical" ||
+    balanceStatus === "missing_config" ||
+    balanceStatus === "missing"
+  ) {
     return "bad";
   }
 
@@ -5093,9 +5380,17 @@ async function fetchJson<T>(path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
-async function postJson<T>(path: string): Promise<T> {
+async function postJson<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
-    method: "POST"
+    method: "POST",
+    ...(body === undefined
+      ? {}
+      : {
+          body: JSON.stringify(body),
+          headers: {
+            "content-type": "application/json"
+          }
+        })
   });
   const payload = (await response.json()) as T;
 

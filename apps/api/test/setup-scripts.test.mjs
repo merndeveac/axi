@@ -14,6 +14,7 @@ const testDirectoryRoot = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(testDirectoryRoot, "../../..");
 const templatePath = join(repoRoot, ".env.pumpportal-data.example");
 const gitignorePath = join(repoRoot, ".gitignore");
+const axiLaunchPath = join(repoRoot, "scripts/dev/axi-launch.mjs");
 const secretValue = "test-secret-api-key-value";
 const privateKeyValue = "test-private-key-value";
 
@@ -39,6 +40,18 @@ describe("PumpPortal data env setup helpers", () => {
     expect(template).not.toContain(secretValue);
     expect(gitignore).toContain(".env.*");
     expect(gitignore).toContain("!.env.pumpportal-data.example");
+  });
+
+  it("keeps the default dev launch discovery-only unless env is respected", () => {
+    const launchScript = readFileSync(axiLaunchPath, "utf8");
+
+    expect(launchScript).toContain("--respect-env");
+    expect(launchScript).toContain('METERED_LAUNCH_DATA_ENABLED: "false"');
+    expect(launchScript).toContain('PUMPPORTAL_TOKEN_TRADES_ENABLED: "false"');
+    expect(launchScript).toContain('METERED_LAUNCH_DATA_ACK_COST: "false"');
+    expect(launchScript).toContain(
+      'PUMPPORTAL_TOKEN_TRADES_ACK_METERED: "false"'
+    );
   });
 
   it("parses .env.local without requiring dotenv", () => {

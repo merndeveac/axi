@@ -1,8 +1,13 @@
 import type {
   MeteredLaunchDataDecision,
+  MeteredLaunchDataSessionAckInput,
   MeteredLaunchDataStatus
 } from "./metered-launch-data-service";
 import type { PumpPortalDataWalletStatus } from "./pumpportal-data-wallet-service";
+import type {
+  PumpPortalWalletStatus,
+  PumpPortalWalletsStatus
+} from "./pumpportal-wallets-service";
 
 export type RuntimeControlFeedStatus = {
   connected: boolean;
@@ -19,14 +24,40 @@ export type RuntimeControlFeedStatus = {
 
 export type RuntimeControlAction = "start" | "stop" | "restart";
 
+type RuntimeBalanceStatus = "missing" | "unknown" | "critical" | "low" | "ok";
+
+export type RuntimeMeteredPriceActionState =
+  | "OFF"
+  | "ARM_REQUIRED"
+  | "READY"
+  | "ACTIVE"
+  | "STOPPED"
+  | "BLOCKED"
+  | "BUDGET_REACHED";
+
 export type RuntimeControlStatus = {
   controlPlaneEnabled: boolean;
   localOnly: boolean;
   runtimeMode: string;
   paperOnly: true;
   tradingDisabled: true;
+  runtime: {
+    mode: string;
+    paperOnly: true;
+    tradingDisabled: true;
+    startedAt: string;
+    uptimeSeconds: number;
+  };
+  api: {
+    online: true;
+    wsOnline: true;
+    pid: number;
+    ports: number[];
+    lastUpdatedAt: string;
+  };
   liveDiscovery: {
     enabled: boolean;
+    provider: string;
     connected: boolean;
     connecting: boolean;
     stopped: boolean;
@@ -37,6 +68,32 @@ export type RuntimeControlStatus = {
     migrationEventCount: number;
     errorCount: number;
     lastError: string | null;
+    reasonCodes: string[];
+  };
+  meteredPriceAction: {
+    state: RuntimeMeteredPriceActionState;
+    enabled: boolean;
+    active: boolean;
+    canStart: boolean;
+    canStop: boolean;
+    requiresAck: boolean;
+    sessionAck: boolean;
+    acknowledgedCost: boolean;
+    provider: string;
+    apiKeyConfigured: boolean;
+    dataWalletPublicKeyConfigured: boolean;
+    dataWalletBalanceStatus: RuntimeBalanceStatus;
+    trackedMintCount: number;
+    eventCount: number;
+    estimatedCostSol: number;
+    sessionCostCapSol: number;
+    budgetRemainingSol: number;
+    maxConcurrentMints: number;
+    maxEventsPerSession: number;
+    budgetReached: boolean;
+    latestEventAt: string | null;
+    blockers: string[];
+    warnings: string[];
     reasonCodes: string[];
   };
   meteredLaunchData: {
@@ -62,6 +119,38 @@ export type RuntimeControlStatus = {
     lastBalanceCheckAt: string | null;
     reasonCodes: string[];
   };
+  tradingWallet: {
+    purpose: "future_lightning_execution";
+    enabledReadiness: true;
+    publicKeyConfigured: boolean;
+    publicKey: string | null;
+    shortPublicKey: string | null;
+    apiKeyConfigured: boolean;
+    balanceSol: number | null;
+    balanceStatus: RuntimeBalanceStatus;
+    lastBalanceCheckAt: string | null;
+    reasonCodes: string[];
+    sameAsDataWallet: boolean;
+    liveTradingAllowed: false;
+    manualArmed: false;
+    warning: string;
+  };
+  usage: {
+    meteredEventCount: number;
+    estimatedCostSol: number;
+    maxSessionCostSol: number;
+    remainingBudgetSol: number;
+    projectedCostPerHourSol: number;
+    trackedMintCount: number;
+  };
+  safety: {
+    accountTradesEnabled: false;
+    lightningExecutionEnabled: false;
+    localTransactionApiEnabled: false;
+    privateKeysLoaded: false;
+    liveTradingEnabled: false;
+    reasonCodes: string[];
+  };
   process: {
     pid: number;
     uptimeSeconds: number;
@@ -72,7 +161,7 @@ export type RuntimeControlStatus = {
 };
 
 export type RuntimeControlResult = {
-  action: RuntimeControlAction | "refresh";
+  action: RuntimeControlAction | "refresh" | "arm";
   ok: boolean;
   message: string;
   status: RuntimeControlStatus;
@@ -100,10 +189,19 @@ export type RuntimeControlServiceOptions = {
   getFeedStatus: () => RuntimeControlFeedStatus;
   getMeteredLatestEventAt?: () => string | null;
   getMeteredLaunchDataStatus: () => MeteredLaunchDataStatus;
+  getTradingWalletsStatus?: () =>
+    | PumpPortalWalletsStatus
+    | Promise<PumpPortalWalletsStatus>;
+  ackMeteredLaunchDataSession?: (
+    input: MeteredLaunchDataSessionAckInput
+  ) => MeteredLaunchDataStatus | Promise<MeteredLaunchDataStatus>;
   ports?: number[];
   refreshDataWallet: () =>
     | PumpPortalDataWalletStatus
     | Promise<PumpPortalDataWalletStatus>;
+  refreshTradingWallet?: () =>
+    | PumpPortalWalletsStatus
+    | Promise<PumpPortalWalletsStatus>;
   restartLiveDiscovery: () => void | Promise<void>;
   runtimeMode: string;
   startLiveDiscovery: () => void | Promise<void>;
@@ -118,7 +216,11 @@ export type RuntimeControlServiceOptions = {
 export type RuntimeControlService = {
   getDiagnostics: () => Promise<RuntimeControlDiagnostics>;
   getStatus: () => Promise<RuntimeControlStatus>;
+  ackMeteredLaunchDataSession: (
+    input: MeteredLaunchDataSessionAckInput
+  ) => Promise<RuntimeControlResult>;
   refreshDataWallet: () => Promise<RuntimeControlResult>;
+  refreshTradingWallet: () => Promise<RuntimeControlResult>;
   restartLiveDiscovery: () => Promise<RuntimeControlResult>;
   restartMeteredLaunchData: () => Promise<RuntimeControlResult>;
   startLiveDiscovery: () => Promise<RuntimeControlResult>;
@@ -136,16 +238,34 @@ export function createRuntimeControlService(
   let liveDiscoveryStartedAt: string | null = null;
 
   async function getStatus(): Promise<RuntimeControlStatus> {
-    const [dataWallet, feed, metered] = await Promise.all([
+    const [dataWallet, feed, metered, wallets] = await Promise.all([
       options.getDataWalletStatus(),
       options.getFeedStatus(),
-      options.getMeteredLaunchDataStatus()
+      options.getMeteredLaunchDataStatus(),
+      options.getTradingWalletsStatus?.() ?? Promise.resolve(null)
     ]);
+    const now = new Date().toISOString();
     const liveStopped =
       !feed.connected &&
       !feed.connecting &&
       liveDiscoveryStoppedAt !== null;
+    const latestMeteredEventAt = options.getMeteredLatestEventAt?.() ?? null;
+    const meteredBlockers = mapMeteredBlockers(metered);
+    const meteredWarnings = mapMeteredWarnings(metered, dataWallet);
+    const meteredState = getMeteredPriceActionState(metered, meteredBlockers);
     const meteredBlocked = isMeteredBlocked(metered);
+    const processStatus = {
+      pid: process.pid,
+      uptimeSeconds: Math.round(process.uptime()),
+      ports: options.ports ?? [8787, 5173],
+      startedAt: processStartedAt
+    };
+    const tradingWallet = wallets?.tradingWallet ?? emptyTradingWallet();
+    const sameAsDataWallet = Boolean(
+      dataWallet.publicKey &&
+        tradingWallet.publicKey &&
+        dataWallet.publicKey === tradingWallet.publicKey
+    );
     const reasonCodes = unique([
       "CONTROL_PLANE_ENABLED",
       "CONTROL_PLANE_LOCAL_ONLY",
@@ -157,6 +277,21 @@ export function createRuntimeControlService(
       ...(meteredBlocked ? ["METERED_DATA_BLOCKED_BY_GATES"] : []),
       ...(metered.active && !meteredBlocked ? ["METERED_DATA_STARTED"] : [])
     ]);
+    const safety: RuntimeControlStatus["safety"] = {
+      accountTradesEnabled: false,
+      lightningExecutionEnabled: false,
+      localTransactionApiEnabled: false,
+      privateKeysLoaded: false,
+      liveTradingEnabled: false,
+      reasonCodes: [
+        "ACCOUNT_TRADES_DISABLED",
+        "LIGHTNING_EXECUTION_DISABLED",
+        "LOCAL_TRANSACTION_API_DISABLED",
+        "PRIVATE_KEYS_NOT_LOADED",
+        "LIVE_TRADING_DISABLED",
+        "PAPER_ONLY"
+      ]
+    };
 
     return {
       controlPlaneEnabled: true,
@@ -164,8 +299,23 @@ export function createRuntimeControlService(
       runtimeMode: options.runtimeMode,
       paperOnly: true,
       tradingDisabled: true,
+      runtime: {
+        mode: options.runtimeMode,
+        paperOnly: true,
+        tradingDisabled: true,
+        startedAt: processStartedAt,
+        uptimeSeconds: processStatus.uptimeSeconds
+      },
+      api: {
+        online: true,
+        wsOnline: true,
+        pid: process.pid,
+        ports: processStatus.ports,
+        lastUpdatedAt: now
+      },
       liveDiscovery: {
         enabled: feed.provider === "pumpportal",
+        provider: feed.provider,
         connected: feed.connected,
         connecting: feed.connecting,
         stopped: liveStopped,
@@ -181,6 +331,43 @@ export function createRuntimeControlService(
           ...(liveStopped ? ["LIVE_DISCOVERY_STOPPED"] : [])
         ])
       },
+      meteredPriceAction: {
+        state: meteredState,
+        enabled: metered.enabled,
+        active: metered.active && meteredBlockers.length === 0,
+        canStart:
+          metered.enabled &&
+          metered.acknowledgedCost &&
+          !metered.budgetReached &&
+          meteredBlockers.length === 0 &&
+          !metered.active,
+        canStop: metered.active || metered.trackedMintCount > 0,
+        requiresAck: true,
+        sessionAck: metered.sessionAcknowledgedCost,
+        acknowledgedCost: metered.acknowledgedCost,
+        provider: metered.provider,
+        apiKeyConfigured: metered.apiKeyConfigured,
+        dataWalletPublicKeyConfigured: metered.dataWalletConfigured,
+        dataWalletBalanceStatus: normalizeBalanceStatus(
+          metered.dataWalletBalanceStatus
+        ),
+        trackedMintCount: metered.trackedMintCount,
+        eventCount: metered.totalEventsThisSession,
+        estimatedCostSol: metered.estimatedCostSol,
+        sessionCostCapSol: metered.maxSessionCostSol,
+        budgetRemainingSol: metered.remainingBudgetSol,
+        maxConcurrentMints: metered.maxConcurrentMints,
+        maxEventsPerSession: metered.maxEventsPerSession,
+        budgetReached: metered.budgetReached,
+        latestEventAt: latestMeteredEventAt,
+        blockers: meteredBlockers,
+        warnings: meteredWarnings,
+        reasonCodes: unique([
+          ...metered.reasonCodes,
+          ...meteredBlockers,
+          ...meteredWarnings
+        ])
+      },
       meteredLaunchData: {
         enabled: metered.enabled,
         active: metered.active && !meteredBlocked,
@@ -190,7 +377,7 @@ export function createRuntimeControlService(
         estimatedCostSol: metered.estimatedCostSol,
         sessionCostCapSol: metered.maxSessionCostSol,
         budgetRemainingSol: metered.remainingBudgetSol,
-        latestEventAt: options.getMeteredLatestEventAt?.() ?? null,
+        latestEventAt: latestMeteredEventAt,
         reasonCodes: mapMeteredReasonCodes(metered.reasonCodes)
       },
       dataWallet: {
@@ -199,17 +386,37 @@ export function createRuntimeControlService(
         shortPublicKey: dataWallet.shortPublicKey,
         apiKeyConfigured: dataWallet.apiKeyConfigured,
         balanceSol: dataWallet.balanceSol,
-        balanceStatus: dataWallet.balanceStatus,
+        balanceStatus: normalizeBalanceStatus(dataWallet.balanceStatus),
         estimatedEventsRemaining: dataWallet.estimatedEventsRemaining,
         lastBalanceCheckAt: dataWallet.lastBalanceCheckAt,
         reasonCodes: dataWallet.reasonCodes
       },
-      process: {
-        pid: process.pid,
-        uptimeSeconds: Math.round(process.uptime()),
-        ports: options.ports ?? [8787, 5173],
-        startedAt: processStartedAt
+      tradingWallet: {
+        purpose: "future_lightning_execution",
+        enabledReadiness: true,
+        publicKeyConfigured: tradingWallet.publicKeyConfigured,
+        publicKey: tradingWallet.publicKey,
+        shortPublicKey: tradingWallet.shortPublicKey,
+        apiKeyConfigured: tradingWallet.apiKeyConfigured,
+        balanceSol: tradingWallet.balanceSol,
+        balanceStatus: normalizeBalanceStatus(tradingWallet.balanceStatus),
+        lastBalanceCheckAt: tradingWallet.lastBalanceCheckAt,
+        reasonCodes: tradingWallet.reasonCodes,
+        sameAsDataWallet,
+        liveTradingAllowed: false,
+        manualArmed: false,
+        warning: "READINESS ONLY - LIVE TRADING DISABLED"
       },
+      usage: {
+        meteredEventCount: metered.totalEventsThisSession,
+        estimatedCostSol: metered.estimatedCostSol,
+        maxSessionCostSol: metered.maxSessionCostSol,
+        remainingBudgetSol: metered.remainingBudgetSol,
+        projectedCostPerHourSol: metered.projectedCostPerHourSol,
+        trackedMintCount: metered.trackedMintCount
+      },
+      safety,
+      process: processStatus,
       reasonCodes
     };
   }
@@ -226,7 +433,7 @@ export function createRuntimeControlService(
         notes: [
           "Runtime controls are local/dev only.",
           "Live discovery controls the PumpPortal discovery websocket.",
-          "Metered launch data uses subscribeTokenTrade only after existing backend gates pass.",
+          "Metered launch data uses subscribeTokenTrade only after session ACK and backend gates pass.",
           "No endpoint signs transactions, sends transactions, or enables trading."
         ]
       }
@@ -353,6 +560,26 @@ export function createRuntimeControlService(
     ]);
   }
 
+  async function refreshTradingWallet(): Promise<RuntimeControlResult> {
+    await options.refreshTradingWallet?.();
+
+    return actionResult("refresh", true, "Trading wallet readiness refreshed.", [
+      "TRADING_WALLET_REFRESH_REQUESTED"
+    ]);
+  }
+
+  async function ackMeteredLaunchDataSession(
+    input: MeteredLaunchDataSessionAckInput
+  ): Promise<RuntimeControlResult> {
+    await options.refreshDataWallet();
+    await options.ackMeteredLaunchDataSession?.(input);
+
+    return actionResult("arm", true, "Metered price action armed for this session.", [
+      "METERED_DATA_SESSION_ACK_REQUESTED",
+      "METERED_DATA_SESSION_ARMED"
+    ]);
+  }
+
   async function actionResult(
     action: RuntimeControlResult["action"],
     ok: boolean,
@@ -377,9 +604,11 @@ export function createRuntimeControlService(
   }
 
   return {
+    ackMeteredLaunchDataSession,
     getDiagnostics,
     getStatus,
     refreshDataWallet,
+    refreshTradingWallet,
     restartLiveDiscovery,
     restartMeteredLaunchData,
     startLiveDiscovery,
@@ -390,7 +619,12 @@ export function createRuntimeControlService(
 }
 
 function isMeteredBlocked(status: MeteredLaunchDataStatus): boolean {
-  return !status.ready || status.reasonCodes.some(isBlockingMeteredReason);
+  const state = getMeteredPriceActionState(status, mapMeteredBlockers(status));
+  return (
+    state === "ARM_REQUIRED" ||
+    state === "BLOCKED" ||
+    state === "BUDGET_REACHED"
+  );
 }
 
 function mapMeteredBlockers(status: MeteredLaunchDataStatus): string[] {
@@ -405,39 +639,133 @@ function mapMeteredReasonCodes(reasonCodes: string[]): string[] {
 }
 
 function mapMeteredBlockerCodes(reasonCodes: string[]): string[] {
-  return unique(reasonCodes.filter(isBlockingMeteredReason).map((code) => {
-    if (code.includes("ACK")) {
-      return "METERED_DATA_ACK_MISSING";
-    }
+  return unique(
+    reasonCodes
+      .map((code): string | null => {
+        if (code === "METERED_LAUNCH_DATA_DISABLED") {
+          return "METERED_DATA_DISABLED";
+        }
 
-    if (code.includes("API_KEY")) {
-      return "METERED_DATA_API_KEY_MISSING";
-    }
+        if (code.includes("ACK")) {
+          return "METERED_DATA_ACK_MISSING";
+        }
 
-    if (code.includes("WALLET") || code.includes("BALANCE")) {
-      return "METERED_DATA_WALLET_NOT_READY";
-    }
+        if (code.includes("API_KEY")) {
+          return "METERED_DATA_API_KEY_MISSING";
+        }
 
-    if (code.includes("BUDGET") || code.includes("CAP")) {
-      return "METERED_DATA_BUDGET_REACHED";
-    }
+        if (code.includes("WALLET_MISSING") || code.includes("WALLET_INVALID")) {
+          return "METERED_DATA_WALLET_NOT_READY";
+        }
 
-    return "METERED_DATA_BLOCKED_BY_GATES";
-  }));
+        if (
+          code.includes("WALLET_LOW") ||
+          code.includes("FUNDS") ||
+          code.includes("BALANCE_LOW") ||
+          code.includes("BALANCE_CRITICAL")
+        ) {
+          return "METERED_DATA_WALLET_LOW";
+        }
+
+        if (code.includes("BUDGET") || code.includes("CAP")) {
+          return "METERED_DATA_BUDGET_REACHED";
+        }
+
+        if (code.includes("OFFLINE")) {
+          return "METERED_DATA_LIVE_DISCOVERY_OFFLINE";
+        }
+
+        return null;
+      })
+      .filter((code): code is string => Boolean(code))
+  );
 }
 
-function isBlockingMeteredReason(code: string): boolean {
-  return (
-    code.includes("DISABLED") ||
-    code.includes("STOPPED") ||
-    code.includes("ACK") ||
-    code.includes("API_KEY") ||
-    code.includes("WALLET") ||
-    code.includes("BALANCE") ||
-    code.includes("BUDGET") ||
-    code.includes("CAP") ||
-    code.includes("OFFLINE")
-  );
+function mapMeteredWarnings(
+  status: MeteredLaunchDataStatus,
+  dataWallet: PumpPortalDataWalletStatus
+): string[] {
+  return unique([
+    ...(status.dataWalletBalanceStatus === "unknown" ||
+    dataWallet.balanceStatus === "unknown" ||
+    status.reasonCodes.some((code) => code.includes("BALANCE_UNKNOWN"))
+      ? ["METERED_DATA_BALANCE_UNKNOWN"]
+      : []),
+    ...(status.acknowledgedCost &&
+    status.reasonCodes.includes("METERED_LAUNCH_DATA_STOPPED")
+      ? ["METERED_DATA_STOPPED"]
+      : [])
+  ]);
+}
+
+function getMeteredPriceActionState(
+  status: MeteredLaunchDataStatus,
+  blockers: string[]
+): RuntimeMeteredPriceActionState {
+  if (!status.enabled) {
+    return "OFF";
+  }
+
+  if (status.budgetReached || blockers.includes("METERED_DATA_BUDGET_REACHED")) {
+    return "BUDGET_REACHED";
+  }
+
+  if (status.active && blockers.length === 0) {
+    return "ACTIVE";
+  }
+
+  if (!status.acknowledgedCost) {
+    return "ARM_REQUIRED";
+  }
+
+  if (blockers.length > 0) {
+    return "BLOCKED";
+  }
+
+  if (status.reasonCodes.includes("METERED_LAUNCH_DATA_STOPPED")) {
+    return "STOPPED";
+  }
+
+  return "READY";
+}
+
+function normalizeBalanceStatus(status: string): RuntimeBalanceStatus {
+  if (status === "missing_config") {
+    return "missing";
+  }
+
+  if (
+    status === "unknown" ||
+    status === "critical" ||
+    status === "low" ||
+    status === "ok"
+  ) {
+    return status;
+  }
+
+  return "unknown";
+}
+
+function emptyTradingWallet(): PumpPortalWalletStatus {
+  return {
+    role: "trading",
+    configured: false,
+    apiKeyConfigured: false,
+    publicKeyConfigured: false,
+    publicKey: null,
+    shortPublicKey: null,
+    publicKeyValid: false,
+    balanceSol: null,
+    balanceLamports: null,
+    balanceStatus: "missing_config",
+    minBalanceSol: 0,
+    warnBalanceSol: 0,
+    criticalBalanceSol: 0,
+    targetBalanceSol: 0,
+    lastBalanceCheckAt: null,
+    lastError: null,
+    reasonCodes: ["LIGHTNING_PUBLIC_KEY_MISSING", "LIGHTNING_API_KEY_MISSING"]
+  };
 }
 
 function unique(values: string[]): string[] {

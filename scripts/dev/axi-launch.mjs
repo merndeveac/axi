@@ -13,13 +13,28 @@ import {
 } from "./axi-dev-utils.mjs";
 
 const meteredMode = process.argv.includes("--metered");
+const respectEnv = process.argv.includes("--respect-env");
 const env = loadLocalRuntimeEnv(
-  meteredMode
-    ? {
-        METERED_LAUNCH_DATA_ENABLED: "true",
-        PUMPPORTAL_TOKEN_TRADES_ENABLED: "true"
-      }
-    : {}
+  respectEnv
+    ? meteredMode
+      ? {
+          METERED_LAUNCH_DATA_ENABLED: "true",
+          PUMPPORTAL_TOKEN_TRADES_ENABLED: "true"
+        }
+      : {}
+    : meteredMode
+      ? {
+          METERED_LAUNCH_DATA_ENABLED: "true",
+          PUMPPORTAL_TOKEN_TRADES_ENABLED: "true",
+          PUMPPORTAL_TOKEN_TRADES_ACK_METERED: "false",
+          METERED_LAUNCH_DATA_ACK_COST: "false"
+        }
+      : {
+          METERED_LAUNCH_DATA_ENABLED: "false",
+          PUMPPORTAL_TOKEN_TRADES_ENABLED: "false",
+          PUMPPORTAL_TOKEN_TRADES_ACK_METERED: "false",
+          METERED_LAUNCH_DATA_ACK_COST: "false"
+        }
 );
 
 await assertPortsLaunchable();
@@ -61,11 +76,12 @@ console.log(
 );
 console.log(
   `Metered data: ${
-    runtime.meteredLaunchData.active
+    runtime.meteredPriceAction?.state?.toLowerCase() ??
+    (runtime.meteredLaunchData.active
       ? "active"
       : runtime.meteredLaunchData.blocked
         ? "blocked"
-        : "stopped"
+        : "stopped")
   }`
 );
 console.log(

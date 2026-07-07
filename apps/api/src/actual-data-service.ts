@@ -143,6 +143,7 @@ export class ActualDataService {
   private readonly subscriptions = new Map<string, ActualDataSubscriptionState>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private budgetReached = false;
+  private sessionAcknowledgedMetered = false;
   private startedAt: string | null = null;
   private totalEventsThisSession = 0;
 
@@ -213,6 +214,11 @@ export class ActualDataService {
     }
 
     this.startedAt = null;
+  }
+
+  acknowledgeMeteredSession(): ActualDataStatus {
+    this.sessionAcknowledgedMetered = true;
+    return this.getStatus();
   }
 
   subscribeMint(
@@ -336,7 +342,7 @@ export class ActualDataService {
     ]);
 
     return {
-      acknowledgedMetered: this.config.acknowledgedMetered,
+      acknowledgedMetered: this.isMeteredAcknowledged(),
       apiKeyConfigured: this.config.apiKeyConfigured,
       autoSubscribe: this.config.autoSubscribe,
       autoSubscribeOnMigration: this.config.autoSubscribeOnMigration,
@@ -498,7 +504,7 @@ export class ActualDataService {
       reasonCodes.push("ACTUAL_DATA_INCOMPATIBLE_PROVIDER");
     }
 
-    if (!this.config.acknowledgedMetered) {
+    if (!this.isMeteredAcknowledged()) {
       reasonCodes.push("METERED_STREAM_NOT_ACKNOWLEDGED");
     }
 
@@ -523,6 +529,10 @@ export class ActualDataService {
 
   private isCompatibleProvider(): boolean {
     return this.providerName === "pumpportal";
+  }
+
+  private isMeteredAcknowledged(): boolean {
+    return this.config.acknowledgedMetered || this.sessionAcknowledgedMetered;
   }
 
   private getDataWalletReadiness(): ActualDataDataWalletReadiness {

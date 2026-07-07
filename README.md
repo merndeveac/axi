@@ -56,7 +56,7 @@ by default and remains paper-only.
 
 ## Modern Momentum Scanner UI
 
-Branch `dev/header-controls-axiom-card-scanner` adds Scanner UI v4: a real
+Branch `dev/full-pump-control-header-scanner-ui` adds Scanner UI v5: a real
 dashboard control header plus compact Axiom-inspired token row/cards with
 correct unavailable/zero handling and Pump.fun curve-derived fields. The
 screenshot reference is used only for visual/information hierarchy. AXI does
@@ -64,17 +64,20 @@ not call Axiom APIs, scrape Axiom, or reverse engineer Axiom.
 
 The top header is now the operational control center for local paper-mode
 runtime work. It shows paper-only mode, PumpPortal live-feed state, API and
-dashboard WebSocket state, data-wallet balance/status, metered price-action
-state, tracked mints, event usage, estimated SOL cost, session cap, budget
-remaining, and last update time. Header buttons call backend runtime endpoints:
+dashboard WebSocket state, data-wallet balance/status, future trading-wallet
+readiness, metered price-action state, tracked mints, event usage, estimated SOL
+cost, session cap, budget remaining, and last update time. Header buttons call
+backend runtime endpoints:
 
 - `POST /runtime/live-discovery/start`
 - `POST /runtime/live-discovery/stop`
 - `POST /runtime/live-discovery/restart`
+- `POST /runtime/metered-launch-data/ack-session`
 - `POST /runtime/metered-launch-data/start`
 - `POST /runtime/metered-launch-data/stop`
 - `POST /runtime/metered-launch-data/restart`
 - `POST /runtime/data-wallet/refresh`
+- `POST /runtime/trading-wallet/refresh`
 
 These endpoints are local-control-plane endpoints only. Responses keep
 `paperOnly: true` and `tradingDisabled: true`. They never expose API keys,
@@ -84,13 +87,14 @@ but it never shows the PumpPortal API key. It does not add buy/sell buttons,
 Lightning controls, account-trade controls, signing controls, or transaction
 sending.
 
-Metered price action has an explicit UI state machine: `OFF`, `BLOCKED`,
-`READY`, `STARTING`, `ACTIVE`, `STOPPING`, `BUDGET_REACHED`, and `ERROR`.
-`Start Metered` is disabled unless the backend says gates pass. When blocked,
-the header shows the first blocker and the diagnostics drawer shows exact gate
-reasons such as ACK missing, API key missing, wallet missing, wallet low,
-balance unknown, budget reached, or live feed offline. The frontend does not
-write `.env.local` and cannot force metered acknowledgement.
+Metered price action has an explicit UI state machine: `OFF`, `ARM_REQUIRED`,
+`READY`, `STOPPED`, `ACTIVE`, `BLOCKED`, `BUDGET_REACHED`, and transient
+button states. `Arm Metered` sends a local in-memory session ACK with caps; it
+does not write `.env.local`. `Start Metered` remains disabled until the backend
+says the armed session can start. When blocked, the header shows the first
+blocker and the diagnostics drawer shows exact gate reasons such as ACK missing,
+API key missing, wallet missing, wallet low, budget reached, or live feed
+offline. Balance unknown is shown as a warning, not as wallet missing.
 
 The Scanner tab is the default product view: one current-session token per
 compact horizontal card row. Collapsed rows group pair/token identity, actual
@@ -1100,10 +1104,15 @@ Recommended local workflow:
   launch-data status without printing secrets.
 - `pnpm axi:restart` stops recorded local AXI processes, rebuilds, launches the
   API and dashboard, writes `.tmp/axi-api.log`, `.tmp/axi-dashboard.log`, and
-  `.tmp/axi-dev-pids.json`, then waits for the API/dashboard.
+  `.tmp/axi-dev-pids.json`, then waits for the API/dashboard. By default it
+  forces metered token-trade flags and ACK flags off even if `.env.local`
+  contains metered values. Use `pnpm axi:restart --respect-env` only when you
+  intentionally want the normal launcher to honor those env values.
 - `pnpm axi:restart:metered` first verifies `.env.local` and the metered gates,
-  then rebuilds and launches with metered token-trade data enabled. It does not
-  set the ACK for you and never enables trading.
+  then rebuilds and launches with metered token-trade data enabled but unarmed.
+  Use the dashboard `Arm Metered` session dialog, then `Start Metered`, before
+  any selected `subscribeTokenTrade` tracking can start. It never enables
+  trading.
 - `pnpm axi:logs` prints recent API/dashboard logs.
 - `pnpm axi:stop` stops only PIDs recorded in `.tmp/axi-dev-pids.json`. If a
   repo-local process owns a port but is not in the PID file, it tells you to run
@@ -1127,7 +1136,7 @@ This launches the API and dashboard with `DATA_FEED_MODE=live`,
 `subscribeNewToken` and `subscribeMigration` enabled, runtime mock data
 disabled, paper auto-ordering disabled, and metered token trades disabled.
 
-Start the same runtime with capped metered launch data enabled only after you
+Start the same runtime with capped metered launch data prepared only after you
 set the explicit data-wallet gates in your shell or `.env.local`:
 
 ```bash
@@ -1136,30 +1145,35 @@ pnpm verify:pumpportal-data-env
 pnpm live:tokens:metered
 ```
 
-The metered launcher refuses to start if the enable flag, cost ACK, data API
-key, or public funding address is missing. It also refuses private-key,
-seed-phrase, or mnemonic env vars. It does not set the ACK or API key for you
-and forces live trading, Lightning execution, account-trade streams, and paper
-auto-orders off.
+The metered launcher refuses private-key, seed-phrase, or mnemonic env vars. It
+does not set the API key for you, forces the metered ACK off at process launch,
+and requires a browser-session `Arm Metered` action before `Start Metered` can
+begin selected token-trade tracking. It also forces live trading, Lightning
+execution, account-trade streams, and paper auto-orders off.
 
 ### Runtime Control Panel
 
-The DATA tab includes `PUMPFUN / PUMPPORTAL CONTROL` for local development:
+The header and DATA tab include `PUMPFUN / PUMPPORTAL CONTROL` surfaces for
+local development:
 
 - Start, stop, or restart PumpPortal live discovery
   (`subscribeNewToken` + `subscribeMigration`).
-- Refresh the PumpPortal data-wallet balance using read-only RPC.
+- Refresh PumpPortal data-wallet and future trading-wallet readiness using
+  read-only RPC.
+- Arm metered launch-data for the current browser/API session with cost and
+  event caps.
 - Start or stop metered launch price action (`subscribeTokenTrade`) only when
   backend gates pass.
 - See live discovery state, metered tracking state, event usage, estimated cost,
-  cost budget remaining, public data-wallet address, SOL balance, API-key
-  configured boolean, API process uptime, paper-only state, and trading-disabled
-  state.
+  cost budget remaining, public data-wallet/trading-wallet addresses, SOL
+  balances, API-key configured booleans, API process uptime, paper-only state,
+  and trading-disabled state.
 
 The Start metered price-action button is disabled when the backend reports
 blockers such as ACK missing, API key missing, wallet missing, wallet low,
-budget reached, or live discovery offline. Dashboard controls do not bypass
-backend gates and cannot enable `subscribeAccountTrade`, Lightning execution,
+budget reached, or live discovery offline. Balance unknown is a warning.
+Dashboard controls do not bypass backend gates and cannot enable
+`subscribeAccountTrade`, Lightning execution,
 Local Transaction API calls, Jupiter swaps, signing, transaction sending, or
 live orders. API keys and private keys are never returned to the dashboard.
 
@@ -1170,10 +1184,12 @@ Runtime-control API endpoints:
 - `POST /runtime/live-discovery/start`
 - `POST /runtime/live-discovery/stop`
 - `POST /runtime/live-discovery/restart`
+- `POST /runtime/metered-launch-data/ack-session`
 - `POST /runtime/metered-launch-data/start`
 - `POST /runtime/metered-launch-data/stop`
 - `POST /runtime/metered-launch-data/restart`
 - `POST /runtime/data-wallet/refresh`
+- `POST /runtime/trading-wallet/refresh`
 
 POST control endpoints are local/dev only and return `403` for non-local
 requests when the request address can be identified.

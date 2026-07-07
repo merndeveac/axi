@@ -38,9 +38,39 @@ describe("runtime control view helpers", () => {
       "ACK missing",
       "API key missing",
       "wallet missing",
-      "balance unknown",
       "live feed offline"
     ]);
+  });
+
+  it("does not treat unknown balance as a wallet blocker when runtime warns", () => {
+    const blockers = getMeteredRuntimeBlockers(
+      {
+        liveDiscovery: { connected: true, connecting: false },
+        meteredPriceAction: {
+          blockers: ["METERED_DATA_ACK_MISSING"],
+          warnings: ["METERED_DATA_BALANCE_UNKNOWN"],
+          reasonCodes: ["METERED_DATA_ACK_MISSING", "METERED_DATA_BALANCE_UNKNOWN"]
+        },
+        dataWallet: {
+          apiKeyConfigured: true,
+          balanceStatus: "unknown",
+          publicKeyConfigured: true,
+          reasonCodes: ["DATA_WALLET_BALANCE_UNKNOWN"]
+        }
+      },
+      {
+        acknowledgedCost: false,
+        apiKeyConfigured: true,
+        budgetReached: false,
+        dataWalletBalanceStatus: "unknown",
+        dataWalletConfigured: true,
+        enabled: true,
+        liveDiscoveryActive: true,
+        ready: false
+      }
+    );
+
+    expect(blockers).toEqual(["ACK missing"]);
   });
 
   it("enables metered start only when gates pass", () => {
@@ -79,6 +109,44 @@ describe("runtime control view helpers", () => {
       buttonLabel: "Start Metered",
       disabled: false,
       state: "READY"
+    });
+  });
+
+  it("enables metered start after session ACK leaves runtime stopped", () => {
+    const view = getMeteredControlView({
+      apiStatus: "connected",
+      meteredStatus: null,
+      pendingAction: "ready",
+      runtimeStatus: {
+        liveDiscovery: { connected: true, connecting: false },
+        meteredPriceAction: {
+          state: "STOPPED",
+          enabled: true,
+          active: false,
+          canStart: true,
+          acknowledgedCost: true,
+          blockers: [],
+          reasonCodes: []
+        },
+        meteredLaunchData: {
+          active: false,
+          blocked: false,
+          enabled: true,
+          reasonCodes: ["METERED_LAUNCH_DATA_STOPPED"]
+        },
+        dataWallet: {
+          apiKeyConfigured: true,
+          balanceStatus: "ok",
+          publicKeyConfigured: true,
+          reasonCodes: []
+        }
+      }
+    });
+
+    expect(view).toMatchObject({
+      buttonLabel: "Start Metered",
+      disabled: false,
+      state: "STOPPED"
     });
   });
 

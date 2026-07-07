@@ -2,10 +2,12 @@ export type RuntimeApiStatus = "checking" | "connected" | "disconnected";
 
 export type MeteredControlState =
   | "OFF"
+  | "ARM_REQUIRED"
   | "BLOCKED"
   | "READY"
   | "STARTING"
   | "ACTIVE"
+  | "STOPPED"
   | "STOPPING"
   | "BUDGET_REACHED"
   | "ERROR";
@@ -19,6 +21,16 @@ export type HeaderRuntimeStatusLike = {
     active?: boolean;
     blocked?: boolean;
     enabled?: boolean;
+    reasonCodes?: string[];
+  };
+  meteredPriceAction?: {
+    state?: MeteredControlState;
+    canStart?: boolean;
+    enabled?: boolean;
+    active?: boolean;
+    acknowledgedCost?: boolean;
+    blockers?: string[];
+    warnings?: string[];
     reasonCodes?: string[];
   };
   dataWallet?: {
@@ -105,6 +117,26 @@ export function getMeteredControlView({
     };
   }
 
+  if (runtimeStatus?.meteredPriceAction?.state === "BUDGET_REACHED") {
+    return {
+      blockers: unique(["budget reached", ...blockers]),
+      buttonLabel: "Budget Reached",
+      disabled: true,
+      helper: "Session cost cap has been reached.",
+      state: "BUDGET_REACHED"
+    };
+  }
+
+  if (runtimeStatus?.meteredPriceAction?.state === "ARM_REQUIRED") {
+    return {
+      blockers: unique(["ACK missing", ...blockers]),
+      buttonLabel: "Start Metered",
+      disabled: true,
+      helper: "Arm this session before starting metered price action.",
+      state: "ARM_REQUIRED"
+    };
+  }
+
   if (runtimeStatus?.meteredLaunchData?.active) {
     return {
       blockers,
@@ -115,13 +147,37 @@ export function getMeteredControlView({
     };
   }
 
-  if (!meteredStatus?.enabled && !runtimeStatus?.meteredLaunchData?.enabled) {
+  if (runtimeStatus?.meteredPriceAction?.state === "ACTIVE") {
+    return {
+      blockers,
+      buttonLabel: "Metered Active",
+      disabled: true,
+      helper: "Use Stop Metered to pause price-action tracking.",
+      state: "ACTIVE"
+    };
+  }
+
+  if (
+    !meteredStatus?.enabled &&
+    !runtimeStatus?.meteredLaunchData?.enabled &&
+    !runtimeStatus?.meteredPriceAction?.enabled
+  ) {
     return {
       blockers: unique(["metered disabled", ...blockers]),
       buttonLabel: "Metered Off",
       disabled: true,
       helper: "Launch with pnpm axi:restart:metered to enable the gated path.",
       state: "OFF"
+    };
+  }
+
+  if (runtimeStatus?.meteredPriceAction?.canStart) {
+    return {
+      blockers,
+      buttonLabel: "Start Metered",
+      disabled: false,
+      helper: "Ready to request backend metered price-action start.",
+      state: runtimeStatus.meteredPriceAction.state ?? "READY"
     };
   }
 
@@ -148,11 +204,14 @@ export function getMeteredRuntimeBlockers(
   runtimeStatus: HeaderRuntimeStatusLike | null,
   meteredStatus: MeteredLaunchDataStatusLike | null
 ): string[] {
+  const action = runtimeStatus?.meteredPriceAction;
+  const explicitBlockers = (action?.blockers ?? []).map(toMeteredBlockerLabel);
   const runtimeCodes = runtimeStatus?.meteredLaunchData?.reasonCodes ?? [];
+  const actionCodes = action?.reasonCodes ?? [];
   const meteredCodes = meteredStatus?.reasonCodes ?? [];
   const walletCodes = runtimeStatus?.dataWallet?.reasonCodes ?? [];
-  const codes = [...runtimeCodes, ...meteredCodes, ...walletCodes];
-  const blockers: string[] = [];
+  const codes = [...explicitBlockers, ...actionCodes, ...runtimeCodes, ...meteredCodes, ...walletCodes];
+  const blockers: string[] = [...explicitBlockers];
   const walletBalanceStatus =
     meteredStatus?.dataWalletBalanceStatus ??
     runtimeStatus?.dataWallet?.balanceStatus ??
@@ -186,7 +245,7 @@ export function getMeteredRuntimeBlockers(
     walletBalanceStatus === "unknown" ||
     codes.some((code) => code.includes("BALANCE_UNKNOWN"))
   ) {
-    blockers.push("balance unknown");
+    // Unknown balance is surfaced as a warning; a configured wallet is not missing.
   }
 
   if (meteredStatus?.budgetReached || codes.some(isBudgetCode)) {
@@ -206,14 +265,27 @@ export function getMeteredRuntimeBlockers(
     blockers.push("ACK missing");
   }
 
-  if (codes.some((code) => code.includes("WALLET"))) {
+  if (
+    codes.some(
+      (code) =>
+        code.includes("WALLET_NOT_READY") ||
+        code.includes("WALLET_MISSING") ||
+        code.includes("WALLET_INVALID")
+    )
+  ) {
     blockers.push("wallet missing");
   }
 
-  if (codes.some((code) => code.includes("BALANCE"))) {
-    blockers.push(
-      walletBalanceStatus === "unknown" ? "balance unknown" : "wallet low"
-    );
+  if (
+    codes.some(
+      (code) =>
+        code.includes("WALLET_LOW") ||
+        code.includes("BALANCE_LOW") ||
+        code.includes("BALANCE_CRITICAL") ||
+        code.includes("FUNDS")
+    )
+  ) {
+    blockers.push("wallet low");
   }
 
   if (codes.some((code) => code.includes("OFFLINE"))) {
@@ -235,6 +307,38 @@ export function getWalletSetupText(
 
 function isBudgetCode(code: string): boolean {
   return code.includes("BUDGET") || code.includes("CAP");
+}
+
+function toMeteredBlockerLabel(code: string): string {
+  if (code.includes("ACK")) {
+    return "ACK missing";
+  }
+
+  if (code.includes("API_KEY")) {
+    return "API key missing";
+  }
+
+  if (code.includes("WALLET_LOW") || code.includes("FUNDS")) {
+    return "wallet low";
+  }
+
+  if (code.includes("WALLET")) {
+    return "wallet missing";
+  }
+
+  if (isBudgetCode(code)) {
+    return "budget reached";
+  }
+
+  if (code.includes("OFFLINE") || code.includes("LIVE_DISCOVERY")) {
+    return "live feed offline";
+  }
+
+  if (code.includes("DISABLED")) {
+    return "metered disabled";
+  }
+
+  return code.toLowerCase().replaceAll("_", " ");
 }
 
 function unique(values: string[]): string[] {
