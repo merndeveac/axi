@@ -226,13 +226,18 @@ const options: ApiServerOptions = {
     maxEventsPerSession: config.METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION,
     maxSessionCostSol: config.METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL,
     maxUiSessionCostSol: config.METERED_LAUNCH_DATA_MAX_UI_SESSION_COST_SOL,
+    minScoreToProtect: config.ROLLING_TRACKER_MIN_SCORE_PROTECT,
+    minScoreToProtectRipping: config.ROLLING_TRACKER_MIN_SCORE_RIP,
     minScoreToExtend: config.METERED_LAUNCH_DATA_MIN_SCORE_TO_EXTEND,
     minScoreToTrack: config.METERED_LAUNCH_DATA_MIN_SCORE_TO_TRACK,
     mode: config.METERED_LAUNCH_DATA_MODE,
+    protectedMaxAgeMs: config.ROLLING_TRACKER_PROTECTED_MAX_AGE_MS,
     projectRateWindowMs: config.METERED_LAUNCH_DATA_PROJECT_RATE_WINDOW_MS,
+    rollingTrackerEnabled: config.ROLLING_TRACKER_ENABLED,
     requireUiAck: config.METERED_LAUNCH_DATA_REQUIRE_UI_ACK,
     requireDataWalletReady:
       config.METERED_LAUNCH_DATA_REQUIRE_DATA_WALLET_READY,
+    staleNoTradesMs: config.ROLLING_TRACKER_STALE_NO_TRADES_MS,
     startActive: config.METERED_LAUNCH_DATA_START_ACTIVE
   }),
   liveTradeTracking: {

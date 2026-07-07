@@ -30,9 +30,68 @@ describe("launch momentum evaluator", () => {
       "PRICE_ACTION_REQUIRES_METERED_TOKEN_TRADES"
     );
     expect(snapshot.windows["5s"].volumeSol).toBe(0);
-    expect(Number.isFinite(snapshot.derivatives.volumeVelocitySolPerSec)).toBe(
-      true
+    expect(snapshot.derivatives.volumeVelocitySolPerSec).toBeNull();
+    expect(snapshot.derivativeScore.totalScore).toBe(0);
+  });
+
+  it("keeps first derivatives null until two valid trade samples exist", () => {
+    const snapshot = evaluateLaunchMomentum({
+      mint,
+      launchedAt,
+      now,
+      trades: [
+        {
+          mint,
+          side: "buy",
+          trader: "buyer-1",
+          signature: "sig-1",
+          priceSol: 0.0004,
+          volumeSol: 1,
+          tokenAmount: 2_500,
+          timestamp: "2026-01-01T00:00:29.000Z"
+        }
+      ]
+    });
+
+    expect(snapshot.derivatives.priceVelocityPctPerSec).toBeNull();
+    expect(snapshot.derivatives.priceAccelerationPctPerSec2).toBeNull();
+    expect(snapshot.reasonCodes).toContain(
+      "INSUFFICIENT_SAMPLES_FOR_DERIVATIVE"
     );
+  });
+
+  it("computes flat first derivatives and null second derivatives with two samples", () => {
+    const snapshot = evaluateLaunchMomentum({
+      mint,
+      launchedAt,
+      now,
+      trades: [
+        {
+          mint,
+          side: "buy",
+          trader: "buyer-1",
+          signature: "sig-1",
+          priceSol: 0.0004,
+          volumeSol: 1,
+          tokenAmount: 2_500,
+          timestamp: "2026-01-01T00:00:25.000Z"
+        },
+        {
+          mint,
+          side: "buy",
+          trader: "buyer-2",
+          signature: "sig-2",
+          priceSol: 0.0004,
+          volumeSol: 1,
+          tokenAmount: 2_500,
+          timestamp: "2026-01-01T00:00:29.000Z"
+        }
+      ]
+    });
+
+    expect(snapshot.derivatives.priceVelocityPctPerSec).toBe(0);
+    expect(snapshot.derivatives.priceAccelerationPctPerSec2).toBeNull();
+    expect(snapshot.derivatives.dVol10sSolPerSec).toBeGreaterThan(0);
   });
 
   it("scores strong early trade flow as ripping", () => {

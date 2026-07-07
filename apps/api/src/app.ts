@@ -642,11 +642,14 @@ export const apiConfigSchema = z.object({
   METERED_LAUNCH_DATA_MODE: z
     .enum(["manual", "newest", "hot_candidates", "launch_score"])
     .default("newest"),
+  ROLLING_TRACKER_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
   METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS: z.coerce
     .number()
     .int()
     .positive()
-    .default(3),
+    .default(5),
   METERED_LAUNCH_DATA_INITIAL_TRACK_MS: z.coerce
     .number()
     .int()
@@ -669,20 +672,42 @@ export const apiConfigSchema = z.object({
     .min(0)
     .max(100)
     .default(0),
+  ROLLING_TRACKER_MIN_SCORE_PROTECT: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .default(65),
+  ROLLING_TRACKER_MIN_SCORE_RIP: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .default(80),
+  ROLLING_TRACKER_PROTECTED_MAX_AGE_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(900000),
+  ROLLING_TRACKER_STALE_NO_TRADES_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(30000),
   METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT: z.coerce
     .number()
     .int()
     .positive()
-    .default(250),
+    .default(500),
   METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION: z.coerce
     .number()
     .int()
     .positive()
-    .default(1000),
+    .default(5000),
   METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL: z.coerce
     .number()
     .positive()
-    .default(0.001),
+    .default(0.005),
   METERED_LAUNCH_DATA_MAX_UI_SESSION_COST_SOL: z.coerce
     .number()
     .positive()
@@ -1596,6 +1621,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     getRiskSnapshot: (mint) => riskSnapshots.get(mint),
     providerName: feed.name
   });
+  let hasOpenPaperPositionForMint: (mint: string) => boolean = (mint) => {
+    void mint;
+    return false;
+  };
   const meteredLaunchData = createMeteredLaunchDataService({
     actualData,
     config: options.meteredLaunchData ?? createMeteredLaunchDataConfig(),
@@ -1605,6 +1634,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     getLiveDiscoveryActive: () =>
       getFeedStatus().realData &&
       getFeedStatus().subscriptions.includes("subscribeNewToken"),
+    hasOpenPaperPosition: (mint) => hasOpenPaperPositionForMint(mint),
     providerName: feed.name
   });
   const lightningReadiness = createLightningReadinessService({
@@ -1623,6 +1653,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     getLaunchCandidate: (mint) => launchScanner.getCandidate(mint),
     getRecentSignals: () => Array.from(signals.values())
   });
+  hasOpenPaperPositionForMint = (mint: string): boolean =>
+    paperPortfolio.getPositionSummaryForMint(mint).hasPosition;
   const watchedWalletExit = createWatchedWalletExitService({
     config: createWatchedWalletExitConfig(options.watchedWalletExit),
     dataWalletReadiness: () => pumpPortalDataWallet.getActualDataReadiness(),
@@ -3559,6 +3591,181 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         card.launchBuyerAccelerationPerSec2
       )
     };
+    const derivativeReasonSet = uniqueReasonCodes([
+      ...derivativeReasonCodes,
+      ...(card.launchDerivativeScore?.reasonCodes ?? []),
+      ...(card.launchDerivativeStrength?.volume.reasonCodes ?? []),
+      ...(card.launchDerivativeStrength?.volumeAcceleration.reasonCodes ?? []),
+      ...(card.launchDerivativeStrength?.price.reasonCodes ?? []),
+      ...(card.launchDerivativeStrength?.priceAcceleration.reasonCodes ?? []),
+      ...(card.launchDerivativeStrength?.buyers.reasonCodes ?? []),
+      ...(card.launchDerivativeStrength?.buyerAcceleration.reasonCodes ?? []),
+      ...(card.launchDerivativeStrength?.trades.reasonCodes ?? []),
+      ...(card.launchDerivativeStrength?.buyPressure.reasonCodes ?? [])
+    ]);
+    const rowDerivatives: MomentumScannerRow["derivatives"] = {
+      dVol5sSolPerSec: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.launchDerivatives?.dVol5sSolPerSec,
+        derivatives.volumeVelocitySolPerSec
+      ),
+      dVol10sSolPerSec: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.launchDerivatives?.dVol10sSolPerSec,
+        derivatives.volumeVelocitySolPerSec
+      ),
+      dVol30sSolPerSec: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.launchDerivatives?.dVol30sSolPerSec,
+        derivatives.volumeVelocitySolPerSec
+      ),
+      d2VolSolPerSec2: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.launchDerivatives?.d2VolSolPerSec2,
+        derivatives.volumeAccelerationSolPerSec2
+      ),
+      dPricePctPerSec: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.launchDerivatives?.dPricePctPerSec,
+        derivatives.priceVelocityPctPerSec
+      ),
+      d2PricePctPerSec2: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.launchDerivatives?.d2PricePctPerSec2,
+        derivatives.priceAccelerationPctPerSec2
+      ),
+      dPriceSolPerSec: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.launchDerivatives?.dPriceSolPerSec,
+        null
+      ),
+      d2PriceSolPerSec2: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.launchDerivatives?.d2PriceSolPerSec2,
+        null
+      ),
+      dBuyersPerSec: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.launchDerivatives?.dBuyersPerSec,
+        derivatives.buyerVelocityPerSec
+      ),
+      d2BuyersPerSec2: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.launchDerivatives?.d2BuyersPerSec2,
+        derivatives.buyerAccelerationPerSec2
+      ),
+      dTradesPerSec: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.launchDerivatives?.dTradesPerSec,
+        null
+      ),
+      d2TradesPerSec2: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.launchDerivatives?.d2TradesPerSec2,
+        null
+      ),
+      dBuyPressurePerSec: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.launchDerivatives?.dBuyPressurePerSec,
+        null
+      ),
+      d2BuyPressurePerSec2: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.launchDerivatives?.d2BuyPressurePerSec2,
+        null
+      ),
+      dMarketCapSolPerSec: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.launchDerivatives?.dMarketCapSolPerSec,
+        null
+      ),
+      d2MarketCapSolPerSec2: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.launchDerivatives?.d2MarketCapSolPerSec2,
+        null
+      ),
+      dLiquiditySolPerSec: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.launchDerivatives?.dLiquiditySolPerSec,
+        null
+      ),
+      d2LiquiditySolPerSec2: chooseDerivativeValue(
+        hasDerivativeSamples,
+        card.launchDerivatives?.d2LiquiditySolPerSec2,
+        null
+      ),
+      reasonCodes: derivativeReasonSet
+    };
+    const rowDerivativeStrength =
+      card.launchDerivativeStrength ??
+      createMomentumDerivativeStrengthFallback(rowDerivatives);
+    const rowDerivativeScore =
+      card.launchDerivativeScore ??
+      rowDerivativeStrength.combinedDerivativeScore;
+    const isProtected =
+      card.paperPositionSummary.hasPosition ||
+      card.launchPhase === "hot" ||
+      card.launchPhase === "ripping" ||
+      rowDerivativeScore.totalScore >= 65;
+    const protectedReason = card.paperPositionSummary.hasPosition
+      ? "PAPER_POSITION"
+      : card.launchPhase === "ripping"
+        ? "LAUNCH_RIPPING"
+        : card.launchPhase === "hot"
+          ? "LAUNCH_HOT"
+          : rowDerivativeScore.totalScore >= 65
+            ? "DERIVATIVE_SCORE_PROTECTED"
+            : null;
+    const rowData: MomentumScannerRow["data"] = {
+      sampleCount: card.sampleCount,
+      validTradeSampleCount: card.validMetricSampleCount,
+      realTradeEventCount: card.realTradeEventCount,
+      launchTradeSampleCount: card.launchTradeSampleCount,
+      discoveryOnly: !hasTradeSamples,
+      hasDerivativeSamples,
+      lastTradeAt: card.latestTradeAt,
+      trackingState: card.meteredLaunchDataState,
+      isProtected,
+      protectedReason,
+      trackingExpiresAt: null,
+      reasonCodes: uniqueReasonCodes([
+        ...(hasTradeSamples ? ["TRADE_SAMPLES_AVAILABLE"] : ["DISCOVERY_ONLY"]),
+        ...(hasDerivativeSamples
+          ? ["DERIVATIVE_SAMPLES_AVAILABLE"]
+          : derivativeReasonCodes),
+        ...(isProtected ? ["ROLLING_SLOT_PROTECTED"] : [])
+      ])
+    };
+    const rowStrategy: MomentumScannerRow["strategy"] = {
+      launchScore: card.launchScore,
+      derivativeScore: rowDerivativeScore.totalScore,
+      signalLabel: rowDerivativeScore.strengthLabel,
+      signalStrength: rowDerivativeStrength.combinedDerivativeScore.totalScore >= 80
+        ? "explosive"
+        : rowDerivativeStrength.combinedDerivativeScore.totalScore >= 65
+          ? "strong"
+          : rowDerivativeStrength.combinedDerivativeScore.totalScore >= 45
+            ? "moderate"
+            : rowDerivativeStrength.combinedDerivativeScore.totalScore > 0
+              ? "weak"
+              : "none",
+      buyReadyPaper: card.launchBuyReadyPaper || card.buyReady,
+      action: card.action,
+      topDriver:
+        card.launchDrivers[0] ??
+        card.strategy.positiveDrivers[0]?.label ??
+        null,
+      topBlocker:
+        card.launchBlockers[0] ??
+        card.strategy.blockers[0]?.label ??
+        null,
+      reasonCodes: uniqueReasonCodes([
+        ...rowDerivativeScore.reasonCodes,
+        ...card.launchReasonCodes,
+        ...card.combinedReasonCodes,
+        "PAPER_ONLY"
+      ])
+    };
     const reasonCodes = uniqueReasonCodes([
       ...card.combinedReasonCodes,
       ...card.dataCompleteness.reasonCodes,
@@ -3570,7 +3777,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       ...Object.values(missingFieldReasons).flat(),
       ...marketUnavailable,
       ...holderUnavailable,
-      ...derivativeReasonCodes,
+      ...derivativeReasonSet,
       "SOCIAL_SIGNAL_PROVIDER_NOT_CONFIGURED",
       "NO_TRADING_CONTROLS",
       "PAPER_ONLY"
@@ -3630,7 +3837,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       volume5sSol,
       volume10sSol,
       volume30sSol,
-      volume60sSol: hasTradeSamples ? finiteOrNull(card.volume60sSol) : null,
+      volume60sSol: hasTradeSamples
+        ? finiteOrNull(card.volume60sSol) ??
+          finiteOrNull(card.launchWindows?.["60s"].volumeSol)
+        : null,
       volume5sUsd: finiteOrNull(card.volume5sUsd),
       volume10sUsd: finiteOrNull(card.volume10sUsd),
       volume30sUsd: finiteOrNull(card.volume30sUsd),
@@ -3670,6 +3880,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       ...derivatives,
       holderVelocityPerSec: null,
       holderAccelerationPerSec2: null,
+      derivatives: rowDerivatives,
+      derivativeStrength: rowDerivativeStrength,
+      strategy: rowStrategy,
+      data: rowData,
       riskLevel: card.riskLevel,
       riskScore: finiteOrNull(card.riskScore),
       hardReject: card.hardReject,
@@ -3782,6 +3996,28 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         ? ["SCANNER_CRITICAL_FIELDS_MISSING"]
         : [])
     ]);
+    const trackedRows = rows.filter((row) => row.trackingState === "tracking");
+    const derivativeUnavailableReasons = countRowFields(
+      rows.flatMap((row) =>
+        row.derivatives.reasonCodes.filter(
+          (code) =>
+            code.includes("UNAVAILABLE") ||
+            code.includes("INSUFFICIENT") ||
+            code.includes("DISCOVERY_ONLY")
+        )
+      )
+    );
+    const averageValidSamplesPerTrackedMint =
+      trackedRows.length === 0
+        ? 0
+        : roundScore(
+            trackedRows.reduce(
+              (sum, row) =>
+                sum +
+                Math.max(row.data.validTradeSampleCount, row.data.launchTradeSampleCount),
+              0
+            ) / trackedRows.length
+          );
 
     return {
       liveTokenCount: liveTokens.getLiveTokens().length,
@@ -3806,6 +4042,53 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           row.priceVelocityPctPerSec !== null ||
           row.buyerVelocityPerSec !== null
       ).length,
+      tokensWithEnoughSamplesForDerivatives: rows.filter(
+        (row) => row.data.hasDerivativeSamples
+      ).length,
+      tokensWithPositiveVolumeVelocity: rows.filter(
+        (row) => (row.derivatives.dVol10sSolPerSec ?? 0) > 0
+      ).length,
+      tokensWithPositiveVolumeAcceleration: rows.filter(
+        (row) => (row.derivatives.d2VolSolPerSec2 ?? 0) > 0
+      ).length,
+      tokensWithPositivePriceVelocity: rows.filter(
+        (row) => (row.derivatives.dPricePctPerSec ?? 0) > 0
+      ).length,
+      tokensWithPositivePriceAcceleration: rows.filter(
+        (row) => (row.derivatives.d2PricePctPerSec2 ?? 0) > 0
+      ).length,
+      tokensWithPositiveBuyerVelocity: rows.filter(
+        (row) => (row.derivatives.dBuyersPerSec ?? 0) > 0
+      ).length,
+      tokensWithPositiveBuyerAcceleration: rows.filter(
+        (row) => (row.derivatives.d2BuyersPerSec2 ?? 0) > 0
+      ).length,
+      tokensWithExplosiveDerivativeStrength: rows.filter((row) =>
+        [
+          row.derivativeStrength.volume,
+          row.derivativeStrength.volumeAcceleration,
+          row.derivativeStrength.price,
+          row.derivativeStrength.priceAcceleration,
+          row.derivativeStrength.buyers,
+          row.derivativeStrength.buyerAcceleration,
+          row.derivativeStrength.trades,
+          row.derivativeStrength.buyPressure
+        ].some((strength) => strength.strength === "explosive")
+      ).length,
+      derivativeUnavailableReasons,
+      averageValidSamplesPerTrackedMint,
+      trackedCoverage: {
+        trackedMintCount: meteredLaunchData.getStatus().trackedMintCount,
+        rowsTracked: trackedRows.length,
+        rowsWithTrades: trackedRows.filter((row) => row.realTradeEventCount > 0)
+          .length,
+        rowsWithDerivatives: trackedRows.filter(
+          (row) =>
+            row.derivatives.dVol10sSolPerSec !== null ||
+            row.derivatives.dPricePctPerSec !== null ||
+            row.derivatives.dBuyersPerSec !== null
+        ).length
+      },
       tokensWithRiskData: rows.filter((row) => row.riskScore !== null).length,
       tokensWithHolderData: rows.filter((row) => row.holderCount !== null)
         .length,
@@ -4408,6 +4691,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         launchPriceSol: launchSnapshot?.priceSol ?? null,
         launchWindows: launchSnapshot?.windows ?? null,
         launchDerivatives: launchSnapshot?.derivatives ?? null,
+        launchDerivativeStrength: launchSnapshot?.derivativeStrength ?? null,
+        launchDerivativeScore: launchSnapshot?.derivativeScore ?? null,
         launchScoreComponents: launchSnapshot?.components ?? null,
         launchTrackingState:
           launchCandidate?.tracking.state ?? "not_tracked",
@@ -4692,6 +4977,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         launchPriceSol: null,
         launchWindows: null,
         launchDerivatives: null,
+        launchDerivativeStrength: null,
+        launchDerivativeScore: null,
         launchScoreComponents: null,
         launchTrackingState: "not_tracked",
         launchVolume5sSol: null,
@@ -7234,6 +7521,198 @@ function chooseDerivativeValue(
   }
 
   return finiteOrNull(primary) ?? finiteOrNull(fallback);
+}
+
+function createMomentumDerivativeStrengthFallback(
+  derivatives: MomentumScannerRow["derivatives"]
+): MomentumScannerRow["derivativeStrength"] {
+  const volume = createMomentumDerivativeStrengthEntry(
+    derivatives.dVol10sSolPerSec,
+    "VOLUME_VELOCITY_UNAVAILABLE",
+    0.75
+  );
+  const volumeAcceleration = createMomentumDerivativeStrengthEntry(
+    derivatives.d2VolSolPerSec2,
+    "VOLUME_ACCELERATION_UNAVAILABLE",
+    0.12
+  );
+  const price = createMomentumDerivativeStrengthEntry(
+    derivatives.dPricePctPerSec,
+    "PRICE_VELOCITY_UNAVAILABLE",
+    1.4
+  );
+  const priceAcceleration = createMomentumDerivativeStrengthEntry(
+    derivatives.d2PricePctPerSec2,
+    "PRICE_ACCELERATION_UNAVAILABLE",
+    0.35
+  );
+  const priceSol = createMomentumDerivativeStrengthEntry(
+    derivatives.dPriceSolPerSec,
+    "PRICE_SOL_VELOCITY_UNAVAILABLE",
+    0.0002
+  );
+  const buyers = createMomentumDerivativeStrengthEntry(
+    derivatives.dBuyersPerSec,
+    "BUYER_VELOCITY_UNAVAILABLE",
+    0.5
+  );
+  const buyerAcceleration = createMomentumDerivativeStrengthEntry(
+    derivatives.d2BuyersPerSec2,
+    "BUYER_ACCELERATION_UNAVAILABLE",
+    0.1
+  );
+  const trades = createMomentumDerivativeStrengthEntry(
+    derivatives.dTradesPerSec,
+    "TRADE_VELOCITY_UNAVAILABLE",
+    0.8
+  );
+  const buyPressure = createMomentumDerivativeStrengthEntry(
+    derivatives.dBuyPressurePerSec,
+    "BUY_PRESSURE_DERIVATIVE_UNAVAILABLE",
+    0.12
+  );
+  const marketCap = createMomentumDerivativeStrengthEntry(
+    derivatives.dMarketCapSolPerSec,
+    "MARKET_CAP_DERIVATIVE_UNAVAILABLE",
+    1.5
+  );
+  const liquidity = createMomentumDerivativeStrengthEntry(
+    derivatives.dLiquiditySolPerSec,
+    "LIQUIDITY_DERIVATIVE_UNAVAILABLE",
+    1.5
+  );
+  const components = {
+    volumeVelocityScore: roundScore(volume.normalizedScore * 0.16),
+    volumeAccelerationScore: roundScore(
+      volumeAcceleration.normalizedScore * 0.12
+    ),
+    priceVelocityScore: roundScore(price.normalizedScore * 0.16),
+    priceAccelerationScore: roundScore(
+      priceAcceleration.normalizedScore * 0.1
+    ),
+    buyerVelocityScore: roundScore(buyers.normalizedScore * 0.14),
+    buyerAccelerationScore: roundScore(
+      buyerAcceleration.normalizedScore * 0.08
+    ),
+    tradeVelocityScore: roundScore(trades.normalizedScore * 0.1),
+    buyPressureScore: roundScore(buyPressure.normalizedScore * 0.14),
+    sellPressurePenalty:
+      (derivatives.dBuyPressurePerSec ?? 0) < 0 ? 14 : 0,
+    missingDataPenalty: derivatives.dVol10sSolPerSec === null ? 22 : 0,
+    riskPenalty: 0
+  };
+  const rawScore =
+    components.volumeVelocityScore +
+    components.volumeAccelerationScore +
+    components.priceVelocityScore +
+    components.priceAccelerationScore +
+    components.buyerVelocityScore +
+    components.buyerAccelerationScore +
+    components.tradeVelocityScore +
+    components.buyPressureScore -
+    components.sellPressurePenalty -
+    components.missingDataPenalty -
+    components.riskPenalty;
+  const totalScore = roundScore(clampNumber(rawScore, 0, 100));
+  const combinedDerivativeScore = {
+    totalScore,
+    strengthLabel: getMomentumDerivativeSignalLabel(totalScore, false),
+    components,
+    reasonCodes: uniqueReasonCodes([
+      ...derivatives.reasonCodes,
+      ...(totalScore > 0
+        ? ["DERIVATIVE_SCORE_FALLBACK"]
+        : ["DERIVATIVE_SCORE_UNAVAILABLE"])
+    ])
+  };
+
+  return {
+    volume,
+    volumeAcceleration,
+    price,
+    priceAcceleration,
+    priceSol,
+    buyers,
+    buyerAcceleration,
+    trades,
+    buyPressure,
+    marketCap,
+    liquidity,
+    combinedDerivativeScore
+  };
+}
+
+function createMomentumDerivativeStrengthEntry(
+  rawValue: number | null,
+  unavailableCode: string,
+  explosiveAt: number
+): MomentumScannerRow["derivativeStrength"]["volume"] {
+  if (rawValue === null || !Number.isFinite(rawValue)) {
+    return {
+      rawValue: null,
+      normalizedScore: 0,
+      direction: "unavailable",
+      strength: "none",
+      reasonCodes: [unavailableCode]
+    };
+  }
+
+  const absoluteValue = Math.abs(rawValue);
+  const normalizedScore = roundScore(
+    clampNumber((absoluteValue / explosiveAt) * 100, 0, 100)
+  );
+  const strength =
+    normalizedScore >= 90
+      ? "explosive"
+      : normalizedScore >= 70
+        ? "strong"
+        : normalizedScore >= 40
+          ? "moderate"
+          : normalizedScore > 0
+            ? "weak"
+            : "none";
+
+  return {
+    rawValue,
+    normalizedScore,
+    direction: rawValue > 0 ? "up" : rawValue < 0 ? "down" : "flat",
+    strength,
+    reasonCodes:
+      strength === "none"
+        ? ["DERIVATIVE_STRENGTH_NONE"]
+        : [`DERIVATIVE_STRENGTH_${strength.toUpperCase()}`]
+  };
+}
+
+function getMomentumDerivativeSignalLabel(
+  score: number,
+  hardReject: boolean
+): MomentumScannerRow["strategy"]["signalLabel"] {
+  if (hardReject) {
+    return "reject";
+  }
+
+  if (score >= 75) {
+    return "ripping";
+  }
+
+  if (score >= 55) {
+    return "hot";
+  }
+
+  if (score >= 25) {
+    return "watch";
+  }
+
+  return "none";
+}
+
+function roundScore(value: number): number {
+  return Number.isFinite(value) ? Math.round(value * 1000) / 1000 : 0;
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(Math.max(Number.isFinite(value) ? value : 0, min), max);
 }
 
 function createMomentumSparkline(

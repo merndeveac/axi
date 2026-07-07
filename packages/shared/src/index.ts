@@ -668,7 +668,13 @@ export type LiveLaunchTrackingState =
   | "unsubscribed"
   | "blocked";
 
-export type LiveCardLaunchWindowLabel = "5s" | "10s" | "30s" | "2m" | "5m";
+export type LiveCardLaunchWindowLabel =
+  | "5s"
+  | "10s"
+  | "30s"
+  | "60s"
+  | "2m"
+  | "5m";
 
 export type LiveCardLaunchWindowMetrics = {
   volumeSol: number;
@@ -686,6 +692,10 @@ export type LiveCardLaunchWindowMetrics = {
   highSol: number | null;
   lowSol: number | null;
   closeSol: number | null;
+  priceOpenSol: number | null;
+  priceHighSol: number | null;
+  priceLowSol: number | null;
+  priceCloseSol: number | null;
   priceChangePct: number;
 };
 
@@ -695,14 +705,40 @@ export type LiveCardLaunchWindows = Record<
 >;
 
 export type LiveCardLaunchDerivatives = {
-  volumeVelocitySolPerSec: number;
-  volumeAccelerationSolPerSec2: number;
-  priceVelocityPctPerSec: number;
-  priceAccelerationPctPerSec2: number;
-  buyerVelocityPerSec: number;
-  buyerAccelerationPerSec2: number;
-  tradeVelocityPerSec: number;
-  tradeAccelerationPerSec2: number;
+  volumeVelocitySolPerSec: number | null;
+  volumeAccelerationSolPerSec2: number | null;
+  priceVelocityPctPerSec: number | null;
+  priceAccelerationPctPerSec2: number | null;
+  priceSolVelocityPerSec: number | null;
+  priceSolAccelerationPerSec2: number | null;
+  buyerVelocityPerSec: number | null;
+  buyerAccelerationPerSec2: number | null;
+  tradeVelocityPerSec: number | null;
+  tradeAccelerationPerSec2: number | null;
+  buyPressureVelocityPerSec: number | null;
+  buyPressureAccelerationPerSec2: number | null;
+  marketCapSolVelocityPerSec: number | null;
+  marketCapSolAccelerationPerSec2: number | null;
+  liquiditySolVelocityPerSec: number | null;
+  liquiditySolAccelerationPerSec2: number | null;
+  dVol5sSolPerSec: number | null;
+  dVol10sSolPerSec: number | null;
+  dVol30sSolPerSec: number | null;
+  d2VolSolPerSec2: number | null;
+  dPricePctPerSec: number | null;
+  d2PricePctPerSec2: number | null;
+  dPriceSolPerSec: number | null;
+  d2PriceSolPerSec2: number | null;
+  dBuyersPerSec: number | null;
+  d2BuyersPerSec2: number | null;
+  dTradesPerSec: number | null;
+  d2TradesPerSec2: number | null;
+  dBuyPressurePerSec: number | null;
+  d2BuyPressurePerSec2: number | null;
+  dMarketCapSolPerSec: number | null;
+  d2MarketCapSolPerSec2: number | null;
+  dLiquiditySolPerSec: number | null;
+  d2LiquiditySolPerSec2: number | null;
 };
 
 export type LiveCardLaunchScoreComponents = {
@@ -713,6 +749,64 @@ export type LiveCardLaunchScoreComponents = {
   buyPressureScore: number;
   riskPenalty: number;
   missingDataPenalty: number;
+};
+
+export type DerivativeDirection = "up" | "down" | "flat" | "unavailable";
+
+export type DerivativeStrengthLabel =
+  | "none"
+  | "weak"
+  | "moderate"
+  | "strong"
+  | "explosive";
+
+export type MomentumDerivativeSignalLabel =
+  | "none"
+  | "watch"
+  | "hot"
+  | "ripping"
+  | "reject";
+
+export type MomentumDerivativeStrengthEntry = {
+  rawValue: number | null;
+  normalizedScore: number;
+  direction: DerivativeDirection;
+  strength: DerivativeStrengthLabel;
+  reasonCodes: string[];
+};
+
+export type MomentumDerivativeScore = {
+  totalScore: number;
+  strengthLabel: MomentumDerivativeSignalLabel;
+  components: {
+    volumeVelocityScore: number;
+    volumeAccelerationScore: number;
+    priceVelocityScore: number;
+    priceAccelerationScore: number;
+    buyerVelocityScore: number;
+    buyerAccelerationScore: number;
+    tradeVelocityScore: number;
+    buyPressureScore: number;
+    sellPressurePenalty: number;
+    missingDataPenalty: number;
+    riskPenalty: number;
+  };
+  reasonCodes: string[];
+};
+
+export type LiveCardLaunchDerivativeStrengths = {
+  volume: MomentumDerivativeStrengthEntry;
+  volumeAcceleration: MomentumDerivativeStrengthEntry;
+  price: MomentumDerivativeStrengthEntry;
+  priceAcceleration: MomentumDerivativeStrengthEntry;
+  priceSol: MomentumDerivativeStrengthEntry;
+  buyers: MomentumDerivativeStrengthEntry;
+  buyerAcceleration: MomentumDerivativeStrengthEntry;
+  trades: MomentumDerivativeStrengthEntry;
+  buyPressure: MomentumDerivativeStrengthEntry;
+  marketCap: MomentumDerivativeStrengthEntry;
+  liquidity: MomentumDerivativeStrengthEntry;
+  combinedDerivativeScore: MomentumDerivativeScore;
 };
 
 export type MomentumSparklinePoint = {
@@ -916,6 +1010,8 @@ export type LiveTokenCardViewModel = {
   launchPriceSol: number | null;
   launchWindows: LiveCardLaunchWindows | null;
   launchDerivatives: LiveCardLaunchDerivatives | null;
+  launchDerivativeStrength: LiveCardLaunchDerivativeStrengths | null;
+  launchDerivativeScore: MomentumDerivativeScore | null;
   launchScoreComponents: LiveCardLaunchScoreComponents | null;
   launchTrackingState: LiveLaunchTrackingState;
   launchVolume5sSol: number | null;
@@ -1015,6 +1111,57 @@ export type MomentumScoreComponents = {
   missingDataPenalty: number | null;
 };
 
+export type MomentumRowDerivatives = {
+  dVol5sSolPerSec: number | null;
+  dVol10sSolPerSec: number | null;
+  dVol30sSolPerSec: number | null;
+  d2VolSolPerSec2: number | null;
+  dPricePctPerSec: number | null;
+  d2PricePctPerSec2: number | null;
+  dPriceSolPerSec: number | null;
+  d2PriceSolPerSec2: number | null;
+  dBuyersPerSec: number | null;
+  d2BuyersPerSec2: number | null;
+  dTradesPerSec: number | null;
+  d2TradesPerSec2: number | null;
+  dBuyPressurePerSec: number | null;
+  d2BuyPressurePerSec2: number | null;
+  dMarketCapSolPerSec: number | null;
+  d2MarketCapSolPerSec2: number | null;
+  dLiquiditySolPerSec: number | null;
+  d2LiquiditySolPerSec2: number | null;
+  reasonCodes: string[];
+};
+
+export type MomentumRowDerivativeStrength = LiveCardLaunchDerivativeStrengths;
+
+export type MomentumRowStrategy = {
+  launchScore: number;
+  derivativeScore: number;
+  signalLabel: MomentumDerivativeSignalLabel;
+  signalStrength: DerivativeStrengthLabel;
+  buyReadyPaper: boolean;
+  action: string;
+  topDriver: string | null;
+  topBlocker: string | null;
+  reasonCodes: string[];
+};
+
+export type MomentumRowData = {
+  sampleCount: number;
+  validTradeSampleCount: number;
+  realTradeEventCount: number;
+  launchTradeSampleCount: number;
+  discoveryOnly: boolean;
+  hasDerivativeSamples: boolean;
+  lastTradeAt: string | null;
+  trackingState: LiveLaunchTrackingState | string;
+  isProtected: boolean;
+  protectedReason: string | null;
+  trackingExpiresAt: string | null;
+  reasonCodes: string[];
+};
+
 export type MomentumScannerRow = {
   mint: string;
   shortMint: string;
@@ -1088,6 +1235,10 @@ export type MomentumScannerRow = {
   buyerAccelerationPerSec2: number | null;
   holderVelocityPerSec: number | null;
   holderAccelerationPerSec2: number | null;
+  derivatives: MomentumRowDerivatives;
+  derivativeStrength: MomentumRowDerivativeStrength;
+  strategy: MomentumRowStrategy;
+  data: MomentumRowData;
   riskLevel: RiskLevel | string;
   riskScore: number | null;
   hardReject: boolean;
@@ -1142,6 +1293,22 @@ export type MomentumDiagnostics = {
   tokensWithLiquidity: number;
   tokensWithTradeData: number;
   tokensWithDerivatives: number;
+  tokensWithEnoughSamplesForDerivatives: number;
+  tokensWithPositiveVolumeVelocity: number;
+  tokensWithPositiveVolumeAcceleration: number;
+  tokensWithPositivePriceVelocity: number;
+  tokensWithPositivePriceAcceleration: number;
+  tokensWithPositiveBuyerVelocity: number;
+  tokensWithPositiveBuyerAcceleration: number;
+  tokensWithExplosiveDerivativeStrength: number;
+  derivativeUnavailableReasons: Record<string, number>;
+  averageValidSamplesPerTrackedMint: number;
+  trackedCoverage: {
+    trackedMintCount: number;
+    rowsTracked: number;
+    rowsWithTrades: number;
+    rowsWithDerivatives: number;
+  };
   tokensWithRiskData: number;
   tokensWithHolderData: number;
   tokensWithPaperPosition: number;

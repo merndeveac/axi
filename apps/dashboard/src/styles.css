@@ -1401,6 +1401,29 @@ tr:last-child td {
   font-size: 0.7rem;
 }
 
+.derivative-strength {
+  font-weight: 760;
+  text-transform: capitalize;
+}
+
+.derivative-strength.weak {
+  color: var(--cyan) !important;
+}
+
+.derivative-strength.moderate,
+.derivative-strength.strong {
+  color: var(--amber) !important;
+}
+
+.derivative-strength.explosive {
+  color: var(--green) !important;
+}
+
+.derivative-strength.none,
+.derivative-strength.unavailable {
+  color: var(--muted) !important;
+}
+
 .pnl-good {
   color: var(--green) !important;
 }
@@ -1517,6 +1540,30 @@ tr:last-child td {
   display: grid;
   gap: 6px;
   margin-top: 8px;
+}
+
+.derivative-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.derivative-table th,
+.derivative-table td {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.055);
+  padding: 4px 3px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.derivative-table th {
+  color: var(--muted);
+  font-weight: 720;
+}
+
+.derivative-table td {
+  color: var(--text);
 }
 
 @media (max-width: 1100px) {

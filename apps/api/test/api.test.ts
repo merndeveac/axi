@@ -3683,7 +3683,9 @@ describe("@axi/api", () => {
     expect(cards[0]?.launchBuyReadyPaper).toBe(false);
     expect(cards[0]?.launchTrackingState).toBe("blocked");
     expect(cards[0]?.launchWindows?.["5s"].volumeSol).toBe(0);
-    expect(cards[0]?.launchDerivatives?.volumeVelocitySolPerSec).toBe(0);
+    expect(cards[0]?.launchWindows?.["60s"].volumeSol).toBe(0);
+    expect(cards[0]?.launchDerivatives?.volumeVelocitySolPerSec).toBeNull();
+    expect(cards[0]?.launchDerivativeScore?.totalScore).toBe(0);
     expect(cards[0]?.launchTradeSampleCount).toBe(0);
     expect(cards[0]?.launchReasonCodes).toContain("LAUNCH_DISCOVERY_ONLY");
     expect(cards[0]?.launchMissingDataReasons).toContain(
@@ -3754,8 +3756,9 @@ describe("@axi/api", () => {
     expect(cards[0]?.launchTrackingState).toBe("blocked");
     expect(cards[0]?.launchVolume5mSol).toBe(1.5);
     expect(cards[0]?.launchWindows?.["5m"].volumeSol).toBe(1.5);
-    expect(cards[0]?.launchDerivatives?.volumeVelocitySolPerSec).toEqual(
-      expect.any(Number)
+    expect(cards[0]?.launchDerivatives?.volumeVelocitySolPerSec).toBeNull();
+    expect(cards[0]?.launchDerivativeStrength?.volume.direction).toBe(
+      "unavailable"
     );
     expect(cards[0]?.launchBuyCount10s).toBe(1);
     expect(cards[0]?.launchReasonCodes).toContain("LAUNCH_TRADE_TRACKED");

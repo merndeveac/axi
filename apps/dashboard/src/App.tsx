@@ -1435,7 +1435,7 @@ export function App() {
     void loadRows();
     const timer = window.setInterval(() => {
       void loadRows();
-    }, 2500);
+    }, 1000);
 
     return () => {
       cancelled = true;
@@ -2541,6 +2541,8 @@ function ScannerTab({
         <span>volume {formatCompactNumber(diagnostics?.tokensWithVolume)}</span>
         <span>trades {formatCompactNumber(diagnostics?.tokensWithTradeData)}</span>
         <span>derivatives {formatCompactNumber(diagnostics?.tokensWithDerivatives)}</span>
+        <span>samples {formatCompactNumber(diagnostics?.tokensWithEnoughSamplesForDerivatives)}</span>
+        <span>explosive {formatCompactNumber(diagnostics?.tokensWithExplosiveDerivativeStrength)}</span>
         <span>mcap {formatCompactNumber(diagnostics?.tokensWithMarketCap)}</span>
         <span>curve liq {formatCompactNumber(diagnostics?.rowsWithCurveLiquidity)}</span>
         <span>dex liq {formatCompactNumber(diagnostics?.rowsWithDexLiquidity)}</span>
@@ -2556,7 +2558,7 @@ function ScannerTab({
             <span>Liquidity / Curve</span>
             <span>Volume</span>
             <span>TXNS / Flow</span>
-            <span>Risk / Token</span>
+            <span>Price / dP</span>
             <span>AXI Signal</span>
           </div>
           {rows.map((row) => (
@@ -2594,6 +2596,7 @@ function ScannerRow({
   const market = getMarketCapDisplay(row);
   const liquidity = getLiquidityDisplay(row);
   const signal = row.signalDisplay;
+  const derivativeScore = row.derivativeStrength.combinedDerivativeScore;
   const rowClass = [
     "scanner-card",
     expanded ? "expanded" : "",
@@ -2664,13 +2667,17 @@ function ScannerRow({
           <span>10s volume</span>
           <small>{formatSol(row.volume30sSol)} 30s / {formatSol(row.volume60sSol)} 60s</small>
           <small>
-            {formatCompactNumber(row.buyCount10s)} buy /{" "}
-            {formatCompactNumber(row.sellCount10s)} sell
+            dVol {formatVelocity(row.derivatives.dVol10sSolPerSec, "sol")} /{" "}
+            {formatAcceleration(row.derivatives.d2VolSolPerSec2, "sol")}
           </small>
         </div>
         <div className="scanner-tx-cell">
           <strong>{formatCompactNumber(row.tradeCount10s)}</strong>
-          <span>TXNS 10s</span>
+          <span>flow 10s</span>
+          <small>
+            {formatCompactNumber(row.buyCount10s)} buy /{" "}
+            {formatCompactNumber(row.sellCount10s)} sell
+          </small>
           <small>
             buyers {formatCompactNumber(row.uniqueBuyers10s)} / sellers{" "}
             {formatCompactNumber(row.uniqueSellers10s)}
@@ -2681,23 +2688,27 @@ function ScannerRow({
           </small>
         </div>
         <div className="scanner-risk-cell">
-          <strong>{String(row.riskLevel)}</strong>
-          <span>{row.hardReject ? "hard reject" : "risk pass"}</span>
-          <small>holders {formatCompactNumber(row.holderCount)}</small>
+          <strong>{formatVelocity(row.derivatives.dPricePctPerSec, "pct")}</strong>
+          <span>dPrice / sec</span>
           <small>
-            top {formatPct(row.topHolderPct)} / top10 {formatPct(row.top10HolderPct)}
+            d2 {formatAcceleration(row.derivatives.d2PricePctPerSec2, "pct")}
           </small>
+          <small>
+            dBuyers {formatVelocity(row.derivatives.dBuyersPerSec, "buyers")}
+          </small>
+          <small>{row.hardReject ? "hard reject" : String(row.riskLevel)}</small>
         </div>
         <div className="scanner-signal-cell">
           <div className="signal-score-line">
-            <strong>{row.launchScore}</strong>
-            <span className={getScorePillClass(row)}>{signal.label}</span>
+            <strong>{derivativeScore.totalScore}</strong>
+            <span className={getScorePillClass(row)}>{row.strategy.signalLabel}</span>
           </div>
-          <span>{formatDataQuality(row.launchPhase)}</span>
-          <span>{signal.topDriver ?? signal.topBlocker ?? row.signalAction}</span>
+          <span className={"derivative-strength " + row.strategy.signalStrength}>
+            {row.strategy.signalStrength} derivative
+          </span>
+          <span>{row.strategy.topDriver ?? row.strategy.topBlocker ?? row.signalAction}</span>
           <small>
-            dVol {formatVelocity(row.volumeVelocitySolPerSec, "sol")} · dPrice{" "}
-            {formatVelocity(row.priceVelocityPctPerSec, "pct")}
+            launch {row.launchScore} · {formatDataQuality(row.launchPhase)}
           </small>
           <small>
             {signal.buyReadyPaper ? "paper ready" : "paper blocked"} ·{" "}
@@ -2854,20 +2865,7 @@ function ScannerRowAudit({
       </div>
       <div className="scanner-audit-panel">
         <h4>Derivatives</h4>
-        <dl>
-          <dt>dVol/dt</dt>
-          <dd>{formatVelocity(row.volumeVelocitySolPerSec, "sol")}</dd>
-          <dt>d2Vol/dt2</dt>
-          <dd>{formatAcceleration(row.volumeAccelerationSolPerSec2, "sol")}</dd>
-          <dt>dPrice/dt</dt>
-          <dd>{formatVelocity(row.priceVelocityPctPerSec, "pct")}</dd>
-          <dt>d2Price/dt2</dt>
-          <dd>{formatAcceleration(row.priceAccelerationPctPerSec2, "pct")}</dd>
-          <dt>dBuyers/dt</dt>
-          <dd>{formatVelocity(row.buyerVelocityPerSec, "buyers")}</dd>
-          <dt>d2Buyers/dt2</dt>
-          <dd>{formatAcceleration(row.buyerAccelerationPerSec2, "buyers")}</dd>
-        </dl>
+        <DerivativeMetricTable row={row} />
       </div>
       <div className="scanner-audit-panel">
         <h4>Metric Windows</h4>
@@ -2983,6 +2981,84 @@ function ScannerRowAudit({
         </dl>
       </div>
     </div>
+  );
+}
+
+function DerivativeMetricTable({ row }: { row: MomentumScannerRow }) {
+  const rows = [
+    {
+      label: "Volume",
+      velocity: formatVelocity(row.derivatives.dVol10sSolPerSec, "sol"),
+      acceleration: formatAcceleration(row.derivatives.d2VolSolPerSec2, "sol"),
+      strength: row.derivativeStrength.volume
+    },
+    {
+      label: "Price %",
+      velocity: formatVelocity(row.derivatives.dPricePctPerSec, "pct"),
+      acceleration: formatAcceleration(row.derivatives.d2PricePctPerSec2, "pct"),
+      strength: row.derivativeStrength.price
+    },
+    {
+      label: "Price SOL",
+      velocity: formatVelocity(row.derivatives.dPriceSolPerSec, "sol"),
+      acceleration: formatAcceleration(row.derivatives.d2PriceSolPerSec2, "sol"),
+      strength: row.derivativeStrength.priceSol
+    },
+    {
+      label: "Buyers",
+      velocity: formatVelocity(row.derivatives.dBuyersPerSec, "buyers"),
+      acceleration: formatAcceleration(row.derivatives.d2BuyersPerSec2, "buyers"),
+      strength: row.derivativeStrength.buyers
+    },
+    {
+      label: "Trades",
+      velocity: formatVelocity(row.derivatives.dTradesPerSec, "trades"),
+      acceleration: formatAcceleration(row.derivatives.d2TradesPerSec2, "trades"),
+      strength: row.derivativeStrength.trades
+    },
+    {
+      label: "Pressure",
+      velocity: formatVelocity(row.derivatives.dBuyPressurePerSec, "pct"),
+      acceleration: formatAcceleration(row.derivatives.d2BuyPressurePerSec2, "pct"),
+      strength: row.derivativeStrength.buyPressure
+    },
+    {
+      label: "Market cap",
+      velocity: formatVelocity(row.derivatives.dMarketCapSolPerSec, "sol"),
+      acceleration: formatAcceleration(row.derivatives.d2MarketCapSolPerSec2, "sol"),
+      strength: row.derivativeStrength.marketCap
+    },
+    {
+      label: "Liquidity",
+      velocity: formatVelocity(row.derivatives.dLiquiditySolPerSec, "sol"),
+      acceleration: formatAcceleration(row.derivatives.d2LiquiditySolPerSec2, "sol"),
+      strength: row.derivativeStrength.liquidity
+    }
+  ];
+
+  return (
+    <table className="derivative-table">
+      <thead>
+        <tr>
+          <th>Metric</th>
+          <th>d/dt</th>
+          <th>d2/dt2</th>
+          <th>Strength</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((metric) => (
+          <tr key={metric.label}>
+            <td>{metric.label}</td>
+            <td>{metric.velocity}</td>
+            <td>{metric.acceleration}</td>
+            <td className={"derivative-strength " + metric.strength.strength}>
+              {metric.strength.strength} · {metric.strength.direction}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 

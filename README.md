@@ -44,9 +44,10 @@ acknowledgement gates.
 The primary live runtime is now PumpPortal/Pump.fun launch discovery. Free
 PumpPortal `subscribeNewToken` and `subscribeMigration` events create launch
 candidates immediately. The launch scanner evaluates each candidate with
-5s/10s/30s/2m/5m windows, SOL volume, buy/sell counts, unique
-buyers/sellers, net buy pressure, price action, volume/price/buyer
-derivatives, launch phase, score, drivers, blockers, and missing-data reasons.
+5s/10s/30s/60s/2m/5m windows, SOL volume, buy/sell counts, unique
+buyers/sellers, net buy pressure, price OHLC, volume/price/buyer/trade/flow
+derivatives, launch phase, derivative strength, score, drivers, blockers, and
+missing-data reasons.
 
 Launch trade tracking uses PumpPortal `subscribeTokenTrade` only for selected
 mints, through the existing one-WebSocket PumpPortal provider and the metered
@@ -101,9 +102,9 @@ The Scanner tab is the default product view: one current-session token per
 compact horizontal card row. Collapsed rows group pair/token identity, actual
 token image when a safe `imageUri` is available, age, short mint,
 source/event badges, inline sparkline, market cap, price, DEX/pool or curve
-liquidity, volume, transactions/flow, risk/token info, AXI signal, momentum
-derivatives, and paper position/PnL. Clicking a row opens a compact shelf for
-strategy components, derivatives, metric windows, risk and holder data, data
+liquidity, volume, transactions/flow, derivative price action, AXI signal, and
+paper position/PnL. Clicking a row opens a compact shelf for strategy
+components, derivative strength, metric windows, risk and holder data, data
 audit, and paper position / exit signal details.
 
 The Scanner tab is backed by:
@@ -118,6 +119,15 @@ React. Rows include identity, image URI, age, launch phase/score, normalized
 volume/flow, buy/sell ratio, net pressure, derivatives, risk/holder fields,
 paper position/PnL, `dataQuality`, migration status, sparkline samples,
 missing/unavailable field reasons, and strategy drivers/blockers.
+
+Derivative fields are sample-gated. Discovery-only rows and one-trade rows
+return derivative values as `null`, not `0`. First derivatives require at least
+two valid timestamped trade samples, second derivatives require at least three,
+and market-cap/liquidity derivatives remain `null` unless a real time-series
+source exists. `/ui/momentum-rows` exposes machine-readable `derivatives`,
+`derivativeStrength`, `strategy`, and `data` objects, and
+`/ui/momentum-diagnostics` reports derivative coverage plus unavailable reason
+counts.
 
 Sparkline source priority is `trade_samples`, then `curve_marks`, then
 `unavailable`. Trade samples come from the metered/metrics PumpPortal token
@@ -377,13 +387,28 @@ METERED_LAUNCH_DATA_START_ACTIVE=false
 METERED_LAUNCH_DATA_REQUIRE_UI_ACK=true
 METERED_LAUNCH_DATA_ACK_COST=false
 METERED_LAUNCH_DATA_MODE=newest
-METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS=3
-METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION=1000
-METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL=0.001
+ROLLING_TRACKER_ENABLED=true
+METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS=5
+METERED_LAUNCH_DATA_INITIAL_TRACK_MS=30000
+METERED_LAUNCH_DATA_EXTENDED_TRACK_MS=300000
+METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT=500
+METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION=5000
+METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL=0.005
 METERED_LAUNCH_DATA_MAX_UI_SESSION_COST_SOL=0.005
+ROLLING_TRACKER_MIN_SCORE_PROTECT=65
+ROLLING_TRACKER_MIN_SCORE_RIP=80
+ROLLING_TRACKER_PROTECTED_MAX_AGE_MS=900000
+ROLLING_TRACKER_STALE_NO_TRADES_MS=30000
 PUMPPORTAL_TOKEN_TRADES_ENABLED=true
 PUMPPORTAL_TOKEN_TRADES_ACK_METERED=false
 ```
+
+In `newest` mode, the rolling tracker keeps at most five active launch mints by
+default. When capacity is full, a newer candidate can preempt the weakest
+unprotected tracked mint. Hot/ripping candidates, protected scores, and open
+paper positions are protected; hard rejects and stale zero-trade subscriptions
+are unsubscribed. This still uses only PumpPortal `subscribeTokenTrade` data and
+does not trade, sign, or call account-trade streams.
 
 Safe local setup:
 
@@ -1291,11 +1316,12 @@ GET /ui/momentum-diagnostics
 ```
 
 Each row includes identity, live feed status, launch phase/score, market fields,
-participant flow, strategy calculations, risk flags, paper position/PnL, data
-quality, and expandable audit fields. Fields that are not available from the
-current data source remain `null` in the API, render as `—` in the UI, and are
-listed in `missingCriticalFields`, `unavailableFields`, `staleFields`, and
-reason codes. The row endpoint does not include historical mock/replay rows.
+participant flow, derivative strength, strategy calculations, risk flags, paper
+position/PnL, data quality, and expandable audit fields. Fields that are not
+available from the current data source remain `null` in the API, render as `—`
+in the UI, and are listed in `missingCriticalFields`, `unavailableFields`,
+`staleFields`, and reason codes. The row endpoint does not include historical
+mock/replay rows.
 `GET /ui/live-token-cards` remains available as the legacy/debug card view
 model.
 
@@ -1328,9 +1354,10 @@ never shows buy/sell buttons, wallet controls, signing controls, or live
 execution controls.
 
 Displayed calculations include first and second derivatives for volume, price,
-and buyers when usable rolling trade samples exist. Holder derivatives are shown
-only when a real holder time series is available; otherwise they render as `—`
-with `HOLDER_TIME_SERIES_UNAVAILABLE`.
+buyers, trades, and buy pressure when usable rolling trade samples exist. First
+derivatives require two samples; acceleration requires three. Holder,
+market-cap, and liquidity derivatives are shown only when real time series are
+available; otherwise they render as `—` with explicit unavailable reason codes.
 
 If tokens arrive but names, symbols, or metadata are missing, enable read-only
 Solana metadata resolution:

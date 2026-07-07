@@ -2,6 +2,7 @@ export const launchWindowMs = {
   "5s": 5_000,
   "10s": 10_000,
   "30s": 30_000,
+  "60s": 60_000,
   "2m": 120_000,
   "5m": 300_000
 } as const;
@@ -20,6 +21,15 @@ export type LaunchPhase =
 export type LaunchScoreLabel = "none" | "watch" | "hot" | "ripping" | "reject";
 
 export type LaunchTradeSide = "buy" | "sell";
+
+export type DerivativeDirection = "up" | "down" | "flat" | "unavailable";
+
+export type DerivativeStrengthLabel =
+  | "none"
+  | "weak"
+  | "moderate"
+  | "strong"
+  | "explosive";
 
 export type LaunchTradeSample = {
   mint: string;
@@ -48,18 +58,90 @@ export type LaunchWindowMetrics = {
   highSol: number | null;
   lowSol: number | null;
   closeSol: number | null;
+  priceOpenSol: number | null;
+  priceHighSol: number | null;
+  priceLowSol: number | null;
+  priceCloseSol: number | null;
   priceChangePct: number;
 };
 
 export type LaunchDerivatives = {
-  volumeVelocitySolPerSec: number;
-  volumeAccelerationSolPerSec2: number;
-  priceVelocityPctPerSec: number;
-  priceAccelerationPctPerSec2: number;
-  buyerVelocityPerSec: number;
-  buyerAccelerationPerSec2: number;
-  tradeVelocityPerSec: number;
-  tradeAccelerationPerSec2: number;
+  volumeVelocitySolPerSec: number | null;
+  volumeAccelerationSolPerSec2: number | null;
+  priceVelocityPctPerSec: number | null;
+  priceAccelerationPctPerSec2: number | null;
+  priceSolVelocityPerSec: number | null;
+  priceSolAccelerationPerSec2: number | null;
+  buyerVelocityPerSec: number | null;
+  buyerAccelerationPerSec2: number | null;
+  tradeVelocityPerSec: number | null;
+  tradeAccelerationPerSec2: number | null;
+  buyPressureVelocityPerSec: number | null;
+  buyPressureAccelerationPerSec2: number | null;
+  marketCapSolVelocityPerSec: number | null;
+  marketCapSolAccelerationPerSec2: number | null;
+  liquiditySolVelocityPerSec: number | null;
+  liquiditySolAccelerationPerSec2: number | null;
+  dVol5sSolPerSec: number | null;
+  dVol10sSolPerSec: number | null;
+  dVol30sSolPerSec: number | null;
+  d2VolSolPerSec2: number | null;
+  dPricePctPerSec: number | null;
+  d2PricePctPerSec2: number | null;
+  dPriceSolPerSec: number | null;
+  d2PriceSolPerSec2: number | null;
+  dBuyersPerSec: number | null;
+  d2BuyersPerSec2: number | null;
+  dTradesPerSec: number | null;
+  d2TradesPerSec2: number | null;
+  dBuyPressurePerSec: number | null;
+  d2BuyPressurePerSec2: number | null;
+  dMarketCapSolPerSec: number | null;
+  d2MarketCapSolPerSec2: number | null;
+  dLiquiditySolPerSec: number | null;
+  d2LiquiditySolPerSec2: number | null;
+};
+
+export type DerivativeStrength = {
+  rawValue: number | null;
+  normalizedScore: number;
+  direction: DerivativeDirection;
+  strength: DerivativeStrengthLabel;
+  reasonCodes: string[];
+};
+
+export type MomentumDerivativeScore = {
+  totalScore: number;
+  strengthLabel: LaunchScoreLabel;
+  components: {
+    volumeVelocityScore: number;
+    volumeAccelerationScore: number;
+    priceVelocityScore: number;
+    priceAccelerationScore: number;
+    buyerVelocityScore: number;
+    buyerAccelerationScore: number;
+    tradeVelocityScore: number;
+    buyPressureScore: number;
+    sellPressurePenalty: number;
+    missingDataPenalty: number;
+    riskPenalty: number;
+  };
+  reasonCodes: string[];
+};
+
+export type LaunchDerivativeStrengths = {
+  volume: DerivativeStrength;
+  volumeAcceleration: DerivativeStrength;
+  price: DerivativeStrength;
+  priceAcceleration: DerivativeStrength;
+  priceSol: DerivativeStrength;
+  buyers: DerivativeStrength;
+  buyerAcceleration: DerivativeStrength;
+  trades: DerivativeStrength;
+  buyPressure: DerivativeStrength;
+  marketCap: DerivativeStrength;
+  liquidity: DerivativeStrength;
+  combinedDerivativeScore: MomentumDerivativeScore;
 };
 
 export type LaunchScoreComponents = {
@@ -83,6 +165,8 @@ export type LaunchMomentumSnapshot = {
   volumeSol: number;
   windows: Record<LaunchWindowLabel, LaunchWindowMetrics>;
   derivatives: LaunchDerivatives;
+  derivativeStrength: LaunchDerivativeStrengths;
+  derivativeScore: MomentumDerivativeScore;
   score: number;
   label: LaunchScoreLabel;
   components: LaunchScoreComponents;
@@ -146,6 +230,14 @@ export function evaluateLaunchMomentum(
     tradeSampleCount: trades.length,
     windows
   });
+  const derivativeStrength = computeDerivativeStrengths({
+    derivatives,
+    hardReject: input.hardReject === true,
+    riskLevel: input.riskLevel ?? "unknown",
+    tradeSampleCount: trades.length,
+    windows
+  });
+  const derivativeScore = derivativeStrength.combinedDerivativeScore;
   const latestTrade = trades.at(-1);
   const reasonCodes: string[] = [launchReasonCodes.discovered];
   const blockers: string[] = [];
@@ -172,7 +264,7 @@ export function evaluateLaunchMomentum(
     drivers.push("early volume");
   }
 
-  if (derivatives.volumeAccelerationSolPerSec2 > 0.03) {
+  if (isGreaterThan(derivatives.volumeAccelerationSolPerSec2, 0.03)) {
     reasonCodes.push(launchReasonCodes.volumeAcceleration);
     drivers.push("volume acceleration");
   }
@@ -182,7 +274,7 @@ export function evaluateLaunchMomentum(
     drivers.push("price action");
   }
 
-  if (derivatives.priceAccelerationPctPerSec2 > 0.1) {
+  if (isGreaterThan(derivatives.priceAccelerationPctPerSec2, 0.1)) {
     reasonCodes.push(launchReasonCodes.priceAcceleration);
     drivers.push("price acceleration");
   }
@@ -192,7 +284,7 @@ export function evaluateLaunchMomentum(
     drivers.push("buyer growth");
   }
 
-  if (derivatives.buyerAccelerationPerSec2 > 0.03) {
+  if (isGreaterThan(derivatives.buyerAccelerationPerSec2, 0.03)) {
     reasonCodes.push(launchReasonCodes.buyerAcceleration);
     drivers.push("buyer acceleration");
   }
@@ -224,7 +316,10 @@ export function evaluateLaunchMomentum(
     components.buyPressureScore -
     components.riskPenalty -
     components.missingDataPenalty;
-  const score = input.hardReject === true ? 0 : round(clamp(rawScore, 0, 100));
+  const score =
+    input.hardReject === true
+      ? 0
+      : round(clamp(Math.max(rawScore, derivativeScore.totalScore), 0, 100));
   const label = scoreToLabel(score, {
     hardReject: input.hardReject === true,
     tradeSampleCount: trades.length
@@ -254,6 +349,8 @@ export function evaluateLaunchMomentum(
     volumeSol: windows["5m"].volumeSol,
     windows,
     derivatives,
+    derivativeStrength,
+    derivativeScore,
     score,
     label,
     components,
@@ -287,6 +384,7 @@ function createWindowRecord(
     "5s": computeWindow(trades, evaluatedAtMs, launchWindowMs["5s"]),
     "10s": computeWindow(trades, evaluatedAtMs, launchWindowMs["10s"]),
     "30s": computeWindow(trades, evaluatedAtMs, launchWindowMs["30s"]),
+    "60s": computeWindow(trades, evaluatedAtMs, launchWindowMs["60s"]),
     "2m": computeWindow(trades, evaluatedAtMs, launchWindowMs["2m"]),
     "5m": computeWindow(trades, evaluatedAtMs, launchWindowMs["5m"])
   };
@@ -303,20 +401,6 @@ function computeWindow(
   });
 
   return computeFromTrades(windowTrades);
-}
-
-function computeSegment(
-  trades: LaunchTradeSample[],
-  evaluatedAtMs: number,
-  olderMs: number,
-  newerMs: number
-): LaunchWindowMetrics {
-  return computeFromTrades(
-    trades.filter((trade) => {
-      const timestampMs = parseTime(trade.timestamp);
-      return timestampMs > evaluatedAtMs - olderMs && timestampMs <= evaluatedAtMs - newerMs;
-    })
-  );
 }
 
 function computeFromTrades(trades: LaunchTradeSample[]): LaunchWindowMetrics {
@@ -367,6 +451,10 @@ function computeFromTrades(trades: LaunchTradeSample[]): LaunchWindowMetrics {
     highSol: Math.max(...trades.map((trade) => trade.priceSol)),
     lowSol: Math.min(...trades.map((trade) => trade.priceSol)),
     closeSol: last.priceSol,
+    priceOpenSol: first.priceSol,
+    priceHighSol: Math.max(...trades.map((trade) => trade.priceSol)),
+    priceLowSol: Math.min(...trades.map((trade) => trade.priceSol)),
+    priceCloseSol: last.priceSol,
     priceChangePct
   });
 }
@@ -375,27 +463,204 @@ function computeDerivatives(
   trades: LaunchTradeSample[],
   evaluatedAtMs: number
 ): LaunchDerivatives {
-  const current = computeWindow(trades, evaluatedAtMs, 5_000);
-  const previous = computeSegment(trades, evaluatedAtMs, 10_000, 5_000);
-  const currentPriceVelocity = current.priceChangePct / 5;
-  const previousPriceVelocity = previous.priceChangePct / 5;
-  const currentVolumeVelocity = current.volumeSol / 5;
-  const previousVolumeVelocity = previous.volumeSol / 5;
-  const currentBuyerVelocity = current.uniqueBuyers / 5;
-  const previousBuyerVelocity = previous.uniqueBuyers / 5;
-  const currentTradeVelocity = current.tradeCount / 5;
-  const previousTradeVelocity = previous.tradeCount / 5;
+  const points = createDerivativePoints(trades, evaluatedAtMs);
+  const volumeVelocity = firstDerivative(points, (point) => point.volumeSol);
+  const volumeAcceleration = secondDerivative(points, (point) => point.volumeSol);
+  const priceVelocity = firstDerivative(points, (point) => point.priceChangePct);
+  const priceAcceleration = secondDerivative(points, (point) => point.priceChangePct);
+  const priceSolVelocity = firstDerivative(points, (point) => point.priceSol);
+  const priceSolAcceleration = secondDerivative(points, (point) => point.priceSol);
+  const buyerVelocity = firstDerivative(points, (point) => point.uniqueBuyers);
+  const buyerAcceleration = secondDerivative(points, (point) => point.uniqueBuyers);
+  const tradeVelocity = firstDerivative(points, (point) => point.tradeCount);
+  const tradeAcceleration = secondDerivative(points, (point) => point.tradeCount);
+  const buyPressureVelocity = firstDerivative(
+    points,
+    (point) => point.netBuyPressure
+  );
+  const buyPressureAcceleration = secondDerivative(
+    points,
+    (point) => point.netBuyPressure
+  );
+  const dVol5sSolPerSec = windowVelocity(
+    computeWindow(trades, evaluatedAtMs, launchWindowMs["5s"]),
+    5
+  );
+  const dVol10sSolPerSec = windowVelocity(
+    computeWindow(trades, evaluatedAtMs, launchWindowMs["10s"]),
+    10
+  );
+  const dVol30sSolPerSec = windowVelocity(
+    computeWindow(trades, evaluatedAtMs, launchWindowMs["30s"]),
+    30
+  );
 
   return {
-    volumeVelocitySolPerSec: round(currentVolumeVelocity),
-    volumeAccelerationSolPerSec2: round((currentVolumeVelocity - previousVolumeVelocity) / 5),
-    priceVelocityPctPerSec: round(currentPriceVelocity),
-    priceAccelerationPctPerSec2: round((currentPriceVelocity - previousPriceVelocity) / 5),
-    buyerVelocityPerSec: round(currentBuyerVelocity),
-    buyerAccelerationPerSec2: round((currentBuyerVelocity - previousBuyerVelocity) / 5),
-    tradeVelocityPerSec: round(currentTradeVelocity),
-    tradeAccelerationPerSec2: round((currentTradeVelocity - previousTradeVelocity) / 5)
+    volumeVelocitySolPerSec: nullableRound(volumeVelocity),
+    volumeAccelerationSolPerSec2: nullableRound(volumeAcceleration),
+    priceVelocityPctPerSec: nullableRound(priceVelocity),
+    priceAccelerationPctPerSec2: nullableRound(priceAcceleration),
+    priceSolVelocityPerSec: nullableRound(priceSolVelocity),
+    priceSolAccelerationPerSec2: nullableRound(priceSolAcceleration),
+    buyerVelocityPerSec: nullableRound(buyerVelocity),
+    buyerAccelerationPerSec2: nullableRound(buyerAcceleration),
+    tradeVelocityPerSec: nullableRound(tradeVelocity),
+    tradeAccelerationPerSec2: nullableRound(tradeAcceleration),
+    buyPressureVelocityPerSec: nullableRound(buyPressureVelocity),
+    buyPressureAccelerationPerSec2: nullableRound(buyPressureAcceleration),
+    marketCapSolVelocityPerSec: null,
+    marketCapSolAccelerationPerSec2: null,
+    liquiditySolVelocityPerSec: null,
+    liquiditySolAccelerationPerSec2: null,
+    dVol5sSolPerSec,
+    dVol10sSolPerSec,
+    dVol30sSolPerSec,
+    d2VolSolPerSec2: nullableRound(volumeAcceleration),
+    dPricePctPerSec: nullableRound(priceVelocity),
+    d2PricePctPerSec2: nullableRound(priceAcceleration),
+    dPriceSolPerSec: nullableRound(priceSolVelocity),
+    d2PriceSolPerSec2: nullableRound(priceSolAcceleration),
+    dBuyersPerSec: nullableRound(buyerVelocity),
+    d2BuyersPerSec2: nullableRound(buyerAcceleration),
+    dTradesPerSec: nullableRound(tradeVelocity),
+    d2TradesPerSec2: nullableRound(tradeAcceleration),
+    dBuyPressurePerSec: nullableRound(buyPressureVelocity),
+    d2BuyPressurePerSec2: nullableRound(buyPressureAcceleration),
+    dMarketCapSolPerSec: null,
+    d2MarketCapSolPerSec2: null,
+    dLiquiditySolPerSec: null,
+    d2LiquiditySolPerSec2: null
   };
+}
+
+type DerivativePoint = {
+  timestampMs: number;
+  volumeSol: number;
+  priceSol: number;
+  priceChangePct: number;
+  uniqueBuyers: number;
+  tradeCount: number;
+  netBuyPressure: number;
+};
+
+function createDerivativePoints(
+  trades: LaunchTradeSample[],
+  evaluatedAtMs: number
+): DerivativePoint[] {
+  const points: DerivativePoint[] = [];
+  const buyers = new Set<string>();
+  let volumeSol = 0;
+  let buyVolumeSol = 0;
+  let sellVolumeSol = 0;
+  const firstPriceSol = trades[0]?.priceSol ?? null;
+
+  for (const trade of trades) {
+    const timestampMs = parseTime(trade.timestamp);
+
+    if (timestampMs > evaluatedAtMs) {
+      continue;
+    }
+
+    volumeSol += trade.volumeSol;
+
+    if (trade.side === "buy") {
+      buyVolumeSol += trade.volumeSol;
+      buyers.add(trade.trader ?? `buy:${trade.signature ?? trade.timestamp}`);
+    } else {
+      sellVolumeSol += trade.volumeSol;
+    }
+
+    const netBuyPressure =
+      volumeSol > 0 ? (buyVolumeSol - sellVolumeSol) / volumeSol : 0;
+    const priceChangePct =
+      firstPriceSol !== null && firstPriceSol > 0
+        ? ((trade.priceSol - firstPriceSol) / firstPriceSol) * 100
+        : 0;
+
+    points.push({
+      timestampMs,
+      volumeSol,
+      priceSol: trade.priceSol,
+      priceChangePct,
+      uniqueBuyers: buyers.size,
+      tradeCount: points.length + 1,
+      netBuyPressure
+    });
+  }
+
+  return points;
+}
+
+function firstDerivative(
+  points: DerivativePoint[],
+  select: (point: DerivativePoint) => number
+): number | null {
+  if (points.length < 2) {
+    return null;
+  }
+
+  return slope(points[0], points.at(-1), select);
+}
+
+function secondDerivative(
+  points: DerivativePoint[],
+  select: (point: DerivativePoint) => number
+): number | null {
+  if (points.length < 3) {
+    return null;
+  }
+
+  const first = points[0];
+  const middle = points[Math.floor((points.length - 1) / 2)];
+  const last = points.at(-1);
+
+  if (!first || !middle || !last) {
+    return null;
+  }
+
+  const olderSlope = slope(first, middle, select);
+  const newerSlope = slope(middle, last, select);
+  const midpointSeconds = (last.timestampMs - first.timestampMs) / 2_000;
+
+  if (
+    olderSlope === null ||
+    newerSlope === null ||
+    !Number.isFinite(midpointSeconds) ||
+    midpointSeconds <= 0
+  ) {
+    return null;
+  }
+
+  return (newerSlope - olderSlope) / midpointSeconds;
+}
+
+function slope(
+  first: DerivativePoint | undefined,
+  last: DerivativePoint | undefined,
+  select: (point: DerivativePoint) => number
+): number | null {
+  if (!first || !last) {
+    return null;
+  }
+
+  const deltaSeconds = (last.timestampMs - first.timestampMs) / 1000;
+
+  if (!Number.isFinite(deltaSeconds) || deltaSeconds <= 0) {
+    return null;
+  }
+
+  return (select(last) - select(first)) / deltaSeconds;
+}
+
+function windowVelocity(
+  window: LaunchWindowMetrics,
+  seconds: number
+): number | null {
+  if (window.tradeCount < 2 || seconds <= 0) {
+    return null;
+  }
+
+  return round(window.volumeSol / seconds);
 }
 
 function computeScoreComponents(input: {
@@ -408,7 +673,11 @@ function computeScoreComponents(input: {
   const window10 = input.windows["10s"];
   const window30 = input.windows["30s"];
   const earlyVolumeScore = clamp(window10.volumeSol * 7 + window30.volumeSol * 2, 0, 24);
-  const volumeAccelerationScore = clamp(input.derivatives.volumeAccelerationSolPerSec2 * 240, 0, 18);
+  const volumeAccelerationScore = clamp(
+    (input.derivatives.volumeAccelerationSolPerSec2 ?? 0) * 240,
+    0,
+    18
+  );
   const priceActionScore = clamp(Math.max(window10.priceChangePct, window30.priceChangePct) * 0.75, 0, 18);
   const buyerGrowthScore = clamp(window10.uniqueBuyers * 3 + window30.uniqueBuyers, 0, 18);
   const buyPressureScore = clamp((Math.max(window10.netBuyPressure, window30.netBuyPressure) + 0.1) * 22, 0, 16);
@@ -423,6 +692,267 @@ function computeScoreComponents(input: {
     buyPressureScore: round(buyPressureScore),
     riskPenalty,
     missingDataPenalty
+  };
+}
+
+function computeDerivativeStrengths(input: {
+  derivatives: LaunchDerivatives;
+  hardReject: boolean;
+  riskLevel: string;
+  tradeSampleCount: number;
+  windows: Record<LaunchWindowLabel, LaunchWindowMetrics>;
+}): LaunchDerivativeStrengths {
+  const volume = toDerivativeStrength(input.derivatives.volumeVelocitySolPerSec, {
+    unavailableCode: "VOLUME_VELOCITY_UNAVAILABLE",
+    weakAt: 0.03,
+    moderateAt: 0.1,
+    strongAt: 0.3,
+    explosiveAt: 0.75
+  });
+  const volumeAcceleration = toDerivativeStrength(
+    input.derivatives.volumeAccelerationSolPerSec2,
+    {
+      unavailableCode: "VOLUME_ACCELERATION_UNAVAILABLE",
+      weakAt: 0.005,
+      moderateAt: 0.02,
+      strongAt: 0.05,
+      explosiveAt: 0.12
+    }
+  );
+  const price = toDerivativeStrength(input.derivatives.priceVelocityPctPerSec, {
+    unavailableCode: "PRICE_VELOCITY_UNAVAILABLE",
+    weakAt: 0.05,
+    moderateAt: 0.2,
+    strongAt: 0.65,
+    explosiveAt: 1.4
+  });
+  const priceAcceleration = toDerivativeStrength(
+    input.derivatives.priceAccelerationPctPerSec2,
+    {
+      unavailableCode: "PRICE_ACCELERATION_UNAVAILABLE",
+      weakAt: 0.01,
+      moderateAt: 0.05,
+      strongAt: 0.15,
+      explosiveAt: 0.35
+    }
+  );
+  const priceSol = toDerivativeStrength(input.derivatives.priceSolVelocityPerSec, {
+    unavailableCode: "PRICE_SOL_VELOCITY_UNAVAILABLE",
+    weakAt: 0.000001,
+    moderateAt: 0.00001,
+    strongAt: 0.00005,
+    explosiveAt: 0.0002
+  });
+  const buyers = toDerivativeStrength(input.derivatives.buyerVelocityPerSec, {
+    unavailableCode: "BUYER_VELOCITY_UNAVAILABLE",
+    weakAt: 0.03,
+    moderateAt: 0.1,
+    strongAt: 0.25,
+    explosiveAt: 0.5
+  });
+  const buyerAcceleration = toDerivativeStrength(
+    input.derivatives.buyerAccelerationPerSec2,
+    {
+      unavailableCode: "BUYER_ACCELERATION_UNAVAILABLE",
+      weakAt: 0.003,
+      moderateAt: 0.015,
+      strongAt: 0.04,
+      explosiveAt: 0.1
+    }
+  );
+  const trades = toDerivativeStrength(input.derivatives.tradeVelocityPerSec, {
+    unavailableCode: "TRADE_VELOCITY_UNAVAILABLE",
+    weakAt: 0.08,
+    moderateAt: 0.2,
+    strongAt: 0.45,
+    explosiveAt: 0.8
+  });
+  const buyPressure = toDerivativeStrength(
+    input.derivatives.buyPressureVelocityPerSec,
+    {
+      unavailableCode: "BUY_PRESSURE_DERIVATIVE_UNAVAILABLE",
+      weakAt: 0.005,
+      moderateAt: 0.02,
+      strongAt: 0.06,
+      explosiveAt: 0.12
+    }
+  );
+  const marketCap = toDerivativeStrength(
+    input.derivatives.marketCapSolVelocityPerSec,
+    {
+      unavailableCode: "MARKET_CAP_DERIVATIVE_UNAVAILABLE",
+      weakAt: 0.05,
+      moderateAt: 0.2,
+      strongAt: 0.6,
+      explosiveAt: 1.5
+    }
+  );
+  const liquidity = toDerivativeStrength(
+    input.derivatives.liquiditySolVelocityPerSec,
+    {
+      unavailableCode: "LIQUIDITY_DERIVATIVE_UNAVAILABLE",
+      weakAt: 0.05,
+      moderateAt: 0.2,
+      strongAt: 0.6,
+      explosiveAt: 1.5
+    }
+  );
+  const combinedDerivativeScore = computeMomentumDerivativeScore({
+    buyerAcceleration,
+    buyers,
+    buyPressure,
+    hardReject: input.hardReject,
+    price,
+    priceAcceleration,
+    riskLevel: input.riskLevel,
+    tradeSampleCount: input.tradeSampleCount,
+    trades,
+    volume,
+    volumeAcceleration,
+    windows: input.windows
+  });
+
+  return {
+    volume,
+    volumeAcceleration,
+    price,
+    priceAcceleration,
+    priceSol,
+    buyers,
+    buyerAcceleration,
+    trades,
+    buyPressure,
+    marketCap,
+    liquidity,
+    combinedDerivativeScore
+  };
+}
+
+function computeMomentumDerivativeScore(input: {
+  buyerAcceleration: DerivativeStrength;
+  buyers: DerivativeStrength;
+  buyPressure: DerivativeStrength;
+  hardReject: boolean;
+  price: DerivativeStrength;
+  priceAcceleration: DerivativeStrength;
+  riskLevel: string;
+  tradeSampleCount: number;
+  trades: DerivativeStrength;
+  volume: DerivativeStrength;
+  volumeAcceleration: DerivativeStrength;
+  windows: Record<LaunchWindowLabel, LaunchWindowMetrics>;
+}): MomentumDerivativeScore {
+  const reasonCodes: string[] = [];
+  const components = {
+    volumeVelocityScore: round(input.volume.normalizedScore * 0.16),
+    volumeAccelerationScore: round(input.volumeAcceleration.normalizedScore * 0.12),
+    priceVelocityScore: round(input.price.normalizedScore * 0.16),
+    priceAccelerationScore: round(input.priceAcceleration.normalizedScore * 0.1),
+    buyerVelocityScore: round(input.buyers.normalizedScore * 0.14),
+    buyerAccelerationScore: round(input.buyerAcceleration.normalizedScore * 0.08),
+    tradeVelocityScore: round(input.trades.normalizedScore * 0.1),
+    buyPressureScore: round(Math.max(input.buyPressure.normalizedScore, 0) * 0.14),
+    sellPressurePenalty:
+      input.windows["10s"].netBuyPressure <= -0.2 ||
+      input.windows["30s"].netBuyPressure <= -0.25
+        ? 32
+        : input.windows["10s"].netBuyPressure < 0
+          ? 14
+          : 0,
+    missingDataPenalty:
+      input.tradeSampleCount === 0 ? 45 : input.tradeSampleCount < 3 ? 22 : 0,
+    riskPenalty: riskPenaltyFor(input.riskLevel, input.hardReject)
+  };
+
+  if (input.tradeSampleCount === 0) {
+    reasonCodes.push("DISCOVERY_ONLY_NO_DERIVATIVES");
+  }
+
+  if (input.tradeSampleCount < 2) {
+    reasonCodes.push(launchReasonCodes.insufficientSamplesForDerivative);
+  }
+
+  if (input.tradeSampleCount < 3) {
+    reasonCodes.push(launchReasonCodes.insufficientTradeData);
+  }
+
+  if (components.sellPressurePenalty > 0) {
+    reasonCodes.push(launchReasonCodes.sellPressure);
+  }
+
+  if (input.hardReject) {
+    reasonCodes.push(launchReasonCodes.rejected);
+  }
+
+  const rawScore =
+    components.volumeVelocityScore +
+    components.volumeAccelerationScore +
+    components.priceVelocityScore +
+    components.priceAccelerationScore +
+    components.buyerVelocityScore +
+    components.buyerAccelerationScore +
+    components.tradeVelocityScore +
+    components.buyPressureScore -
+    components.sellPressurePenalty -
+    components.missingDataPenalty -
+    components.riskPenalty;
+  const totalScore = input.hardReject ? 0 : round(clamp(rawScore, 0, 100));
+
+  return {
+    totalScore,
+    strengthLabel: scoreToLabel(totalScore, {
+      hardReject: input.hardReject,
+      tradeSampleCount: input.tradeSampleCount
+    }),
+    components,
+    reasonCodes: uniqueStrings(reasonCodes)
+  };
+}
+
+function toDerivativeStrength(
+  rawValue: number | null,
+  thresholds: {
+    unavailableCode: string;
+    weakAt: number;
+    moderateAt: number;
+    strongAt: number;
+    explosiveAt: number;
+  }
+): DerivativeStrength {
+  if (rawValue === null || !Number.isFinite(rawValue)) {
+    return {
+      rawValue: null,
+      normalizedScore: 0,
+      direction: "unavailable",
+      strength: "none",
+      reasonCodes: [thresholds.unavailableCode]
+    };
+  }
+
+  const absoluteValue = Math.abs(rawValue);
+  const normalizedScore = round(clamp((absoluteValue / thresholds.explosiveAt) * 100, 0, 100));
+  const strength =
+    absoluteValue >= thresholds.explosiveAt
+      ? "explosive"
+      : absoluteValue >= thresholds.strongAt
+        ? "strong"
+        : absoluteValue >= thresholds.moderateAt
+          ? "moderate"
+          : absoluteValue >= thresholds.weakAt
+            ? "weak"
+            : "none";
+  const direction =
+    rawValue > 0 ? "up" : rawValue < 0 ? "down" : ("flat" as const);
+
+  return {
+    rawValue: round(rawValue),
+    normalizedScore,
+    direction,
+    strength,
+    reasonCodes:
+      strength === "none"
+        ? ["DERIVATIVE_STRENGTH_NONE"]
+        : [`DERIVATIVE_STRENGTH_${strength.toUpperCase()}`]
   };
 }
 
@@ -517,6 +1047,10 @@ function emptyWindow(): LaunchWindowMetrics {
     highSol: null,
     lowSol: null,
     closeSol: null,
+    priceOpenSol: null,
+    priceHighSol: null,
+    priceLowSol: null,
+    priceCloseSol: null,
     priceChangePct: 0
   };
 }
@@ -538,6 +1072,10 @@ function sanitizeWindow(window: LaunchWindowMetrics): LaunchWindowMetrics {
     highSol: nullableRound(window.highSol),
     lowSol: nullableRound(window.lowSol),
     closeSol: nullableRound(window.closeSol),
+    priceOpenSol: nullableRound(window.priceOpenSol ?? window.openSol),
+    priceHighSol: nullableRound(window.priceHighSol ?? window.highSol),
+    priceLowSol: nullableRound(window.priceLowSol ?? window.lowSol),
+    priceCloseSol: nullableRound(window.priceCloseSol ?? window.closeSol),
     priceChangePct: round(window.priceChangePct)
   };
 }
@@ -612,6 +1150,10 @@ function parseTime(value: string | Date): number {
 
 function isPositiveFinite(value: number): boolean {
   return Number.isFinite(value) && value > 0;
+}
+
+function isGreaterThan(value: number | null, threshold: number): boolean {
+  return value !== null && Number.isFinite(value) && value > threshold;
 }
 
 function nullableRound(value: number | null): number | null {

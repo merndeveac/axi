@@ -1,4 +1,10 @@
-export type VelocityUnit = "usd" | "sol" | "pct" | "buyers" | "holders";
+export type VelocityUnit =
+  | "usd"
+  | "sol"
+  | "pct"
+  | "buyers"
+  | "holders"
+  | "trades";
 
 export function formatUnknown(value: unknown): string {
   if (value === null || value === undefined || value === "") {

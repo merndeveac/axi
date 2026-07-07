@@ -207,6 +207,101 @@ describe("MeteredLaunchDataService", () => {
     );
   });
 
+  it("preempts the weakest unprotected slot for rolling newest candidates", () => {
+    const candidates = new Map([
+      [
+        mint,
+        createLaunchCandidate({
+          mint,
+          phase: "watching",
+          score: 10
+        })
+      ],
+      [
+        secondMint,
+        createLaunchCandidate({
+          mint: secondMint,
+          phase: "hot",
+          score: 70
+        })
+      ]
+    ]);
+    const service = createService(
+      {
+        acknowledgedCost: true,
+        apiKeyConfigured: true,
+        autoUnsubscribeOnLowScore: false,
+        dataWalletPublicKeyConfigured: true,
+        enabled: true,
+        maxConcurrentMints: 1,
+        staleNoTradesMs: 0
+      },
+      readyWallet,
+      new PumpPortalFeedProvider(),
+      (candidateMint) => candidates.get(candidateMint) ?? null
+    );
+
+    service.evaluateNewLaunchCandidate(candidates.get(mint)!);
+    const decision = service.evaluateNewLaunchCandidate(
+      candidates.get(secondMint)!
+    );
+
+    expect(decision.tracked).toBe(true);
+    expect(decision.reasonCodes).toContain(
+      "ROLLING_TRACKER_PREEMPTED_WEAK_SLOT"
+    );
+    expect(service.getTrackedMints()).toEqual([secondMint]);
+    expect(service.getTrackedMint(mint)?.reasonCodes).toContain(
+      "METERED_LAUNCH_DATA_ROLLING_PREEMPT_WEAK_SLOT"
+    );
+  });
+
+  it("does not preempt protected hot or ripping tracked slots", () => {
+    const candidates = new Map([
+      [
+        mint,
+        createLaunchCandidate({
+          mint,
+          phase: "ripping",
+          score: 85
+        })
+      ],
+      [
+        secondMint,
+        createLaunchCandidate({
+          mint: secondMint,
+          phase: "hot",
+          score: 90
+        })
+      ]
+    ]);
+    const service = createService(
+      {
+        acknowledgedCost: true,
+        apiKeyConfigured: true,
+        autoUnsubscribeOnLowScore: false,
+        dataWalletPublicKeyConfigured: true,
+        enabled: true,
+        maxConcurrentMints: 1,
+        staleNoTradesMs: 0
+      },
+      readyWallet,
+      new PumpPortalFeedProvider(),
+      (candidateMint) => candidates.get(candidateMint) ?? null
+    );
+
+    service.evaluateNewLaunchCandidate(candidates.get(mint)!);
+    const decision = service.evaluateNewLaunchCandidate(
+      candidates.get(secondMint)!
+    );
+
+    expect(decision.tracked).toBe(false);
+    expect(decision.reasonCodes).toContain(
+      "METERED_LAUNCH_DATA_MAX_CONCURRENT_REACHED"
+    );
+    expect(service.getTrackedMints()).toEqual([mint]);
+  });
+
   it("untracks when the per-mint event cap is reached", () => {
     const service = createService({
       acknowledgedCost: true,
@@ -347,7 +442,10 @@ function createService(
   config: Parameters<typeof createMeteredLaunchDataService>[0]["config"] = {},
   readiness: ActualDataDataWalletReadiness = readyWallet,
   provider = new PumpPortalFeedProvider(),
-  candidate: LaunchCandidateView | null = null
+  candidate:
+    | LaunchCandidateView
+    | ((candidateMint: string) => LaunchCandidateView | null)
+    | null = null
 ) {
   const envAckEnabled = config?.acknowledgedCost === true;
   const actualData = createActualDataService({
@@ -376,7 +474,8 @@ function createService(
       ...config
     },
     dataWalletReadiness: () => readiness,
-    getLaunchCandidate: () => candidate,
+    getLaunchCandidate: (candidateMint) =>
+      typeof candidate === "function" ? candidate(candidateMint) : candidate,
     providerName: "pumpportal"
   });
 }

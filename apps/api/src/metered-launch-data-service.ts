@@ -30,11 +30,16 @@ export type MeteredLaunchDataConfig = {
   startActive: boolean;
   requireDataWalletReady: boolean;
   mode: MeteredLaunchDataMode;
+  rollingTrackerEnabled: boolean;
   maxConcurrentMints: number;
   initialTrackMs: number;
   extendedTrackMs: number;
   minScoreToExtend: number;
   minScoreToTrack: number;
+  minScoreToProtect: number;
+  minScoreToProtectRipping: number;
+  protectedMaxAgeMs: number;
+  staleNoTradesMs: number;
   maxEventsPerMint: number;
   maxEventsPerSession: number;
   maxSessionCostSol: number;
@@ -156,6 +161,7 @@ export type MeteredLaunchDataServiceOptions = {
   getLaunchCandidate?: (mint: string) => LaunchCandidateView | null;
   getLaunchCandidates?: (limit?: number) => LaunchCandidateView[];
   getLiveDiscoveryActive?: () => boolean;
+  hasOpenPaperPosition?: (mint: string) => boolean;
   providerName: string;
 };
 
@@ -177,6 +183,7 @@ type InternalTrackedMint = Omit<
 > & {
   initialReviewTimer?: ReturnType<typeof setTimeout>;
   extendedReviewTimer?: ReturnType<typeof setTimeout>;
+  staleNoTradesTimer?: ReturnType<typeof setTimeout>;
 };
 
 export function createMeteredLaunchDataConfig(
@@ -190,14 +197,19 @@ export function createMeteredLaunchDataConfig(
     startActive: input.startActive ?? false,
     requireDataWalletReady: input.requireDataWalletReady ?? true,
     mode: input.mode ?? "newest",
-    maxConcurrentMints: input.maxConcurrentMints ?? 3,
+    rollingTrackerEnabled: input.rollingTrackerEnabled ?? true,
+    maxConcurrentMints: input.maxConcurrentMints ?? 5,
     initialTrackMs: input.initialTrackMs ?? 30_000,
     extendedTrackMs: input.extendedTrackMs ?? 300_000,
     minScoreToExtend: input.minScoreToExtend ?? 45,
     minScoreToTrack: input.minScoreToTrack ?? 0,
-    maxEventsPerMint: input.maxEventsPerMint ?? 250,
-    maxEventsPerSession: input.maxEventsPerSession ?? 1000,
-    maxSessionCostSol: input.maxSessionCostSol ?? 0.001,
+    minScoreToProtect: input.minScoreToProtect ?? 65,
+    minScoreToProtectRipping: input.minScoreToProtectRipping ?? 80,
+    protectedMaxAgeMs: input.protectedMaxAgeMs ?? 900_000,
+    staleNoTradesMs: input.staleNoTradesMs ?? 30_000,
+    maxEventsPerMint: input.maxEventsPerMint ?? 500,
+    maxEventsPerSession: input.maxEventsPerSession ?? 5000,
+    maxSessionCostSol: input.maxSessionCostSol ?? 0.005,
     maxUiSessionCostSol: input.maxUiSessionCostSol ?? 0.005,
     autoUnsubscribeOnHardReject:
       input.autoUnsubscribeOnHardReject ?? true,
@@ -230,6 +242,7 @@ export class MeteredLaunchDataService {
     | ((limit?: number) => LaunchCandidateView[])
     | undefined;
   private readonly getLiveDiscoveryActive: (() => boolean) | undefined;
+  private readonly hasOpenPaperPosition: ((mint: string) => boolean) | undefined;
   private readonly providerName: string;
   private readonly recentTradeEvents: StoredMeteredLaunchDataEvent[] = [];
   private readonly tracked = new Map<string, InternalTrackedMint>();
@@ -254,6 +267,7 @@ export class MeteredLaunchDataService {
     this.getLaunchCandidate = options.getLaunchCandidate;
     this.getLaunchCandidates = options.getLaunchCandidates;
     this.getLiveDiscoveryActive = options.getLiveDiscoveryActive;
+    this.hasOpenPaperPosition = options.hasOpenPaperPosition;
     this.providerName = options.providerName;
     this.runtimeStopped = !(this.config.startActive && this.isCostAcknowledged());
   }
@@ -418,12 +432,33 @@ export class MeteredLaunchDataService {
   ): MeteredLaunchDataDecision {
     const blockers = this.getSubscriptionBlockers(candidate.mint);
     const score = candidate.snapshot.score;
+    const capacityBlocker = "METERED_LAUNCH_DATA_MAX_CONCURRENT_REACHED";
+    let effectiveBlockers = blockers;
+    let preemptedMint: string | null = null;
+
+    if (
+      !options.dryRun &&
+      blockers.includes(capacityBlocker) &&
+      blockers.filter((blocker) => blocker !== capacityBlocker).length === 0 &&
+      this.config.rollingTrackerEnabled &&
+      this.shouldTrackCandidate(candidate)
+    ) {
+      const preempted = this.preemptWeakestUnprotectedMint(candidate);
+
+      if (preempted) {
+        preemptedMint = preempted.mint;
+        effectiveBlockers = blockers.filter(
+          (blocker) => blocker !== capacityBlocker
+        );
+      }
+    }
+
     const reasonCodes = unique([
-      ...blockers,
+      ...effectiveBlockers,
       ...this.getCandidateSelectionReasonCodes(candidate)
     ]);
     const shouldTrack =
-      blockers.length === 0 &&
+      effectiveBlockers.length === 0 &&
       this.shouldTrackCandidate(candidate) &&
       !options.dryRun;
 
@@ -434,6 +469,9 @@ export class MeteredLaunchDataService {
         tracked: false,
         reasonCodes: unique([
           ...reasonCodes,
+          ...(preemptedMint
+            ? [`METERED_LAUNCH_DATA_PREEMPTED_${preemptedMint}`]
+            : []),
           ...(options.dryRun ? ["METERED_LAUNCH_DATA_EVALUATION_ONLY"] : [])
         ]),
         score,
@@ -454,7 +492,12 @@ export class MeteredLaunchDataService {
       mint: candidate.mint,
       action: "track",
       tracked: true,
-      reasonCodes: trackingState.reasonCodes,
+      reasonCodes: unique([
+        ...trackingState.reasonCodes,
+        ...(preemptedMint
+          ? ["ROLLING_TRACKER_PREEMPTED_WEAK_SLOT"]
+          : [])
+      ]),
       score,
       mode: this.config.mode,
       trackingState,
@@ -554,6 +597,7 @@ export class MeteredLaunchDataService {
 
     this.tracked.set(normalizedMint, state);
     this.scheduleInitialReview(normalizedMint);
+    this.scheduleStaleNoTradesReview(normalizedMint);
     this.persistSubscription(state);
     return this.toTrackedMint(state);
   }
@@ -827,6 +871,98 @@ export class MeteredLaunchDataService {
     return candidate.snapshot.score >= this.config.minScoreToTrack;
   }
 
+  private preemptWeakestUnprotectedMint(
+    incomingCandidate: LaunchCandidateView
+  ): MeteredLaunchDataTrackedMint | null {
+    const candidates = this.getTrackedMints()
+      .map((mint) => {
+        const tracked = this.tracked.get(mint);
+        const candidate = this.getLaunchCandidate?.(mint) ?? null;
+
+        if (!tracked || tracked.status !== "tracking") {
+          return null;
+        }
+
+        return {
+          candidate,
+          protectedReason: this.getTrackedMintProtectionReason(
+            tracked,
+            candidate
+          ),
+          score: candidate?.snapshot.score ?? 0,
+          tracked
+        };
+      })
+      .filter(
+        (
+          value
+        ): value is {
+          candidate: LaunchCandidateView | null;
+          protectedReason: string | null;
+          score: number;
+          tracked: InternalTrackedMint;
+        } => value !== null
+      )
+      .filter((value) => value.protectedReason === null)
+      .sort((left, right) => left.score - right.score);
+
+    const weakest = candidates[0];
+
+    if (!weakest) {
+      return null;
+    }
+
+    if (incomingCandidate.snapshot.score < weakest.score) {
+      return null;
+    }
+
+    return this.untrackMint(
+      weakest.tracked.mint,
+      "rolling_preempt_weak_slot"
+    );
+  }
+
+  private getTrackedMintProtectionReason(
+    tracked: InternalTrackedMint,
+    candidate: LaunchCandidateView | null
+  ): string | null {
+    if (this.hasOpenPaperPosition?.(tracked.mint) === true) {
+      return "paper_position";
+    }
+
+    const subscribedAtMs = tracked.subscribedAt
+      ? Date.parse(tracked.subscribedAt)
+      : NaN;
+    const ageMs = Number.isFinite(subscribedAtMs)
+      ? Date.now() - subscribedAtMs
+      : Number.POSITIVE_INFINITY;
+
+    if (
+      Number.isFinite(ageMs) &&
+      ageMs <= this.config.protectedMaxAgeMs &&
+      candidate?.snapshot.score !== undefined &&
+      candidate.snapshot.score >= this.config.minScoreToProtect
+    ) {
+      return "protected_score";
+    }
+
+    if (
+      candidate?.snapshot.phase === "ripping" &&
+      candidate.snapshot.score >= this.config.minScoreToProtectRipping
+    ) {
+      return "ripping";
+    }
+
+    if (
+      candidate?.snapshot.phase === "hot" &&
+      candidate.snapshot.score >= this.config.minScoreToProtect
+    ) {
+      return "hot";
+    }
+
+    return null;
+  }
+
   private getCandidateSelectionReasonCodes(
     candidate: LaunchCandidateView
   ): string[] {
@@ -873,6 +1009,30 @@ export class MeteredLaunchDataService {
     state.initialReviewTimer = setTimeout(() => {
       this.reviewInitialWindow(mint);
     }, this.config.initialTrackMs);
+  }
+
+  private scheduleStaleNoTradesReview(mint: string): void {
+    const state = this.tracked.get(mint);
+
+    if (!state || this.config.staleNoTradesMs <= 0) {
+      return;
+    }
+
+    state.staleNoTradesTimer = setTimeout(() => {
+      this.reviewStaleNoTrades(mint);
+    }, this.config.staleNoTradesMs);
+  }
+
+  private reviewStaleNoTrades(mint: string): void {
+    const state = this.tracked.get(mint);
+
+    if (!state || state.status !== "tracking") {
+      return;
+    }
+
+    if (state.eventCount === 0) {
+      this.untrackMint(mint, "stale_no_trades");
+    }
   }
 
   private reviewInitialWindow(mint: string): void {
@@ -939,6 +1099,11 @@ export class MeteredLaunchDataService {
     if (state.extendedReviewTimer) {
       clearTimeout(state.extendedReviewTimer);
       delete state.extendedReviewTimer;
+    }
+
+    if (state.staleNoTradesTimer) {
+      clearTimeout(state.staleNoTradesTimer);
+      delete state.staleNoTradesTimer;
     }
   }
 
