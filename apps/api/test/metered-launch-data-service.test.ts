@@ -116,6 +116,58 @@ describe("MeteredLaunchDataService", () => {
     expect(provider.getAccountTradeSubscriptions()).toEqual([]);
   });
 
+  it("arms with a session ACK but waits for runtime start before tracking", () => {
+    const provider = new PumpPortalFeedProvider();
+    const service = createService(
+      {
+        acknowledgedCost: false,
+        apiKeyConfigured: true,
+        dataWalletPublicKeyConfigured: true,
+        enabled: true
+      },
+      readyWallet,
+      provider
+    );
+
+    const armed = service.acknowledgeSession({
+      ackCost: true,
+      maxConcurrentMints: 2,
+      maxEventsPerSession: 100,
+      maxSessionCostSol: 0.001
+    });
+
+    expect(armed.ackSource).toBe("session");
+    expect(armed.active).toBe(false);
+    expect(armed.canStart).toBe(true);
+    expect(() => service.trackMint(mint, "manual")).toThrow(
+      MeteredLaunchDataServiceError
+    );
+
+    service.start();
+    expect(service.trackMint(mint, "manual").status).toBe("tracking");
+    expect(provider.getTokenTradeSubscriptions()).toEqual([mint]);
+  });
+
+  it("rejects session ACK caps above the UI ceiling", () => {
+    const service = createService({
+      acknowledgedCost: false,
+      apiKeyConfigured: true,
+      dataWalletPublicKeyConfigured: true,
+      enabled: true,
+      maxSessionCostSol: 0.01,
+      maxUiSessionCostSol: 0.005
+    });
+
+    expect(() =>
+      service.acknowledgeSession({
+        ackCost: true,
+        maxConcurrentMints: 2,
+        maxEventsPerSession: 100,
+        maxSessionCostSol: 0.006
+      })
+    ).toThrow("Requested session cost cap exceeds the UI session ceiling.");
+  });
+
   it("selects newest launch candidates when gates are ready", () => {
     const service = createService({
       acknowledgedCost: true,
@@ -297,6 +349,7 @@ function createService(
   provider = new PumpPortalFeedProvider(),
   candidate: LaunchCandidateView | null = null
 ) {
+  const envAckEnabled = config?.acknowledgedCost === true;
   const actualData = createActualDataService({
     config: createActualDataConfig({
       acknowledgedMetered: true,
@@ -313,7 +366,15 @@ function createService(
 
   return createMeteredLaunchDataService({
     actualData,
-    config,
+    config: {
+      ...(envAckEnabled
+        ? {
+            requireUiAck: false,
+            startActive: true
+          }
+        : {}),
+      ...config
+    },
     dataWalletReadiness: () => readiness,
     getLaunchCandidate: () => candidate,
     providerName: "pumpportal"

@@ -26,9 +26,14 @@ export type HeaderRuntimeStatusLike = {
   meteredPriceAction?: {
     state?: MeteredControlState;
     canStart?: boolean;
+    canArm?: boolean;
+    controlsEnabled?: boolean;
+    capabilityConfigured?: boolean;
     enabled?: boolean;
     active?: boolean;
     acknowledgedCost?: boolean;
+    envAck?: boolean;
+    ackSource?: "env" | "none" | "session";
     blockers?: string[];
     warnings?: string[];
     reasonCodes?: string[];
@@ -137,6 +142,16 @@ export function getMeteredControlView({
     };
   }
 
+  if (runtimeStatus?.meteredPriceAction?.state === "OFF") {
+    return {
+      blockers: unique(["metered disabled", ...blockers]),
+      buttonLabel: "Metered Off",
+      disabled: true,
+      helper: "Configure PumpPortal data wallet/API readiness to enable controls.",
+      state: "OFF"
+    };
+  }
+
   if (runtimeStatus?.meteredLaunchData?.active) {
     return {
       blockers,
@@ -166,7 +181,7 @@ export function getMeteredControlView({
       blockers: unique(["metered disabled", ...blockers]),
       buttonLabel: "Metered Off",
       disabled: true,
-      helper: "Launch with pnpm axi:restart:metered to enable the gated path.",
+      helper: "Configure PumpPortal data wallet/API readiness to enable controls.",
       state: "OFF"
     };
   }

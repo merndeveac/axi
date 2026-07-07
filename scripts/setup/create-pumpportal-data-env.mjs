@@ -64,4 +64,5 @@ console.log("4. Fill SOLANA_RPC_HTTP if you want read-only balance checks.");
 console.log("5. Do NOT paste your private key.");
 console.log("6. Fund the public key with a small amount of SOL.");
 console.log("7. Run pnpm verify:pumpportal-data-env.");
-console.log("8. Run pnpm live:tokens:metered.");
+console.log("8. Run pnpm axi:restart.");
+console.log("9. Use Arm Metered, then Start Metered, in the dashboard.");

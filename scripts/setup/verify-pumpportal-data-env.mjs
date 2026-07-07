@@ -48,7 +48,7 @@ console.log(
   `- metered data enabled: ${formatYesNo((env.METERED_LAUNCH_DATA_ENABLED ?? "") === "true")}`
 );
 console.log(
-  `- metered ack: ${formatYesNo((env.METERED_LAUNCH_DATA_ACK_COST ?? "") === "true")}`
+  `- UI session ACK required: ${formatYesNo((env.METERED_LAUNCH_DATA_REQUIRE_UI_ACK ?? "") === "true")}`
 );
 console.log(
   `- account trades disabled: ${formatYesNo(accountTradesDisabled)}`

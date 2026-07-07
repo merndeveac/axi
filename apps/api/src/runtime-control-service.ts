@@ -73,11 +73,16 @@ export type RuntimeControlStatus = {
   meteredPriceAction: {
     state: RuntimeMeteredPriceActionState;
     enabled: boolean;
+    controlsEnabled: boolean;
+    capabilityConfigured: boolean;
     active: boolean;
+    canArm: boolean;
     canStart: boolean;
     canStop: boolean;
     requiresAck: boolean;
     sessionAck: boolean;
+    envAck: boolean;
+    ackSource: "env" | "none" | "session";
     acknowledgedCost: boolean;
     provider: string;
     apiKeyConfigured: boolean;
@@ -90,6 +95,7 @@ export type RuntimeControlStatus = {
     budgetRemainingSol: number;
     maxConcurrentMints: number;
     maxEventsPerSession: number;
+    maxUiSessionCostSol: number;
     budgetReached: boolean;
     latestEventAt: string | null;
     blockers: string[];
@@ -195,6 +201,9 @@ export type RuntimeControlServiceOptions = {
   ackMeteredLaunchDataSession?: (
     input: MeteredLaunchDataSessionAckInput
   ) => MeteredLaunchDataStatus | Promise<MeteredLaunchDataStatus>;
+  clearMeteredLaunchDataSessionAck?: () =>
+    | MeteredLaunchDataStatus
+    | Promise<MeteredLaunchDataStatus>;
   ports?: number[];
   refreshDataWallet: () =>
     | PumpPortalDataWalletStatus
@@ -219,6 +228,7 @@ export type RuntimeControlService = {
   ackMeteredLaunchDataSession: (
     input: MeteredLaunchDataSessionAckInput
   ) => Promise<RuntimeControlResult>;
+  clearMeteredLaunchDataSessionAck: () => Promise<RuntimeControlResult>;
   refreshDataWallet: () => Promise<RuntimeControlResult>;
   refreshTradingWallet: () => Promise<RuntimeControlResult>;
   restartLiveDiscovery: () => Promise<RuntimeControlResult>;
@@ -334,16 +344,16 @@ export function createRuntimeControlService(
       meteredPriceAction: {
         state: meteredState,
         enabled: metered.enabled,
+        controlsEnabled: metered.controlsEnabled,
+        capabilityConfigured: metered.capabilityConfigured,
         active: metered.active && meteredBlockers.length === 0,
-        canStart:
-          metered.enabled &&
-          metered.acknowledgedCost &&
-          !metered.budgetReached &&
-          meteredBlockers.length === 0 &&
-          !metered.active,
-        canStop: metered.active || metered.trackedMintCount > 0,
-        requiresAck: true,
+        canArm: metered.canArm,
+        canStart: metered.canStart && !metered.budgetReached,
+        canStop: metered.canStop,
+        requiresAck: metered.requireUiAck,
         sessionAck: metered.sessionAcknowledgedCost,
+        envAck: metered.envAcknowledgedCost,
+        ackSource: metered.ackSource,
         acknowledgedCost: metered.acknowledgedCost,
         provider: metered.provider,
         apiKeyConfigured: metered.apiKeyConfigured,
@@ -358,6 +368,7 @@ export function createRuntimeControlService(
         budgetRemainingSol: metered.remainingBudgetSol,
         maxConcurrentMints: metered.maxConcurrentMints,
         maxEventsPerSession: metered.maxEventsPerSession,
+        maxUiSessionCostSol: metered.maxUiSessionCostSol,
         budgetReached: metered.budgetReached,
         latestEventAt: latestMeteredEventAt,
         blockers: meteredBlockers,
@@ -498,12 +509,22 @@ export function createRuntimeControlService(
     let metered = options.getMeteredLaunchDataStatus();
     const blockers = mapMeteredBlockers(metered);
 
-    if (blockers.length > 0) {
+    if (metered.active && blockers.length === 0) {
+      return actionResult("start", true, "Metered launch data is already running.", [
+        "METERED_DATA_START_REQUESTED",
+        "METERED_DATA_ALREADY_RUNNING"
+      ]);
+    }
+
+    if (blockers.length > 0 || !metered.canStart) {
       return actionResult(
         "start",
         false,
         "Metered launch data is blocked by current gates.",
-        ["METERED_DATA_START_REQUESTED", ...blockers]
+        [
+          "METERED_DATA_START_REQUESTED",
+          ...(blockers.length > 0 ? blockers : ["METERED_DATA_NOT_READY"])
+        ]
       );
     }
 
@@ -580,6 +601,15 @@ export function createRuntimeControlService(
     ]);
   }
 
+  async function clearMeteredLaunchDataSessionAck(): Promise<RuntimeControlResult> {
+    await options.clearMeteredLaunchDataSessionAck?.();
+
+    return actionResult("arm", true, "Metered price action session ACK cleared.", [
+      "METERED_DATA_SESSION_ACK_CLEAR_REQUESTED",
+      "METERED_DATA_SESSION_ACK_CLEARED"
+    ]);
+  }
+
   async function actionResult(
     action: RuntimeControlResult["action"],
     ok: boolean,
@@ -605,6 +635,7 @@ export function createRuntimeControlService(
 
   return {
     ackMeteredLaunchDataSession,
+    clearMeteredLaunchDataSessionAck,
     getDiagnostics,
     getStatus,
     refreshDataWallet,
@@ -628,7 +659,7 @@ function isMeteredBlocked(status: MeteredLaunchDataStatus): boolean {
 }
 
 function mapMeteredBlockers(status: MeteredLaunchDataStatus): string[] {
-  return mapMeteredBlockerCodes(status.reasonCodes);
+  return mapMeteredBlockerCodes(status.blockers);
 }
 
 function mapMeteredReasonCodes(reasonCodes: string[]): string[] {
@@ -686,15 +717,16 @@ function mapMeteredWarnings(
   dataWallet: PumpPortalDataWalletStatus
 ): string[] {
   return unique([
+    ...status.warnings.map((warning) =>
+      warning === "METERED_LAUNCH_DATA_STOPPED"
+        ? "METERED_DATA_STOPPED"
+        : warning
+    ),
     ...(status.dataWalletBalanceStatus === "unknown" ||
     dataWallet.balanceStatus === "unknown" ||
     status.reasonCodes.some((code) => code.includes("BALANCE_UNKNOWN"))
       ? ["METERED_DATA_BALANCE_UNKNOWN"]
       : []),
-    ...(status.acknowledgedCost &&
-    status.reasonCodes.includes("METERED_LAUNCH_DATA_STOPPED")
-      ? ["METERED_DATA_STOPPED"]
-      : [])
   ]);
 }
 
@@ -702,7 +734,7 @@ function getMeteredPriceActionState(
   status: MeteredLaunchDataStatus,
   blockers: string[]
 ): RuntimeMeteredPriceActionState {
-  if (!status.enabled) {
+  if (!status.controlsEnabled || !status.enabled) {
     return "OFF";
   }
 
@@ -722,7 +754,10 @@ function getMeteredPriceActionState(
     return "BLOCKED";
   }
 
-  if (status.reasonCodes.includes("METERED_LAUNCH_DATA_STOPPED")) {
+  if (
+    status.reasonCodes.includes("METERED_LAUNCH_DATA_STOPPED") &&
+    status.lastStopReason !== null
+  ) {
     return "STOPPED";
   }
 

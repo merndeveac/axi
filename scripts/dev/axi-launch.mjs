@@ -14,26 +14,37 @@ import {
 
 const meteredMode = process.argv.includes("--metered");
 const respectEnv = process.argv.includes("--respect-env");
+const uiControlledMeteredEnv = {
+  METERED_LAUNCH_DATA_CONTROLS_ENABLED: "true",
+  METERED_LAUNCH_DATA_ENABLED: "true",
+  METERED_LAUNCH_DATA_START_ACTIVE: "false",
+  METERED_LAUNCH_DATA_REQUIRE_UI_ACK: "true",
+  METERED_LAUNCH_DATA_ACK_COST: "false",
+  PUMPPORTAL_TOKEN_TRADES_ENABLED: "true",
+  PUMPPORTAL_TOKEN_TRADES_ACK_METERED: "false",
+  PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE: "false",
+  PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE_ON_MIGRATION: "false",
+  PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE_ON_NEW_TOKEN: "false",
+  PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE_ON_QUALIFIED: "false",
+  PUMPPORTAL_TOKEN_TRADES_MANUAL_MINTS: ""
+};
 const env = loadLocalRuntimeEnv(
   respectEnv
     ? meteredMode
       ? {
+          METERED_LAUNCH_DATA_CONTROLS_ENABLED: "true",
           METERED_LAUNCH_DATA_ENABLED: "true",
           PUMPPORTAL_TOKEN_TRADES_ENABLED: "true"
         }
-      : {}
+      : {
+          METERED_LAUNCH_DATA_CONTROLS_ENABLED: "true"
+        }
     : meteredMode
       ? {
-          METERED_LAUNCH_DATA_ENABLED: "true",
-          PUMPPORTAL_TOKEN_TRADES_ENABLED: "true",
-          PUMPPORTAL_TOKEN_TRADES_ACK_METERED: "false",
-          METERED_LAUNCH_DATA_ACK_COST: "false"
+          ...uiControlledMeteredEnv
         }
       : {
-          METERED_LAUNCH_DATA_ENABLED: "false",
-          PUMPPORTAL_TOKEN_TRADES_ENABLED: "false",
-          PUMPPORTAL_TOKEN_TRADES_ACK_METERED: "false",
-          METERED_LAUNCH_DATA_ACK_COST: "false"
+          ...uiControlledMeteredEnv
         }
 );
 

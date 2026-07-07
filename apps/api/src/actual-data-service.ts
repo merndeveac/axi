@@ -221,6 +221,11 @@ export class ActualDataService {
     return this.getStatus();
   }
 
+  clearMeteredSessionAck(): ActualDataStatus {
+    this.sessionAcknowledgedMetered = false;
+    return this.getStatus();
+  }
+
   subscribeMint(
     mint: string,
     reason: string

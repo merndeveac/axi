@@ -25,7 +25,14 @@ const tradingWalletPublicKey = samePumpPortalWallet
   : config.PUMPPORTAL_TRADING_WALLET_PUBLIC_KEY;
 const liveTradeTrackingEnabled = config.LIVE_TRADE_TRACKING_ENABLED;
 const launchTrackingEnabled = config.PUMPPORTAL_LAUNCH_TRACKING_ENABLED;
-const meteredLaunchDataEnabled = config.METERED_LAUNCH_DATA_ENABLED;
+const meteredLaunchDataControlsEnabled =
+  config.METERED_LAUNCH_DATA_CONTROLS_ENABLED ||
+  config.METERED_LAUNCH_DATA_ENABLED;
+const meteredLaunchDataEnabled =
+  config.METERED_LAUNCH_DATA_ENABLED || meteredLaunchDataControlsEnabled;
+const meteredLaunchDataEnvAcknowledged =
+  config.METERED_LAUNCH_DATA_ACK_COST &&
+  !config.METERED_LAUNCH_DATA_REQUIRE_UI_ACK;
 const effectiveMeteredLaunchDataExtendedTrackMs =
   config.MOMENTUM_ADAPTIVE_TRACKING_ENABLED
     ? Math.max(
@@ -79,7 +86,7 @@ const effectiveActualDataAcknowledged =
     config.PUMPPORTAL_TOKEN_TRADES_ACK_METERED) &&
   (!liveTradeTrackingEnabled || config.LIVE_TRADE_TRACKING_ACK_METERED) &&
   (!launchTrackingEnabled || config.PUMPPORTAL_LAUNCH_TRACKING_ACK_METERED) &&
-  (!meteredLaunchDataEnabled || config.METERED_LAUNCH_DATA_ACK_COST);
+  (!meteredLaunchDataEnabled || meteredLaunchDataEnvAcknowledged);
 const mockFeed: MockFeedProviderOptions = {
   scenario: config.MOCK_FEED_SCENARIO
 };
@@ -208,6 +215,7 @@ const options: ApiServerOptions = {
       config.METERED_LAUNCH_DATA_AUTO_UNSUBSCRIBE_ON_LOW_SCORE,
     dataWalletPublicKeyConfigured:
       config.PUMPPORTAL_DATA_WALLET_PUBLIC_KEY !== undefined,
+    controlsEnabled: meteredLaunchDataControlsEnabled,
     enabled: meteredLaunchDataEnabled,
     eventCostSolPer10000: config.PUMPPORTAL_DATA_EVENT_COST_SOL_PER_10000,
     extendedTrackMs: effectiveMeteredLaunchDataExtendedTrackMs,
@@ -217,12 +225,15 @@ const options: ApiServerOptions = {
     maxEventsPerMint: config.METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT,
     maxEventsPerSession: config.METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION,
     maxSessionCostSol: config.METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL,
+    maxUiSessionCostSol: config.METERED_LAUNCH_DATA_MAX_UI_SESSION_COST_SOL,
     minScoreToExtend: config.METERED_LAUNCH_DATA_MIN_SCORE_TO_EXTEND,
     minScoreToTrack: config.METERED_LAUNCH_DATA_MIN_SCORE_TO_TRACK,
     mode: config.METERED_LAUNCH_DATA_MODE,
     projectRateWindowMs: config.METERED_LAUNCH_DATA_PROJECT_RATE_WINDOW_MS,
+    requireUiAck: config.METERED_LAUNCH_DATA_REQUIRE_UI_ACK,
     requireDataWalletReady:
-      config.METERED_LAUNCH_DATA_REQUIRE_DATA_WALLET_READY
+      config.METERED_LAUNCH_DATA_REQUIRE_DATA_WALLET_READY,
+    startActive: config.METERED_LAUNCH_DATA_START_ACTIVE
   }),
   liveTradeTracking: {
     acknowledgedMetered: config.LIVE_TRADE_TRACKING_ACK_METERED,

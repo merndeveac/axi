@@ -73,6 +73,7 @@ backend runtime endpoints:
 - `POST /runtime/live-discovery/stop`
 - `POST /runtime/live-discovery/restart`
 - `POST /runtime/metered-launch-data/ack-session`
+- `POST /runtime/metered-launch-data/clear-session-ack`
 - `POST /runtime/metered-launch-data/start`
 - `POST /runtime/metered-launch-data/stop`
 - `POST /runtime/metered-launch-data/restart`
@@ -176,7 +177,6 @@ Useful local commands:
 
 ```bash
 pnpm axi:restart
-pnpm axi:restart:metered
 pnpm axi:doctor
 pnpm axi:stop
 ```
@@ -371,12 +371,18 @@ PUMPPORTAL_DATA_WALLET_PUBLIC_KEY=<PUBLIC_FUNDING_ADDRESS>
 PUMPPORTAL_DATA_API_KEY=<PUMPPORTAL_DATA_API_KEY>
 SOLANA_RPC_HTTP=<RPC_HTTP_URL>
 
+METERED_LAUNCH_DATA_CONTROLS_ENABLED=true
 METERED_LAUNCH_DATA_ENABLED=true
-METERED_LAUNCH_DATA_ACK_COST=true
+METERED_LAUNCH_DATA_START_ACTIVE=false
+METERED_LAUNCH_DATA_REQUIRE_UI_ACK=true
+METERED_LAUNCH_DATA_ACK_COST=false
 METERED_LAUNCH_DATA_MODE=newest
 METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS=3
 METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION=1000
 METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL=0.001
+METERED_LAUNCH_DATA_MAX_UI_SESSION_COST_SOL=0.005
+PUMPPORTAL_TOKEN_TRADES_ENABLED=true
+PUMPPORTAL_TOKEN_TRADES_ACK_METERED=false
 ```
 
 Safe local setup:
@@ -410,8 +416,11 @@ pnpm check:pumpportal-data-wallet
 Start:
 
 ```bash
-pnpm live:tokens:metered
+pnpm axi:restart
 ```
+
+Then use the dashboard `Arm Metered` dialog and `Start Metered` button when you
+want capped `subscribeTokenTrade` price action.
 
 Endpoints:
 
@@ -1084,11 +1093,9 @@ Live-token runtime helpers:
 ```bash
 pnpm axi:doctor
 pnpm axi:restart
-pnpm axi:restart:metered
 pnpm axi:logs
 pnpm axi:stop
 pnpm live:tokens
-pnpm live:tokens:metered
 pnpm setup:pumpportal-data-env
 pnpm verify:pumpportal-data-env
 pnpm smoke:pumpportal-metered-config
@@ -1104,15 +1111,15 @@ Recommended local workflow:
   launch-data status without printing secrets.
 - `pnpm axi:restart` stops recorded local AXI processes, rebuilds, launches the
   API and dashboard, writes `.tmp/axi-api.log`, `.tmp/axi-dashboard.log`, and
-  `.tmp/axi-dev-pids.json`, then waits for the API/dashboard. By default it
-  forces metered token-trade flags and ACK flags off even if `.env.local`
-  contains metered values. Use `pnpm axi:restart --respect-env` only when you
-  intentionally want the normal launcher to honor those env values.
-- `pnpm axi:restart:metered` first verifies `.env.local` and the metered gates,
-  then rebuilds and launches with metered token-trade data enabled but unarmed.
-  Use the dashboard `Arm Metered` session dialog, then `Start Metered`, before
-  any selected `subscribeTokenTrade` tracking can start. It never enables
-  trading.
+  `.tmp/axi-dev-pids.json`, then waits for the API/dashboard. It loads
+  PumpPortal data-wallet/API readiness and exposes dashboard metered controls,
+  but forces command ACKs, auto token-trade subscriptions, and start-active mode
+  off. Use `Arm Metered`, then `Start Metered`, before any selected
+  `subscribeTokenTrade` tracking can start.
+- `pnpm axi:restart:metered` remains an advanced validation helper. It verifies
+  `.env.local`, rebuilds, and launches with the same UI-controlled metered
+  state: configured but unarmed until the dashboard session ACK and Start
+  button run. It never enables trading.
 - `pnpm axi:logs` prints recent API/dashboard logs.
 - `pnpm axi:stop` stops only PIDs recorded in `.tmp/axi-dev-pids.json`. If a
   repo-local process owns a port but is not in the PID file, it tells you to run
@@ -1134,22 +1141,23 @@ pnpm live:tokens
 This launches the API and dashboard with `DATA_FEED_MODE=live`,
 `DATA_FEED=pumpportal`, `AXI_RUNTIME_MODE=pumpportal_first`, PumpPortal
 `subscribeNewToken` and `subscribeMigration` enabled, runtime mock data
-disabled, paper auto-ordering disabled, and metered token trades disabled.
+disabled, paper auto-ordering disabled, and metered token trades prepared but
+inactive.
 
-Start the same runtime with capped metered launch data prepared only after you
-set the explicit data-wallet gates in your shell or `.env.local`:
+Prepare the same runtime after setting the data-wallet/API values in
+`.env.local`:
 
 ```bash
 pnpm setup:pumpportal-data-env
 pnpm verify:pumpportal-data-env
-pnpm live:tokens:metered
+pnpm axi:restart
 ```
 
-The metered launcher refuses private-key, seed-phrase, or mnemonic env vars. It
-does not set the API key for you, forces the metered ACK off at process launch,
-and requires a browser-session `Arm Metered` action before `Start Metered` can
-begin selected token-trade tracking. It also forces live trading, Lightning
-execution, account-trade streams, and paper auto-orders off.
+The launcher refuses private-key, seed-phrase, or mnemonic env vars. It does not
+set the API key for you, forces command ACKs off at process launch, and requires
+a browser-session `Arm Metered` action before `Start Metered` can begin selected
+token-trade tracking. It also forces live trading, Lightning execution,
+account-trade streams, and paper auto-orders off.
 
 ### Runtime Control Panel
 
@@ -1185,6 +1193,7 @@ Runtime-control API endpoints:
 - `POST /runtime/live-discovery/stop`
 - `POST /runtime/live-discovery/restart`
 - `POST /runtime/metered-launch-data/ack-session`
+- `POST /runtime/metered-launch-data/clear-session-ack`
 - `POST /runtime/metered-launch-data/start`
 - `POST /runtime/metered-launch-data/stop`
 - `POST /runtime/metered-launch-data/restart`
@@ -1211,8 +1220,9 @@ Troubleshooting quick map:
 - API key missing: fill `PUMPPORTAL_DATA_API_KEY` in `.env.local`.
 - Data wallet low: fund only the public data-wallet address with a small amount
   of SOL.
-- Metered ACK missing: set `METERED_LAUNCH_DATA_ACK_COST=true` only after you
-  accept metered data costs.
+- Metered ACK missing: use the dashboard `Arm Metered` dialog to acknowledge a
+  capped in-memory browser session. Normal `pnpm axi:restart` does not require
+  or persist command ACKs.
 - PumpPortal connected but no tracked mints: check DATA tab blockers and
   `GET /runtime/status`; metered mode may be stopped, blocked, or waiting for
   qualifying launches.
@@ -1562,7 +1572,8 @@ Recommended flow:
 5. Run `pnpm verify:pumpportal-data-env`.
 6. Fund the public key with a small amount of SOL.
 7. Optionally run `pnpm check:pumpportal-data-wallet`.
-8. Start with `pnpm live:tokens:metered`.
+8. Start with `pnpm axi:restart`, then use `Arm Metered` and `Start Metered` in
+   the dashboard when you want capped price action.
 9. Check `/pumpportal/data-wallet/status`.
 
 `.env.local` values:

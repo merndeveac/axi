@@ -336,11 +336,19 @@ type LaunchScannerStatus = {
 
 type MeteredLaunchDataStatus = {
   enabled: boolean;
+  controlsEnabled?: boolean;
+  capabilityConfigured?: boolean;
   active: boolean;
   acknowledgedCost: boolean;
+  envAcknowledgedCost?: boolean;
   sessionAcknowledgedCost: boolean;
+  ackSource?: "env" | "none" | "session";
+  requireUiAck?: boolean;
   requireDataWalletReady: boolean;
   ready: boolean;
+  canArm?: boolean;
+  canStart?: boolean;
+  canStop?: boolean;
   mode: string;
   provider: string;
   liveDiscoveryEnabled: boolean;
@@ -354,6 +362,7 @@ type MeteredLaunchDataStatus = {
   trackedMintCount: number;
   maxEventsPerMint: number;
   maxEventsPerSession: number;
+  maxUiSessionCostSol?: number;
   totalEventsThisSession: number;
   estimatedCostSol: number;
   maxSessionCostSol: number;
@@ -361,6 +370,8 @@ type MeteredLaunchDataStatus = {
   projectedCostPerHourSol: number;
   budgetReached: boolean;
   reasonCodes: string[];
+  blockers?: string[];
+  warnings?: string[];
   trackedMints: string[];
   lastStopReason: string | null;
   startedAt: string | null;
@@ -414,11 +425,16 @@ type RuntimeControlStatus = {
       | "BLOCKED"
       | "BUDGET_REACHED";
     enabled: boolean;
+    controlsEnabled: boolean;
+    capabilityConfigured: boolean;
     active: boolean;
+    canArm: boolean;
     canStart: boolean;
     canStop: boolean;
     requiresAck: boolean;
     sessionAck: boolean;
+    envAck: boolean;
+    ackSource: "env" | "none" | "session";
     acknowledgedCost: boolean;
     provider: string;
     apiKeyConfigured: boolean;
@@ -431,6 +447,7 @@ type RuntimeControlStatus = {
     budgetRemainingSol: number;
     maxConcurrentMints: number;
     maxEventsPerSession: number;
+    maxUiSessionCostSol: number;
     budgetReached: boolean;
     latestEventAt: string | null;
     blockers: string[];
@@ -1368,17 +1385,11 @@ export function App() {
 
     const loadRuntimeControl = async () => {
       try {
-        const [nextRuntimeControlStatus, nextFeedStatus, nextMeteredStatus] =
-          await Promise.all([
-            fetchJson<RuntimeControlStatus>("/runtime/status"),
-            fetchJson<FeedStatus>("/feed/status"),
-            fetchJson<MeteredLaunchDataStatus>("/metered-launch-data/status")
-          ]);
+        const nextRuntimeControlStatus =
+          await fetchJson<RuntimeControlStatus>("/runtime/status");
 
         if (!cancelled) {
           setRuntimeControlStatus(nextRuntimeControlStatus);
-          setFeedStatus(nextFeedStatus);
-          setMeteredLaunchDataStatus(nextMeteredStatus);
           setApiStatus("connected");
           setLastUpdated(new Date().toLocaleTimeString());
         }
@@ -1502,16 +1513,10 @@ export function App() {
   };
 
   const refreshRuntimeControlSurfaces = async () => {
-    const [nextRuntimeControlStatus, nextMeteredStatus, nextFeedStatus] =
-      await Promise.all([
-        fetchJson<RuntimeControlStatus>("/runtime/status"),
-        fetchJson<MeteredLaunchDataStatus>("/metered-launch-data/status"),
-        fetchJson<FeedStatus>("/feed/status")
-      ]);
+    const nextRuntimeControlStatus =
+      await fetchJson<RuntimeControlStatus>("/runtime/status");
 
     setRuntimeControlStatus(nextRuntimeControlStatus);
-    setMeteredLaunchDataStatus(nextMeteredStatus);
-    setFeedStatus(nextFeedStatus);
     setApiStatus("connected");
     setLastUpdated(new Date().toLocaleTimeString());
   };
@@ -1783,25 +1788,25 @@ function HeaderControlCenter({
   const [armMaxEventsPerSession, setArmMaxEventsPerSession] = useState("1000");
   const meteredControl = getMeteredControlView({
     apiStatus,
-    meteredStatus: meteredLaunchDataStatus,
+    meteredStatus: null,
     pendingAction: runtimeActionStatus,
     runtimeStatus: runtimeControlStatus
   });
   const meteredPriceAction = runtimeControlStatus?.meteredPriceAction ?? null;
   const meteredBlockers = getHeaderMeteredRuntimeBlockers(
     runtimeControlStatus,
-    meteredLaunchDataStatus
+    null
   );
   const walletSetupText = getWalletSetupText(runtimeControlStatus);
   const dataWalletPublicKey =
-    dataWalletStatus?.publicKey ?? runtimeControlStatus?.dataWallet.publicKey ?? null;
+    runtimeControlStatus?.dataWallet.publicKey ?? dataWalletStatus?.publicKey ?? null;
   const dataWalletShort =
-    dataWalletStatus?.shortPublicKey ??
     runtimeControlStatus?.dataWallet.shortPublicKey ??
+    dataWalletStatus?.shortPublicKey ??
     "public address";
   const balanceStatus =
-    dataWalletStatus?.balanceStatus ??
     runtimeControlStatus?.dataWallet.balanceStatus ??
+    dataWalletStatus?.balanceStatus ??
     "unknown";
   const apiOffline = apiStatus === "disconnected";
   const liveFeedStopped =
@@ -1809,12 +1814,10 @@ function HeaderControlCenter({
     !runtimeControlStatus?.liveDiscovery.connecting;
   const projectedCostPerHour =
     runtimeControlStatus?.usage.projectedCostPerHourSol ??
-    meteredLaunchDataStatus?.projectedCostPerHourSol ??
     null;
   const latestMeteredAt =
     meteredPriceAction?.latestEventAt ??
     runtimeControlStatus?.meteredLaunchData.latestEventAt ??
-    meteredLaunchDataStatus?.startedAt ??
     null;
   const tradingWallet = runtimeControlStatus?.tradingWallet ?? null;
   const tradingWalletShort =
@@ -1822,16 +1825,19 @@ function HeaderControlCenter({
   const tradingBalanceStatus = tradingWallet?.balanceStatus ?? "unknown";
   const canArmMetered =
     !apiOffline &&
-    meteredPriceAction?.enabled === true &&
-    meteredPriceAction.active !== true;
+    meteredPriceAction?.canArm === true;
   const parsedArmCost = Number(armMaxSessionCostSol);
   const parsedArmMints = Number(armMaxConcurrentMints);
   const parsedArmEvents = Number(armMaxEventsPerSession);
+  const armSessionCostCeiling = Math.min(
+    meteredPriceAction?.sessionCostCapSol ?? 0.001,
+    meteredPriceAction?.maxUiSessionCostSol ?? 0.005
+  );
   const armSubmitDisabled =
     !armCostAck ||
     !Number.isFinite(parsedArmCost) ||
     parsedArmCost <= 0 ||
-    parsedArmCost > (meteredPriceAction?.sessionCostCapSol ?? 0.001) ||
+    parsedArmCost > armSessionCostCeiling ||
     !Number.isInteger(parsedArmMints) ||
     parsedArmMints <= 0 ||
     parsedArmMints > (meteredPriceAction?.maxConcurrentMints ?? 3) ||
@@ -1941,12 +1947,18 @@ function HeaderControlCenter({
         />
         <HeaderMetric
           label="Feed"
-          value={formatCompactNumber(feedStatus?.newTokenEventCount)}
-          detail={`${formatCompactNumber(feedStatus?.migrationEventCount)} migrated`}
+          value={formatCompactNumber(
+            runtimeControlStatus?.liveDiscovery.newTokenEventCount ??
+              feedStatus?.newTokenEventCount
+          )}
+          detail={`${formatCompactNumber(
+            runtimeControlStatus?.liveDiscovery.migrationEventCount ??
+              feedStatus?.migrationEventCount
+          )} migrated`}
         />
         <HeaderMetric
           label="Wallet"
-          value={formatSol(dataWalletStatus?.balanceSol ?? runtimeControlStatus?.dataWallet.balanceSol)}
+          value={formatSol(runtimeControlStatus?.dataWallet.balanceSol ?? dataWalletStatus?.balanceSol)}
           detail={dataWalletShort}
         />
         <HeaderMetric
@@ -1958,12 +1970,10 @@ function HeaderControlCenter({
           label="Events"
           value={formatCompactNumber(
             meteredPriceAction?.eventCount ??
-              meteredLaunchDataStatus?.totalEventsThisSession ??
               runtimeControlStatus?.meteredLaunchData.eventCount
           )}
           detail={`${formatSol(
             meteredPriceAction?.estimatedCostSol ??
-              meteredLaunchDataStatus?.estimatedCostSol ??
               runtimeControlStatus?.meteredLaunchData.estimatedCostSol
           )} est`}
         />
@@ -1971,12 +1981,10 @@ function HeaderControlCenter({
           label="Budget"
           value={formatSol(
             meteredPriceAction?.budgetRemainingSol ??
-              meteredLaunchDataStatus?.remainingBudgetSol ??
               runtimeControlStatus?.meteredLaunchData.budgetRemainingSol
           )}
           detail={`${formatSol(
             meteredPriceAction?.sessionCostCapSol ??
-              meteredLaunchDataStatus?.maxSessionCostSol ??
               runtimeControlStatus?.meteredLaunchData.sessionCostCapSol
           )} cap`}
         />
@@ -2106,7 +2114,7 @@ function HeaderControlCenter({
               <label>
                 <span>Session SOL cap</span>
                 <input
-                  max={meteredPriceAction?.sessionCostCapSol ?? 0.001}
+                  max={armSessionCostCeiling}
                   min="0.000001"
                   onChange={(event) => setArmMaxSessionCostSol(event.target.value)}
                   step="0.000001"
@@ -2142,7 +2150,11 @@ function HeaderControlCenter({
                   onChange={(event) => setArmCostAck(event.target.checked)}
                   type="checkbox"
                 />
-                <span>Metered PumpPortal token-trade data can spend SOL.</span>
+                <span>
+                  I understand this arms PumpPortal subscribeTokenTrade for this
+                  browser session only, can spend data-wallet SOL up to the
+                  session cap, and does not enable trading.
+                </span>
               </label>
             </div>
             <div className="modal-actions">
@@ -2289,7 +2301,6 @@ function HeaderControlCenter({
             <div className="offline-commands control-commands">
               <code>pnpm axi:doctor</code>
               <code>pnpm axi:restart</code>
-              <code>pnpm axi:restart:metered</code>
               <code>pnpm axi:stop</code>
             </div>
           </section>

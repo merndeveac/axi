@@ -1573,7 +1573,7 @@ describe("@axi/api", () => {
     expect(ackResponse.statusCode).toBe(200);
     expect(ackBody.status.meteredPriceAction.sessionAck).toBe(true);
     expect(ackBody.status.meteredPriceAction.canStart).toBe(true);
-    expect(ackBody.status.meteredPriceAction.state).toBe("STOPPED");
+    expect(ackBody.status.meteredPriceAction.state).toBe("READY");
     expect(startResponse.statusCode).toBe(200);
     expect(startBody.status.meteredPriceAction.state).toBe("ACTIVE");
     expect(startBody.status.meteredPriceAction.active).toBe(true);
@@ -1612,6 +1612,45 @@ describe("@axi/api", () => {
     expect(response.statusCode).toBe(400);
     expect(body.error).toBe("METERED_LAUNCH_DATA_SESSION_COST_EXCEEDS_CONFIG");
     expect(body.status.meteredPriceAction.sessionAck).toBe(false);
+  });
+
+  it("runtime clear session ACK resets metered start readiness", async () => {
+    server = createMeteredLaunchDataTestServer({
+      acknowledgedCost: false,
+      dataWalletBalanceSol: 0.05,
+      enabled: true,
+      liveDiscoveryConnected: true
+    });
+
+    await server.app.inject({
+      method: "POST",
+      url: "/runtime/metered-launch-data/ack-session",
+      payload: {
+        ackCost: true,
+        maxSessionCostSol: 0.001,
+        maxConcurrentMints: 2,
+        maxEventsPerSession: 100
+      }
+    });
+
+    const clearResponse = await server.app.inject({
+      method: "POST",
+      url: "/runtime/metered-launch-data/clear-session-ack"
+    });
+    const body = clearResponse.json() as {
+      status: {
+        meteredPriceAction: {
+          canStart: boolean;
+          sessionAck: boolean;
+          state: string;
+        };
+      };
+    };
+
+    expect(clearResponse.statusCode).toBe(200);
+    expect(body.status.meteredPriceAction.sessionAck).toBe(false);
+    expect(body.status.meteredPriceAction.canStart).toBe(false);
+    expect(body.status.meteredPriceAction.state).toBe("ARM_REQUIRED");
   });
 
   it("runtime stop unsubscribes metered launch-data subscriptions", async () => {
@@ -4438,7 +4477,9 @@ function createMeteredLaunchDataTestServer(options: {
       maxConcurrentMints: 3,
       maxEventsPerMint: 250,
       maxEventsPerSession: 1000,
-      maxSessionCostSol: 0.001
+      maxSessionCostSol: 0.001,
+      requireUiAck: !options.acknowledgedCost,
+      startActive: options.acknowledgedCost
     },
     pumpPortal: {
       apiKey: "test-api-key",

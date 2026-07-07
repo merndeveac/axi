@@ -14,10 +14,11 @@ export const forbiddenEnvKeyPatterns = [
 export const forbiddenExactEnvKeys = ["SEED"];
 
 export const requiredMeteredEnv = {
+  METERED_LAUNCH_DATA_CONTROLS_ENABLED: "true",
   METERED_LAUNCH_DATA_ENABLED: "true",
-  METERED_LAUNCH_DATA_ACK_COST: "true",
+  METERED_LAUNCH_DATA_START_ACTIVE: "false",
+  METERED_LAUNCH_DATA_REQUIRE_UI_ACK: "true",
   PUMPPORTAL_TOKEN_TRADES_ENABLED: "true",
-  PUMPPORTAL_TOKEN_TRADES_ACK_METERED: "true",
   PAPER_AUTO_ORDER: "false",
   PUMPPORTAL_LIGHTNING_ALLOW_LIVE_TRADING: "false",
   EXIT_STRATEGY_ACCOUNT_TRADES_ENABLED: "false",

@@ -42,13 +42,18 @@ describe("PumpPortal data env setup helpers", () => {
     expect(gitignore).toContain("!.env.pumpportal-data.example");
   });
 
-  it("keeps the default dev launch discovery-only unless env is respected", () => {
+  it("keeps the default dev launch UI-controlled unless env is respected", () => {
     const launchScript = readFileSync(axiLaunchPath, "utf8");
 
     expect(launchScript).toContain("--respect-env");
-    expect(launchScript).toContain('METERED_LAUNCH_DATA_ENABLED: "false"');
-    expect(launchScript).toContain('PUMPPORTAL_TOKEN_TRADES_ENABLED: "false"');
+    expect(launchScript).toContain(
+      'METERED_LAUNCH_DATA_CONTROLS_ENABLED: "true"'
+    );
+    expect(launchScript).toContain('METERED_LAUNCH_DATA_ENABLED: "true"');
+    expect(launchScript).toContain('METERED_LAUNCH_DATA_START_ACTIVE: "false"');
+    expect(launchScript).toContain('METERED_LAUNCH_DATA_REQUIRE_UI_ACK: "true"');
     expect(launchScript).toContain('METERED_LAUNCH_DATA_ACK_COST: "false"');
+    expect(launchScript).toContain('PUMPPORTAL_TOKEN_TRADES_ENABLED: "true"');
     expect(launchScript).toContain(
       'PUMPPORTAL_TOKEN_TRADES_ACK_METERED: "false"'
     );
@@ -80,10 +85,13 @@ describe("PumpPortal data env setup helpers", () => {
       PUMPPORTAL_DATA_WALLET_PUBLIC_KEY: "",
       PUMPPORTAL_DATA_API_KEY: "",
       PUMPPORTAL_API_KEY: "",
+      METERED_LAUNCH_DATA_CONTROLS_ENABLED: "true",
       METERED_LAUNCH_DATA_ENABLED: "true",
-      METERED_LAUNCH_DATA_ACK_COST: "true",
+      METERED_LAUNCH_DATA_START_ACTIVE: "false",
+      METERED_LAUNCH_DATA_REQUIRE_UI_ACK: "true",
+      METERED_LAUNCH_DATA_ACK_COST: "false",
       PUMPPORTAL_TOKEN_TRADES_ENABLED: "true",
-      PUMPPORTAL_TOKEN_TRADES_ACK_METERED: "true",
+      PUMPPORTAL_TOKEN_TRADES_ACK_METERED: "false",
       PAPER_AUTO_ORDER: "false",
       PUMPPORTAL_LIGHTNING_ALLOW_LIVE_TRADING: "false",
       PUMPPORTAL_LIGHTNING_MANUAL_ARMED: "false",
@@ -145,10 +153,13 @@ function validEnv() {
       "11111111111111111111111111111111",
     PUMPPORTAL_DATA_API_KEY: secretValue,
     SOLANA_RPC_HTTP: "http://localhost:8899",
+    METERED_LAUNCH_DATA_CONTROLS_ENABLED: "true",
     METERED_LAUNCH_DATA_ENABLED: "true",
-    METERED_LAUNCH_DATA_ACK_COST: "true",
+    METERED_LAUNCH_DATA_START_ACTIVE: "false",
+    METERED_LAUNCH_DATA_REQUIRE_UI_ACK: "true",
+    METERED_LAUNCH_DATA_ACK_COST: "false",
     PUMPPORTAL_TOKEN_TRADES_ENABLED: "true",
-    PUMPPORTAL_TOKEN_TRADES_ACK_METERED: "true",
+    PUMPPORTAL_TOKEN_TRADES_ACK_METERED: "false",
     PAPER_AUTO_ORDER: "false",
     PUMPPORTAL_LIGHTNING_ALLOW_LIVE_TRADING: "false",
     PUMPPORTAL_LIGHTNING_MANUAL_ARMED: "false",

@@ -112,7 +112,7 @@ describe("runtime control view helpers", () => {
     });
   });
 
-  it("enables metered start after session ACK leaves runtime stopped", () => {
+  it("enables metered start after session ACK leaves runtime ready", () => {
     const view = getMeteredControlView({
       apiStatus: "connected",
       meteredStatus: null,
@@ -120,7 +120,7 @@ describe("runtime control view helpers", () => {
       runtimeStatus: {
         liveDiscovery: { connected: true, connecting: false },
         meteredPriceAction: {
-          state: "STOPPED",
+          state: "READY",
           enabled: true,
           active: false,
           canStart: true,
@@ -146,7 +146,33 @@ describe("runtime control view helpers", () => {
     expect(view).toMatchObject({
       buttonLabel: "Start Metered",
       disabled: false,
-      state: "STOPPED"
+      state: "READY"
+    });
+  });
+
+  it("does not send users to the metered restart command for OFF state", () => {
+    const view = getMeteredControlView({
+      apiStatus: "connected",
+      meteredStatus: null,
+      pendingAction: "ready",
+      runtimeStatus: {
+        meteredPriceAction: {
+          state: "OFF",
+          enabled: false,
+          controlsEnabled: false,
+          active: false,
+          canStart: false,
+          acknowledgedCost: false,
+          blockers: [],
+          reasonCodes: []
+        }
+      }
+    });
+
+    expect(view.helper).not.toContain("axi:restart:metered");
+    expect(view).toMatchObject({
+      disabled: true,
+      state: "OFF"
     });
   });
 

@@ -24,7 +24,10 @@ export type MeteredLaunchDataMode =
 
 export type MeteredLaunchDataConfig = {
   enabled: boolean;
+  controlsEnabled: boolean;
   acknowledgedCost: boolean;
+  requireUiAck: boolean;
+  startActive: boolean;
   requireDataWalletReady: boolean;
   mode: MeteredLaunchDataMode;
   maxConcurrentMints: number;
@@ -35,6 +38,7 @@ export type MeteredLaunchDataConfig = {
   maxEventsPerMint: number;
   maxEventsPerSession: number;
   maxSessionCostSol: number;
+  maxUiSessionCostSol: number;
   autoUnsubscribeOnHardReject: boolean;
   autoUnsubscribeOnLowScore: boolean;
   projectRateWindowMs: number;
@@ -96,15 +100,24 @@ export type MeteredLaunchDataSessionAckInput = {
   maxSessionCostSol: number;
   maxConcurrentMints: number;
   maxEventsPerSession: number;
+  startAfterAck?: boolean | undefined;
 };
 
 export type MeteredLaunchDataStatus = {
   enabled: boolean;
+  controlsEnabled: boolean;
+  capabilityConfigured: boolean;
   active: boolean;
   acknowledgedCost: boolean;
+  envAcknowledgedCost: boolean;
   sessionAcknowledgedCost: boolean;
+  ackSource: "env" | "none" | "session";
+  requireUiAck: boolean;
   requireDataWalletReady: boolean;
   ready: boolean;
+  canArm: boolean;
+  canStart: boolean;
+  canStop: boolean;
   mode: MeteredLaunchDataMode;
   provider: string;
   liveDiscoveryEnabled: boolean;
@@ -118,6 +131,7 @@ export type MeteredLaunchDataStatus = {
   trackedMintCount: number;
   maxEventsPerMint: number;
   maxEventsPerSession: number;
+  maxUiSessionCostSol: number;
   totalEventsThisSession: number;
   estimatedCostSol: number;
   maxSessionCostSol: number;
@@ -125,6 +139,8 @@ export type MeteredLaunchDataStatus = {
   projectedCostPerHourSol: number;
   budgetReached: boolean;
   reasonCodes: string[];
+  blockers: string[];
+  warnings: string[];
   trackedMints: string[];
   lastStopReason: string | null;
   startedAt: string | null;
@@ -168,7 +184,10 @@ export function createMeteredLaunchDataConfig(
 ): MeteredLaunchDataConfig {
   return {
     enabled: input.enabled ?? false,
+    controlsEnabled: input.controlsEnabled ?? input.enabled ?? false,
     acknowledgedCost: input.acknowledgedCost ?? false,
+    requireUiAck: input.requireUiAck ?? true,
+    startActive: input.startActive ?? false,
     requireDataWalletReady: input.requireDataWalletReady ?? true,
     mode: input.mode ?? "newest",
     maxConcurrentMints: input.maxConcurrentMints ?? 3,
@@ -179,6 +198,7 @@ export function createMeteredLaunchDataConfig(
     maxEventsPerMint: input.maxEventsPerMint ?? 250,
     maxEventsPerSession: input.maxEventsPerSession ?? 1000,
     maxSessionCostSol: input.maxSessionCostSol ?? 0.001,
+    maxUiSessionCostSol: input.maxUiSessionCostSol ?? 0.005,
     autoUnsubscribeOnHardReject:
       input.autoUnsubscribeOnHardReject ?? true,
     autoUnsubscribeOnLowScore: input.autoUnsubscribeOnLowScore ?? true,
@@ -235,13 +255,19 @@ export class MeteredLaunchDataService {
     this.getLaunchCandidates = options.getLaunchCandidates;
     this.getLiveDiscoveryActive = options.getLiveDiscoveryActive;
     this.providerName = options.providerName;
-    this.runtimeStopped = !this.config.acknowledgedCost;
+    this.runtimeStopped = !(this.config.startActive && this.isCostAcknowledged());
+  }
+
+  prepare(): void {
+    if (this.config.startActive && this.isCostAcknowledged()) {
+      this.start();
+    }
   }
 
   start(): void {
     this.runtimeStopped = !this.isCostAcknowledged();
 
-    if (this.startedAt) {
+    if (this.runtimeStopped || this.startedAt) {
       return;
     }
 
@@ -267,6 +293,7 @@ export class MeteredLaunchDataService {
 
   stop(): void {
     this.runtimeStopped = true;
+    this.lastStopReason = "service_stop";
 
     for (const mint of this.getTrackedMints()) {
       this.untrackMint(mint, "service_stop");
@@ -336,6 +363,14 @@ export class MeteredLaunchDataService {
       );
     }
 
+    if (input.maxSessionCostSol > this.config.maxUiSessionCostSol) {
+      throw new MeteredLaunchDataServiceError(
+        "METERED_LAUNCH_DATA_SESSION_COST_EXCEEDS_UI_LIMIT",
+        "Requested session cost cap exceeds the UI session ceiling.",
+        400
+      );
+    }
+
     if (input.maxConcurrentMints > this.config.maxConcurrentMints) {
       throw new MeteredLaunchDataServiceError(
         "METERED_LAUNCH_DATA_CONCURRENT_CAP_EXCEEDS_CONFIG",
@@ -357,6 +392,22 @@ export class MeteredLaunchDataService {
       maxEventsPerSession: input.maxEventsPerSession,
       maxSessionCostSol: input.maxSessionCostSol
     };
+
+    if (input.startAfterAck) {
+      this.start();
+    }
+
+    return this.getStatus();
+  }
+
+  clearSessionAck(): MeteredLaunchDataStatus {
+    this.sessionAck = null;
+    this.runtimeStopped = true;
+    this.lastStopReason = "session_ack_cleared";
+
+    for (const mint of this.getTrackedMints()) {
+      this.untrackMint(mint, "session_ack_cleared");
+    }
 
     return this.getStatus();
   }
@@ -439,9 +490,12 @@ export class MeteredLaunchDataService {
     const blockers = this.getSubscriptionBlockers(normalizedMint);
 
     if (blockers.length > 0) {
+      const primaryBlocker = blockers[0] ?? "METERED_LAUNCH_DATA_BLOCKED";
       throw new MeteredLaunchDataServiceError(
-        blockers[0] ?? "METERED_LAUNCH_DATA_BLOCKED",
-        "Metered launch data tracking is blocked by current safety gates."
+        primaryBlocker,
+        primaryBlocker === "METERED_LAUNCH_DATA_STOPPED"
+          ? "Start metered price action before tracking mints."
+          : "Metered launch data tracking is blocked by current safety gates."
       );
     }
 
@@ -611,14 +665,36 @@ export class MeteredLaunchDataService {
   getStatus(): MeteredLaunchDataStatus {
     const cost = this.getSessionCost();
     const dataWallet = this.getDataWalletReadiness();
+    const blockers = this.getStartBlockers();
+    const reasonCodes = this.getReasonCodes();
+    const acknowledgedCost = this.isCostAcknowledged();
+    const capabilityConfigured = this.isCapabilityConfigured(dataWallet);
+    const active = this.config.enabled && acknowledgedCost && !this.runtimeStopped;
 
     return {
       enabled: this.config.enabled,
-      active: this.config.enabled && !this.runtimeStopped,
-      acknowledgedCost: this.isCostAcknowledged(),
+      controlsEnabled: this.config.controlsEnabled,
+      capabilityConfigured,
+      active,
+      acknowledgedCost,
+      envAcknowledgedCost: this.config.acknowledgedCost,
       sessionAcknowledgedCost: this.sessionAck !== null,
+      ackSource: this.getAckSource(),
+      requireUiAck: this.config.requireUiAck,
       requireDataWalletReady: this.config.requireDataWalletReady,
-      ready: this.isReady(),
+      ready: blockers.length === 0,
+      canArm:
+        this.config.controlsEnabled &&
+        this.config.enabled &&
+        capabilityConfigured &&
+        !active,
+      canStart:
+        this.config.controlsEnabled &&
+        this.config.enabled &&
+        acknowledgedCost &&
+        !active &&
+        blockers.length === 0,
+      canStop: active || this.getTrackedMints().length > 0,
       mode: this.config.mode,
       provider: this.providerName,
       liveDiscoveryEnabled: this.config.liveDiscoveryEnabled,
@@ -633,13 +709,16 @@ export class MeteredLaunchDataService {
       trackedMintCount: this.getTrackedMints().length,
       maxEventsPerMint: this.config.maxEventsPerMint,
       maxEventsPerSession: this.getMaxEventsPerSession(),
+      maxUiSessionCostSol: this.config.maxUiSessionCostSol,
       totalEventsThisSession: this.totalEventsThisSession,
       estimatedCostSol: cost.estimatedCostSol,
       maxSessionCostSol: this.getMaxSessionCostSol(),
       remainingBudgetSol: cost.remainingBudgetSol,
       projectedCostPerHourSol: cost.projectedCostPerHourSol,
       budgetReached: this.budgetReached,
-      reasonCodes: this.getReasonCodes(),
+      reasonCodes,
+      blockers,
+      warnings: this.getWarnings(),
       trackedMints: this.getTrackedMints(),
       lastStopReason: this.lastStopReason,
       startedAt: this.startedAt,
@@ -700,9 +779,10 @@ export class MeteredLaunchDataService {
   }
 
   getReasonCodes(): string[] {
-    const blockers = this.getSubscriptionBlockers();
+    const blockers = this.getStartBlockers();
     return unique([
       ...blockers,
+      ...(this.runtimeStopped ? ["METERED_LAUNCH_DATA_STOPPED"] : []),
       ...this.getDataWalletReadiness().reasonCodes,
       ...(blockers.length === 0 ? ["METERED_LAUNCH_DATA_READY"] : []),
       ...(this.budgetReached ? ["METERED_LAUNCH_DATA_BUDGET_REACHED"] : []),
@@ -892,9 +972,28 @@ export class MeteredLaunchDataService {
     });
   }
 
-  private getSubscriptionBlockers(mint?: string): string[] {
+  private getStartBlockers(): string[] {
+    return this.getSubscriptionBlockers(undefined, { includeStopped: false });
+  }
+
+  private getWarnings(): string[] {
+    const stoppedAfterUserAction =
+      this.runtimeStopped &&
+      this.isCostAcknowledged() &&
+      this.lastStopReason !== null;
+
+    return unique([
+      ...(stoppedAfterUserAction ? ["METERED_LAUNCH_DATA_STOPPED"] : [])
+    ]);
+  }
+
+  private getSubscriptionBlockers(
+    mint?: string,
+    options: { includeStopped?: boolean } = {}
+  ): string[] {
     const dataWallet = this.getDataWalletReadiness();
     const reasonCodes: string[] = [];
+    const includeStopped = options.includeStopped ?? true;
 
     if (!this.config.enabled) {
       reasonCodes.push("METERED_LAUNCH_DATA_DISABLED");
@@ -904,7 +1003,7 @@ export class MeteredLaunchDataService {
       reasonCodes.push("METERED_LAUNCH_DATA_ACK_MISSING");
     }
 
-    if (this.runtimeStopped) {
+    if (includeStopped && this.runtimeStopped) {
       reasonCodes.push("METERED_LAUNCH_DATA_STOPPED");
     }
 
@@ -961,7 +1060,7 @@ export class MeteredLaunchDataService {
   }
 
   private isReady(): boolean {
-    return this.getSubscriptionBlockers().length === 0;
+    return this.getStartBlockers().length === 0;
   }
 
   private getDataWalletReadiness(): ActualDataDataWalletReadiness {
@@ -986,7 +1085,34 @@ export class MeteredLaunchDataService {
   }
 
   private isCostAcknowledged(): boolean {
-    return this.config.acknowledgedCost || this.sessionAck !== null;
+    return (
+      this.sessionAck !== null ||
+      (this.config.acknowledgedCost && !this.config.requireUiAck)
+    );
+  }
+
+  private getAckSource(): MeteredLaunchDataStatus["ackSource"] {
+    if (this.sessionAck !== null) {
+      return "session";
+    }
+
+    if (this.config.acknowledgedCost && !this.config.requireUiAck) {
+      return "env";
+    }
+
+    return "none";
+  }
+
+  private isCapabilityConfigured(
+    dataWallet = this.getDataWalletReadiness()
+  ): boolean {
+    return (
+      this.config.controlsEnabled &&
+      this.config.enabled &&
+      this.config.apiKeyConfigured &&
+      this.config.dataWalletPublicKeyConfigured &&
+      dataWallet.configured
+    );
   }
 
   private getMaxConcurrentMints(): number {

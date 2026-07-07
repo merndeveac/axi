@@ -624,6 +624,15 @@ export const apiConfigSchema = z.object({
   METERED_LAUNCH_DATA_ENABLED: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(false),
+  METERED_LAUNCH_DATA_CONTROLS_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  METERED_LAUNCH_DATA_START_ACTIVE: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  METERED_LAUNCH_DATA_REQUIRE_UI_ACK: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
   METERED_LAUNCH_DATA_ACK_COST: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(false),
@@ -674,6 +683,10 @@ export const apiConfigSchema = z.object({
     .number()
     .positive()
     .default(0.001),
+  METERED_LAUNCH_DATA_MAX_UI_SESSION_COST_SOL: z.coerce
+    .number()
+    .positive()
+    .default(0.005),
   METERED_LAUNCH_DATA_AUTO_UNSUBSCRIBE_ON_HARD_REJECT: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(true),
@@ -1345,7 +1358,8 @@ const runtimeMeteredLaunchDataAckBodySchema = z.object({
   ackCost: z.literal(true),
   maxSessionCostSol: z.coerce.number().positive(),
   maxConcurrentMints: z.coerce.number().int().positive(),
-  maxEventsPerSession: z.coerce.number().int().positive()
+  maxEventsPerSession: z.coerce.number().int().positive(),
+  startAfterAck: z.preprocess(parseBooleanEnv, z.boolean()).optional()
 });
 const launchCostQuerySchema = z.object({
   avgEventsPerToken: z.coerce.number().positive().default(20),
@@ -1635,6 +1649,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       actualData.acknowledgeMeteredSession();
       return meteredLaunchData.acknowledgeSession(input);
     },
+    clearMeteredLaunchDataSessionAck: () => {
+      actualData.clearMeteredSessionAck();
+      return meteredLaunchData.clearSessionAck();
+    },
     refreshDataWallet: () => pumpPortalDataWallet.refreshBalance({ force: true }),
     refreshTradingWallet: () => pumpPortalWallets.refreshBalances({ force: true }),
     restartLiveDiscovery: async () => {
@@ -1892,6 +1910,17 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
         throw error;
       }
+    }
+  );
+
+  app.post(
+    "/runtime/metered-launch-data/clear-session-ack",
+    async (request, reply) => {
+      if (!isLocalRuntimeControlRequest(request)) {
+        return sendNonLocalRuntimeControlReply(reply);
+      }
+
+      return runtimeControl.clearMeteredLaunchDataSessionAck();
     }
   );
 
@@ -3230,7 +3259,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     feedStarted = true;
     actualData.start();
     launchScanner.start();
-    meteredLaunchData.start();
+    meteredLaunchData.prepare();
     paperPortfolio.start();
     watchedWalletExit.start();
     void feed.start(handleFeedEvent);
