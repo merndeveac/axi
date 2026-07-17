@@ -171,4 +171,64 @@ describe("launch momentum evaluator", () => {
     expect(snapshot.phase).toBe("rejected");
     expect(snapshot.reasonCodes).toContain("LAUNCH_REJECTED");
   });
+
+  it("rejects invalid timestamps instead of substituting wall-clock time", () => {
+    const invalidTrade: LaunchTradeSample = {
+      mint,
+      side: "buy",
+      trader: "buyer-invalid",
+      signature: "sig-invalid",
+      priceSol: 0.0004,
+      volumeSol: 1,
+      tokenAmount: 2_500,
+      timestamp: "not-a-date"
+    };
+    const snapshot = evaluateLaunchMomentum({
+      mint,
+      launchedAt,
+      now,
+      trades: [
+        invalidTrade,
+        {
+          ...invalidTrade,
+          signature: "sig-future",
+          timestamp: "2026-01-01T00:00:31.000Z"
+        }
+      ]
+    });
+
+    expect(snapshot.tradeSampleCount).toBe(0);
+    expect(snapshot.derivatives.volumeVelocitySolPerSec).toBeNull();
+    expect(() =>
+      evaluateLaunchMomentum({
+        mint,
+        launchedAt,
+        now: "not-a-date",
+        trades: []
+      })
+    ).toThrow("launch momentum timestamps must be valid");
+  });
+
+  it("deduplicates trade signatures and does not invent buyer identities", () => {
+    const duplicate: LaunchTradeSample = {
+      mint,
+      side: "buy",
+      trader: null,
+      signature: "same-signature",
+      priceSol: 0.0004,
+      volumeSol: 1,
+      tokenAmount: 2_500,
+      timestamp: "2026-01-01T00:00:29.000Z"
+    };
+    const snapshot = evaluateLaunchMomentum({
+      mint,
+      launchedAt,
+      now,
+      trades: [duplicate, { ...duplicate }]
+    });
+
+    expect(snapshot.tradeSampleCount).toBe(1);
+    expect(snapshot.windows["5s"].tradeCount).toBe(1);
+    expect(snapshot.windows["5s"].uniqueBuyers).toBe(0);
+  });
 });

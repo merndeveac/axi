@@ -310,6 +310,9 @@ export type IndexerAdapter = {
     mint: string,
     query?: TradeBucketQuery
   ) => ReturnType<TradeTimeseries["getSeries"]>;
+  getDerivatives: (
+    mint: string
+  ) => ReturnType<TradeTimeseries["getDerivatives"]>;
   getTimeseriesStatus: (mint?: string) => TradeTimeseriesStatus;
 };
 
@@ -418,6 +421,7 @@ export function createIndexerAdapter(
     buildStreamSubscriptionPreview: (request = {}) =>
       buildManagedStreamSubscriptionPreview(streamConfig, request),
     getTimeseries: (mint, query) => timeseries.getSeries(mint, query),
+    getDerivatives: (mint) => timeseries.getDerivatives(mint),
     getTimeseriesStatus: (mint) => timeseries.getStatus(mint)
   };
 }

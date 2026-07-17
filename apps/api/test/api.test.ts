@@ -1483,6 +1483,7 @@ describe("@axi/api", () => {
       ownership: Record<string, string>;
       roadmap: {
         canonicalOneSecondTimeseries: string;
+        derivativeCorrectness: string;
         rollingNewestTokenScheduler: string;
         schedulerMutationApplied: boolean;
       };
@@ -1505,11 +1506,18 @@ describe("@axi/api", () => {
         canonical: boolean;
         retentionMs: number;
       };
+      derivatives: {
+        canonical: boolean;
+        method: string;
+        firstDerivativeMinSamples: number;
+        secondDerivativeMinSamples: number;
+      };
     };
 
     expect(response.statusCode).toBe(200);
     expect(body.ownership).toMatchObject({
       discoveryAndLaunchScoring: "LaunchScannerService",
+      canonicalDerivatives: "@axi/derivatives",
       canonicalTimeseries: "@axi/timeseries",
       subscriptionTransport: "ActualDataService",
       subscriptionPolicy: "MeteredLaunchDataService",
@@ -1529,12 +1537,19 @@ describe("@axi/api", () => {
     });
     expect(body.configuration.driftDetected).toBe(false);
     expect(body.roadmap.canonicalOneSecondTimeseries).toBe("implemented");
+    expect(body.roadmap.derivativeCorrectness).toBe("implemented");
     expect(body.roadmap.rollingNewestTokenScheduler).toBe("implemented");
     expect(body.roadmap.schedulerMutationApplied).toBe(false);
     expect(body.timeseries).toMatchObject({
       bucketMs: 1000,
       canonical: true,
       retentionMs: 300_000
+    });
+    expect(body.derivatives).toMatchObject({
+      canonical: true,
+      method: "event_time_finite_difference",
+      firstDerivativeMinSamples: 2,
+      secondDerivativeMinSamples: 3
     });
     expect(body.safety.apiHost).toBe("127.0.0.1");
     expect(body.safety.tradingDisabled).toBe(true);
@@ -2921,7 +2936,7 @@ describe("@axi/api", () => {
     expect(row?.signalDisplay.buyReadyPaper).toBe(false);
   });
 
-  it("GET /ui/momentum-rows exposes an up sparkline and derivatives after enough trade samples", async () => {
+  it("GET /ui/momentum-rows exposes d1 but keeps d2 unavailable with two samples", async () => {
     server = createApiServer({
       logLevel: false,
       startFeed: false,
@@ -2966,11 +2981,14 @@ describe("@axi/api", () => {
     expect(row?.sparkline.points).toHaveLength(2);
     expect(row?.sparkline.priceChangePct).toBeGreaterThan(0);
     expect(row?.volumeVelocitySolPerSec).toEqual(expect.any(Number));
-    expect(row?.volumeAccelerationSolPerSec2).toEqual(expect.any(Number));
+    expect(row?.volumeAccelerationSolPerSec2).toBeNull();
     expect(row?.priceVelocityPctPerSec).toEqual(expect.any(Number));
     expect(row?.buyerVelocityPerSec).toEqual(expect.any(Number));
     expect(row?.unavailableFields).not.toContain(
       "INSUFFICIENT_SAMPLES_FOR_DERIVATIVE"
+    );
+    expect(row?.unavailableFields).toContain(
+      "INSUFFICIENT_SAMPLES_FOR_SECOND_DERIVATIVE"
     );
     expect(findNonFiniteNumbers(row)).toEqual([]);
   });
@@ -3700,6 +3718,25 @@ describe("@axi/api", () => {
     expect(timeseriesBody.windows["10s"].tradeCount).toBe(1);
     expect(timeseriesBody.windows["10s"].volumeSol).toBe(1.5);
 
+    const derivativesResponse = await server.app.inject({
+      method: "GET",
+      url: `/indexer/derivatives/${body.normalizedEvent.mint}`
+    });
+    expect(derivativesResponse.statusCode).toBe(200);
+    expect(derivativesResponse.json()).toMatchObject({
+      canonical: true,
+      method: "event_time_finite_difference",
+      observationCount: 1,
+      primary: {
+        metrics: {
+          priceVelocityPctPerSec: {
+            status: "insufficient_samples",
+            value: null
+          }
+        }
+      }
+    });
+
     const historyResponse = await server.app.inject({
       method: "GET",
       url: `/indexer/timeseries/${body.normalizedEvent.mint}/history`
@@ -3726,6 +3763,19 @@ describe("@axi/api", () => {
         bucketCount: 1,
         canonical: true
       },
+      tradingDisabled: true
+    });
+
+    const runtimeDerivativesResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/derivatives"
+    });
+    expect(runtimeDerivativesResponse.json()).toMatchObject({
+      canonical: true,
+      method: "event_time_finite_difference",
+      derivativeReadyMintCount: 0,
+      accelerationReadyMintCount: 0,
+      unavailableValue: null,
       tradingDisabled: true
     });
 

@@ -122,9 +122,12 @@ missing/unavailable field reasons, and strategy drivers/blockers.
 
 Derivative fields are sample-gated. Discovery-only rows and one-trade rows
 return derivative values as `null`, not `0`. First derivatives require at least
-two valid timestamped trade samples, second derivatives require at least three,
+two valid distinct event timestamps, second derivatives require at least three,
 and market-cap/liquidity derivatives remain `null` unless a real time-series
-source exists. `/ui/momentum-rows` exposes machine-readable `derivatives`,
+source exists. Raw launch and indexer derivatives use the shared
+`@axi/derivatives` event-time finite-difference engine; duplicate observations
+are removed, invalid timestamps are rejected, and a computed flat derivative
+remains a real `0`. `/ui/momentum-rows` exposes machine-readable `derivatives`,
 `derivativeStrength`, `strategy`, and `data` objects, and
 `/ui/momentum-diagnostics` reports derivative coverage plus unavailable reason
 counts.
@@ -600,7 +603,12 @@ one-second buckets. The engine retains at least five minutes in memory, handles
 bounded out-of-order events deterministically, materializes zero-activity gaps
 with carried prices, and exposes 1s/5s/10s/30s/60s/2m/5m windows. Actual buckets
 are upserted into SQLite for inspection and local replay; synthetic gap buckets
-are query-time views and are not persisted. The existing
+are query-time views and are not persisted. Canonical raw derivatives are
+computed across 1s/5s/10s/30s/60s/2m/5m windows with explicit availability,
+sample count, timestamp span, units, and reason codes. Flow velocity is the
+window total divided by window seconds; flow acceleration compares equal
+half-window rates. Price derivatives use actual event-time spans and
+non-uniform finite differences. The existing
 `/ui/live-token-cards` dashboard endpoint keeps its current response source by
 default. Set `API_INDEXER_PREFER_LIVE_STATE_CARDS=true` only when testing the
 new live-state card adapter.
@@ -613,7 +621,9 @@ Indexer endpoints:
 - `GET /indexer/live-cards`
 - `GET /indexer/timeseries/:mint`
 - `GET /indexer/timeseries/:mint/history`
+- `GET /indexer/derivatives/:mint`
 - `GET /runtime/timeseries`
+- `GET /runtime/derivatives`
 - `GET /indexer/stream/status`
 - `GET /indexer/stream/real-readiness`
 - `GET /indexer/stream/config`
@@ -2264,6 +2274,8 @@ docker compose --profile indexer up -d
 - `@axi/live-state`: current-session in-memory live token state from normalized
   indexer events.
 - `@axi/timeseries`: pure indexer-side trade OHLCV and rolling derivatives.
+- `@axi/derivatives`: deterministic, sample-gated event-time first and second
+  derivatives with explicit units and unavailable-state diagnostics.
 - `@axi/launch-momentum`: pure PumpPortal launch-window metrics, derivatives,
   scoring, reason codes, and simulation fixtures.
 - `@axi/stream-core`: provider-agnostic managed Solana stream contracts,

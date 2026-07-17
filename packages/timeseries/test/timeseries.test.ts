@@ -177,19 +177,35 @@ describe("@axi/timeseries", () => {
     );
   });
 
-  it("derives finite rolling stats from fixed buckets", () => {
+  it("projects sample-gated canonical derivatives into rolling stats", () => {
     const series = createTradeTimeseries();
 
     series.ingestTrade(
       trade({ id: "a", second: 1, priceSol: 1, volumeSol: 1 })
     );
     series.ingestTrade(
-      trade({ id: "b", second: 6, priceSol: 2, volumeSol: 5 })
+      trade({ id: "b", second: 3, priceSol: 1, volumeSol: 2 })
+    );
+    series.ingestTrade(
+      trade({ id: "c", second: 5, priceSol: 2, volumeSol: 5 })
     );
 
     const stats = series.getRollingStats(mint);
-    expect(stats.priceVelocityPctPerSec).toBe(0);
-    expect(stats.volumeAccelerationSolPerSec2).toBe(0.16);
+    expect(stats).toMatchObject({
+      method: "event_time_finite_difference",
+      sampleCount: 3,
+      priceVelocityPctPerSec: 25,
+      priceAccelerationPctPerSec2: 25,
+      volumeVelocitySolPerSec: 1.6,
+      volumeAccelerationSolPerSec2: 0.96,
+      tradeVelocityPerSec: 0.6,
+      tradeAccelerationPerSec2: 0.16
+    });
+    expect(series.getStatus()).toMatchObject({
+      derivativeReadyMintCount: 1,
+      accelerationReadyMintCount: 1
+    });
+    expect(series.getSeries(mint).derivatives.primaryWindow).toBe("5s");
     expect(JSON.stringify(stats)).not.toMatch(/NaN|Infinity/);
   });
 

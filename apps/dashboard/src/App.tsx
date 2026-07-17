@@ -548,6 +548,7 @@ type RuntimeContract = {
   };
   ownership: {
     capacityModel: string;
+    canonicalDerivatives: string;
     canonicalTimeseries: string;
     discoveryAndLaunchScoring: string;
     subscriptionPolicy: string;
@@ -573,6 +574,15 @@ type RuntimeContract = {
     acceptedEventCount: number;
     duplicateEventCount: number;
     lateEventCount: number;
+  };
+  derivatives: {
+    canonical: true;
+    method: string;
+    primaryWindowMs: number;
+    firstDerivativeMinSamples: number;
+    secondDerivativeMinSamples: number;
+    derivativeReadyMintCount: number;
+    accelerationReadyMintCount: number;
   };
 };
 
@@ -2142,7 +2152,7 @@ function HeaderControlCenter({
           }
           detail={
             runtimeContract
-              ? `${formatCompactNumber(runtimeContract.timeseries.acceptedEventCount)} trades · ${formatCompactNumber(runtimeContract.timeseries.mintCount)} mints`
+              ? `${formatCompactNumber(runtimeContract.derivatives.derivativeReadyMintCount)} d1 · ${formatCompactNumber(runtimeContract.derivatives.accelerationReadyMintCount)} d2 ready`
               : "series checking"
           }
         />

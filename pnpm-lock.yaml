@@ -224,6 +224,8 @@ importers:
         specifier: ^8.18.0
         version: 8.21.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
 
+  packages/derivatives: {}
+
   packages/event-bus:
     dependencies:
       '@axi/indexer-core':
@@ -244,7 +246,11 @@ importers:
         specifier: ^3.25.0
         version: 3.25.76
 
-  packages/launch-momentum: {}
+  packages/launch-momentum:
+    dependencies:
+      '@axi/derivatives':
+        specifier: workspace:*
+        version: link:../derivatives
 
   packages/live-state:
     dependencies:
@@ -380,6 +386,9 @@ importers:
 
   packages/timeseries:
     dependencies:
+      '@axi/derivatives':
+        specifier: workspace:*
+        version: link:../derivatives
       '@axi/indexer-core':
         specifier: workspace:*
         version: link:../indexer-core

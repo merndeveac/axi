@@ -2092,6 +2092,24 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     tradingDisabled: true
   }));
 
+  app.get("/runtime/derivatives", async () => {
+    const status = indexerAdapter.getTimeseriesStatus();
+
+    return {
+      canonical: true,
+      method: status.derivativeMethod,
+      primaryWindowMs: 5_000,
+      firstDerivativeMinSamples: 2,
+      secondDerivativeMinSamples: 3,
+      derivativeReadyMintCount: status.derivativeReadyMintCount,
+      accelerationReadyMintCount: status.accelerationReadyMintCount,
+      unavailableValue: null,
+      paperOnly: true,
+      dataOnly: true,
+      tradingDisabled: true
+    };
+  });
+
   app.post("/runtime/capacity/snapshot", async () => {
     const report = getRuntimeCapacityReport();
     const snapshot = saveCapacitySnapshot({
@@ -2393,6 +2411,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const params = mintParamSchema.parse(request.params);
     const query = timeseriesQuerySchema.parse(request.query);
     return indexerAdapter.getTimeseries(params.mint, query);
+  });
+
+  app.get("/indexer/derivatives/:mint", async (request) => {
+    const params = mintParamSchema.parse(request.params);
+    return indexerAdapter.getDerivatives(params.mint);
   });
 
   app.get("/indexer/timeseries/:mint/history", async (request) => {
@@ -3720,17 +3743,25 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   function liveCardToMomentumScannerRow(
     card: LiveTokenCardViewModel
   ): MomentumScannerRow {
-    const hasDerivativeSamples =
-      card.sampleCount >= 2 ||
-      card.launchTradeSampleCount >= 2 ||
-      card.realTradeEventCount >= 2;
+    const derivativeSampleCount = Math.max(
+      card.sampleCount,
+      card.launchTradeSampleCount,
+      card.realTradeEventCount
+    );
+    const hasDerivativeSamples = derivativeSampleCount >= 2;
+    const hasSecondDerivativeSamples = derivativeSampleCount >= 3;
     const hasTradeSamples =
       card.sampleCount > 0 ||
       card.launchTradeSampleCount > 0 ||
       card.realTradeEventCount > 0;
-    const derivativeReasonCodes = hasDerivativeSamples
-      ? []
-      : ["INSUFFICIENT_SAMPLES_FOR_DERIVATIVE"];
+    const derivativeReasonCodes = [
+      ...(hasDerivativeSamples
+        ? []
+        : ["INSUFFICIENT_SAMPLES_FOR_DERIVATIVE"]),
+      ...(hasSecondDerivativeSamples
+        ? []
+        : ["INSUFFICIENT_SAMPLES_FOR_SECOND_DERIVATIVE"])
+    ];
     const missingFieldReasons = buildMomentumMissingFieldReasons(card, {
       hasDerivativeSamples,
       hasTradeSamples
@@ -3793,7 +3824,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         card.launchVolumeVelocitySolPerSec
       ),
       volumeAccelerationSolPerSec2: chooseDerivativeValue(
-        hasDerivativeSamples,
+        hasSecondDerivativeSamples,
         card.volumeAccelerationSolPerSec2,
         card.launchVolumeAccelerationSolPerSec2
       ),
@@ -3803,7 +3834,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         card.launchPriceVelocityPctPerSec
       ),
       priceAccelerationPctPerSec2: chooseDerivativeValue(
-        hasDerivativeSamples,
+        hasSecondDerivativeSamples,
         card.priceSolAccelerationPctPerSec2 ?? card.priceAccelerationPctPerSec2,
         card.launchPriceAccelerationPctPerSec2
       ),
@@ -3813,7 +3844,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         card.launchBuyerVelocityPerSec
       ),
       buyerAccelerationPerSec2: chooseDerivativeValue(
-        hasDerivativeSamples,
+        hasSecondDerivativeSamples,
         card.buyerAccelerationPerSec2,
         card.launchBuyerAccelerationPerSec2
       )
@@ -3847,7 +3878,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         derivatives.volumeVelocitySolPerSec
       ),
       d2VolSolPerSec2: chooseDerivativeValue(
-        hasDerivativeSamples,
+        hasSecondDerivativeSamples,
         card.launchDerivatives?.d2VolSolPerSec2,
         derivatives.volumeAccelerationSolPerSec2
       ),
@@ -3857,7 +3888,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         derivatives.priceVelocityPctPerSec
       ),
       d2PricePctPerSec2: chooseDerivativeValue(
-        hasDerivativeSamples,
+        hasSecondDerivativeSamples,
         card.launchDerivatives?.d2PricePctPerSec2,
         derivatives.priceAccelerationPctPerSec2
       ),
@@ -3867,7 +3898,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         null
       ),
       d2PriceSolPerSec2: chooseDerivativeValue(
-        hasDerivativeSamples,
+        hasSecondDerivativeSamples,
         card.launchDerivatives?.d2PriceSolPerSec2,
         null
       ),
@@ -3877,7 +3908,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         derivatives.buyerVelocityPerSec
       ),
       d2BuyersPerSec2: chooseDerivativeValue(
-        hasDerivativeSamples,
+        hasSecondDerivativeSamples,
         card.launchDerivatives?.d2BuyersPerSec2,
         derivatives.buyerAccelerationPerSec2
       ),
@@ -3887,7 +3918,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         null
       ),
       d2TradesPerSec2: chooseDerivativeValue(
-        hasDerivativeSamples,
+        hasSecondDerivativeSamples,
         card.launchDerivatives?.d2TradesPerSec2,
         null
       ),
@@ -3897,7 +3928,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         null
       ),
       d2BuyPressurePerSec2: chooseDerivativeValue(
-        hasDerivativeSamples,
+        hasSecondDerivativeSamples,
         card.launchDerivatives?.d2BuyPressurePerSec2,
         null
       ),
@@ -3907,7 +3938,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         null
       ),
       d2MarketCapSolPerSec2: chooseDerivativeValue(
-        hasDerivativeSamples,
+        hasSecondDerivativeSamples,
         card.launchDerivatives?.d2MarketCapSolPerSec2,
         null
       ),
@@ -3917,7 +3948,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         null
       ),
       d2LiquiditySolPerSec2: chooseDerivativeValue(
-        hasDerivativeSamples,
+        hasSecondDerivativeSamples,
         card.launchDerivatives?.d2LiquiditySolPerSec2,
         null
       ),
@@ -4413,6 +4444,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         candidate?.identity ?? getTokenIdentitySummary(token.mint);
       const metrics =
         metricsEngine.getMetrics(token.mint) ?? candidate?.latestMetrics;
+      const canonicalDerivatives = indexerAdapter.getDerivatives(token.mint);
+      const canonicalDerivativeWindow = canonicalDerivatives.primary;
+      const canonicalDerivativeMetrics = canonicalDerivativeWindow.metrics;
+      const hasCanonicalDerivativeObservations =
+        canonicalDerivatives.observationCount > 0;
       const riskSnapshot =
         riskSnapshots.get(token.mint) ?? candidate?.latestRisk;
       const decision = candidate?.latestDecision;
@@ -4546,6 +4582,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           : []),
         ...(metrics?.usedSolMetricsFallback
           ? ["SCORE_USED_SOL_METRICS_FALLBACK"]
+          : []),
+        ...(hasCanonicalDerivativeObservations
+          ? [
+              ...canonicalDerivatives.reasonCodes,
+              ...canonicalDerivativeWindow.reasonCodes
+            ]
           : []),
         "HOLDER_TIME_SERIES_UNAVAILABLE",
         ...dataSourceWarnings
@@ -4820,36 +4862,72 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         devHolderPct: riskSnapshot?.flags.devHolderPct ?? null,
         holderDataSource,
         holderDataFreshnessMs,
-        volumeVelocityUsdPerSec: metricsAvailable
-          ? numberOrNull(metrics?.volumeVelocityUsdPerSec)
-          : null,
-        volumeAccelerationUsdPerSec2: metricsAvailable
-          ? numberOrNull(metrics?.volumeAccelerationUsdPerSec2)
-          : null,
-        volumeVelocitySolPerSec: metricsAvailable
-          ? numberOrNull(metrics?.volumeVelocitySolPerSec)
-          : null,
-        volumeAccelerationSolPerSec2: metricsAvailable
-          ? numberOrNull(metrics?.volumeAccelerationSolPerSec2)
-          : null,
-        priceVelocityPctPerSec: metricsAvailable
-          ? numberOrNull(metrics?.priceVelocityPctPerSec)
-          : null,
-        priceAccelerationPctPerSec2: metricsAvailable
-          ? numberOrNull(metrics?.priceAccelerationPctPerSec2)
-          : null,
-        priceSolVelocityPctPerSec: metricsAvailable
-          ? numberOrNull(metrics?.priceSolVelocityPctPerSec)
-          : null,
-        priceSolAccelerationPctPerSec2: metricsAvailable
-          ? numberOrNull(metrics?.priceSolAccelerationPctPerSec2)
-          : null,
-        buyerVelocityPerSec: metricsAvailable
-          ? numberOrNull(metrics?.buyerVelocityPerSec)
-          : null,
-        buyerAccelerationPerSec2: metricsAvailable
-          ? numberOrNull(metrics?.buyerAccelerationPerSec2)
-          : null,
+        volumeVelocityUsdPerSec: hasCanonicalDerivativeObservations
+          ? canonicalDerivativeMetrics.volumeVelocityUsdPerSec.value
+          : metricsAvailable
+            ? numberOrNull(metrics?.volumeVelocityUsdPerSec)
+            : null,
+        volumeAccelerationUsdPerSec2: hasCanonicalDerivativeObservations
+          ? canonicalDerivativeMetrics.volumeAccelerationUsdPerSec2.value
+          : metricsAvailable
+            ? numberOrNull(metrics?.volumeAccelerationUsdPerSec2)
+            : null,
+        volumeVelocitySolPerSec: hasCanonicalDerivativeObservations
+          ? canonicalDerivativeMetrics.volumeVelocitySolPerSec.value
+          : metricsAvailable
+            ? numberOrNull(metrics?.volumeVelocitySolPerSec)
+            : null,
+        volumeAccelerationSolPerSec2: hasCanonicalDerivativeObservations
+          ? canonicalDerivativeMetrics.volumeAccelerationSolPerSec2.value
+          : metricsAvailable
+            ? numberOrNull(metrics?.volumeAccelerationSolPerSec2)
+            : null,
+        priceVelocityPctPerSec:
+          hasCanonicalDerivativeObservations &&
+          canonicalDerivativeWindow.priceSource === "USD"
+            ? canonicalDerivativeMetrics.priceVelocityPctPerSec.value
+            : hasCanonicalDerivativeObservations
+              ? null
+              : metricsAvailable
+                ? numberOrNull(metrics?.priceVelocityPctPerSec)
+                : null,
+        priceAccelerationPctPerSec2:
+          hasCanonicalDerivativeObservations &&
+          canonicalDerivativeWindow.priceSource === "USD"
+            ? canonicalDerivativeMetrics.priceAccelerationPctPerSec2.value
+            : hasCanonicalDerivativeObservations
+              ? null
+              : metricsAvailable
+                ? numberOrNull(metrics?.priceAccelerationPctPerSec2)
+                : null,
+        priceSolVelocityPctPerSec:
+          hasCanonicalDerivativeObservations &&
+          canonicalDerivativeWindow.priceSource === "SOL"
+            ? canonicalDerivativeMetrics.priceVelocityPctPerSec.value
+            : hasCanonicalDerivativeObservations
+              ? null
+              : metricsAvailable
+                ? numberOrNull(metrics?.priceSolVelocityPctPerSec)
+                : null,
+        priceSolAccelerationPctPerSec2:
+          hasCanonicalDerivativeObservations &&
+          canonicalDerivativeWindow.priceSource === "SOL"
+            ? canonicalDerivativeMetrics.priceAccelerationPctPerSec2.value
+            : hasCanonicalDerivativeObservations
+              ? null
+              : metricsAvailable
+                ? numberOrNull(metrics?.priceSolAccelerationPctPerSec2)
+                : null,
+        buyerVelocityPerSec: hasCanonicalDerivativeObservations
+          ? canonicalDerivativeMetrics.buyerVelocityPerSec.value
+          : metricsAvailable
+            ? numberOrNull(metrics?.buyerVelocityPerSec)
+            : null,
+        buyerAccelerationPerSec2: hasCanonicalDerivativeObservations
+          ? canonicalDerivativeMetrics.buyerAccelerationPerSec2.value
+          : metricsAvailable
+            ? numberOrNull(metrics?.buyerAccelerationPerSec2)
+            : null,
         holderVelocityPerSec: null,
         holderAccelerationPerSec2: null,
         sampleCount: metrics?.sampleCount ?? 0,
@@ -5124,13 +5202,25 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         volumeAccelerationSolPerSec2: numberOrNull(
           timeseries.rollingStats.volumeAccelerationSolPerSec2
         ),
-        priceVelocityPctPerSec: null,
-        priceAccelerationPctPerSec2: null,
+        priceVelocityPctPerSec:
+          timeseries.rollingStats.priceSource === "USD"
+            ? numberOrNull(timeseries.rollingStats.priceVelocityPctPerSec)
+            : null,
+        priceAccelerationPctPerSec2:
+          timeseries.rollingStats.priceSource === "USD"
+            ? numberOrNull(
+                timeseries.rollingStats.priceAccelerationPctPerSec2
+              )
+            : null,
         priceSolVelocityPctPerSec: numberOrNull(
-          timeseries.rollingStats.priceVelocityPctPerSec
+          timeseries.rollingStats.priceSource === "SOL"
+            ? timeseries.rollingStats.priceVelocityPctPerSec
+            : null
         ),
         priceSolAccelerationPctPerSec2: numberOrNull(
-          timeseries.rollingStats.priceAccelerationPctPerSec2
+          timeseries.rollingStats.priceSource === "SOL"
+            ? timeseries.rollingStats.priceAccelerationPctPerSec2
+            : null
         ),
         buyerVelocityPerSec: numberOrNull(
           timeseries.rollingStats.buyerVelocityPerSec
@@ -5146,6 +5236,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         calculationConfidence: token.latestTrade?.confidence ?? "low",
         calculationReasonCodes: uniqueReasonCodes([
           "INDEXER_LIVE_STATE_CARD",
+          ...timeseries.rollingStats.reasonCodes,
           ...(window60s.tradeCount < 3 ? ["INSUFFICIENT_TRADE_METRICS"] : []),
           "HOLDER_TIME_SERIES_UNAVAILABLE"
         ]),
@@ -5719,8 +5810,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         reasonCodes: ["CHAIN_EVENTS_CANDIDATE_MINT"]
       });
     }
-    const latestMetrics =
-      rollingMetrics ?? metricsEngine.getMetrics(candidate.mint);
+    const latestMetrics = applyCanonicalDerivativesToRollingMetrics(
+      rollingMetrics ?? metricsEngine.getMetrics(candidate.mint),
+      indexerAdapter.getDerivatives(candidate.mint)
+    );
     candidateEngine.updateMetrics(candidate.mint, latestMetrics);
 
     const effectiveMetrics = mergeRollingIntoLegacyMetrics(
@@ -5966,7 +6059,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       });
     }
 
-    const latestMetrics = metricsEngine.getMetrics(options.record.mint);
+    const latestMetrics = applyCanonicalDerivativesToRollingMetrics(
+      metricsEngine.getMetrics(options.record.mint),
+      indexerAdapter.getDerivatives(options.record.mint)
+    );
     const effectiveMetrics = mergeRollingIntoLegacyMetrics(
       options.event
         ? getLegacyMetrics(options.event)
@@ -6984,6 +7080,60 @@ function mergeRollingIntoLegacyMetrics(
       metrics.buyerVelocity,
       rollingMetrics.buyerVelocityPerSec
     )
+  };
+}
+
+function applyCanonicalDerivativesToRollingMetrics(
+  metrics: RollingMetricsSnapshot | undefined,
+  derivatives: ReturnType<IndexerAdapter["getDerivatives"]>
+): RollingMetricsSnapshot | undefined {
+  if (!metrics || derivatives.observationCount === 0) {
+    return metrics;
+  }
+
+  const canonical = derivatives.primary;
+  const values = canonical.metrics;
+
+  return {
+    ...metrics,
+    volumeVelocityUsdPerSec:
+      values.volumeVelocityUsdPerSec.value ??
+      metrics.volumeVelocityUsdPerSec,
+    volumeAccelerationUsdPerSec2:
+      values.volumeAccelerationUsdPerSec2.value ??
+      metrics.volumeAccelerationUsdPerSec2,
+    volumeVelocitySolPerSec:
+      values.volumeVelocitySolPerSec.value ?? metrics.volumeVelocitySolPerSec,
+    volumeAccelerationSolPerSec2:
+      values.volumeAccelerationSolPerSec2.value ??
+      metrics.volumeAccelerationSolPerSec2,
+    buyerVelocityPerSec:
+      values.buyerVelocityPerSec.value ?? metrics.buyerVelocityPerSec,
+    buyerAccelerationPerSec2:
+      values.buyerAccelerationPerSec2.value ??
+      metrics.buyerAccelerationPerSec2,
+    tradesPerSecond:
+      values.tradeVelocityPerSec.value ?? metrics.tradesPerSecond,
+    priceVelocityPctPerSec:
+      canonical.priceSource === "USD"
+        ? (values.priceVelocityPctPerSec.value ??
+          metrics.priceVelocityPctPerSec)
+        : metrics.priceVelocityPctPerSec,
+    priceAccelerationPctPerSec2:
+      canonical.priceSource === "USD"
+        ? (values.priceAccelerationPctPerSec2.value ??
+          metrics.priceAccelerationPctPerSec2)
+        : metrics.priceAccelerationPctPerSec2,
+    priceSolVelocityPctPerSec:
+      canonical.priceSource === "SOL"
+        ? (values.priceVelocityPctPerSec.value ??
+          metrics.priceSolVelocityPctPerSec)
+        : metrics.priceSolVelocityPctPerSec,
+    priceSolAccelerationPctPerSec2:
+      canonical.priceSource === "SOL"
+        ? (values.priceAccelerationPctPerSec2.value ??
+          metrics.priceSolAccelerationPctPerSec2)
+        : metrics.priceSolAccelerationPctPerSec2
   };
 }
 

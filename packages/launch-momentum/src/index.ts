@@ -1,3 +1,5 @@
+import { computeCanonicalDerivatives } from "@axi/derivatives";
+
 export const launchWindowMs = {
   "5s": 5_000,
   "10s": 10_000,
@@ -220,7 +222,11 @@ export function evaluateLaunchMomentum(
   const evaluatedAt = new Date(evaluatedAtMs).toISOString();
   const launchedAt = new Date(launchedAtMs).toISOString();
   const ageSeconds = sanitizeNumber((evaluatedAtMs - launchedAtMs) / 1000);
-  const trades = sanitizeTrades(input.trades ?? [], input.mint);
+  const trades = sanitizeTrades(
+    input.trades ?? [],
+    input.mint,
+    evaluatedAtMs
+  );
   const windows = createWindowRecord(trades, evaluatedAtMs);
   const derivatives = computeDerivatives(trades, evaluatedAtMs);
   const components = computeScoreComponents({
@@ -422,10 +428,14 @@ function computeFromTrades(trades: LaunchTradeSample[]): LaunchWindowMetrics {
 
     if (trade.side === "buy") {
       buyVolumeSol += trade.volumeSol;
-      buyers.add(trade.trader ?? `buy:${trade.signature ?? trade.timestamp}`);
+      if (trade.trader) {
+        buyers.add(trade.trader);
+      }
     } else {
       sellVolumeSol += trade.volumeSol;
-      sellers.add(trade.trader ?? `sell:${trade.signature ?? trade.timestamp}`);
+      if (trade.trader) {
+        sellers.add(trade.trader);
+      }
     }
   }
 
@@ -463,204 +473,62 @@ function computeDerivatives(
   trades: LaunchTradeSample[],
   evaluatedAtMs: number
 ): LaunchDerivatives {
-  const points = createDerivativePoints(trades, evaluatedAtMs);
-  const volumeVelocity = firstDerivative(points, (point) => point.volumeSol);
-  const volumeAcceleration = secondDerivative(points, (point) => point.volumeSol);
-  const priceVelocity = firstDerivative(points, (point) => point.priceChangePct);
-  const priceAcceleration = secondDerivative(points, (point) => point.priceChangePct);
-  const priceSolVelocity = firstDerivative(points, (point) => point.priceSol);
-  const priceSolAcceleration = secondDerivative(points, (point) => point.priceSol);
-  const buyerVelocity = firstDerivative(points, (point) => point.uniqueBuyers);
-  const buyerAcceleration = secondDerivative(points, (point) => point.uniqueBuyers);
-  const tradeVelocity = firstDerivative(points, (point) => point.tradeCount);
-  const tradeAcceleration = secondDerivative(points, (point) => point.tradeCount);
-  const buyPressureVelocity = firstDerivative(
-    points,
-    (point) => point.netBuyPressure
-  );
-  const buyPressureAcceleration = secondDerivative(
-    points,
-    (point) => point.netBuyPressure
-  );
-  const dVol5sSolPerSec = windowVelocity(
-    computeWindow(trades, evaluatedAtMs, launchWindowMs["5s"]),
-    5
-  );
-  const dVol10sSolPerSec = windowVelocity(
-    computeWindow(trades, evaluatedAtMs, launchWindowMs["10s"]),
-    10
-  );
-  const dVol30sSolPerSec = windowVelocity(
-    computeWindow(trades, evaluatedAtMs, launchWindowMs["30s"]),
-    30
-  );
+  const snapshot = computeCanonicalDerivatives({
+    mint: trades[0]?.mint ?? "unknown",
+    evaluatedAt: evaluatedAtMs,
+    observations: trades.map((trade) => ({
+      id: tradeIdentity(trade),
+      timestamp: trade.timestamp,
+      side: trade.side,
+      trader: trade.trader,
+      priceSol: trade.priceSol,
+      volumeSol: trade.volumeSol
+    }))
+  });
+  const primary = snapshot.windows["10s"].metrics;
+  const window5s = snapshot.windows["5s"].metrics;
+  const window30s = snapshot.windows["30s"].metrics;
 
   return {
-    volumeVelocitySolPerSec: nullableRound(volumeVelocity),
-    volumeAccelerationSolPerSec2: nullableRound(volumeAcceleration),
-    priceVelocityPctPerSec: nullableRound(priceVelocity),
-    priceAccelerationPctPerSec2: nullableRound(priceAcceleration),
-    priceSolVelocityPerSec: nullableRound(priceSolVelocity),
-    priceSolAccelerationPerSec2: nullableRound(priceSolAcceleration),
-    buyerVelocityPerSec: nullableRound(buyerVelocity),
-    buyerAccelerationPerSec2: nullableRound(buyerAcceleration),
-    tradeVelocityPerSec: nullableRound(tradeVelocity),
-    tradeAccelerationPerSec2: nullableRound(tradeAcceleration),
-    buyPressureVelocityPerSec: nullableRound(buyPressureVelocity),
-    buyPressureAccelerationPerSec2: nullableRound(buyPressureAcceleration),
+    volumeVelocitySolPerSec: primary.volumeVelocitySolPerSec.value,
+    volumeAccelerationSolPerSec2:
+      primary.volumeAccelerationSolPerSec2.value,
+    priceVelocityPctPerSec: primary.priceVelocityPctPerSec.value,
+    priceAccelerationPctPerSec2:
+      primary.priceAccelerationPctPerSec2.value,
+    priceSolVelocityPerSec: primary.priceSolVelocityPerSec.value,
+    priceSolAccelerationPerSec2:
+      primary.priceSolAccelerationPerSec2.value,
+    buyerVelocityPerSec: primary.buyerVelocityPerSec.value,
+    buyerAccelerationPerSec2: primary.buyerAccelerationPerSec2.value,
+    tradeVelocityPerSec: primary.tradeVelocityPerSec.value,
+    tradeAccelerationPerSec2: primary.tradeAccelerationPerSec2.value,
+    buyPressureVelocityPerSec: primary.buyPressureVelocityPerSec.value,
+    buyPressureAccelerationPerSec2:
+      primary.buyPressureAccelerationPerSec2.value,
     marketCapSolVelocityPerSec: null,
     marketCapSolAccelerationPerSec2: null,
     liquiditySolVelocityPerSec: null,
     liquiditySolAccelerationPerSec2: null,
-    dVol5sSolPerSec,
-    dVol10sSolPerSec,
-    dVol30sSolPerSec,
-    d2VolSolPerSec2: nullableRound(volumeAcceleration),
-    dPricePctPerSec: nullableRound(priceVelocity),
-    d2PricePctPerSec2: nullableRound(priceAcceleration),
-    dPriceSolPerSec: nullableRound(priceSolVelocity),
-    d2PriceSolPerSec2: nullableRound(priceSolAcceleration),
-    dBuyersPerSec: nullableRound(buyerVelocity),
-    d2BuyersPerSec2: nullableRound(buyerAcceleration),
-    dTradesPerSec: nullableRound(tradeVelocity),
-    d2TradesPerSec2: nullableRound(tradeAcceleration),
-    dBuyPressurePerSec: nullableRound(buyPressureVelocity),
-    d2BuyPressurePerSec2: nullableRound(buyPressureAcceleration),
+    dVol5sSolPerSec: window5s.volumeVelocitySolPerSec.value,
+    dVol10sSolPerSec: primary.volumeVelocitySolPerSec.value,
+    dVol30sSolPerSec: window30s.volumeVelocitySolPerSec.value,
+    d2VolSolPerSec2: primary.volumeAccelerationSolPerSec2.value,
+    dPricePctPerSec: primary.priceVelocityPctPerSec.value,
+    d2PricePctPerSec2: primary.priceAccelerationPctPerSec2.value,
+    dPriceSolPerSec: primary.priceSolVelocityPerSec.value,
+    d2PriceSolPerSec2: primary.priceSolAccelerationPerSec2.value,
+    dBuyersPerSec: primary.buyerVelocityPerSec.value,
+    d2BuyersPerSec2: primary.buyerAccelerationPerSec2.value,
+    dTradesPerSec: primary.tradeVelocityPerSec.value,
+    d2TradesPerSec2: primary.tradeAccelerationPerSec2.value,
+    dBuyPressurePerSec: primary.buyPressureVelocityPerSec.value,
+    d2BuyPressurePerSec2: primary.buyPressureAccelerationPerSec2.value,
     dMarketCapSolPerSec: null,
     d2MarketCapSolPerSec2: null,
     dLiquiditySolPerSec: null,
     d2LiquiditySolPerSec2: null
   };
-}
-
-type DerivativePoint = {
-  timestampMs: number;
-  volumeSol: number;
-  priceSol: number;
-  priceChangePct: number;
-  uniqueBuyers: number;
-  tradeCount: number;
-  netBuyPressure: number;
-};
-
-function createDerivativePoints(
-  trades: LaunchTradeSample[],
-  evaluatedAtMs: number
-): DerivativePoint[] {
-  const points: DerivativePoint[] = [];
-  const buyers = new Set<string>();
-  let volumeSol = 0;
-  let buyVolumeSol = 0;
-  let sellVolumeSol = 0;
-  const firstPriceSol = trades[0]?.priceSol ?? null;
-
-  for (const trade of trades) {
-    const timestampMs = parseTime(trade.timestamp);
-
-    if (timestampMs > evaluatedAtMs) {
-      continue;
-    }
-
-    volumeSol += trade.volumeSol;
-
-    if (trade.side === "buy") {
-      buyVolumeSol += trade.volumeSol;
-      buyers.add(trade.trader ?? `buy:${trade.signature ?? trade.timestamp}`);
-    } else {
-      sellVolumeSol += trade.volumeSol;
-    }
-
-    const netBuyPressure =
-      volumeSol > 0 ? (buyVolumeSol - sellVolumeSol) / volumeSol : 0;
-    const priceChangePct =
-      firstPriceSol !== null && firstPriceSol > 0
-        ? ((trade.priceSol - firstPriceSol) / firstPriceSol) * 100
-        : 0;
-
-    points.push({
-      timestampMs,
-      volumeSol,
-      priceSol: trade.priceSol,
-      priceChangePct,
-      uniqueBuyers: buyers.size,
-      tradeCount: points.length + 1,
-      netBuyPressure
-    });
-  }
-
-  return points;
-}
-
-function firstDerivative(
-  points: DerivativePoint[],
-  select: (point: DerivativePoint) => number
-): number | null {
-  if (points.length < 2) {
-    return null;
-  }
-
-  return slope(points[0], points.at(-1), select);
-}
-
-function secondDerivative(
-  points: DerivativePoint[],
-  select: (point: DerivativePoint) => number
-): number | null {
-  if (points.length < 3) {
-    return null;
-  }
-
-  const first = points[0];
-  const middle = points[Math.floor((points.length - 1) / 2)];
-  const last = points.at(-1);
-
-  if (!first || !middle || !last) {
-    return null;
-  }
-
-  const olderSlope = slope(first, middle, select);
-  const newerSlope = slope(middle, last, select);
-  const midpointSeconds = (last.timestampMs - first.timestampMs) / 2_000;
-
-  if (
-    olderSlope === null ||
-    newerSlope === null ||
-    !Number.isFinite(midpointSeconds) ||
-    midpointSeconds <= 0
-  ) {
-    return null;
-  }
-
-  return (newerSlope - olderSlope) / midpointSeconds;
-}
-
-function slope(
-  first: DerivativePoint | undefined,
-  last: DerivativePoint | undefined,
-  select: (point: DerivativePoint) => number
-): number | null {
-  if (!first || !last) {
-    return null;
-  }
-
-  const deltaSeconds = (last.timestampMs - first.timestampMs) / 1000;
-
-  if (!Number.isFinite(deltaSeconds) || deltaSeconds <= 0) {
-    return null;
-  }
-
-  return (select(last) - select(first)) / deltaSeconds;
-}
-
-function windowVelocity(
-  window: LaunchWindowMetrics,
-  seconds: number
-): number | null {
-  if (window.tradeCount < 2 || seconds <= 0) {
-    return null;
-  }
-
-  return round(window.volumeSol / seconds);
 }
 
 function computeScoreComponents(input: {
@@ -1016,18 +884,54 @@ function scoreToPhase(
 
 function sanitizeTrades(
   trades: LaunchTradeSample[],
-  mint: string
+  mint: string,
+  evaluatedAtMs: number
 ): LaunchTradeSample[] {
-  return trades
-    .filter(
-      (trade) =>
+  const valid = trades
+    .filter((trade) => {
+      const timestampMs = tryParseTime(trade.timestamp);
+
+      return (
         trade.mint === mint &&
         (trade.side === "buy" || trade.side === "sell") &&
         isPositiveFinite(trade.priceSol) &&
         isPositiveFinite(trade.volumeSol) &&
-        Number.isFinite(parseTime(trade.timestamp))
-    )
-    .sort((left, right) => parseTime(left.timestamp) - parseTime(right.timestamp));
+        timestampMs !== null &&
+        timestampMs <= evaluatedAtMs
+      );
+    })
+    .sort(
+      (left, right) =>
+        parseTime(left.timestamp) - parseTime(right.timestamp) ||
+        tradeIdentity(left).localeCompare(tradeIdentity(right))
+    );
+  const seen = new Set<string>();
+
+  return valid.filter((trade) => {
+    const identity = tradeIdentity(trade);
+
+    if (seen.has(identity)) {
+      return false;
+    }
+
+    seen.add(identity);
+    return true;
+  });
+}
+
+function tradeIdentity(trade: LaunchTradeSample): string {
+  return (
+    trade.signature?.trim() ||
+    [
+      trade.mint,
+      trade.timestamp,
+      trade.side,
+      trade.trader ?? "unknown",
+      trade.priceSol,
+      trade.volumeSol,
+      trade.tokenAmount ?? "unknown"
+    ].join(":")
+  );
 }
 
 function emptyWindow(): LaunchWindowMetrics {
@@ -1143,9 +1047,18 @@ function riskPenaltyFor(riskLevel: string, hardReject: boolean): number {
 }
 
 function parseTime(value: string | Date): number {
-  const date = value instanceof Date ? value : new Date(value);
-  const time = date.getTime();
-  return Number.isFinite(time) ? time : Date.now();
+  const time = tryParseTime(value);
+
+  if (time === null) {
+    throw new RangeError("launch momentum timestamps must be valid");
+  }
+
+  return time;
+}
+
+function tryParseTime(value: string | Date): number | null {
+  const time = (value instanceof Date ? value : new Date(value)).getTime();
+  return Number.isFinite(time) ? time : null;
 }
 
 function isPositiveFinite(value: number): boolean {

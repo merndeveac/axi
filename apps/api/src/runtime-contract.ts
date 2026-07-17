@@ -52,7 +52,7 @@ export function createRuntimeContract(input: {
   );
 
   return {
-    version: 3,
+    version: 4,
     runtimeSessionId: input.runtimeSessionId,
     safety: {
       paperOnly: true,
@@ -70,6 +70,7 @@ export function createRuntimeContract(input: {
       providerConnection: "PumpPortalFeedProvider",
       rollingMetrics: "@axi/metrics",
       canonicalTimeseries: "@axi/timeseries",
+      canonicalDerivatives: "@axi/derivatives",
       capacityModel: "@axi/capacity-model",
       trackingScheduler: "@axi/tracking-scheduler",
       paperPortfolio: "@axi/paper-portfolio",
@@ -95,10 +96,24 @@ export function createRuntimeContract(input: {
       driftDetected: drift.length > 0
     },
     timeseries: input.timeseries,
+    derivatives: {
+      canonical: true,
+      method: input.timeseries.derivativeMethod,
+      primaryWindowMs: 5_000,
+      firstDerivativeMinSamples: 2,
+      secondDerivativeMinSamples: 3,
+      derivativeReadyMintCount: input.timeseries.derivativeReadyMintCount,
+      accelerationReadyMintCount: input.timeseries.accelerationReadyMintCount,
+      unavailableValue: null,
+      paperOnly: true,
+      dataOnly: true,
+      tradingDisabled: true
+    },
     roadmap: {
       coverageCapacityInstrumentation: "implemented",
       rollingNewestTokenScheduler: "implemented",
       canonicalOneSecondTimeseries: "implemented",
+      derivativeCorrectness: "implemented",
       schedulerMutationApplied:
         meteredStatus.scheduler.trackingMutationCount > 0
     },

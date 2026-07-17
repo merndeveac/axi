@@ -3,6 +3,10 @@ import {
   isTradeUsableForMetrics,
   type NormalizedTokenTradeEvent
 } from "@axi/indexer-core";
+import {
+  computeCanonicalDerivatives,
+  type CanonicalDerivativeSnapshot
+} from "@axi/derivatives";
 
 export const canonicalBucketMs = 1_000 as const;
 export const defaultTimeseriesRetentionMs = 300_000 as const;
@@ -39,15 +43,27 @@ export type Ohlcv = {
 };
 
 export type RollingStats = {
-  priceVelocityPctPerSec: number;
-  priceAccelerationPctPerSec2: number;
+  method: "event_time_finite_difference";
+  windowMs: 5_000;
+  evaluatedAt: string | null;
+  sampleCount: number;
+  distinctTimestampCount: number;
+  priceVelocityPctPerSec: number | null;
+  priceAccelerationPctPerSec2: number | null;
   priceSource: "SOL" | "USD" | "unavailable";
-  volumeVelocitySolPerSec: number;
-  volumeAccelerationSolPerSec2: number;
-  volumeVelocityUsdPerSec: number;
-  volumeAccelerationUsdPerSec2: number;
-  buyerVelocityPerSec: number;
-  buyerAccelerationPerSec2: number;
+  priceSolVelocityPerSec: number | null;
+  priceSolAccelerationPerSec2: number | null;
+  volumeVelocitySolPerSec: number | null;
+  volumeAccelerationSolPerSec2: number | null;
+  volumeVelocityUsdPerSec: number | null;
+  volumeAccelerationUsdPerSec2: number | null;
+  buyerVelocityPerSec: number | null;
+  buyerAccelerationPerSec2: number | null;
+  tradeVelocityPerSec: number | null;
+  tradeAccelerationPerSec2: number | null;
+  buyPressureVelocityPerSec: number | null;
+  buyPressureAccelerationPerSec2: number | null;
+  reasonCodes: string[];
 };
 
 export type TradeBucket1s = Ohlcv & {
@@ -82,6 +98,9 @@ export type TradeTimeseriesStatus = {
   invalidEventCount: number;
   lateEventCount: number;
   prunedBucketCount: number;
+  derivativeReadyMintCount: number;
+  accelerationReadyMintCount: number;
+  derivativeMethod: "event_time_finite_difference";
   earliestBucketStart: string | null;
   latestBucketStart: string | null;
   lastEventAt: string | null;
@@ -100,6 +119,7 @@ export type TradeTimeseriesSeries = {
   buckets: TradeBucket1s[];
   windows: Record<TradeWindowLabel, Ohlcv>;
   rollingStats: RollingStats;
+  derivatives: CanonicalDerivativeSnapshot;
   status: TradeTimeseriesStatus;
   reasonCodes: string[];
   paperOnly: true;
@@ -124,6 +144,7 @@ export type TradeBucketQuery = {
 export type TradeTimeseries = {
   clear: () => void;
   getBuckets: (mint: string, query?: TradeBucketQuery) => TradeBucket1s[];
+  getDerivatives: (mint: string) => CanonicalDerivativeSnapshot;
   getOhlcv: (mint: string, windowMs: TradeWindowMs | number) => Ohlcv;
   getRollingStats: (mint: string) => RollingStats;
   getSeries: (mint: string, query?: TradeBucketQuery) => TradeTimeseriesSeries;
@@ -377,54 +398,65 @@ export function createTradeTimeseries(
   }
 
   function getRollingStats(mint: string): RollingStats {
-    const state = states.get(mint.trim());
-
-    if (!state || state.buckets.size === 0) {
-      return emptyRollingStats();
-    }
-
-    const referenceBucketStart = getLatestBucketStart(state);
-    const current5s = computeBucketRangeOhlcv(
-      state,
-      referenceBucketStart,
-      5,
-      0
-    );
-    const previous5s = computeBucketRangeOhlcv(
-      state,
-      referenceBucketStart,
-      5,
-      5
-    );
-    const priceSource = selectPriceSource(current5s, previous5s);
-    const currentPriceVelocity = priceChangePct(current5s, priceSource) / 5;
-    const previousPriceVelocity = priceChangePct(previous5s, priceSource) / 5;
-    const currentVolumeVelocitySol = current5s.volumeSol / 5;
-    const previousVolumeVelocitySol = previous5s.volumeSol / 5;
-    const currentVolumeVelocityUsd = current5s.volumeUsd / 5;
-    const previousVolumeVelocityUsd = previous5s.volumeUsd / 5;
-    const currentBuyerVelocity = current5s.uniqueBuyers / 5;
-    const previousBuyerVelocity = previous5s.uniqueBuyers / 5;
+    const snapshot = getDerivatives(mint);
+    const window = snapshot.primary;
+    const metrics = window.metrics;
 
     return {
-      priceVelocityPctPerSec: roundMetric(currentPriceVelocity),
-      priceAccelerationPctPerSec2: roundMetric(
-        (currentPriceVelocity - previousPriceVelocity) / 5
-      ),
-      priceSource,
-      volumeVelocitySolPerSec: roundMetric(currentVolumeVelocitySol),
-      volumeAccelerationSolPerSec2: roundMetric(
-        (currentVolumeVelocitySol - previousVolumeVelocitySol) / 5
-      ),
-      volumeVelocityUsdPerSec: roundMetric(currentVolumeVelocityUsd),
-      volumeAccelerationUsdPerSec2: roundMetric(
-        (currentVolumeVelocityUsd - previousVolumeVelocityUsd) / 5
-      ),
-      buyerVelocityPerSec: roundMetric(currentBuyerVelocity),
-      buyerAccelerationPerSec2: roundMetric(
-        (currentBuyerVelocity - previousBuyerVelocity) / 5
-      )
+      method: snapshot.method,
+      windowMs: 5_000,
+      evaluatedAt: snapshot.evaluatedAt,
+      sampleCount: window.observationCount,
+      distinctTimestampCount: window.distinctTimestampCount,
+      priceVelocityPctPerSec: metrics.priceVelocityPctPerSec.value,
+      priceAccelerationPctPerSec2:
+        metrics.priceAccelerationPctPerSec2.value,
+      priceSource: window.priceSource,
+      priceSolVelocityPerSec: metrics.priceSolVelocityPerSec.value,
+      priceSolAccelerationPerSec2:
+        metrics.priceSolAccelerationPerSec2.value,
+      volumeVelocitySolPerSec: metrics.volumeVelocitySolPerSec.value,
+      volumeAccelerationSolPerSec2:
+        metrics.volumeAccelerationSolPerSec2.value,
+      volumeVelocityUsdPerSec: metrics.volumeVelocityUsdPerSec.value,
+      volumeAccelerationUsdPerSec2:
+        metrics.volumeAccelerationUsdPerSec2.value,
+      buyerVelocityPerSec: metrics.buyerVelocityPerSec.value,
+      buyerAccelerationPerSec2: metrics.buyerAccelerationPerSec2.value,
+      tradeVelocityPerSec: metrics.tradeVelocityPerSec.value,
+      tradeAccelerationPerSec2: metrics.tradeAccelerationPerSec2.value,
+      buyPressureVelocityPerSec: metrics.buyPressureVelocityPerSec.value,
+      buyPressureAccelerationPerSec2:
+        metrics.buyPressureAccelerationPerSec2.value,
+      reasonCodes: unique([
+        ...snapshot.reasonCodes,
+        ...window.reasonCodes,
+        ...Object.values(metrics).flatMap((metric) => metric.reasonCodes)
+      ])
     };
+  }
+
+  function getDerivatives(mint: string): CanonicalDerivativeSnapshot {
+    const normalizedMint = mint.trim();
+    const state = states.get(normalizedMint);
+    const samples = state ? getAllSamples(state) : [];
+
+    return computeCanonicalDerivatives({
+      mint: normalizedMint,
+      observations: samples.map((sample) => ({
+        id: sample.id,
+        timestamp: sample.timestampMs,
+        side: sample.side,
+        trader: sample.trader,
+        priceSol: sample.priceSol,
+        priceUsd: sample.priceUsd,
+        volumeSol: sample.volumeSol,
+        volumeUsd: sample.volumeUsd
+      })),
+      ...(state && Number.isFinite(state.maxTimestampMs)
+        ? { evaluatedAt: state.maxTimestampMs }
+        : {})
+    });
   }
 
   function getStatus(mint?: string): TradeTimeseriesStatus {
@@ -452,6 +484,13 @@ export function createTradeTimeseries(
       invalidEventCount,
       lateEventCount,
       prunedBucketCount,
+      derivativeReadyMintCount: selectedStates.filter((state) =>
+        hasMinimumDerivativeSamples(state, 2)
+      ).length,
+      accelerationReadyMintCount: selectedStates.filter((state) =>
+        hasMinimumDerivativeSamples(state, 3)
+      ).length,
+      derivativeMethod: "event_time_finite_difference",
       earliestBucketStart:
         earliest === null ? null : new Date(earliest).toISOString(),
       latestBucketStart:
@@ -483,6 +522,7 @@ export function createTradeTimeseries(
     const actualBucketCount = buckets.filter(
       (bucket) => !bucket.synthetic
     ).length;
+    const derivatives = getDerivatives(mint);
 
     return {
       mint: mint.trim(),
@@ -493,6 +533,7 @@ export function createTradeTimeseries(
       buckets,
       windows: getWindows(mint),
       rollingStats: getRollingStats(mint),
+      derivatives,
       status: getStatus(mint),
       reasonCodes: [
         "TIMESERIES_CANONICAL_ONE_SECOND_BUCKETS",
@@ -511,6 +552,7 @@ export function createTradeTimeseries(
   return {
     clear,
     getBuckets,
+    getDerivatives,
     getOhlcv,
     getRollingStats,
     getSeries,
@@ -619,6 +661,27 @@ function getEarliestRetainedBucketStart(
 
 function getLatestBucketStart(state: TokenTimeseriesState): number {
   return Math.max(...state.buckets.keys());
+}
+
+function getAllSamples(state: TokenTimeseriesState): TradeSample[] {
+  return Array.from(state.buckets.values()).flat().sort(compareSamples);
+}
+
+function hasMinimumDerivativeSamples(
+  state: TokenTimeseriesState,
+  minimum: number
+): boolean {
+  const cutoff = state.maxTimestampMs - 5_000;
+  const recentTimestamps = new Set(
+    getAllSamples(state)
+      .filter(
+        (sample) =>
+          sample.timestampMs > cutoff &&
+          sample.timestampMs <= state.maxTimestampMs
+      )
+      .map((sample) => sample.timestampMs)
+  );
+  return recentTimestamps.size >= minimum;
 }
 
 function getCarryPrice(
@@ -910,58 +973,6 @@ function sanitizeOhlcv(input: Ohlcv): Ohlcv {
     uniqueBuyers: input.uniqueBuyers,
     uniqueSellers: input.uniqueSellers
   };
-}
-
-function emptyRollingStats(): RollingStats {
-  return {
-    priceVelocityPctPerSec: 0,
-    priceAccelerationPctPerSec2: 0,
-    priceSource: "unavailable",
-    volumeVelocitySolPerSec: 0,
-    volumeAccelerationSolPerSec2: 0,
-    volumeVelocityUsdPerSec: 0,
-    volumeAccelerationUsdPerSec2: 0,
-    buyerVelocityPerSec: 0,
-    buyerAccelerationPerSec2: 0
-  };
-}
-
-function selectPriceSource(
-  current: Ohlcv,
-  previous: Ohlcv
-): RollingStats["priceSource"] {
-  if (current.openSol !== null && current.closeSol !== null) {
-    return "SOL";
-  }
-
-  if (
-    current.openUsd !== null &&
-    current.closeUsd !== null &&
-    (previous.openUsd !== null || current.tradeCount > 0)
-  ) {
-    return "USD";
-  }
-
-  return "unavailable";
-}
-
-function priceChangePct(
-  ohlcv: Ohlcv,
-  source: RollingStats["priceSource"]
-): number {
-  const open = source === "SOL" ? ohlcv.openSol : ohlcv.openUsd;
-  const close = source === "SOL" ? ohlcv.closeSol : ohlcv.closeUsd;
-
-  if (
-    source === "unavailable" ||
-    open === null ||
-    close === null ||
-    open <= 0
-  ) {
-    return 0;
-  }
-
-  return ((close - open) / open) * 100;
 }
 
 function getClose(
