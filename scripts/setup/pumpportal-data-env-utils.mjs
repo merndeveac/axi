@@ -14,13 +14,21 @@ export const forbiddenEnvKeyPatterns = [
 export const forbiddenExactEnvKeys = ["SEED"];
 
 export const requiredMeteredEnv = {
+  API_HOST: "127.0.0.1",
   METERED_LAUNCH_DATA_CONTROLS_ENABLED: "true",
   METERED_LAUNCH_DATA_ENABLED: "true",
   METERED_LAUNCH_DATA_START_ACTIVE: "false",
   METERED_LAUNCH_DATA_REQUIRE_UI_ACK: "true",
+  METERED_LAUNCH_DATA_ACK_COST: "false",
+  METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS: "3",
+  METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT: "250",
+  METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION: "1000",
+  METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL: "0.001",
+  METERED_LAUNCH_DATA_MAX_UI_SESSION_COST_SOL: "0.001",
   PUMPPORTAL_TOKEN_TRADES_ENABLED: "true",
   PAPER_AUTO_ORDER: "false",
   PUMPPORTAL_LIGHTNING_ALLOW_LIVE_TRADING: "false",
+  PUMPPORTAL_LIGHTNING_MANUAL_ARMED: "false",
   EXIT_STRATEGY_ACCOUNT_TRADES_ENABLED: "false",
   EXIT_STRATEGY_ACCOUNT_TRADES_ACK_METERED: "false"
 };
@@ -149,7 +157,9 @@ export function validatePumpPortalDataEnv(env, options = {}) {
   if (!publicKeyConfigured) {
     errors.push("PUMPPORTAL_DATA_WALLET_PUBLIC_KEY is required.");
   } else if (!publicKeyValid) {
-    errors.push("PUMPPORTAL_DATA_WALLET_PUBLIC_KEY does not look like a Solana public key.");
+    errors.push(
+      "PUMPPORTAL_DATA_WALLET_PUBLIC_KEY does not look like a Solana public key."
+    );
   }
 
   if (!dataApiKeyConfigured) {
@@ -162,12 +172,16 @@ export function validatePumpPortalDataEnv(env, options = {}) {
         "PUMPPORTAL_API_KEY is not set; it can be inferred from PUMPPORTAL_DATA_API_KEY for compatibility."
       );
     } else {
-      errors.push("PUMPPORTAL_API_KEY is required or must be inferable from PUMPPORTAL_DATA_API_KEY.");
+      errors.push(
+        "PUMPPORTAL_API_KEY is required or must be inferable from PUMPPORTAL_DATA_API_KEY."
+      );
     }
   }
 
   if (!isFilled(env.SOLANA_RPC_HTTP)) {
-    warnings.push("SOLANA_RPC_HTTP is missing; balance checks will be unavailable.");
+    warnings.push(
+      "SOLANA_RPC_HTTP is missing; balance checks will be unavailable."
+    );
   }
 
   for (const [key, expected] of Object.entries(requiredMeteredEnv)) {

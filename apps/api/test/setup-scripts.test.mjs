@@ -36,6 +36,18 @@ describe("PumpPortal data env setup helpers", () => {
     expect(template).toContain("PUMPPORTAL_DATA_WALLET_PUBLIC_KEY=");
     expect(template).toContain("PUMPPORTAL_DATA_API_KEY=");
     expect(template).toContain("SOLANA_RPC_HTTP=");
+    expect(template).toContain("API_HOST=127.0.0.1");
+    expect(template).toContain("METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS=3");
+    expect(template).toContain("METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT=250");
+    expect(template).toContain(
+      "METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION=1000"
+    );
+    expect(template).toContain(
+      "METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL=0.001"
+    );
+    expect(template).toContain(
+      "METERED_LAUNCH_DATA_MAX_UI_SESSION_COST_SOL=0.001"
+    );
     expect(template).toContain("DO NOT paste your PumpPortal private key");
     expect(template).not.toContain(secretValue);
     expect(gitignore).toContain(".env.*");
@@ -51,8 +63,19 @@ describe("PumpPortal data env setup helpers", () => {
     );
     expect(launchScript).toContain('METERED_LAUNCH_DATA_ENABLED: "true"');
     expect(launchScript).toContain('METERED_LAUNCH_DATA_START_ACTIVE: "false"');
-    expect(launchScript).toContain('METERED_LAUNCH_DATA_REQUIRE_UI_ACK: "true"');
+    expect(launchScript).toContain(
+      'METERED_LAUNCH_DATA_REQUIRE_UI_ACK: "true"'
+    );
     expect(launchScript).toContain('METERED_LAUNCH_DATA_ACK_COST: "false"');
+    expect(launchScript).toContain(
+      'METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS: "3"'
+    );
+    expect(launchScript).toContain(
+      'METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION: "1000"'
+    );
+    expect(launchScript).toContain(
+      'METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL: "0.001"'
+    );
     expect(launchScript).toContain('PUMPPORTAL_TOKEN_TRADES_ENABLED: "true"');
     expect(launchScript).toContain(
       'PUMPPORTAL_TOKEN_TRADES_ACK_METERED: "false"'
@@ -149,8 +172,8 @@ describe("PumpPortal data env setup helpers", () => {
 
 function validEnv() {
   return {
-    PUMPPORTAL_DATA_WALLET_PUBLIC_KEY:
-      "11111111111111111111111111111111",
+    API_HOST: "127.0.0.1",
+    PUMPPORTAL_DATA_WALLET_PUBLIC_KEY: "11111111111111111111111111111111",
     PUMPPORTAL_DATA_API_KEY: secretValue,
     SOLANA_RPC_HTTP: "http://localhost:8899",
     METERED_LAUNCH_DATA_CONTROLS_ENABLED: "true",
@@ -158,6 +181,11 @@ function validEnv() {
     METERED_LAUNCH_DATA_START_ACTIVE: "false",
     METERED_LAUNCH_DATA_REQUIRE_UI_ACK: "true",
     METERED_LAUNCH_DATA_ACK_COST: "false",
+    METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS: "3",
+    METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT: "250",
+    METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION: "1000",
+    METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL: "0.001",
+    METERED_LAUNCH_DATA_MAX_UI_SESSION_COST_SOL: "0.001",
     PUMPPORTAL_TOKEN_TRADES_ENABLED: "true",
     PUMPPORTAL_TOKEN_TRADES_ACK_METERED: "false",
     PAPER_AUTO_ORDER: "false",

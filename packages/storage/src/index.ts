@@ -288,6 +288,8 @@ export type StorageStats = {
   watchPlanCount: number;
   watchActionCount: number;
   lightningTradePlanCount: number;
+  runtimeSessionCount: number;
+  operatorActionCount: number;
   pumpPortalWalletStatusSnapshotCount: number;
   riskSnapshotCount: number;
   candidateDecisionCount: number;
@@ -323,6 +325,48 @@ export type StoredLightningTradePlan = Omit<
   "createdAt"
 > & {
   id: number;
+  createdAt: string;
+};
+
+export type RuntimeSessionInput = {
+  sessionId: string;
+  runtimeMode: string;
+  paidDataArmed: boolean;
+  startedAt: string;
+  stoppedAt?: string | null;
+  stopReason?: string | null;
+  configFingerprint: string;
+  createdAt?: string;
+};
+
+export type StoredRuntimeSession = Omit<
+  RuntimeSessionInput,
+  "createdAt" | "stoppedAt" | "stopReason"
+> & {
+  id: number;
+  stoppedAt: string | null;
+  stopReason: string | null;
+  createdAt: string;
+};
+
+export type OperatorActionOutcome = "succeeded" | "blocked" | "failed";
+
+export type OperatorActionInput = {
+  actionId: string;
+  action: string;
+  target: string;
+  safeParameters?: Record<string, unknown>;
+  outcome: OperatorActionOutcome;
+  reasonCodes: string[];
+  createdAt?: string;
+};
+
+export type StoredOperatorAction = Omit<
+  OperatorActionInput,
+  "createdAt" | "safeParameters"
+> & {
+  id: number;
+  safeParameters: Record<string, unknown>;
   createdAt: string;
 };
 
@@ -409,9 +453,7 @@ export type ExitRuleInput = {
   name: string;
   enabled: boolean;
   trigger:
-    | "watched_wallet_buy"
-    | "watched_wallet_sell"
-    | "watched_wallet_any_trade";
+    "watched_wallet_buy" | "watched_wallet_sell" | "watched_wallet_any_trade";
   minProfitPct: number;
   minProfitSol?: number | null;
   sellPct: number;
@@ -1349,6 +1391,29 @@ type LightningTradePlanRow = {
   created_at: string;
 };
 
+type RuntimeSessionRow = {
+  id: number;
+  session_id: string;
+  runtime_mode: string;
+  paid_data_armed: number;
+  started_at: string;
+  stopped_at: string | null;
+  stop_reason: string | null;
+  config_fingerprint: string;
+  created_at: string;
+};
+
+type OperatorActionRow = {
+  id: number;
+  action_id: string;
+  action: string;
+  target: string;
+  safe_parameters_json: string;
+  outcome: OperatorActionOutcome;
+  reason_codes_json: string;
+  created_at: string;
+};
+
 type PumpPortalWalletStatusSnapshotRow = {
   id: number;
   data_wallet_public_key: string | null;
@@ -1959,6 +2024,27 @@ const lightningTradePlanInputSchema = z.object({
   warnings: z.array(z.string().min(1)),
   request: z.unknown(),
   payload: z.unknown(),
+  createdAt: z.string().datetime().optional()
+});
+
+const runtimeSessionInputSchema = z.object({
+  sessionId: z.string().min(1),
+  runtimeMode: z.string().min(1),
+  paidDataArmed: z.boolean(),
+  startedAt: z.string().datetime(),
+  stoppedAt: z.string().datetime().nullable().optional(),
+  stopReason: z.string().min(1).nullable().optional(),
+  configFingerprint: z.string().min(1),
+  createdAt: z.string().datetime().optional()
+});
+
+const operatorActionInputSchema = z.object({
+  actionId: z.string().min(1),
+  action: z.string().min(1),
+  target: z.string().min(1),
+  safeParameters: z.object({}).catchall(z.unknown()).default({}),
+  outcome: z.enum(["succeeded", "blocked", "failed"]),
+  reasonCodes: z.array(z.string().min(1)),
   createdAt: z.string().datetime().optional()
 });
 
@@ -3523,9 +3609,7 @@ export function listLaunchCandidates(limit = 50): StoredLaunchCandidate[] {
   return rows.map(mapLaunchCandidateRow);
 }
 
-export function getLaunchCandidate(
-  mint: string
-): StoredLaunchCandidate | null {
+export function getLaunchCandidate(mint: string): StoredLaunchCandidate | null {
   const row = getDb()
     .prepare("select * from launch_candidates where mint = ?")
     .get(mint) as LaunchCandidateRow | undefined;
@@ -4334,6 +4418,125 @@ export function listLightningTradePlans(
     .all(parsedLimit) as LightningTradePlanRow[];
 
   return rows.map(mapLightningTradePlanRow);
+}
+
+export function saveRuntimeSession(
+  session: RuntimeSessionInput
+): StoredRuntimeSession {
+  const parsed = runtimeSessionInputSchema.parse(session);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const db = getDb();
+
+  db.prepare(
+    `insert into runtime_sessions (
+      session_id,
+      runtime_mode,
+      paid_data_armed,
+      started_at,
+      stopped_at,
+      stop_reason,
+      config_fingerprint,
+      created_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?)
+    on conflict(session_id) do update set
+      runtime_mode = excluded.runtime_mode,
+      paid_data_armed = excluded.paid_data_armed,
+      started_at = excluded.started_at,
+      stopped_at = excluded.stopped_at,
+      stop_reason = excluded.stop_reason,
+      config_fingerprint = excluded.config_fingerprint`
+  ).run(
+    parsed.sessionId,
+    parsed.runtimeMode,
+    parsed.paidDataArmed ? 1 : 0,
+    parsed.startedAt,
+    parsed.stoppedAt ?? null,
+    parsed.stopReason ?? null,
+    parsed.configFingerprint,
+    createdAt
+  );
+
+  const row = db
+    .prepare("select * from runtime_sessions where session_id = ?")
+    .get(parsed.sessionId) as RuntimeSessionRow | undefined;
+
+  if (!row) {
+    throw new Error(`Runtime session ${parsed.sessionId} was not persisted.`);
+  }
+
+  return mapRuntimeSessionRow(row);
+}
+
+export function listRuntimeSessions(limit = 50): StoredRuntimeSession[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from runtime_sessions
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as RuntimeSessionRow[];
+
+  return rows.map(mapRuntimeSessionRow);
+}
+
+export function saveOperatorAction(
+  action: OperatorActionInput
+): StoredOperatorAction {
+  const parsed = operatorActionInputSchema.parse(action);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const safeParameters = sanitizeStoragePayload(
+    parsed.safeParameters
+  ) as Record<string, unknown>;
+  const db = getDb();
+
+  db.prepare(
+    `insert into operator_actions (
+      action_id,
+      action,
+      target,
+      safe_parameters_json,
+      outcome,
+      reason_codes_json,
+      created_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?)
+    on conflict(action_id) do nothing`
+  ).run(
+    parsed.actionId,
+    parsed.action,
+    parsed.target,
+    stringifyJson(safeParameters),
+    parsed.outcome,
+    stringifyJson(parsed.reasonCodes),
+    createdAt
+  );
+
+  const row = db
+    .prepare("select * from operator_actions where action_id = ?")
+    .get(parsed.actionId) as OperatorActionRow | undefined;
+
+  if (!row) {
+    throw new Error(`Operator action ${parsed.actionId} was not persisted.`);
+  }
+
+  return mapOperatorActionRow(row);
+}
+
+export function listOperatorActions(limit = 50): StoredOperatorAction[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from operator_actions
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as OperatorActionRow[];
+
+  return rows.map(mapOperatorActionRow);
 }
 
 export function listLightningTradePlansByMint(
@@ -5315,7 +5518,9 @@ export function upsertPaperPortfolioPosition(
     .get(parsed.positionId) as PaperPortfolioPositionRow | undefined;
 
   if (!row) {
-    throw new Error(`Failed to upsert paper portfolio position ${parsed.positionId}`);
+    throw new Error(
+      `Failed to upsert paper portfolio position ${parsed.positionId}`
+    );
   }
 
   return mapPaperPortfolioPositionRow(row);
@@ -5480,6 +5685,8 @@ export function getStorageStats(): StorageStats {
     watchPlanCount: countRows(db, "watch_plans"),
     watchActionCount: countRows(db, "watch_actions"),
     lightningTradePlanCount: countRows(db, "lightning_trade_plans"),
+    runtimeSessionCount: countRows(db, "runtime_sessions"),
+    operatorActionCount: countRows(db, "operator_actions"),
     pumpPortalWalletStatusSnapshotCount: countRows(
       db,
       "pumpportal_wallet_status_snapshots"
@@ -5493,10 +5700,7 @@ export function getStorageStats(): StorageStats {
     paperPortfolioPositionCount: countRows(db, "paper_portfolio_positions"),
     paperPortfolioSnapshotCount: countRows(db, "paper_portfolio_snapshots"),
     watchedWalletCount: countRows(db, "watched_wallets"),
-    watchedWalletTradeEventCount: countRows(
-      db,
-      "watched_wallet_trade_events"
-    ),
+    watchedWalletTradeEventCount: countRows(db, "watched_wallet_trade_events"),
     exitRuleCount: countRows(db, "exit_rules"),
     exitSignalCount: countRows(db, "exit_signals"),
     lastSignalAt: lastSignal.last_signal_at
@@ -6431,6 +6635,47 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(14, "metered_launch_data", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 15)) {
+    db.exec(`
+      create table if not exists runtime_sessions (
+        id integer primary key autoincrement,
+        session_id text not null unique,
+        runtime_mode text not null,
+        paid_data_armed integer not null,
+        started_at text not null,
+        stopped_at text,
+        stop_reason text,
+        config_fingerprint text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_runtime_sessions_created_at
+        on runtime_sessions(created_at);
+
+      create table if not exists operator_actions (
+        id integer primary key autoincrement,
+        action_id text not null unique,
+        action text not null,
+        target text not null,
+        safe_parameters_json text not null,
+        outcome text not null,
+        reason_codes_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_operator_actions_created_at
+        on operator_actions(created_at);
+
+      create index if not exists idx_operator_actions_target
+        on operator_actions(target);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(15, "runtime_control_audit", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -7164,6 +7409,36 @@ function mapLightningTradePlanRow(
     warnings: JSON.parse(row.warnings_json) as string[],
     request: JSON.parse(row.request_json),
     payload: JSON.parse(row.payload_json),
+    createdAt: row.created_at
+  };
+}
+
+function mapRuntimeSessionRow(row: RuntimeSessionRow): StoredRuntimeSession {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    runtimeMode: row.runtime_mode,
+    paidDataArmed: Boolean(row.paid_data_armed),
+    startedAt: row.started_at,
+    stoppedAt: row.stopped_at,
+    stopReason: row.stop_reason,
+    configFingerprint: row.config_fingerprint,
+    createdAt: row.created_at
+  };
+}
+
+function mapOperatorActionRow(row: OperatorActionRow): StoredOperatorAction {
+  return {
+    id: row.id,
+    actionId: row.action_id,
+    action: row.action,
+    target: row.target,
+    safeParameters: JSON.parse(row.safe_parameters_json) as Record<
+      string,
+      unknown
+    >,
+    outcome: row.outcome,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
     createdAt: row.created_at
   };
 }

@@ -31,11 +31,7 @@ export type ActualDataServiceConfig = {
 };
 
 export type ActualDataDataWalletBalanceStatus =
-  | "unknown"
-  | "missing_config"
-  | "critical"
-  | "low"
-  | "ok";
+  "unknown" | "missing_config" | "critical" | "low" | "ok";
 
 export type ActualDataDataWalletReadiness = {
   configured: boolean;
@@ -134,13 +130,15 @@ export class ActualDataService {
   >();
   private readonly config: ActualDataServiceConfig;
   private readonly dataWalletReadiness:
-    | (() => ActualDataDataWalletReadiness)
-    | undefined;
+    (() => ActualDataDataWalletReadiness) | undefined;
   private readonly perMintEventCounts = new Map<string, number>();
   private readonly providerName: string;
   private readonly pumpPortalProvider: PumpPortalFeedProvider | undefined;
   private readonly recentTrades: StoredPumpPortalTokenTradeEvent[] = [];
-  private readonly subscriptions = new Map<string, ActualDataSubscriptionState>();
+  private readonly subscriptions = new Map<
+    string,
+    ActualDataSubscriptionState
+  >();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private budgetReached = false;
   private sessionAcknowledgedMetered = false;
@@ -226,10 +224,7 @@ export class ActualDataService {
     return this.getStatus();
   }
 
-  subscribeMint(
-    mint: string,
-    reason: string
-  ): ActualDataSubscriptionState {
+  subscribeMint(mint: string, reason: string): ActualDataSubscriptionState {
     const normalizedMint = mint.trim();
 
     if (!isValidSolanaMint(normalizedMint)) {
@@ -319,7 +314,8 @@ export class ActualDataService {
 
     const state: ActualDataSubscriptionState = {
       ...existing,
-      eventCount: this.perMintEventCounts.get(normalizedMint) ?? existing.eventCount,
+      eventCount:
+        this.perMintEventCounts.get(normalizedMint) ?? existing.eventCount,
       reason,
       reasonCodes: uniqueReasonCodes([
         ...existing.reasonCodes,
@@ -353,7 +349,8 @@ export class ActualDataService {
       autoSubscribeOnMigration: this.config.autoSubscribeOnMigration,
       autoSubscribeOnNewToken: this.config.autoSubscribeOnNewToken,
       autoSubscribeOnQualified: this.config.autoSubscribeOnQualified,
-      budgetReached: this.budgetReached || providerStats?.budgetReached === true,
+      budgetReached:
+        this.budgetReached || providerStats?.budgetReached === true,
       compatibleProvider: this.isCompatibleProvider(),
       dataWalletBalanceSol: dataWallet.balanceSol,
       dataWalletBalanceStatus: dataWallet.balanceStatus,
@@ -434,11 +431,15 @@ export class ActualDataService {
       subscription.eventCount = mintCount;
     }
 
-    const summary = this.updateCandidateSummary(event.mint, event.reasonCodes ?? [], {
-      latestPriceSol: event.priceSol ?? null,
-      latestRealTradeAt: event.timestamp,
-      latestVolumeSol: event.volumeSol ?? null
-    });
+    const summary = this.updateCandidateSummary(
+      event.mint,
+      event.reasonCodes ?? [],
+      {
+        latestPriceSol: event.priceSol ?? null,
+        latestRealTradeAt: event.timestamp,
+        latestVolumeSol: event.volumeSol ?? null
+      }
+    );
 
     if (mintCount >= this.config.maxEventsPerMint) {
       this.unsubscribeMint(event.mint, "max_events_per_mint");
@@ -459,39 +460,9 @@ export class ActualDataService {
     event: FeedEvent,
     decision: CandidateDecision | undefined
   ): ActualDataSubscriptionState | undefined {
-    if (!this.config.autoSubscribe || !this.config.enabled) {
-      return undefined;
-    }
-
-    const mint = event.type === "token_created" ? event.candidate.mint : event.mint;
-    const rawType = event.rawSourceEventType ?? event.type;
-    const shouldSubscribeForNewToken =
-      event.type === "token_created" &&
-      rawType !== "migration" &&
-      this.config.autoSubscribeOnNewToken;
-    const shouldSubscribeForMigration =
-      event.type === "token_created" &&
-      rawType === "migration" &&
-      this.config.autoSubscribeOnMigration;
-    const shouldSubscribeForQualified =
-      decision !== undefined &&
-      this.config.autoSubscribeOnQualified &&
-      decision.score >= this.config.minScoreToAutoSubscribe &&
-      !decision.hardReject;
-
-    if (
-      !shouldSubscribeForNewToken &&
-      !shouldSubscribeForMigration &&
-      !shouldSubscribeForQualified
-    ) {
-      return undefined;
-    }
-
-    try {
-      return this.subscribeMint(mint, "auto");
-    } catch {
-      return undefined;
-    }
+    void event;
+    void decision;
+    return undefined;
   }
 
   private canSubscribe(): boolean {
@@ -604,7 +575,8 @@ export class ActualDataService {
     const existing = this.candidateSummaries.get(mint);
     const subscription = this.subscriptions.get(mint);
     const summary: ActualDataCandidateSummary = {
-      eventCount: this.perMintEventCounts.get(mint) ?? existing?.eventCount ?? 0,
+      eventCount:
+        this.perMintEventCounts.get(mint) ?? existing?.eventCount ?? 0,
       latestPriceSol:
         latest?.latestPriceSol ?? existing?.latestPriceSol ?? null,
       latestRealTradeAt:
@@ -626,31 +598,33 @@ export class ActualDataService {
   }
 }
 
-export function createActualDataConfig(input: {
-  acknowledgedMetered?: boolean;
-  apiKeyConfigured?: boolean;
-  autoSubscribe?: boolean;
-  autoSubscribeOnMigration?: boolean;
-  autoSubscribeOnNewToken?: boolean;
-  autoSubscribeOnQualified?: boolean;
-  enabled?: boolean;
-  manualMints?: string[];
-  maxEventsPerMint?: number;
-  maxEventsPerSession?: number;
-  maxSubscribedTokens?: number;
-  minScoreToAutoSubscribe?: number;
-  requireApiKey?: boolean;
-  unsubscribeAfterMs?: number;
-} = {}): ActualDataServiceConfig {
+export function createActualDataConfig(
+  input: {
+    acknowledgedMetered?: boolean;
+    apiKeyConfigured?: boolean;
+    autoSubscribe?: boolean;
+    autoSubscribeOnMigration?: boolean;
+    autoSubscribeOnNewToken?: boolean;
+    autoSubscribeOnQualified?: boolean;
+    enabled?: boolean;
+    manualMints?: string[];
+    maxEventsPerMint?: number;
+    maxEventsPerSession?: number;
+    maxSubscribedTokens?: number;
+    minScoreToAutoSubscribe?: number;
+    requireApiKey?: boolean;
+    unsubscribeAfterMs?: number;
+  } = {}
+): ActualDataServiceConfig {
   return {
     acknowledgedMetered: input.acknowledgedMetered ?? false,
     apiKeyConfigured: input.apiKeyConfigured ?? false,
-    autoSubscribe: input.autoSubscribe ?? false,
-    autoSubscribeOnMigration: input.autoSubscribeOnMigration ?? false,
-    autoSubscribeOnNewToken: input.autoSubscribeOnNewToken ?? false,
-    autoSubscribeOnQualified: input.autoSubscribeOnQualified ?? false,
+    autoSubscribe: false,
+    autoSubscribeOnMigration: false,
+    autoSubscribeOnNewToken: false,
+    autoSubscribeOnQualified: false,
     enabled: input.enabled ?? false,
-    manualMints: uniqueReasonCodes(input.manualMints ?? []),
+    manualMints: [],
     maxEventsPerMint: input.maxEventsPerMint ?? 1000,
     maxEventsPerSession: input.maxEventsPerSession ?? 5000,
     maxSubscribedTokens: input.maxSubscribedTokens ?? 10,

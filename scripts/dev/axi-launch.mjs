@@ -15,11 +15,19 @@ import {
 const meteredMode = process.argv.includes("--metered");
 const respectEnv = process.argv.includes("--respect-env");
 const uiControlledMeteredEnv = {
+  API_HOST: "127.0.0.1",
   METERED_LAUNCH_DATA_CONTROLS_ENABLED: "true",
   METERED_LAUNCH_DATA_ENABLED: "true",
   METERED_LAUNCH_DATA_START_ACTIVE: "false",
   METERED_LAUNCH_DATA_REQUIRE_UI_ACK: "true",
   METERED_LAUNCH_DATA_ACK_COST: "false",
+  METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS: "3",
+  METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT: "250",
+  METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION: "1000",
+  METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL: "0.001",
+  METERED_LAUNCH_DATA_MAX_UI_SESSION_COST_SOL: "0.001",
+  PUMPPORTAL_LIGHTNING_ALLOW_LIVE_TRADING: "false",
+  PUMPPORTAL_LIGHTNING_MANUAL_ARMED: "false",
   PUMPPORTAL_TOKEN_TRADES_ENABLED: "true",
   PUMPPORTAL_TOKEN_TRADES_ACK_METERED: "false",
   PUMPPORTAL_TOKEN_TRADES_AUTO_SUBSCRIBE: "false",
@@ -75,7 +83,9 @@ const runtime = await fetchJson(`${apiUrl}/runtime/status`);
 
 console.log("AXI launched.");
 console.log(`API URL: ${apiUrl}`);
-console.log(`Dashboard URL: ${dashboardUrl}${dashboardReady ? "" : " (still starting)"}`);
+console.log(
+  `Dashboard URL: ${dashboardUrl}${dashboardReady ? "" : " (still starting)"}`
+);
 console.log(
   `Live discovery: ${
     runtime.liveDiscovery.connected

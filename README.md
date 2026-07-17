@@ -374,6 +374,24 @@ booleans, but never displays the API key.
 PumpPortal's published metered data price used by AXI's estimator is
 `0.01 SOL` per `10,000` messages. Start with small caps.
 
+### Runtime ownership and local controls
+
+The runtime has one subscription-policy owner. `LaunchScannerService` performs
+free discovery and launch scoring, `ActualDataService` adapts the single
+PumpPortal token-trade transport, and `MeteredLaunchDataService` decides which
+mints are tracked and applies all metered caps. The canonical mutation route is
+`/metered-launch-data/track`; the older `/actual-data/subscribe`,
+`/launch/track`, and `/live/trade-tracking/track` mutations return `410` and
+cannot bypass the metered policy.
+
+`GET /runtime/contracts` publishes this ownership map and reports safe-default
+configuration drift. `GET /runtime/operator-actions` exposes sanitized local
+mutation audit records. State-changing API requests are accepted only from the
+local machine and, when a browser sends an Origin header, from
+`API_ALLOWED_ORIGINS`. The API binds to `127.0.0.1` by default. A paid-data ACK
+belongs to one process session and is cleared by stop, shutdown, budget failure,
+or restart.
+
 Example `.env.local`:
 
 ```bash
@@ -388,13 +406,13 @@ METERED_LAUNCH_DATA_REQUIRE_UI_ACK=true
 METERED_LAUNCH_DATA_ACK_COST=false
 METERED_LAUNCH_DATA_MODE=newest
 ROLLING_TRACKER_ENABLED=true
-METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS=5
+METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS=3
 METERED_LAUNCH_DATA_INITIAL_TRACK_MS=30000
 METERED_LAUNCH_DATA_EXTENDED_TRACK_MS=300000
-METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT=500
-METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION=5000
-METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL=0.005
-METERED_LAUNCH_DATA_MAX_UI_SESSION_COST_SOL=0.005
+METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT=250
+METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION=1000
+METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL=0.001
+METERED_LAUNCH_DATA_MAX_UI_SESSION_COST_SOL=0.001
 ROLLING_TRACKER_MIN_SCORE_PROTECT=65
 ROLLING_TRACKER_MIN_SCORE_RIP=80
 ROLLING_TRACKER_PROTECTED_MAX_AGE_MS=900000
@@ -403,7 +421,7 @@ PUMPPORTAL_TOKEN_TRADES_ENABLED=true
 PUMPPORTAL_TOKEN_TRADES_ACK_METERED=false
 ```
 
-In `newest` mode, the rolling tracker keeps at most five active launch mints by
+In `newest` mode, the rolling tracker keeps at most three active launch mints by
 default. When capacity is full, a newer candidate can preempt the weakest
 unprotected tracked mint. Hot/ripping candidates, protected scores, and open
 paper positions are protected; hard rejects and stale zero-trade subscriptions

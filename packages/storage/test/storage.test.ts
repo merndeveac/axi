@@ -47,6 +47,7 @@ import {
   listMeteredLaunchDataSessions,
   listMeteredLaunchDataSubscriptions,
   listMeteredLaunchDataSubscriptionsByMint,
+  listOperatorActions,
   listPumpPortalWalletStatusSnapshots,
   listExitRules,
   listExitSignals,
@@ -81,6 +82,7 @@ import {
   listRecentSignals,
   listRiskSnapshotsForReplay,
   listRiskSnapshots,
+  listRuntimeSessions,
   listSignalsForReplay,
   listTokenIdentities,
   listTokenIdentitiesForReplay,
@@ -115,6 +117,8 @@ import {
   saveMeteredLaunchDataEvent,
   saveMeteredLaunchDataSession,
   saveMeteredLaunchDataSubscription,
+  saveOperatorAction,
+  saveRuntimeSession,
   saveActualDataSession,
   saveActualDataSubscription,
   savePaperOrder,
@@ -168,6 +172,8 @@ describe("@axi/storage", () => {
     expect(stats.watchPlanCount).toBe(0);
     expect(stats.watchActionCount).toBe(0);
     expect(stats.lightningTradePlanCount).toBe(0);
+    expect(stats.runtimeSessionCount).toBe(0);
+    expect(stats.operatorActionCount).toBe(0);
     expect(stats.pumpPortalWalletStatusSnapshotCount).toBe(0);
     expect(stats.meteredLaunchDataSessionCount).toBe(0);
     expect(stats.meteredLaunchDataSubscriptionCount).toBe(0);
@@ -187,6 +193,72 @@ describe("@axi/storage", () => {
     expect(stats.watchedWalletTradeEventCount).toBe(0);
     expect(stats.exitRuleCount).toBe(0);
     expect(stats.exitSignalCount).toBe(0);
+  });
+
+  it("persists idempotent runtime sessions and sanitized operator actions", () => {
+    initStorage({ databasePath });
+    const startedAt = "2026-07-16T00:00:00.000Z";
+
+    saveRuntimeSession({
+      sessionId: "runtime-test",
+      runtimeMode: "live",
+      paidDataArmed: false,
+      startedAt,
+      configFingerprint: "safe-fingerprint"
+    });
+    saveRuntimeSession({
+      sessionId: "runtime-test",
+      runtimeMode: "live",
+      paidDataArmed: true,
+      startedAt,
+      configFingerprint: "safe-fingerprint"
+    });
+    saveOperatorAction({
+      actionId: "runtime-test:1",
+      action: "POST",
+      target: "/runtime/metered-launch-data/start",
+      safeParameters: {
+        mint,
+        apiKey: "must-not-persist",
+        nested: { privateKey: "must-not-persist" }
+      },
+      outcome: "succeeded",
+      reasonCodes: ["LOCAL_MUTATION_ALLOWED"]
+    });
+    saveOperatorAction({
+      actionId: "runtime-test:1",
+      action: "POST",
+      target: "/runtime/metered-launch-data/start",
+      outcome: "failed",
+      reasonCodes: ["DUPLICATE_ATTEMPT"]
+    });
+
+    expect(listRuntimeSessions()).toEqual([
+      expect.objectContaining({
+        sessionId: "runtime-test",
+        paidDataArmed: true
+      })
+    ]);
+    expect(listOperatorActions()).toEqual([
+      expect.objectContaining({
+        actionId: "runtime-test:1",
+        outcome: "succeeded",
+        safeParameters: {
+          mint,
+          apiKey: "[redacted]",
+          nested: { privateKey: "[redacted]" }
+        }
+      })
+    ]);
+
+    closeStorage();
+    initStorage({ databasePath });
+    expect(getStorageStats()).toEqual(
+      expect.objectContaining({
+        runtimeSessionCount: 1,
+        operatorActionCount: 1
+      })
+    );
   });
 
   it("signal can be saved and read", () => {
@@ -353,7 +425,9 @@ describe("@axi/storage", () => {
     expect(listPaperPortfolioFills()).toHaveLength(1);
     expect(listPaperPortfolioPositions()).toHaveLength(1);
     expect(listPaperPortfolioSnapshots()).toHaveLength(1);
-    expect(getPaperPortfolioPosition(mint)?.positionId).toBe("paper-position-1");
+    expect(getPaperPortfolioPosition(mint)?.positionId).toBe(
+      "paper-position-1"
+    );
     expect(getPaperPortfolioPosition(mint)?.currentPriceSol).toBeNull();
     expect(stats.paperPortfolioOrderCount).toBe(1);
     expect(stats.paperPortfolioFillCount).toBe(1);
@@ -1028,9 +1102,7 @@ describe("@axi/storage", () => {
     );
     expect(snapshot.id).toBeGreaterThan(0);
     expect(listLaunchScoreSnapshots(10)[0]?.score).toBe(76);
-    expect(listLaunchScoreSnapshotsByMint(mint, 10)[0]?.phase).toBe(
-      "ripping"
-    );
+    expect(listLaunchScoreSnapshotsByMint(mint, 10)[0]?.phase).toBe("ripping");
     expect(trackingEvent.id).toBeGreaterThan(0);
     expect(listLaunchTrackingEvents(10)[0]?.action).toBe("track");
     expect(session.id).toBeGreaterThan(0);

@@ -1,9 +1,4 @@
-import {
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode
-} from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type {
   LiveTokenCardViewModel,
   MomentumDiagnostics,
@@ -527,6 +522,31 @@ type RuntimeControlResult = {
   tradingDisabled: true;
 };
 
+type RuntimeContract = {
+  version: number;
+  runtimeSessionId: string;
+  safety: {
+    apiHost: string;
+    localMutationGuard: boolean;
+    tradingDisabled: boolean;
+  };
+  ownership: {
+    discoveryAndLaunchScoring: string;
+    subscriptionPolicy: string;
+    subscriptionTransport: string;
+    trackingCommandRoute: string;
+  };
+  configuration: {
+    driftDetected: boolean;
+    drift: Array<{
+      code: string;
+      key: string;
+      expected: number;
+      actual: number;
+    }>;
+  };
+};
+
 type MeteredLaunchDataTrackedMint = {
   mint: string;
   status: string;
@@ -975,7 +995,9 @@ type PaperPortfolioPerformanceResponse = {
   snapshot: PaperPortfolioSnapshot;
   bestTrade: PaperPortfolioPosition | null;
   worstTrade: PaperPortfolioPosition | null;
-  snapshots: Array<PaperPortfolioSnapshot & { id?: number; createdAt?: string }>;
+  snapshots: Array<
+    PaperPortfolioSnapshot & { id?: number; createdAt?: string }
+  >;
   paperOnly: true;
   liveExecutionDisabled: true;
 };
@@ -1110,6 +1132,8 @@ export function App() {
   >([]);
   const [runtimeControlStatus, setRuntimeControlStatus] =
     useState<RuntimeControlStatus | null>(null);
+  const [runtimeContract, setRuntimeContract] =
+    useState<RuntimeContract | null>(null);
   const [runtimeActionStatus, setRuntimeActionStatus] =
     useState<string>("ready");
   const [liveCardEnrichmentStatus, setLiveCardEnrichmentStatus] =
@@ -1160,9 +1184,8 @@ export function App() {
 
     const refreshScannerRows = async () => {
       try {
-        const nextRows = await fetchJson<MomentumScannerRow[]>(
-          "/ui/momentum-rows"
-        );
+        const nextRows =
+          await fetchJson<MomentumScannerRow[]>("/ui/momentum-rows");
         setMomentumRows(nextRows);
       } catch {
         // Polling remains the fallback path.
@@ -1247,6 +1270,7 @@ export function App() {
           nextMeteredLaunchDataStatus,
           nextMeteredLaunchDataTracked,
           nextRuntimeControlStatus,
+          nextRuntimeContract,
           nextActualTrades,
           nextLiveCardEnrichmentStatus,
           nextMarketStatus,
@@ -1281,7 +1305,9 @@ export function App() {
           fetchJson<ExitEventsResponse>("/exit/events?limit=25"),
           fetchJson<ExitSignalsResponse>("/exit/signals?limit=25"),
           fetchJson<PaperPortfolioStatus>("/paper-portfolio/status"),
-          fetchJson<PaperPortfolioSnapshotResponse>("/paper-portfolio/snapshot"),
+          fetchJson<PaperPortfolioSnapshotResponse>(
+            "/paper-portfolio/snapshot"
+          ),
           fetchJson<PaperPortfolioPositionsResponse>(
             "/paper-portfolio/positions"
           ),
@@ -1301,6 +1327,7 @@ export function App() {
             "/metered-launch-data/tracked?limit=25"
           ),
           fetchJson<RuntimeControlStatus>("/runtime/status"),
+          fetchJson<RuntimeContract>("/runtime/contracts"),
           fetchJson<PumpPortalTradeRow[]>("/actual-data/trades?limit=10"),
           fetchJson<LiveCardEnrichmentStatus>("/enrichment/status"),
           fetchJson<MarketStatus>("/market/status"),
@@ -1346,6 +1373,7 @@ export function App() {
           setMeteredLaunchDataStatus(nextMeteredLaunchDataStatus);
           setMeteredLaunchDataTracked(nextMeteredLaunchDataTracked.current);
           setRuntimeControlStatus(nextRuntimeControlStatus);
+          setRuntimeContract(nextRuntimeContract);
           setActualTrades(nextActualTrades);
           setLiveCardEnrichmentStatus(nextLiveCardEnrichmentStatus);
           setMarketStatus(nextMarketStatus);
@@ -1417,9 +1445,8 @@ export function App() {
 
     const loadRows = async () => {
       try {
-        const nextRows = await fetchJson<MomentumScannerRow[]>(
-          "/ui/momentum-rows"
-        );
+        const nextRows =
+          await fetchJson<MomentumScannerRow[]>("/ui/momentum-rows");
 
         if (!cancelled) {
           setMomentumRows(nextRows);
@@ -1611,6 +1638,7 @@ export function App() {
         onToggleDiagnostics={() => setControlPanelOpen((open) => !open)}
         rippingLaunchCount={rippingLaunchCount}
         runtimeActionStatus={runtimeActionStatus}
+        runtimeContract={runtimeContract}
         runtimeControlStatus={runtimeControlStatus}
         runRuntimeAction={runRuntimeAction}
         trackedCardCount={trackedCardCount}
@@ -1749,6 +1777,7 @@ function HeaderControlCenter({
   onToggleDiagnostics,
   rippingLaunchCount,
   runtimeActionStatus,
+  runtimeContract,
   runtimeControlStatus,
   runRuntimeAction,
   trackedCardCount,
@@ -1775,8 +1804,13 @@ function HeaderControlCenter({
   onToggleDiagnostics: () => void;
   rippingLaunchCount: number;
   runtimeActionStatus: string;
+  runtimeContract: RuntimeContract | null;
   runtimeControlStatus: RuntimeControlStatus | null;
-  runRuntimeAction: (path: string, label: string, body?: unknown) => Promise<void>;
+  runRuntimeAction: (
+    path: string,
+    label: string,
+    body?: unknown
+  ) => Promise<void>;
   trackedCardCount: number;
   unavailableFieldCount: number;
   websocketLabel: string;
@@ -1799,7 +1833,9 @@ function HeaderControlCenter({
   );
   const walletSetupText = getWalletSetupText(runtimeControlStatus);
   const dataWalletPublicKey =
-    runtimeControlStatus?.dataWallet.publicKey ?? dataWalletStatus?.publicKey ?? null;
+    runtimeControlStatus?.dataWallet.publicKey ??
+    dataWalletStatus?.publicKey ??
+    null;
   const dataWalletShort =
     runtimeControlStatus?.dataWallet.shortPublicKey ??
     dataWalletStatus?.shortPublicKey ??
@@ -1813,8 +1849,7 @@ function HeaderControlCenter({
     !runtimeControlStatus?.liveDiscovery.connected &&
     !runtimeControlStatus?.liveDiscovery.connecting;
   const projectedCostPerHour =
-    runtimeControlStatus?.usage.projectedCostPerHourSol ??
-    null;
+    runtimeControlStatus?.usage.projectedCostPerHourSol ?? null;
   const latestMeteredAt =
     meteredPriceAction?.latestEventAt ??
     runtimeControlStatus?.meteredLaunchData.latestEventAt ??
@@ -1823,9 +1858,7 @@ function HeaderControlCenter({
   const tradingWalletShort =
     tradingWallet?.shortPublicKey ?? "public address pending";
   const tradingBalanceStatus = tradingWallet?.balanceStatus ?? "unknown";
-  const canArmMetered =
-    !apiOffline &&
-    meteredPriceAction?.canArm === true;
+  const canArmMetered = !apiOffline && meteredPriceAction?.canArm === true;
   const parsedArmCost = Number(armMaxSessionCostSol);
   const parsedArmMints = Number(armMaxConcurrentMints);
   const parsedArmEvents = Number(armMaxEventsPerSession);
@@ -1864,7 +1897,10 @@ function HeaderControlCenter({
   };
 
   const refreshWallets = async () => {
-    await runRuntimeAction("/runtime/data-wallet/refresh", "Refreshing data wallet");
+    await runRuntimeAction(
+      "/runtime/data-wallet/refresh",
+      "Refreshing data wallet"
+    );
     await runRuntimeAction(
       "/runtime/trading-wallet/refresh",
       "Refreshing trading wallet"
@@ -1877,7 +1913,9 @@ function HeaderControlCenter({
         <div className="brand-cluster">
           <div className="brand-mark">AXI</div>
           <div>
-            <p className="eyebrow">live token intelligence / momentum scanner</p>
+            <p className="eyebrow">
+              live token intelligence / momentum scanner
+            </p>
             <h1>AXI</h1>
             <span className="runtime-mode">
               {feedModeLabel} · {modeLabel} · PumpPortal-first
@@ -1889,7 +1927,13 @@ function HeaderControlCenter({
           <StatusChip label="PAPER" tone="good" value="ONLY" />
           <StatusChip
             label="LIVE FEED"
-            tone={liveTone === "online" ? "good" : liveTone === "warning" ? "warn" : "bad"}
+            tone={
+              liveTone === "online"
+                ? "good"
+                : liveTone === "warning"
+                  ? "warn"
+                  : "bad"
+            }
             value={liveLabel}
           />
           <StatusChip
@@ -1897,8 +1941,10 @@ function HeaderControlCenter({
             tone={
               (meteredPriceAction?.state ?? meteredControl.state) === "ACTIVE"
                 ? "good"
-                : (meteredPriceAction?.state ?? meteredControl.state) === "READY" ||
-                    (meteredPriceAction?.state ?? meteredControl.state) === "STOPPED"
+                : (meteredPriceAction?.state ?? meteredControl.state) ===
+                      "READY" ||
+                    (meteredPriceAction?.state ?? meteredControl.state) ===
+                      "STOPPED"
                   ? "warn"
                   : (meteredPriceAction?.state ?? meteredControl.state) ===
                         "BLOCKED" ||
@@ -1925,6 +1971,17 @@ function HeaderControlCenter({
             value={apiLabel}
           />
           <StatusChip
+            label="CONFIG"
+            tone={runtimeContract?.configuration.driftDetected ? "bad" : "good"}
+            value={
+              runtimeContract
+                ? runtimeContract.configuration.driftDetected
+                  ? "DRIFT"
+                  : "ALIGNED"
+                : "CHECKING"
+            }
+          />
+          <StatusChip
             label="WS"
             tone={connectionStatus === "open" ? "good" : "warn"}
             value={websocketLabel}
@@ -1934,7 +1991,10 @@ function HeaderControlCenter({
       </div>
 
       <div className="control-metrics" aria-label="Scanner summary">
-        <HeaderMetric label="Rows" value={formatCompactNumber(momentumRowCount)} />
+        <HeaderMetric
+          label="Rows"
+          value={formatCompactNumber(momentumRowCount)}
+        />
         <HeaderMetric
           label="Hot"
           value={formatCompactNumber(hotLaunchCount)}
@@ -1958,7 +2018,10 @@ function HeaderControlCenter({
         />
         <HeaderMetric
           label="Wallet"
-          value={formatSol(runtimeControlStatus?.dataWallet.balanceSol ?? dataWalletStatus?.balanceSol)}
+          value={formatSol(
+            runtimeControlStatus?.dataWallet.balanceSol ??
+              dataWalletStatus?.balanceSol
+          )}
           detail={dataWalletShort}
         />
         <HeaderMetric
@@ -2116,7 +2179,9 @@ function HeaderControlCenter({
                 <input
                   max={armSessionCostCeiling}
                   min="0.000001"
-                  onChange={(event) => setArmMaxSessionCostSol(event.target.value)}
+                  onChange={(event) =>
+                    setArmMaxSessionCostSol(event.target.value)
+                  }
                   step="0.000001"
                   type="number"
                   value={armMaxSessionCostSol}
@@ -2127,7 +2192,9 @@ function HeaderControlCenter({
                 <input
                   max={meteredPriceAction?.maxConcurrentMints ?? 3}
                   min="1"
-                  onChange={(event) => setArmMaxConcurrentMints(event.target.value)}
+                  onChange={(event) =>
+                    setArmMaxConcurrentMints(event.target.value)
+                  }
                   step="1"
                   type="number"
                   value={armMaxConcurrentMints}
@@ -2138,7 +2205,9 @@ function HeaderControlCenter({
                 <input
                   max={meteredPriceAction?.maxEventsPerSession ?? 1000}
                   min="1"
-                  onChange={(event) => setArmMaxEventsPerSession(event.target.value)}
+                  onChange={(event) =>
+                    setArmMaxEventsPerSession(event.target.value)
+                  }
                   step="1"
                   type="number"
                   value={armMaxEventsPerSession}
@@ -2201,17 +2270,34 @@ function HeaderControlCenter({
                 )}
               </dd>
               <dt>balance</dt>
-              <dd>{formatSol(dataWalletStatus?.balanceSol ?? runtimeControlStatus?.dataWallet.balanceSol)}</dd>
+              <dd>
+                {formatSol(
+                  dataWalletStatus?.balanceSol ??
+                    runtimeControlStatus?.dataWallet.balanceSol
+                )}
+              </dd>
               <dt>status</dt>
               <dd>{balanceStatus}</dd>
               <dt>events remaining</dt>
-              <dd>{formatCompactNumber(dataWalletStatus?.estimatedEventsRemaining ?? runtimeControlStatus?.dataWallet.estimatedEventsRemaining)}</dd>
+              <dd>
+                {formatCompactNumber(
+                  dataWalletStatus?.estimatedEventsRemaining ??
+                    runtimeControlStatus?.dataWallet.estimatedEventsRemaining
+                )}
+              </dd>
               <dt>last check</dt>
-              <dd>{formatTimeAgo(dataWalletStatus?.lastBalanceCheckAt ?? runtimeControlStatus?.dataWallet.lastBalanceCheckAt)}</dd>
+              <dd>
+                {formatTimeAgo(
+                  dataWalletStatus?.lastBalanceCheckAt ??
+                    runtimeControlStatus?.dataWallet.lastBalanceCheckAt
+                )}
+              </dd>
               {walletSetupText ? (
                 <>
                   <dt>setup</dt>
-                  <dd><code>{walletSetupText}</code></dd>
+                  <dd>
+                    <code>{walletSetupText}</code>
+                  </dd>
                 </>
               ) : null}
             </dl>
@@ -2248,15 +2334,45 @@ function HeaderControlCenter({
             <h2>Metered Usage</h2>
             <dl>
               <dt>tracked mints</dt>
-              <dd>{formatCompactNumber(meteredPriceAction?.trackedMintCount ?? meteredLaunchDataStatus?.trackedMintCount ?? runtimeControlStatus?.meteredLaunchData.trackedMintCount)}</dd>
+              <dd>
+                {formatCompactNumber(
+                  meteredPriceAction?.trackedMintCount ??
+                    meteredLaunchDataStatus?.trackedMintCount ??
+                    runtimeControlStatus?.meteredLaunchData.trackedMintCount
+                )}
+              </dd>
               <dt>events this session</dt>
-              <dd>{formatCompactNumber(meteredPriceAction?.eventCount ?? meteredLaunchDataStatus?.totalEventsThisSession ?? runtimeControlStatus?.meteredLaunchData.eventCount)}</dd>
+              <dd>
+                {formatCompactNumber(
+                  meteredPriceAction?.eventCount ??
+                    meteredLaunchDataStatus?.totalEventsThisSession ??
+                    runtimeControlStatus?.meteredLaunchData.eventCount
+                )}
+              </dd>
               <dt>estimated spent</dt>
-              <dd>{formatSol(meteredPriceAction?.estimatedCostSol ?? meteredLaunchDataStatus?.estimatedCostSol ?? runtimeControlStatus?.meteredLaunchData.estimatedCostSol)}</dd>
+              <dd>
+                {formatSol(
+                  meteredPriceAction?.estimatedCostSol ??
+                    meteredLaunchDataStatus?.estimatedCostSol ??
+                    runtimeControlStatus?.meteredLaunchData.estimatedCostSol
+                )}
+              </dd>
               <dt>session cap</dt>
-              <dd>{formatSol(meteredPriceAction?.sessionCostCapSol ?? meteredLaunchDataStatus?.maxSessionCostSol ?? runtimeControlStatus?.meteredLaunchData.sessionCostCapSol)}</dd>
+              <dd>
+                {formatSol(
+                  meteredPriceAction?.sessionCostCapSol ??
+                    meteredLaunchDataStatus?.maxSessionCostSol ??
+                    runtimeControlStatus?.meteredLaunchData.sessionCostCapSol
+                )}
+              </dd>
               <dt>budget remaining</dt>
-              <dd>{formatSol(meteredPriceAction?.budgetRemainingSol ?? meteredLaunchDataStatus?.remainingBudgetSol ?? runtimeControlStatus?.meteredLaunchData.budgetRemainingSol)}</dd>
+              <dd>
+                {formatSol(
+                  meteredPriceAction?.budgetRemainingSol ??
+                    meteredLaunchDataStatus?.remainingBudgetSol ??
+                    runtimeControlStatus?.meteredLaunchData.budgetRemainingSol
+                )}
+              </dd>
               <dt>projected / hour</dt>
               <dd>{formatSol(projectedCostPerHour)}</dd>
               <dt>latest metered event</dt>
@@ -2267,7 +2383,11 @@ function HeaderControlCenter({
             <h2>Runtime</h2>
             <dl>
               <dt>runtime mode</dt>
-              <dd>{runtimeControlStatus?.runtimeMode ?? healthStatus?.dataFeedMode ?? "unknown"}</dd>
+              <dd>
+                {runtimeControlStatus?.runtimeMode ??
+                  healthStatus?.dataFeedMode ??
+                  "unknown"}
+              </dd>
               <dt>provider</dt>
               <dd>{feedLabel}</dd>
               <dt>live feed</dt>
@@ -2421,7 +2541,8 @@ function ScannerTab({
         <div>
           <h2>Momentum Scanner</h2>
           <p>
-            {totalRows} current-session rows / {rows.length} visible / blanks are unavailable, not zero
+            {totalRows} current-session rows / {rows.length} visible / blanks
+            are unavailable, not zero
           </p>
         </div>
         <span className="table-meta">
@@ -2429,7 +2550,10 @@ function ScannerTab({
         </span>
       </div>
 
-      <div className="live-controls scanner-controls" aria-label="Scanner controls">
+      <div
+        className="live-controls scanner-controls"
+        aria-label="Scanner controls"
+      >
         <label>
           <span>Search</span>
           <input
@@ -2535,18 +2659,45 @@ function ScannerTab({
         </label>
       </div>
 
-      <div className="scanner-summary-strip" aria-label="Scanner diagnostics summary">
+      <div
+        className="scanner-summary-strip"
+        aria-label="Scanner diagnostics summary"
+      >
         <span>price {formatCompactNumber(diagnostics?.tokensWithPrice)}</span>
-        <span>curve price {formatCompactNumber(diagnostics?.rowsWithCurvePrice)}</span>
+        <span>
+          curve price {formatCompactNumber(diagnostics?.rowsWithCurvePrice)}
+        </span>
         <span>volume {formatCompactNumber(diagnostics?.tokensWithVolume)}</span>
-        <span>trades {formatCompactNumber(diagnostics?.tokensWithTradeData)}</span>
-        <span>derivatives {formatCompactNumber(diagnostics?.tokensWithDerivatives)}</span>
-        <span>samples {formatCompactNumber(diagnostics?.tokensWithEnoughSamplesForDerivatives)}</span>
-        <span>explosive {formatCompactNumber(diagnostics?.tokensWithExplosiveDerivativeStrength)}</span>
-        <span>mcap {formatCompactNumber(diagnostics?.tokensWithMarketCap)}</span>
-        <span>curve liq {formatCompactNumber(diagnostics?.rowsWithCurveLiquidity)}</span>
-        <span>dex liq {formatCompactNumber(diagnostics?.rowsWithDexLiquidity)}</span>
-        <span>holders {formatCompactNumber(diagnostics?.tokensWithHolderData)}</span>
+        <span>
+          trades {formatCompactNumber(diagnostics?.tokensWithTradeData)}
+        </span>
+        <span>
+          derivatives {formatCompactNumber(diagnostics?.tokensWithDerivatives)}
+        </span>
+        <span>
+          samples{" "}
+          {formatCompactNumber(
+            diagnostics?.tokensWithEnoughSamplesForDerivatives
+          )}
+        </span>
+        <span>
+          explosive{" "}
+          {formatCompactNumber(
+            diagnostics?.tokensWithExplosiveDerivativeStrength
+          )}
+        </span>
+        <span>
+          mcap {formatCompactNumber(diagnostics?.tokensWithMarketCap)}
+        </span>
+        <span>
+          curve liq {formatCompactNumber(diagnostics?.rowsWithCurveLiquidity)}
+        </span>
+        <span>
+          dex liq {formatCompactNumber(diagnostics?.rowsWithDexLiquidity)}
+        </span>
+        <span>
+          holders {formatCompactNumber(diagnostics?.tokensWithHolderData)}
+        </span>
       </div>
 
       {rows.length > 0 ? (
@@ -2605,7 +2756,8 @@ function ScannerRow({
   ]
     .filter(Boolean)
     .join(" ");
-  const eventLabel = row.migrationStatus === "migrated" ? "Migrated" : "New Token";
+  const eventLabel =
+    row.migrationStatus === "migrated" ? "Migrated" : "New Token";
   const metadataLabel = row.hasMetadata ? "metadata" : "metadata pending";
   const linkLabel = row.hasSocialLinks ? "links" : "social n/a";
   const liquidityLabel =
@@ -2633,7 +2785,9 @@ function ScannerRow({
             <small className="scanner-token-badges">
               <span>{row.source}</span>
               <span>{eventLabel}</span>
-              {row.trackingState === "tracking" ? <span>Trade Tracked</span> : null}
+              {row.trackingState === "tracking" ? (
+                <span>Trade Tracked</span>
+              ) : null}
               <span>{metadataLabel}</span>
               <span>{linkLabel}</span>
             </small>
@@ -2659,13 +2813,18 @@ function ScannerRow({
             {liquidityLabel}
           </span>
           <strong>{liquidity.primary}</strong>
-          <small title={liquidity.secondary}>{formatMintShort(liquidity.secondary)}</small>
+          <small title={liquidity.secondary}>
+            {formatMintShort(liquidity.secondary)}
+          </small>
           <small>mark {formatSol(row.curve.curvePriceSol)}</small>
         </div>
         <div className="scanner-flow-cell">
           <strong>{formatSol(row.volume10sSol)}</strong>
           <span>10s volume</span>
-          <small>{formatSol(row.volume30sSol)} 30s / {formatSol(row.volume60sSol)} 60s</small>
+          <small>
+            {formatSol(row.volume30sSol)} 30s / {formatSol(row.volume60sSol)}{" "}
+            60s
+          </small>
           <small>
             dVol {formatVelocity(row.derivatives.dVol10sSolPerSec, "sol")} /{" "}
             {formatAcceleration(row.derivatives.d2VolSolPerSec2, "sol")}
@@ -2688,7 +2847,9 @@ function ScannerRow({
           </small>
         </div>
         <div className="scanner-risk-cell">
-          <strong>{formatVelocity(row.derivatives.dPricePctPerSec, "pct")}</strong>
+          <strong>
+            {formatVelocity(row.derivatives.dPricePctPerSec, "pct")}
+          </strong>
           <span>dPrice / sec</span>
           <small>
             d2 {formatAcceleration(row.derivatives.d2PricePctPerSec2, "pct")}
@@ -2696,17 +2857,27 @@ function ScannerRow({
           <small>
             dBuyers {formatVelocity(row.derivatives.dBuyersPerSec, "buyers")}
           </small>
-          <small>{row.hardReject ? "hard reject" : String(row.riskLevel)}</small>
+          <small>
+            {row.hardReject ? "hard reject" : String(row.riskLevel)}
+          </small>
         </div>
         <div className="scanner-signal-cell">
           <div className="signal-score-line">
             <strong>{derivativeScore.totalScore}</strong>
-            <span className={getScorePillClass(row)}>{row.strategy.signalLabel}</span>
+            <span className={getScorePillClass(row)}>
+              {row.strategy.signalLabel}
+            </span>
           </div>
-          <span className={"derivative-strength " + row.strategy.signalStrength}>
+          <span
+            className={"derivative-strength " + row.strategy.signalStrength}
+          >
             {row.strategy.signalStrength} derivative
           </span>
-          <span>{row.strategy.topDriver ?? row.strategy.topBlocker ?? row.signalAction}</span>
+          <span>
+            {row.strategy.topDriver ??
+              row.strategy.topBlocker ??
+              row.signalAction}
+          </span>
           <small>
             launch {row.launchScore} · {formatDataQuality(row.launchPhase)}
           </small>
@@ -2721,7 +2892,9 @@ function ScannerRow({
           ) : null}
         </div>
       </button>
-      {expanded ? <ScannerRowAudit row={row} showUnavailable={showUnavailable} /> : null}
+      {expanded ? (
+        <ScannerRowAudit row={row} showUnavailable={showUnavailable} />
+      ) : null}
     </article>
   );
 }
@@ -2850,7 +3023,9 @@ function ScannerRowAudit({
           <dt>early volume</dt>
           <dd>{formatCompactNumber(row.scoreComponents.earlyVolumeScore)}</dd>
           <dt>volume acceleration</dt>
-          <dd>{formatCompactNumber(row.scoreComponents.volumeAccelerationScore)}</dd>
+          <dd>
+            {formatCompactNumber(row.scoreComponents.volumeAccelerationScore)}
+          </dd>
           <dt>price action</dt>
           <dd>{formatCompactNumber(row.scoreComponents.priceActionScore)}</dd>
           <dt>buyer growth</dt>
@@ -2888,7 +3063,8 @@ function ScannerRowAudit({
           <dd>{formatPct(row.netBuyPressure)}</dd>
           <dt>unique buyers/sellers</dt>
           <dd>
-            {formatCompactNumber(row.uniqueBuyers10s)} / {formatCompactNumber(row.uniqueSellers10s)}
+            {formatCompactNumber(row.uniqueBuyers10s)} /{" "}
+            {formatCompactNumber(row.uniqueSellers10s)}
           </dd>
           <dt>latest trade</dt>
           <dd>{formatTimeAgo(row.latestTradeAt)}</dd>
@@ -2905,7 +3081,8 @@ function ScannerRowAudit({
           <dd>{formatBool(row.hardReject)}</dd>
           <dt>mint / freeze auth</dt>
           <dd>
-            {formatBool(row.mintAuthorityActive)} / {formatBool(row.freezeAuthorityActive)}
+            {formatBool(row.mintAuthorityActive)} /{" "}
+            {formatBool(row.freezeAuthorityActive)}
           </dd>
           <dt>holders</dt>
           <dd>{formatCompactNumber(row.holderCount)}</dd>
@@ -2967,10 +3144,15 @@ function ScannerRowAudit({
             {formatSol(row.entryPriceSol)} / {formatSol(row.currentPriceSol)}
           </dd>
           <dt>paper exit</dt>
-          <dd>{row.latestPaperExitSignal ? row.latestPaperExitSignal.sellPct + "%" : "none"}</dd>
+          <dd>
+            {row.latestPaperExitSignal
+              ? row.latestPaperExitSignal.sellPct + "%"
+              : "none"}
+          </dd>
           <dt>position pnl</dt>
           <dd>
-            {formatPct(row.unrealizedPnlPct)} / {formatSol(row.unrealizedPnlSol)}
+            {formatPct(row.unrealizedPnlPct)} /{" "}
+            {formatSol(row.unrealizedPnlSol)}
           </dd>
           <dt>paper ready</dt>
           <dd>{formatBool(row.signalDisplay.buyReadyPaper)}</dd>
@@ -2995,43 +3177,64 @@ function DerivativeMetricTable({ row }: { row: MomentumScannerRow }) {
     {
       label: "Price %",
       velocity: formatVelocity(row.derivatives.dPricePctPerSec, "pct"),
-      acceleration: formatAcceleration(row.derivatives.d2PricePctPerSec2, "pct"),
+      acceleration: formatAcceleration(
+        row.derivatives.d2PricePctPerSec2,
+        "pct"
+      ),
       strength: row.derivativeStrength.price
     },
     {
       label: "Price SOL",
       velocity: formatVelocity(row.derivatives.dPriceSolPerSec, "sol"),
-      acceleration: formatAcceleration(row.derivatives.d2PriceSolPerSec2, "sol"),
+      acceleration: formatAcceleration(
+        row.derivatives.d2PriceSolPerSec2,
+        "sol"
+      ),
       strength: row.derivativeStrength.priceSol
     },
     {
       label: "Buyers",
       velocity: formatVelocity(row.derivatives.dBuyersPerSec, "buyers"),
-      acceleration: formatAcceleration(row.derivatives.d2BuyersPerSec2, "buyers"),
+      acceleration: formatAcceleration(
+        row.derivatives.d2BuyersPerSec2,
+        "buyers"
+      ),
       strength: row.derivativeStrength.buyers
     },
     {
       label: "Trades",
       velocity: formatVelocity(row.derivatives.dTradesPerSec, "trades"),
-      acceleration: formatAcceleration(row.derivatives.d2TradesPerSec2, "trades"),
+      acceleration: formatAcceleration(
+        row.derivatives.d2TradesPerSec2,
+        "trades"
+      ),
       strength: row.derivativeStrength.trades
     },
     {
       label: "Pressure",
       velocity: formatVelocity(row.derivatives.dBuyPressurePerSec, "pct"),
-      acceleration: formatAcceleration(row.derivatives.d2BuyPressurePerSec2, "pct"),
+      acceleration: formatAcceleration(
+        row.derivatives.d2BuyPressurePerSec2,
+        "pct"
+      ),
       strength: row.derivativeStrength.buyPressure
     },
     {
       label: "Market cap",
       velocity: formatVelocity(row.derivatives.dMarketCapSolPerSec, "sol"),
-      acceleration: formatAcceleration(row.derivatives.d2MarketCapSolPerSec2, "sol"),
+      acceleration: formatAcceleration(
+        row.derivatives.d2MarketCapSolPerSec2,
+        "sol"
+      ),
       strength: row.derivativeStrength.marketCap
     },
     {
       label: "Liquidity",
       velocity: formatVelocity(row.derivatives.dLiquiditySolPerSec, "sol"),
-      acceleration: formatAcceleration(row.derivatives.d2LiquiditySolPerSec2, "sol"),
+      acceleration: formatAcceleration(
+        row.derivatives.d2LiquiditySolPerSec2,
+        "sol"
+      ),
       strength: row.derivativeStrength.liquidity
     }
   ];
@@ -3071,7 +3274,9 @@ function SignalsTab({
   signals: OverlaySignal[];
   strategy: StrategyStatus | null;
 }) {
-  const sortedCards = [...cards].sort((left, right) => right.score - left.score);
+  const sortedCards = [...cards].sort(
+    (left, right) => right.score - left.score
+  );
 
   return (
     <section className="tab-panel" role="tabpanel">
@@ -3098,10 +3303,7 @@ function SignalsTab({
           label="min samples"
           value={formatCompactNumber(strategy?.thresholds.minSampleCount)}
         />
-        <Stat
-          label="safety"
-          value={strategy?.paperOnly ? "PAPER ONLY" : "—"}
-        />
+        <Stat label="safety" value={strategy?.paperOnly ? "PAPER ONLY" : "—"} />
         <div className="formula-list">
           {(strategy?.formula ?? []).map((line) => (
             <span key={line}>{line}</span>
@@ -3585,7 +3787,14 @@ function ExitTab({
       <ReasonCodes codes={status?.reasonCodes ?? []} limit={18} />
       <TableShell
         empty="No watched wallets configured"
-        headers={["Alias", "Address", "Tags", "Enabled", "Last Event", "Events"]}
+        headers={[
+          "Alias",
+          "Address",
+          "Tags",
+          "Enabled",
+          "Last Event",
+          "Events"
+        ]}
         rows={wallets.map((wallet) => {
           const stats = eventStatsByWallet.get(wallet.address);
 
@@ -3715,7 +3924,11 @@ function DataTab({
   pumpPortalWalletsStatus: PumpPortalWalletsStatus | null;
   runtimeActionStatus: string;
   runtimeControlStatus: RuntimeControlStatus | null;
-  runRuntimeAction: (path: string, label: string, body?: unknown) => Promise<void>;
+  runRuntimeAction: (
+    path: string,
+    label: string,
+    body?: unknown
+  ) => Promise<void>;
   tokenIdentities: TokenIdentityRow[];
   tokenIdentityStatus: TokenIdentityStatus | null;
 }) {
@@ -3818,9 +4031,7 @@ function DataTab({
           detail={`${launchScannerStatus?.trackedMintCount ?? 0}/${
             launchScannerStatus?.maxConcurrentTracked ?? 0
           } mints`}
-          tone={
-            launchScannerStatus?.launchTrackingEnabled ? "warn" : "neutral"
-          }
+          tone={launchScannerStatus?.launchTrackingEnabled ? "warn" : "neutral"}
         />
         <MetricValue
           label="metered launch data"
@@ -3849,9 +4060,7 @@ function DataTab({
         <MetricValue
           label="launch budget"
           value={formatSol(launchScannerStatus?.estimatedMeteredCostSol)}
-          detail={`${formatSol(
-            launchScannerStatus?.maxSessionCostSol
-          )} cap`}
+          detail={`${formatSol(launchScannerStatus?.maxSessionCostSol)} cap`}
           tone={
             (launchScannerStatus?.estimatedMeteredCostSol ?? 0) >=
             (launchScannerStatus?.maxSessionCostSol ?? Number.POSITIVE_INFINITY)
@@ -3971,7 +4180,9 @@ function DataTab({
         />
         <MetricValue
           label="stream state"
-          value={(indexerStatus?.streamConnectionState ?? "disabled").toUpperCase()}
+          value={(
+            indexerStatus?.streamConnectionState ?? "disabled"
+          ).toUpperCase()}
           detail={`${formatCompactNumber(
             indexerStatus?.streamEnvelopeCount
           )} envelopes`}
@@ -3998,13 +4209,16 @@ function DataTab({
         />
         <MetricValue
           label="stream endpoint"
-          value={indexerStatus?.managedStream?.endpointMasked ? "MASKED" : "UNSET"}
+          value={
+            indexerStatus?.managedStream?.endpointMasked ? "MASKED" : "UNSET"
+          }
           detail={indexerStatus?.managedStream?.endpointMasked ?? "no endpoint"}
         />
         <MetricValue
           label="subscription"
           value={
-            indexerStatus?.managedStream?.subscriptionSummary?.transactionsEnabled
+            indexerStatus?.managedStream?.subscriptionSummary
+              ?.transactionsEnabled
               ? "TRANSACTIONS"
               : "HEALTHCHECK"
           }
@@ -4136,9 +4350,7 @@ function DataTab({
             }
             detail="backend only"
             tone={
-              runtimeControlStatus?.dataWallet.apiKeyConfigured
-                ? "good"
-                : "bad"
+              runtimeControlStatus?.dataWallet.apiKeyConfigured ? "good" : "bad"
             }
           />
           <MetricValue
@@ -4280,12 +4492,16 @@ function DataTab({
         <div className="status-grid secondary-grid embedded-grid">
           <MetricValue
             label="mode"
-            value={(launchScannerStatus?.launchTrackingMode ?? "manual").toUpperCase()}
+            value={(
+              launchScannerStatus?.launchTrackingMode ?? "manual"
+            ).toUpperCase()}
             detail={launchScannerStatus?.runtimeMode ?? "pumpportal_first"}
           />
           <MetricValue
             label="discovery"
-            value={launchScannerStatus?.liveDiscoveryActive ? "ACTIVE" : "OFFLINE"}
+            value={
+              launchScannerStatus?.liveDiscoveryActive ? "ACTIVE" : "OFFLINE"
+            }
             detail={`${launchScannerStatus?.candidateCount ?? 0} candidates`}
             tone={launchScannerStatus?.liveDiscoveryActive ? "good" : "bad"}
           />
@@ -4300,9 +4516,7 @@ function DataTab({
           />
           <MetricValue
             label="per token"
-            value={formatCompactNumber(
-              launchScannerStatus?.maxEventsPerToken
-            )}
+            value={formatCompactNumber(launchScannerStatus?.maxEventsPerToken)}
             detail="event cap"
           />
           <MetricValue
@@ -4357,7 +4571,9 @@ function DataTab({
           <MetricValue
             label="data wallet"
             value={
-              meteredLaunchDataStatus?.dataWalletConfigured ? "READY" : "BLOCKED"
+              meteredLaunchDataStatus?.dataWalletConfigured
+                ? "READY"
+                : "BLOCKED"
             }
             detail={(
               meteredLaunchDataStatus?.dataWalletBalanceStatus ?? "unknown"
@@ -4370,9 +4586,7 @@ function DataTab({
             label="api key"
             value={meteredLaunchDataStatus?.apiKeyConfigured ? "YES" : "NO"}
             detail="backend only"
-            tone={
-              meteredLaunchDataStatus?.apiKeyConfigured ? "good" : "bad"
-            }
+            tone={meteredLaunchDataStatus?.apiKeyConfigured ? "good" : "bad"}
           />
           <MetricValue
             label="tracked mints"
@@ -4589,9 +4803,7 @@ function DataWalletPanel({
           label="funding address"
           value={dataWalletStatus?.shortPublicKey ?? "—"}
           detail={
-            dataWalletStatus?.publicKeyConfigured
-              ? "public key"
-              : "missing"
+            dataWalletStatus?.publicKeyConfigured ? "public key" : "missing"
           }
         />
         <MetricValue
@@ -4656,7 +4868,9 @@ function DataWalletPanel({
         />
       </div>
       <div className="data-wallet-address-row">
-        <span className="mono">{publicKey ?? "PUMPPORTAL_DATA_WALLET_PUBLIC_KEY missing"}</span>
+        <span className="mono">
+          {publicKey ?? "PUMPPORTAL_DATA_WALLET_PUBLIC_KEY missing"}
+        </span>
         <button
           disabled={!publicKey}
           onClick={() => copyPublicKey(publicKey)}
@@ -4810,7 +5024,9 @@ function WalletReadinessBlock({
         />
       </div>
       <div className="data-wallet-address-row">
-        <span className="mono">{publicKey ?? `${title} public key missing`}</span>
+        <span className="mono">
+          {publicKey ?? `${title} public key missing`}
+        </span>
         <button
           disabled={!publicKey}
           onClick={() => copyPublicKey(publicKey)}
@@ -5066,7 +5282,9 @@ function filterRows(
     }
 
     if (options.actionFilter === "watch") {
-      return row.signalAction.includes("WATCH") || row.launchPhase === "watching";
+      return (
+        row.signalAction.includes("WATCH") || row.launchPhase === "watching"
+      );
     }
 
     if (options.actionFilter === "hot") {
@@ -5078,7 +5296,11 @@ function filterRows(
     }
 
     if (options.actionFilter === "rejected") {
-      return row.hardReject || row.signalStrength === "reject" || row.launchPhase === "rejected";
+      return (
+        row.hardReject ||
+        row.signalStrength === "reject" ||
+        row.launchPhase === "rejected"
+      );
     }
 
     if (options.actionFilter === "tradeTracked") {
@@ -5105,7 +5327,10 @@ function filterRows(
     }
 
     if (options.actionFilter === "missingData") {
-      return row.unavailableFields.length > 0 || row.dataQuality.missingCriticalCount > 0;
+      return (
+        row.unavailableFields.length > 0 ||
+        row.dataQuality.missingCriticalCount > 0
+      );
     }
 
     if (options.actionFilter === "missingCritical") {
@@ -5190,15 +5415,11 @@ function sortRows(
     }
 
     if (sortMode === "uniqueBuyers") {
-      return (
-        (right.uniqueBuyers10s ?? -1) - (left.uniqueBuyers10s ?? -1)
-      );
+      return (right.uniqueBuyers10s ?? -1) - (left.uniqueBuyers10s ?? -1);
     }
 
     if (sortMode === "buySellRatio") {
-      return (
-        (right.buySellRatio ?? -1) - (left.buySellRatio ?? -1)
-      );
+      return (right.buySellRatio ?? -1) - (left.buySellRatio ?? -1);
     }
 
     if (sortMode === "signalStrength") {

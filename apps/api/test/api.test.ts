@@ -17,7 +17,7 @@ import type {
   StrategyStatus
 } from "@axi/shared";
 import type { ApiServer } from "../src/app";
-import { createApiServer } from "../src/app";
+import { createApiServer, loadApiConfig } from "../src/app";
 import { createActualDataConfig } from "../src/actual-data-service";
 
 let server: ApiServer | undefined;
@@ -27,7 +27,10 @@ let databasePath: string;
 class FakeWebSocket implements WebSocketLike {
   static instances: FakeWebSocket[] = [];
   readonly sent: string[] = [];
-  private readonly handlers = new Map<string, Array<(...args: unknown[]) => void>>();
+  private readonly handlers = new Map<
+    string,
+    Array<(...args: unknown[]) => void>
+  >();
 
   constructor(readonly url: string) {
     FakeWebSocket.instances.push(this);
@@ -68,6 +71,27 @@ afterEach(async () => {
 });
 
 describe("@axi/api", () => {
+  it("uses one conservative local runtime configuration by default", () => {
+    const config = loadApiConfig({});
+
+    expect(config.API_HOST).toBe("127.0.0.1");
+    expect(config.API_ALLOWED_ORIGINS).toEqual([
+      "http://127.0.0.1:5173",
+      "http://localhost:5173"
+    ]);
+    expect(config.METERED_LAUNCH_DATA_CONTROLS_ENABLED).toBe(true);
+    expect(config.METERED_LAUNCH_DATA_START_ACTIVE).toBe(false);
+    expect(config.METERED_LAUNCH_DATA_REQUIRE_UI_ACK).toBe(true);
+    expect(config.METERED_LAUNCH_DATA_ACK_COST).toBe(false);
+    expect(config.METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS).toBe(3);
+    expect(config.METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT).toBe(250);
+    expect(config.METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION).toBe(1000);
+    expect(config.METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL).toBe(0.001);
+    expect(config.METERED_LAUNCH_DATA_MAX_UI_SESSION_COST_SOL).toBe(0.001);
+    expect(config.PUMPPORTAL_LIGHTNING_ALLOW_LIVE_TRADING).toBe(false);
+    expect(config.PUMPPORTAL_LIGHTNING_MANUAL_ARMED).toBe(false);
+  });
+
   it("GET /health returns paper-mode status", async () => {
     server = createTestServer();
 
@@ -1024,7 +1048,7 @@ describe("@axi/api", () => {
     expect(body.reasonCodes).toContain("METERED_STREAM_NOT_ACKNOWLEDGED");
   });
 
-  it("POST /actual-data/subscribe rejects when disabled", async () => {
+  it("POST /actual-data/subscribe is deprecated when disabled", async () => {
     server = createActualDataTestServer({
       acknowledgedMetered: true,
       enabled: false
@@ -1042,11 +1066,11 @@ describe("@axi/api", () => {
       error: string;
     };
 
-    expect(response.statusCode).toBe(409);
-    expect(body.error).toBe("ACTUAL_DATA_DISABLED");
+    expect(response.statusCode).toBe(410);
+    expect(body.error).toBe("TRACKING_ROUTE_DEPRECATED");
   });
 
-  it("POST /actual-data/subscribe rejects when ack is missing", async () => {
+  it("POST /actual-data/subscribe cannot bypass the canonical ACK gate", async () => {
     server = createActualDataTestServer({
       acknowledgedMetered: false,
       enabled: true
@@ -1064,11 +1088,11 @@ describe("@axi/api", () => {
       error: string;
     };
 
-    expect(response.statusCode).toBe(409);
-    expect(body.error).toBe("METERED_STREAM_NOT_ACKNOWLEDGED");
+    expect(response.statusCode).toBe(410);
+    expect(body.error).toBe("TRACKING_ROUTE_DEPRECATED");
   });
 
-  it("POST /actual-data/subscribe rejects invalid mint", async () => {
+  it("POST /actual-data/subscribe is deprecated before payload policy", async () => {
     server = createActualDataTestServer({
       acknowledgedMetered: true,
       enabled: true
@@ -1086,11 +1110,11 @@ describe("@axi/api", () => {
       error: string;
     };
 
-    expect(response.statusCode).toBe(400);
-    expect(body.error).toBe("INVALID_MINT");
+    expect(response.statusCode).toBe(410);
+    expect(body.error).toBe("TRACKING_ROUTE_DEPRECATED");
   });
 
-  it("POST /actual-data/subscribe rejects verified insufficient data-wallet balance", async () => {
+  it("POST /actual-data/subscribe cannot bypass wallet gates", async () => {
     server = createActualDataTestServer({
       acknowledgedMetered: true,
       dataWalletBalanceSol: 0.005,
@@ -1105,22 +1129,10 @@ describe("@axi/api", () => {
         reason: "manual"
       }
     });
-    const body = response.json() as {
-      actualData: {
-        dataWalletBalanceSol: number | null;
-        dataWalletBalanceStatus: string;
-        dataWalletReasonCodes: string[];
-      };
-      error: string;
-    };
+    const body = response.json() as { error: string };
 
-    expect(response.statusCode).toBe(409);
-    expect(body.error).toBe("DATA_WALLET_FUNDS_REQUIRED_FOR_METERED_STREAM");
-    expect(body.actualData.dataWalletBalanceSol).toBe(0.005);
-    expect(body.actualData.dataWalletBalanceStatus).toBe("critical");
-    expect(body.actualData.dataWalletReasonCodes).toContain(
-      "DATA_WALLET_BALANCE_CRITICAL"
-    );
+    expect(response.statusCode).toBe(410);
+    expect(body.error).toBe("TRACKING_ROUTE_DEPRECATED");
   });
 
   it("GET /actual-data/trades returns an array", async () => {
@@ -1404,6 +1416,145 @@ describe("@axi/api", () => {
     expect(body.tradingDisabled).toBe(true);
   });
 
+  it("central guard rejects every non-local mutation while keeping reads available", async () => {
+    server = createTestServer();
+
+    const readResponse = await server.app.inject({
+      headers: { origin: "https://unapproved.example" },
+      method: "GET",
+      url: "/health"
+    });
+    const nonLocalMutation = await server.app.inject({
+      headers: { "x-forwarded-for": "203.0.113.10" },
+      method: "POST",
+      url: "/tokens/resolve",
+      payload: { mint: "INVALID_MINT" }
+    });
+    const unapprovedOriginMutation = await server.app.inject({
+      headers: { origin: "https://unapproved.example" },
+      method: "POST",
+      url: "/tokens/resolve",
+      payload: { mint: "INVALID_MINT" }
+    });
+
+    expect(readResponse.statusCode).toBe(200);
+    expect(readResponse.headers["access-control-allow-origin"]).toBeUndefined();
+    expect(nonLocalMutation.statusCode).toBe(403);
+    expect(unapprovedOriginMutation.statusCode).toBe(403);
+    expect(unapprovedOriginMutation.json()).toMatchObject({
+      error: "UNAPPROVED_CONTROL_ORIGIN"
+    });
+
+    const auditResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/operator-actions?limit=10"
+    });
+    const audit = auditResponse.json() as {
+      actions: Array<{
+        outcome: string;
+        safeParameters: Record<string, unknown>;
+        target: string;
+      }>;
+    };
+
+    expect(
+      audit.actions.filter((action) => action.outcome === "blocked")
+    ).toHaveLength(2);
+    expect(
+      audit.actions.every((action) => action.target === "/tokens/resolve")
+    ).toBe(true);
+    expect(JSON.stringify(audit)).not.toContain("INVALID_MINT");
+  });
+
+  it("GET /runtime/contracts publishes ownership and conservative caps", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/runtime/contracts"
+    });
+    const body = response.json() as {
+      configuration: { driftDetected: boolean };
+      ownership: Record<string, string>;
+      safety: { apiHost: string; tradingDisabled: boolean };
+      subscriptionPolicy: {
+        configured: {
+          maxConcurrentMints: number;
+          maxEventsPerMint: number;
+          maxEventsPerSession: number;
+          maxSessionCostSol: number;
+          maxUiSessionCostSol: number;
+        };
+      };
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.ownership).toMatchObject({
+      discoveryAndLaunchScoring: "LaunchScannerService",
+      subscriptionTransport: "ActualDataService",
+      subscriptionPolicy: "MeteredLaunchDataService",
+      trackingCommandRoute: "/metered-launch-data/track"
+    });
+    expect(body.subscriptionPolicy.configured).toEqual({
+      maxConcurrentMints: 3,
+      maxEventsPerMint: 250,
+      maxEventsPerSession: 1000,
+      maxSessionCostSol: 0.001,
+      maxUiSessionCostSol: 0.001
+    });
+    expect(body.configuration.driftDetected).toBe(false);
+    expect(body.safety.apiHost).toBe("127.0.0.1");
+    expect(body.safety.tradingDisabled).toBe(true);
+  });
+
+  it("a new runtime session never restores a previous paid-data ACK", async () => {
+    server = createMeteredLaunchDataTestServer({
+      acknowledgedCost: false,
+      dataWalletBalanceSol: 0.05,
+      enabled: true
+    });
+
+    const ackResponse = await server.app.inject({
+      method: "POST",
+      url: "/runtime/metered-launch-data/ack-session",
+      payload: {
+        ackCost: true,
+        maxSessionCostSol: 0.001,
+        maxConcurrentMints: 3,
+        maxEventsPerSession: 1000
+      }
+    });
+    expect(ackResponse.statusCode).toBe(200);
+    expect(server.meteredLaunchData.getStatus().sessionAcknowledgedCost).toBe(
+      true
+    );
+
+    await server.close();
+    server = undefined;
+    server = createMeteredLaunchDataTestServer({
+      acknowledgedCost: false,
+      dataWalletBalanceSol: 0.05,
+      enabled: true
+    });
+
+    expect(server.meteredLaunchData.getStatus()).toMatchObject({
+      acknowledgedCost: false,
+      sessionAcknowledgedCost: false
+    });
+    const sessionsResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/sessions"
+    });
+    const sessionsBody = sessionsResponse.json() as {
+      currentSessionId: string;
+      sessions: Array<{ sessionId: string; paidDataArmed: boolean }>;
+    };
+    const current = sessionsBody.sessions.find(
+      (session) => session.sessionId === sessionsBody.currentSessionId
+    );
+    expect(current?.paidDataArmed).toBe(false);
+  });
+
   it("runtime live discovery stop is idempotent", async () => {
     server = createApiServer({
       dataFeed: "pumpportal",
@@ -1612,6 +1763,7 @@ describe("@axi/api", () => {
     expect(response.statusCode).toBe(400);
     expect(body.error).toBe("METERED_LAUNCH_DATA_SESSION_COST_EXCEEDS_CONFIG");
     expect(body.status.meteredPriceAction.sessionAck).toBe(false);
+    expect(server.actualData.getStatus().acknowledgedMetered).toBe(false);
   });
 
   it("runtime clear session ACK resets metered start readiness", async () => {
@@ -1708,12 +1860,14 @@ describe("@axi/api", () => {
     };
 
     expect(stopResponse.statusCode).toBe(200);
-    expect(stopBody.status.meteredPriceAction.state).toBe("STOPPED");
+    expect(stopBody.status.meteredPriceAction.state).toBe("ARM_REQUIRED");
     expect(stopBody.status.meteredPriceAction.trackedMintCount).toBe(0);
     expect(server.meteredLaunchData.getTrackedMints()).toEqual([]);
-    expect(server.actualData.getSubscriptions().filter(
-      (subscription) => subscription.status === "subscribed"
-    )).toEqual([]);
+    expect(
+      server.actualData
+        .getSubscriptions()
+        .filter((subscription) => subscription.status === "subscribed")
+    ).toEqual([]);
   });
 
   it("runtime data-wallet refresh returns public status only", async () => {
@@ -2126,7 +2280,7 @@ describe("@axi/api", () => {
     expect(body.reasonCodes).toContain("LIVE_TRADE_TRACKING_DISABLED");
   });
 
-  it("POST /live/trade-tracking/track rejects when live ack is missing", async () => {
+  it("POST /live/trade-tracking/track is deprecated when ACK is missing", async () => {
     server = createActualDataTestServer({
       acknowledgedMetered: true,
       enabled: true,
@@ -2146,11 +2300,11 @@ describe("@axi/api", () => {
       error: string;
     };
 
-    expect(response.statusCode).toBe(409);
-    expect(body.error).toBe("LIVE_TRADE_TRACKING_METERED_NOT_ACKNOWLEDGED");
+    expect(response.statusCode).toBe(410);
+    expect(body.error).toBe("TRACKING_ROUTE_DEPRECATED");
   });
 
-  it("POST /live/trade-tracking/track subscribes through the guarded PumpPortal stream", async () => {
+  it("POST /live/trade-tracking/track cannot mutate the PumpPortal stream", async () => {
     server = createActualDataTestServer({
       acknowledgedMetered: true,
       enabled: true,
@@ -2166,29 +2320,12 @@ describe("@axi/api", () => {
         reason: "test"
       }
     });
-    const body = response.json() as {
-      paperOnly: boolean;
-      status: {
-        subscribedTokenCount: number;
-        trackedMints: string[];
-      };
-      subscription: {
-        mint: string;
-        reasonCodes: string[];
-        status: string;
-      };
-    };
+    const body = response.json() as { error: string; paperOnly: boolean };
 
-    expect(response.statusCode).toBe(200);
+    expect(response.statusCode).toBe(410);
+    expect(body.error).toBe("TRACKING_ROUTE_DEPRECATED");
     expect(body.paperOnly).toBe(true);
-    expect(body.subscription.status).toBe("subscribed");
-    expect(body.subscription.reasonCodes).toContain(
-      "PUMPPORTAL_TRADE_STREAM_METERED"
-    );
-    expect(body.status.subscribedTokenCount).toBe(1);
-    expect(body.status.trackedMints).toContain(
-      "So11111111111111111111111111111111111111112"
-    );
+    expect(server.actualData.getSubscriptions()).toEqual([]);
   });
 
   it("GET /enrichment/status is disabled by default", async () => {
@@ -2346,7 +2483,7 @@ describe("@axi/api", () => {
     expect(body.reasonCodes).toContain("PUMPPORTAL_LAUNCH_COST_ESTIMATE");
   });
 
-  it("POST /launch/track rejects when launch tracking is disabled", async () => {
+  it("POST /launch/track is deprecated in favor of canonical metered tracking", async () => {
     server = createApiServer({
       logLevel: false,
       startFeed: false,
@@ -2361,17 +2498,10 @@ describe("@axi/api", () => {
         reason: "test"
       }
     });
-    const body = response.json() as {
-      error: string;
-      launch: {
-        launchTrackingEnabled: boolean;
-      };
-      paperOnly: boolean;
-    };
+    const body = response.json() as { error: string; paperOnly: boolean };
 
-    expect(response.statusCode).toBe(409);
-    expect(body.error).toBe("PUMPPORTAL_LAUNCH_TRACKING_DISABLED");
-    expect(body.launch.launchTrackingEnabled).toBe(false);
+    expect(response.statusCode).toBe(410);
+    expect(body.error).toBe("TRACKING_ROUTE_DEPRECATED");
     expect(body.paperOnly).toBe(true);
   });
 
@@ -2425,7 +2555,9 @@ describe("@axi/api", () => {
     expect(response.statusCode).toBe(409);
     expect(body.error).toBe("METERED_LAUNCH_DATA_ACK_MISSING");
     expect(body.status.acknowledgedCost).toBe(false);
-    expect(body.status.reasonCodes).toContain("METERED_LAUNCH_DATA_ACK_MISSING");
+    expect(body.status.reasonCodes).toContain(
+      "METERED_LAUNCH_DATA_ACK_MISSING"
+    );
   });
 
   it("POST /metered-launch-data/track accepts mocked gates", async () => {
@@ -2957,10 +3089,12 @@ describe("@axi/api", () => {
     const rows = response.json() as MomentumScannerRow[];
 
     expect(response.statusCode).toBe(200);
+    expect(rows.find((row) => row.mint.includes("Image"))?.imageUri).toBe(
+      "https://example.test/token.png"
+    );
     expect(
-      rows.find((row) => row.mint.includes("Image"))?.imageUri
-    ).toBe("https://example.test/token.png");
-    expect(rows.find((row) => row.mint.includes("Unsafe"))?.imageUri).toBeNull();
+      rows.find((row) => row.mint.includes("Unsafe"))?.imageUri
+    ).toBeNull();
   });
 
   it("GET /ui/momentum-rows preserves a migrated token as one row", async () => {
@@ -3360,7 +3494,9 @@ describe("@axi/api", () => {
     expect(yellowstoneResponse.statusCode).toBe(200);
     expect(yellowstone.provider).toBe("yellowstone");
     expect(yellowstone.request.provider).toBe("yellowstone");
-    expect(yellowstone.subscriptionSummary.transactionAccountIncludeCount).toBe(1);
+    expect(yellowstone.subscriptionSummary.transactionAccountIncludeCount).toBe(
+      1
+    );
     expect(yellowstone.reasonCodes).toContain("STREAM_PROFILE_BUILT");
     expect(laserstreamResponse.statusCode).toBe(200);
     expect(laserstream.provider).toBe("laserstream");
@@ -3610,7 +3746,10 @@ describe("@axi/api", () => {
       method: "GET",
       url: "/indexer/live-cards"
     });
-    const cards = response.json() as Array<{ mint: string; eventTypes: string[] }>;
+    const cards = response.json() as Array<{
+      mint: string;
+      eventTypes: string[];
+    }>;
 
     expect(response.statusCode).toBe(200);
     expect(cards).toHaveLength(1);
@@ -4350,10 +4489,7 @@ function createTestServer(): ApiServer {
   });
 }
 
-function findDisallowedApiKeyFields(
-  value: unknown,
-  path = "$"
-): string[] {
+function findDisallowedApiKeyFields(value: unknown, path = "$"): string[] {
   if (Array.isArray(value)) {
     return value.flatMap((item, index) =>
       findDisallowedApiKeyFields(item, `${path}[${index}]`)
@@ -4372,10 +4508,7 @@ function findDisallowedApiKeyFields(
           ? [currentPath]
           : [];
 
-      return [
-        ...offenders,
-        ...findDisallowedApiKeyFields(child, currentPath)
-      ];
+      return [...offenders, ...findDisallowedApiKeyFields(child, currentPath)];
     }
   );
 }
@@ -4705,8 +4838,7 @@ function createPumpPortalEvent(
     timestamp?: string;
   } = {}
 ): TokenCreatedEvent {
-  const mint =
-    options.mint ?? "PumpPortalMint111111111111111111111111111";
+  const mint = options.mint ?? "PumpPortalMint111111111111111111111111111";
   const timestamp = options.timestamp ?? "2026-01-01T00:00:00.000Z";
 
   return {

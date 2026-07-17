@@ -1,7 +1,4 @@
-import {
-  isValidSolanaMint,
-  type TokenTradeEvent
-} from "@axi/data-feeds";
+import { isValidSolanaMint, type TokenTradeEvent } from "@axi/data-feeds";
 import type { StoredMeteredLaunchDataEvent } from "@axi/storage";
 import {
   saveMeteredLaunchDataEvent,
@@ -14,13 +11,11 @@ import {
   type ActualDataService,
   type ActualDataSubscriptionState
 } from "./actual-data-service";
+import { safeMeteredRuntimeDefaults } from "./runtime-contract";
 import type { LaunchCandidateView } from "./launch-scanner-service";
 
 export type MeteredLaunchDataMode =
-  | "manual"
-  | "newest"
-  | "hot_candidates"
-  | "launch_score";
+  "manual" | "newest" | "hot_candidates" | "launch_score";
 
 export type MeteredLaunchDataConfig = {
   enabled: boolean;
@@ -198,7 +193,8 @@ export function createMeteredLaunchDataConfig(
     requireDataWalletReady: input.requireDataWalletReady ?? true,
     mode: input.mode ?? "newest",
     rollingTrackerEnabled: input.rollingTrackerEnabled ?? true,
-    maxConcurrentMints: input.maxConcurrentMints ?? 5,
+    maxConcurrentMints:
+      input.maxConcurrentMints ?? safeMeteredRuntimeDefaults.maxConcurrentMints,
     initialTrackMs: input.initialTrackMs ?? 30_000,
     extendedTrackMs: input.extendedTrackMs ?? 300_000,
     minScoreToExtend: input.minScoreToExtend ?? 45,
@@ -207,18 +203,22 @@ export function createMeteredLaunchDataConfig(
     minScoreToProtectRipping: input.minScoreToProtectRipping ?? 80,
     protectedMaxAgeMs: input.protectedMaxAgeMs ?? 900_000,
     staleNoTradesMs: input.staleNoTradesMs ?? 30_000,
-    maxEventsPerMint: input.maxEventsPerMint ?? 500,
-    maxEventsPerSession: input.maxEventsPerSession ?? 5000,
-    maxSessionCostSol: input.maxSessionCostSol ?? 0.005,
-    maxUiSessionCostSol: input.maxUiSessionCostSol ?? 0.005,
-    autoUnsubscribeOnHardReject:
-      input.autoUnsubscribeOnHardReject ?? true,
+    maxEventsPerMint:
+      input.maxEventsPerMint ?? safeMeteredRuntimeDefaults.maxEventsPerMint,
+    maxEventsPerSession:
+      input.maxEventsPerSession ??
+      safeMeteredRuntimeDefaults.maxEventsPerSession,
+    maxSessionCostSol:
+      input.maxSessionCostSol ?? safeMeteredRuntimeDefaults.maxSessionCostSol,
+    maxUiSessionCostSol:
+      input.maxUiSessionCostSol ??
+      safeMeteredRuntimeDefaults.maxUiSessionCostSol,
+    autoUnsubscribeOnHardReject: input.autoUnsubscribeOnHardReject ?? true,
     autoUnsubscribeOnLowScore: input.autoUnsubscribeOnLowScore ?? true,
     projectRateWindowMs: input.projectRateWindowMs ?? 60_000,
     eventCostSolPer10000: input.eventCostSolPer10000 ?? 0.01,
     apiKeyConfigured: input.apiKeyConfigured ?? false,
-    dataWalletPublicKeyConfigured:
-      input.dataWalletPublicKeyConfigured ?? false,
+    dataWalletPublicKeyConfigured: input.dataWalletPublicKeyConfigured ?? false,
     liveDiscoveryEnabled: input.liveDiscoveryEnabled ?? true
   };
 }
@@ -233,16 +233,14 @@ export class MeteredLaunchDataService {
   private readonly actualData: ActualDataService;
   private readonly config: MeteredLaunchDataConfig;
   private readonly dataWalletReadiness:
-    | (() => ActualDataDataWalletReadiness)
-    | undefined;
+    (() => ActualDataDataWalletReadiness) | undefined;
   private readonly getLaunchCandidate:
-    | ((mint: string) => LaunchCandidateView | null)
-    | undefined;
+    ((mint: string) => LaunchCandidateView | null) | undefined;
   private readonly getLaunchCandidates:
-    | ((limit?: number) => LaunchCandidateView[])
-    | undefined;
+    ((limit?: number) => LaunchCandidateView[]) | undefined;
   private readonly getLiveDiscoveryActive: (() => boolean) | undefined;
-  private readonly hasOpenPaperPosition: ((mint: string) => boolean) | undefined;
+  private readonly hasOpenPaperPosition:
+    ((mint: string) => boolean) | undefined;
   private readonly providerName: string;
   private readonly recentTradeEvents: StoredMeteredLaunchDataEvent[] = [];
   private readonly tracked = new Map<string, InternalTrackedMint>();
@@ -250,13 +248,11 @@ export class MeteredLaunchDataService {
   private budgetReached = false;
   private lastStopReason: string | null = null;
   private runtimeStopped = false;
-  private sessionAck:
-    | {
-        maxConcurrentMints: number;
-        maxEventsPerSession: number;
-        maxSessionCostSol: number;
-      }
-    | null = null;
+  private sessionAck: {
+    maxConcurrentMints: number;
+    maxEventsPerSession: number;
+    maxSessionCostSol: number;
+  } | null = null;
   private startedAt: string | null = null;
   private totalEventsThisSession = 0;
 
@@ -269,7 +265,9 @@ export class MeteredLaunchDataService {
     this.getLiveDiscoveryActive = options.getLiveDiscoveryActive;
     this.hasOpenPaperPosition = options.hasOpenPaperPosition;
     this.providerName = options.providerName;
-    this.runtimeStopped = !(this.config.startActive && this.isCostAcknowledged());
+    this.runtimeStopped = !(
+      this.config.startActive && this.isCostAcknowledged()
+    );
   }
 
   prepare(): void {
@@ -494,9 +492,7 @@ export class MeteredLaunchDataService {
       tracked: true,
       reasonCodes: unique([
         ...trackingState.reasonCodes,
-        ...(preemptedMint
-          ? ["ROLLING_TRACKER_PREEMPTED_WEAK_SLOT"]
-          : [])
+        ...(preemptedMint ? ["ROLLING_TRACKER_PREEMPTED_WEAK_SLOT"] : [])
       ]),
       score,
       mode: this.config.mode,
@@ -713,7 +709,8 @@ export class MeteredLaunchDataService {
     const reasonCodes = this.getReasonCodes();
     const acknowledgedCost = this.isCostAcknowledged();
     const capabilityConfigured = this.isCapabilityConfigured(dataWallet);
-    const active = this.config.enabled && acknowledgedCost && !this.runtimeStopped;
+    const active =
+      this.config.enabled && acknowledgedCost && !this.runtimeStopped;
 
     return {
       enabled: this.config.enabled,
@@ -916,10 +913,7 @@ export class MeteredLaunchDataService {
       return null;
     }
 
-    return this.untrackMint(
-      weakest.tracked.mint,
-      "rolling_preempt_weak_slot"
-    );
+    return this.untrackMint(weakest.tracked.mint, "rolling_preempt_weak_slot");
   }
 
   private getTrackedMintProtectionReason(
@@ -1131,7 +1125,8 @@ export class MeteredLaunchDataService {
       reasonCodes: state.reasonCodes,
       payload: {
         ...this.toTrackedMint(state),
-        subscription: subscription ?? this.findActualDataSubscription(state.mint)
+        subscription:
+          subscription ?? this.findActualDataSubscription(state.mint)
       },
       ...(createdAt ? { createdAt } : {})
     });
@@ -1182,8 +1177,8 @@ export class MeteredLaunchDataService {
 
     if (
       this.config.requireDataWalletReady &&
-      dataWallet.subscriptionBlockers.some((code) =>
-        code.includes("BALANCE") || code.includes("FUNDS")
+      dataWallet.subscriptionBlockers.some(
+        (code) => code.includes("BALANCE") || code.includes("FUNDS")
       )
     ) {
       reasonCodes.push("METERED_LAUNCH_DATA_WALLET_LOW");
@@ -1281,11 +1276,15 @@ export class MeteredLaunchDataService {
   }
 
   private getMaxConcurrentMints(): number {
-    return this.sessionAck?.maxConcurrentMints ?? this.config.maxConcurrentMints;
+    return (
+      this.sessionAck?.maxConcurrentMints ?? this.config.maxConcurrentMints
+    );
   }
 
   private getMaxEventsPerSession(): number {
-    return this.sessionAck?.maxEventsPerSession ?? this.config.maxEventsPerSession;
+    return (
+      this.sessionAck?.maxEventsPerSession ?? this.config.maxEventsPerSession
+    );
   }
 
   private getMaxSessionCostSol(): number {
@@ -1327,7 +1326,9 @@ export class MeteredLaunchDataService {
     return round(this.config.eventCostSolPer10000 / 10_000);
   }
 
-  private getEstimatedCostSol(eventCount = this.totalEventsThisSession): number {
+  private getEstimatedCostSol(
+    eventCount = this.totalEventsThisSession
+  ): number {
     return round(eventCount * this.getEstimatedCostPerEventSol());
   }
 
@@ -1394,8 +1395,13 @@ function isPumpPortalTokenTradeEvent(event: TokenTradeEvent): boolean {
 }
 
 function reasonToCode(reason: string): string {
-  const normalized = reason.trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_");
-  return normalized ? `METERED_LAUNCH_DATA_${normalized}` : "METERED_LAUNCH_DATA_STOPPED";
+  const normalized = reason
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_");
+  return normalized
+    ? `METERED_LAUNCH_DATA_${normalized}`
+    : "METERED_LAUNCH_DATA_STOPPED";
 }
 
 function round(value: number): number {
