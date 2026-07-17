@@ -63,6 +63,7 @@
     "@axi/stream-core": "workspace:*",
     "@axi/stream-mock": "workspace:*",
     "@axi/timeseries": "workspace:*",
+    "@axi/tracking-scheduler": "workspace:*",
     "@axi/token-identity": "workspace:*",
     "@axi/watch-orchestrator": "workspace:*",
     "fastify": "^5.0.0",

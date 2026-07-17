@@ -214,15 +214,15 @@ describe("MeteredLaunchDataService", () => {
         createLaunchCandidate({
           mint,
           phase: "watching",
-          score: 10
+          score: 60
         })
       ],
       [
         secondMint,
         createLaunchCandidate({
           mint: secondMint,
-          phase: "hot",
-          score: 70
+          phase: "watching",
+          score: 1
         })
       ]
     ]);
@@ -248,15 +248,16 @@ describe("MeteredLaunchDataService", () => {
 
     expect(decision.tracked).toBe(true);
     expect(decision.reasonCodes).toContain(
-      "ROLLING_TRACKER_PREEMPTED_WEAK_SLOT"
+      "SCHEDULER_PREEMPT_WEAKEST_FOR_NEWEST"
     );
+    expect(decision.schedulerDecision?.preemptMint).toBe(mint);
     expect(service.getTrackedMints()).toEqual([secondMint]);
     expect(service.getTrackedMint(mint)?.reasonCodes).toContain(
-      "METERED_LAUNCH_DATA_ROLLING_PREEMPT_WEAK_SLOT"
+      "METERED_LAUNCH_DATA_SCHEDULER_PREEMPT_FOR_NEWEST"
     );
   });
 
-  it("does not preempt protected hot or ripping tracked slots", () => {
+  it("caps soft protection to preserve the reserved newest slot", () => {
     const candidates = new Map([
       [
         mint,
@@ -295,11 +296,117 @@ describe("MeteredLaunchDataService", () => {
       candidates.get(secondMint)!
     );
 
-    expect(decision.tracked).toBe(false);
-    expect(decision.reasonCodes).toContain(
-      "METERED_LAUNCH_DATA_MAX_CONCURRENT_REACHED"
+    expect(decision.tracked).toBe(true);
+    expect(decision.reasonCodes).toContain("SCHEDULER_PROTECTION_CAP_ENFORCED");
+    expect(service.getTrackedMints()).toEqual([secondMint]);
+    expect(service.getSchedulerStatus().effectiveMaxProtectedMints).toBe(0);
+  });
+
+  it("queues behind absolute paper-position protection and drains when a slot opens", () => {
+    const openPositions = new Set([mint]);
+    const candidates = new Map([
+      [mint, createLaunchCandidate({ mint, score: 90 })],
+      [secondMint, createLaunchCandidate({ mint: secondMint, score: 5 })]
+    ]);
+    const service = createService(
+      {
+        acknowledgedCost: true,
+        apiKeyConfigured: true,
+        autoUnsubscribeOnLowScore: false,
+        dataWalletPublicKeyConfigured: true,
+        enabled: true,
+        maxConcurrentMints: 1,
+        schedulerQueueMaxAgeMs: 0,
+        staleNoTradesMs: 0
+      },
+      readyWallet,
+      new PumpPortalFeedProvider(),
+      (candidateMint) => candidates.get(candidateMint) ?? null,
+      (candidateMint) => openPositions.has(candidateMint)
     );
+
+    service.evaluateNewLaunchCandidate(candidates.get(mint)!);
+    const queued = service.evaluateNewLaunchCandidate(
+      candidates.get(secondMint)!
+    );
+
+    expect(queued.action).toBe("queue");
+    expect(service.getSchedulerStatus().queuedMints).toEqual([secondMint]);
     expect(service.getTrackedMints()).toEqual([mint]);
+
+    openPositions.delete(mint);
+    service.untrackMint(mint, "paper_position_closed");
+
+    expect(service.getSchedulerStatus().queuedCandidateCount).toBe(0);
+    expect(service.getTrackedMints()).toEqual([secondMint]);
+  });
+
+  it("keeps the same subscription across a migration event", () => {
+    const provider = new PumpPortalFeedProvider();
+    const candidates = new Map([
+      [mint, createLaunchCandidate({ mint, eventType: "new_token" })]
+    ]);
+    const service = createService(
+      {
+        acknowledgedCost: true,
+        apiKeyConfigured: true,
+        dataWalletPublicKeyConfigured: true,
+        enabled: true,
+        staleNoTradesMs: 0
+      },
+      readyWallet,
+      provider,
+      (candidateMint) => candidates.get(candidateMint) ?? null
+    );
+
+    service.evaluateNewLaunchCandidate(candidates.get(mint)!);
+    candidates.set(
+      mint,
+      createLaunchCandidate({ mint, eventType: "migration" })
+    );
+    const decision = service.evaluateNewLaunchCandidate(candidates.get(mint)!);
+
+    expect(decision.schedulerDecision?.action).toBe("keep");
+    expect(decision.reasonCodes).toContain("SCHEDULER_MIGRATION_CONTINUITY");
+    expect(provider.getTokenTradeSubscriptions()).toEqual([mint]);
+  });
+
+  it("evicts an already tracked mint when the scheduler sees a hard reject", () => {
+    const candidates = new Map([
+      [mint, createLaunchCandidate({ mint, phase: "watching", score: 20 })]
+    ]);
+    const service = createService(
+      {
+        acknowledgedCost: true,
+        apiKeyConfigured: true,
+        dataWalletPublicKeyConfigured: true,
+        enabled: true,
+        staleNoTradesMs: 0
+      },
+      readyWallet,
+      new PumpPortalFeedProvider(),
+      (candidateMint) => candidates.get(candidateMint) ?? null
+    );
+
+    service.evaluateNewLaunchCandidate(candidates.get(mint)!);
+    candidates.set(
+      mint,
+      createLaunchCandidate({
+        blockers: ["HARD_REJECT"],
+        mint,
+        phase: "rejected",
+        score: 0
+      })
+    );
+    const decision = service.evaluateNewLaunchCandidate(candidates.get(mint)!);
+
+    expect(decision.tracked).toBe(false);
+    expect(decision.schedulerDecision?.action).toBe("drop");
+    expect(service.getTrackedMints()).toEqual([]);
+    expect(service.getTrackedMint(mint)?.reasonCodes).toContain(
+      "METERED_LAUNCH_DATA_SCHEDULER_HARD_REJECT"
+    );
+    expect(service.getSchedulerStatus().trackingMutationCount).toBe(2);
   });
 
   it("untracks when the per-mint event cap is reached", () => {
@@ -445,7 +552,8 @@ function createService(
   candidate:
     | LaunchCandidateView
     | ((candidateMint: string) => LaunchCandidateView | null)
-    | null = null
+    | null = null,
+  hasOpenPaperPosition: (candidateMint: string) => boolean = () => false
 ) {
   const envAckEnabled = config?.acknowledgedCost === true;
   const actualData = createActualDataService({
@@ -476,6 +584,7 @@ function createService(
     dataWalletReadiness: () => readiness,
     getLaunchCandidate: (candidateMint) =>
       typeof candidate === "function" ? candidate(candidateMint) : candidate,
+    hasOpenPaperPosition,
     providerName: "pumpportal"
   });
 }
@@ -518,6 +627,7 @@ function createTokenTradeEvent(eventMint = mint): TokenTradeEvent {
 function createLaunchCandidate(
   options: {
     blockers?: string[];
+    eventType?: string;
     mint?: string;
     phase?: LaunchCandidateView["snapshot"]["phase"];
     score?: number;
@@ -529,7 +639,7 @@ function createLaunchCandidate(
   return {
     mint: candidateMint,
     source: "pumpportal",
-    eventType: "token_created",
+    eventType: options.eventType ?? "token_created",
     name: "Mock Launch",
     symbol: "MOCK",
     title: "MOCK Mock Launch",

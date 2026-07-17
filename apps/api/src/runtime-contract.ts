@@ -3,6 +3,10 @@ import type { MeteredLaunchDataService } from "./metered-launch-data-service";
 
 export const safeMeteredRuntimeDefaults = {
   maxConcurrentMints: 3,
+  reservedNewestSlots: 1,
+  maxProtectedMints: 2,
+  schedulerQueueLimit: 50,
+  schedulerQueueMaxAgeMs: 30_000,
   maxEventsPerMint: 250,
   maxEventsPerSession: 1_000,
   maxSessionCostSol: 0.001,
@@ -22,6 +26,10 @@ export function createRuntimeContract(input: {
   const meteredStatus = input.meteredLaunchData.getStatus();
   const configured = {
     maxConcurrentMints: meteredStatus.maxConcurrentMints,
+    reservedNewestSlots: meteredStatus.scheduler.reservedNewestSlots,
+    maxProtectedMints: meteredStatus.scheduler.configuredMaxProtectedMints,
+    schedulerQueueLimit: meteredStatus.scheduler.queueLimit,
+    schedulerQueueMaxAgeMs: meteredStatus.scheduler.queueMaxAgeMs,
     maxEventsPerMint: meteredStatus.maxEventsPerMint,
     maxEventsPerSession: meteredStatus.maxEventsPerSession,
     maxSessionCostSol: meteredStatus.maxSessionCostSol,
@@ -42,7 +50,7 @@ export function createRuntimeContract(input: {
   );
 
   return {
-    version: 1,
+    version: 2,
     runtimeSessionId: input.runtimeSessionId,
     safety: {
       paperOnly: true,
@@ -60,6 +68,7 @@ export function createRuntimeContract(input: {
       providerConnection: "PumpPortalFeedProvider",
       rollingMetrics: "@axi/metrics",
       capacityModel: "@axi/capacity-model",
+      trackingScheduler: "@axi/tracking-scheduler",
       paperPortfolio: "@axi/paper-portfolio",
       trackingCommandRoute: "/metered-launch-data/track"
     },
@@ -70,6 +79,7 @@ export function createRuntimeContract(input: {
       acknowledgedCost: meteredStatus.acknowledgedCost,
       requireUiAck: meteredStatus.requireUiAck,
       configured,
+      scheduler: meteredStatus.scheduler,
       transport: {
         provider: actualDataStatus.provider,
         subscriptionCount: actualDataStatus.subscribedTokenCount,
@@ -83,8 +93,9 @@ export function createRuntimeContract(input: {
     },
     roadmap: {
       coverageCapacityInstrumentation: "implemented",
-      rollingNewestTokenScheduler: "not_implemented",
-      schedulerMutationApplied: false
+      rollingNewestTokenScheduler: "implemented",
+      schedulerMutationApplied:
+        meteredStatus.scheduler.trackingMutationCount > 0
     },
     deprecatedMutationRoutes: [
       "/actual-data/subscribe",

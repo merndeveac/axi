@@ -84,6 +84,10 @@ describe("@axi/api", () => {
     expect(config.METERED_LAUNCH_DATA_REQUIRE_UI_ACK).toBe(true);
     expect(config.METERED_LAUNCH_DATA_ACK_COST).toBe(false);
     expect(config.METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS).toBe(3);
+    expect(config.ROLLING_TRACKER_RESERVED_NEWEST_SLOTS).toBe(1);
+    expect(config.ROLLING_TRACKER_MAX_PROTECTED_MINTS).toBe(2);
+    expect(config.ROLLING_TRACKER_QUEUE_LIMIT).toBe(50);
+    expect(config.ROLLING_TRACKER_QUEUE_MAX_AGE_MS).toBe(30_000);
     expect(config.METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT).toBe(250);
     expect(config.METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION).toBe(1000);
     expect(config.METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL).toBe(0.001);
@@ -1476,14 +1480,22 @@ describe("@axi/api", () => {
     const body = response.json() as {
       configuration: { driftDetected: boolean };
       ownership: Record<string, string>;
+      roadmap: {
+        rollingNewestTokenScheduler: string;
+        schedulerMutationApplied: boolean;
+      };
       safety: { apiHost: string; tradingDisabled: boolean };
       subscriptionPolicy: {
         configured: {
           maxConcurrentMints: number;
+          maxProtectedMints: number;
           maxEventsPerMint: number;
           maxEventsPerSession: number;
           maxSessionCostSol: number;
           maxUiSessionCostSol: number;
+          reservedNewestSlots: number;
+          schedulerQueueLimit: number;
+          schedulerQueueMaxAgeMs: number;
         };
       };
     };
@@ -1493,18 +1505,64 @@ describe("@axi/api", () => {
       discoveryAndLaunchScoring: "LaunchScannerService",
       subscriptionTransport: "ActualDataService",
       subscriptionPolicy: "MeteredLaunchDataService",
+      trackingScheduler: "@axi/tracking-scheduler",
       trackingCommandRoute: "/metered-launch-data/track"
     });
     expect(body.subscriptionPolicy.configured).toEqual({
       maxConcurrentMints: 3,
+      reservedNewestSlots: 1,
+      maxProtectedMints: 2,
+      schedulerQueueLimit: 50,
+      schedulerQueueMaxAgeMs: 30_000,
       maxEventsPerMint: 250,
       maxEventsPerSession: 1000,
       maxSessionCostSol: 0.001,
       maxUiSessionCostSol: 0.001
     });
     expect(body.configuration.driftDetected).toBe(false);
+    expect(body.roadmap.rollingNewestTokenScheduler).toBe("implemented");
+    expect(body.roadmap.schedulerMutationApplied).toBe(false);
     expect(body.safety.apiHost).toBe("127.0.0.1");
     expect(body.safety.tradingDisabled).toBe(true);
+  });
+
+  it("reports the rolling scheduler policy and current-session decisions", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/runtime/scheduler"
+    });
+    const body = response.json() as {
+      decisions: unknown[];
+      scheduler: {
+        active: boolean;
+        enabled: boolean;
+        implemented: boolean;
+        queuedCandidateCount: number;
+        reservedNewestSlots: number;
+        trackingMutationCount: number;
+      };
+      tradingDisabled: boolean;
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.scheduler.implemented).toBe(true);
+    expect(body.scheduler.enabled).toBe(true);
+    expect(body.scheduler.active).toBe(false);
+    expect(body.scheduler.reservedNewestSlots).toBe(1);
+    expect(body.scheduler.queuedCandidateCount).toBe(0);
+    expect(body.scheduler.trackingMutationCount).toBe(0);
+    expect(body.decisions).toEqual([]);
+    expect(body.tradingDisabled).toBe(true);
+
+    const decisionsResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/scheduler/decisions?limit=10"
+    });
+
+    expect(decisionsResponse.statusCode).toBe(200);
+    expect(decisionsResponse.json()).toMatchObject({ decisions: [] });
   });
 
   it("reports capacity without changing scheduler policy and persists explicit snapshots", async () => {

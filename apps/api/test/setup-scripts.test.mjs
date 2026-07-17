@@ -38,6 +38,9 @@ describe("PumpPortal data env setup helpers", () => {
     expect(template).toContain("SOLANA_RPC_HTTP=");
     expect(template).toContain("API_HOST=127.0.0.1");
     expect(template).toContain("METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS=3");
+    expect(template).toContain("ROLLING_TRACKER_RESERVED_NEWEST_SLOTS=1");
+    expect(template).toContain("ROLLING_TRACKER_MAX_PROTECTED_MINTS=2");
+    expect(template).toContain("ROLLING_TRACKER_QUEUE_LIMIT=50");
     expect(template).toContain("METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT=250");
     expect(template).toContain(
       "METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION=1000"
@@ -70,6 +73,10 @@ describe("PumpPortal data env setup helpers", () => {
     expect(launchScript).toContain(
       'METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS: "3"'
     );
+    expect(launchScript).toContain(
+      'ROLLING_TRACKER_RESERVED_NEWEST_SLOTS: "1"'
+    );
+    expect(launchScript).toContain('ROLLING_TRACKER_MAX_PROTECTED_MINTS: "2"');
     expect(launchScript).toContain(
       'METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION: "1000"'
     );
@@ -181,6 +188,11 @@ function validEnv() {
     METERED_LAUNCH_DATA_START_ACTIVE: "false",
     METERED_LAUNCH_DATA_REQUIRE_UI_ACK: "true",
     METERED_LAUNCH_DATA_ACK_COST: "false",
+    ROLLING_TRACKER_ENABLED: "true",
+    ROLLING_TRACKER_RESERVED_NEWEST_SLOTS: "1",
+    ROLLING_TRACKER_MAX_PROTECTED_MINTS: "2",
+    ROLLING_TRACKER_QUEUE_LIMIT: "50",
+    ROLLING_TRACKER_QUEUE_MAX_AGE_MS: "30000",
     METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS: "3",
     METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT: "250",
     METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION: "1000",

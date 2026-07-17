@@ -58,7 +58,9 @@ export function createRuntimeCapacityReport(input: {
     maxEventsPerSession: input.meteredCost.maxEventsPerSession,
     estimatedSessionCostSol: input.meteredCost.estimatedCostSol,
     maxSessionCostSol: input.meteredCost.maxSessionCostSol,
-    eventCostSolPer10000: input.meteredCost.eventCostSolPer10000
+    eventCostSolPer10000: input.meteredCost.eventCostSolPer10000,
+    schedulerMutationApplied:
+      input.meteredStatus.scheduler.trackingMutationCount > 0
   };
   const result = evaluateCapacityModel(modelInput);
 

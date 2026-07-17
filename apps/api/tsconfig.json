@@ -34,6 +34,7 @@
     { "path": "../../packages/stream-core" },
     { "path": "../../packages/stream-mock" },
     { "path": "../../packages/timeseries" },
+    { "path": "../../packages/tracking-scheduler" },
     { "path": "../../packages/token-identity" },
     { "path": "../../packages/watch-orchestrator" }
   ]

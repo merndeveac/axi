@@ -45,6 +45,7 @@
       "@axi/stream-core": ["packages/stream-core/src/index.ts"],
       "@axi/stream-mock": ["packages/stream-mock/src/index.ts"],
       "@axi/timeseries": ["packages/timeseries/src/index.ts"],
+      "@axi/tracking-scheduler": ["packages/tracking-scheduler/src/index.ts"],
       "@axi/watch-orchestrator": ["packages/watch-orchestrator/src/index.ts"],
       "@axi/shared": ["packages/shared/src/index.ts"],
       "@axi/scoring": ["packages/scoring/src/index.ts"],

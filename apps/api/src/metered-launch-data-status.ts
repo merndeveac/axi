@@ -63,6 +63,7 @@ const meteredLaunchData = createMeteredLaunchDataService({
     initialTrackMs: config.METERED_LAUNCH_DATA_INITIAL_TRACK_MS,
     liveDiscoveryEnabled: config.PUMPPORTAL_LIVE_DISCOVERY_ENABLED,
     maxConcurrentMints: config.METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS,
+    maxProtectedMints: config.ROLLING_TRACKER_MAX_PROTECTED_MINTS,
     maxEventsPerMint: config.METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT,
     maxEventsPerSession: config.METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION,
     maxSessionCostSol: config.METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL,
@@ -74,9 +75,12 @@ const meteredLaunchData = createMeteredLaunchDataService({
     protectedMaxAgeMs: config.ROLLING_TRACKER_PROTECTED_MAX_AGE_MS,
     projectRateWindowMs: config.METERED_LAUNCH_DATA_PROJECT_RATE_WINDOW_MS,
     rollingTrackerEnabled: config.ROLLING_TRACKER_ENABLED,
+    reservedNewestSlots: config.ROLLING_TRACKER_RESERVED_NEWEST_SLOTS,
     requireDataWalletReady:
       config.METERED_LAUNCH_DATA_REQUIRE_DATA_WALLET_READY,
-    staleNoTradesMs: config.ROLLING_TRACKER_STALE_NO_TRADES_MS
+    staleNoTradesMs: config.ROLLING_TRACKER_STALE_NO_TRADES_MS,
+    schedulerQueueLimit: config.ROLLING_TRACKER_QUEUE_LIMIT,
+    schedulerQueueMaxAgeMs: config.ROLLING_TRACKER_QUEUE_MAX_AGE_MS
   }),
   dataWalletReadiness: () => pumpPortalDataWallet.getActualDataReadiness(),
   providerName: config.DATA_FEED

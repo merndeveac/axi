@@ -18,6 +18,7 @@ export type CapacityModelInput = {
   estimatedSessionCostSol: number;
   maxSessionCostSol: number;
   eventCostSolPer10000: number;
+  schedulerMutationApplied?: boolean;
 };
 
 export type CapacityModelResult = {
@@ -70,7 +71,7 @@ export type CapacityModelResult = {
     extendedObservationMs: number;
     staleNoTradesMs: number;
     newestAlwaysConsidered: true;
-    schedulerMutationApplied: false;
+    schedulerMutationApplied: boolean;
   };
   reasonCodes: string[];
   paperOnly: true;
@@ -287,7 +288,7 @@ export function evaluateCapacityModel(
       extendedObservationMs: round(extendedObservationMs),
       staleNoTradesMs: round(staleNoTradesMs),
       newestAlwaysConsidered: true,
-      schedulerMutationApplied: false
+      schedulerMutationApplied: input.schedulerMutationApplied === true
     },
     reasonCodes,
     paperOnly: true,

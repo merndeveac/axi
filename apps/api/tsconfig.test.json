@@ -42,6 +42,9 @@
       "@axi/stream-core": ["../../packages/stream-core/dist/index.d.ts"],
       "@axi/stream-mock": ["../../packages/stream-mock/dist/index.d.ts"],
       "@axi/timeseries": ["../../packages/timeseries/dist/index.d.ts"],
+      "@axi/tracking-scheduler": [
+        "../../packages/tracking-scheduler/dist/index.d.ts"
+      ],
       "@axi/token-identity": [
         "../../packages/token-identity/dist/index.d.ts"
       ],

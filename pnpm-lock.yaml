@@ -131,6 +131,9 @@ importers:
       '@axi/token-identity':
         specifier: workspace:*
         version: link:../../packages/token-identity
+      '@axi/tracking-scheduler':
+        specifier: workspace:*
+        version: link:../../packages/tracking-scheduler
       '@axi/watch-orchestrator':
         specifier: workspace:*
         version: link:../../packages/watch-orchestrator
@@ -382,6 +385,8 @@ importers:
         version: link:../indexer-core
 
   packages/token-identity: {}
+
+  packages/tracking-scheduler: {}
 
   packages/watch-orchestrator:
     dependencies:

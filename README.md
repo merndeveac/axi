@@ -412,9 +412,9 @@ projected SOL cost = projected messages * (0.01 SOL / 10,000 messages)
 ```
 
 The scenario matrix evaluates launch intervals of 30, 10, and 5 seconds against
-quiet, average, and viral per-mint message rates. These are planning outputs
-only: `schedulerMutationApplied` remains `false`, and the existing rolling
-tracker policy is unchanged.
+quiet, average, and viral per-mint message rates. The capacity model itself is
+read-only. `schedulerMutationApplied` becomes `true` only after the separate
+rolling scheduler actually changes a current-session tracking subscription.
 
 Capacity endpoints:
 
@@ -436,6 +436,10 @@ METERED_LAUNCH_DATA_REQUIRE_UI_ACK=true
 METERED_LAUNCH_DATA_ACK_COST=false
 METERED_LAUNCH_DATA_MODE=newest
 ROLLING_TRACKER_ENABLED=true
+ROLLING_TRACKER_RESERVED_NEWEST_SLOTS=1
+ROLLING_TRACKER_MAX_PROTECTED_MINTS=2
+ROLLING_TRACKER_QUEUE_LIMIT=50
+ROLLING_TRACKER_QUEUE_MAX_AGE_MS=30000
 METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS=3
 METERED_LAUNCH_DATA_INITIAL_TRACK_MS=30000
 METERED_LAUNCH_DATA_EXTENDED_TRACK_MS=300000
@@ -451,12 +455,35 @@ PUMPPORTAL_TOKEN_TRADES_ENABLED=true
 PUMPPORTAL_TOKEN_TRADES_ACK_METERED=false
 ```
 
-In `newest` mode, the rolling tracker keeps at most three active launch mints by
-default. When capacity is full, a newer candidate can preempt the weakest
-unprotected tracked mint. Hot/ripping candidates, protected scores, and open
-paper positions are protected; hard rejects and stale zero-trade subscriptions
-are unsubscribed. This still uses only PumpPortal `subscribeTokenTrade` data and
-does not trade, sign, or call account-trade streams.
+### Rolling newest-token scheduler
+
+`@axi/tracking-scheduler` is the deterministic owner of automatic slot
+allocation. Every eligible discovery reaches the scheduler even when capacity
+is full. In `newest` mode, the default three-slot policy reserves one slot from
+soft protection, honors at most two HOT/RIPPING/score/migration protections,
+and preempts the weakest eviction-eligible mint without requiring the new mint
+to have a higher score. Hard rejects, maximum-age mints, and stale zero-trade
+subscriptions are evicted before active weak mints.
+
+Open paper positions and future live positions are absolute protections from
+scheduler preemption; hard per-mint, tracking-age, session event, and session
+cost caps still apply. If every slot has an absolute position, the newest
+candidate enters a bounded, current-session-only queue instead of displacing a
+position. The queue keeps the latest 50 candidates for at most 30 seconds by
+default and automatically reconsiders the newest queued candidate when a slot
+opens. Repeated migration discovery for an already tracked mint keeps the
+existing subscription rather than restarting its observation window.
+
+Scheduler state and recent decisions are read-only at:
+
+- `GET /runtime/scheduler`
+- `GET /runtime/scheduler/decisions`
+
+All subscription mutations still pass through `MeteredLaunchDataService`, so
+the UI ACK, wallet readiness, concurrent limit, per-mint event cap, session
+event cap, and SOL cost cap remain mandatory. This uses only PumpPortal
+`subscribeTokenTrade` data and does not trade, sign, or call account-trade
+streams.
 
 Safe local setup:
 

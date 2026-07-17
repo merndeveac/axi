@@ -669,6 +669,27 @@ export const apiConfigSchema = z.object({
   ROLLING_TRACKER_ENABLED: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(true),
+  ROLLING_TRACKER_RESERVED_NEWEST_SLOTS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(safeMeteredRuntimeDefaults.reservedNewestSlots),
+  ROLLING_TRACKER_MAX_PROTECTED_MINTS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(safeMeteredRuntimeDefaults.maxProtectedMints),
+  ROLLING_TRACKER_QUEUE_LIMIT: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .max(1000)
+    .default(safeMeteredRuntimeDefaults.schedulerQueueLimit),
+  ROLLING_TRACKER_QUEUE_MAX_AGE_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(safeMeteredRuntimeDefaults.schedulerQueueMaxAgeMs),
   METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS: z.coerce
     .number()
     .int()
@@ -2019,6 +2040,25 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   );
 
   app.get("/runtime/capacity", async () => getRuntimeCapacityReport());
+
+  app.get("/runtime/scheduler", async () => ({
+    scheduler: meteredLaunchData.getSchedulerStatus(),
+    decisions: meteredLaunchData.getSchedulerDecisions(25),
+    paperOnly: true,
+    dataOnly: true,
+    tradingDisabled: true
+  }));
+
+  app.get("/runtime/scheduler/decisions", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+
+    return {
+      decisions: meteredLaunchData.getSchedulerDecisions(query.limit),
+      paperOnly: true,
+      dataOnly: true,
+      tradingDisabled: true
+    };
+  });
 
   app.post("/runtime/capacity/snapshot", async () => {
     const report = getRuntimeCapacityReport();

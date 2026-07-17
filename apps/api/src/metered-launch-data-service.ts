@@ -1,6 +1,12 @@
 import { isValidSolanaMint, type TokenTradeEvent } from "@axi/data-feeds";
 import type { StoredMeteredLaunchDataEvent } from "@axi/storage";
 import {
+  scheduleNewestCandidate,
+  type TrackingProtectionReason,
+  type TrackingSchedulerDecision,
+  type TrackingSchedulerTrackedMint
+} from "@axi/tracking-scheduler";
+import {
   saveMeteredLaunchDataEvent,
   saveMeteredLaunchDataSession,
   saveMeteredLaunchDataSubscription
@@ -26,6 +32,10 @@ export type MeteredLaunchDataConfig = {
   requireDataWalletReady: boolean;
   mode: MeteredLaunchDataMode;
   rollingTrackerEnabled: boolean;
+  reservedNewestSlots: number;
+  maxProtectedMints: number;
+  schedulerQueueLimit: number;
+  schedulerQueueMaxAgeMs: number;
   maxConcurrentMints: number;
   initialTrackMs: number;
   extendedTrackMs: number;
@@ -67,12 +77,45 @@ export type MeteredLaunchDataTrackedMint = {
 
 export type MeteredLaunchDataDecision = {
   mint: string;
-  action: "track" | "skip";
+  action: "queue" | "skip" | "track";
   tracked: boolean;
   reasonCodes: string[];
   score: number | null;
   mode: MeteredLaunchDataMode;
   trackingState: MeteredLaunchDataTrackedMint | null;
+  schedulerDecision: MeteredLaunchDataSchedulerDecision | null;
+  paperOnly: true;
+  dataOnly: true;
+  tradingDisabled: true;
+};
+
+export type MeteredLaunchDataSchedulerDecision = TrackingSchedulerDecision & {
+  decisionId: number;
+  decidedAt: string;
+  executed: boolean;
+  queueDepthAfter: number;
+};
+
+export type MeteredLaunchDataSchedulerStatus = {
+  implemented: true;
+  enabled: boolean;
+  active: boolean;
+  reservedNewestSlots: number;
+  configuredMaxProtectedMints: number;
+  effectiveMaxProtectedMints: number;
+  absoluteProtectedMintCount: number;
+  softProtectedMintCount: number;
+  queueLimit: number;
+  queueMaxAgeMs: number;
+  queuedCandidateCount: number;
+  queuedMints: string[];
+  evaluationCount: number;
+  trackingMutationCount: number;
+  preemptionCount: number;
+  queuedCount: number;
+  droppedCount: number;
+  lastDecision: MeteredLaunchDataSchedulerDecision | null;
+  reasonCodes: string[];
   paperOnly: true;
   dataOnly: true;
   tradingDisabled: true;
@@ -130,6 +173,7 @@ export type MeteredLaunchDataStatus = {
   maxConcurrentMints: number;
   trackedMintCount: number;
   protectedMintCount: number;
+  scheduler: MeteredLaunchDataSchedulerStatus;
   initialTrackMs: number;
   extendedTrackMs: number;
   protectedMaxAgeMs: number;
@@ -170,6 +214,7 @@ export type MeteredLaunchDataServiceOptions = {
   getLaunchCandidates?: (limit?: number) => LaunchCandidateView[];
   getLiveDiscoveryActive?: () => boolean;
   hasOpenPaperPosition?: (mint: string) => boolean;
+  hasOpenLivePosition?: (mint: string) => boolean;
   providerName: string;
 };
 
@@ -194,9 +239,19 @@ type InternalTrackedMint = Omit<
   staleNoTradesTimer?: ReturnType<typeof setTimeout>;
 };
 
+type QueuedLaunchCandidate = {
+  candidate: LaunchCandidateView;
+  enqueuedAt: string;
+};
+
 export function createMeteredLaunchDataConfig(
   input: Partial<MeteredLaunchDataConfig> = {}
 ): MeteredLaunchDataConfig {
+  const maxConcurrentMints =
+    input.maxConcurrentMints ?? safeMeteredRuntimeDefaults.maxConcurrentMints;
+  const reservedNewestSlots =
+    input.reservedNewestSlots ?? safeMeteredRuntimeDefaults.reservedNewestSlots;
+
   return {
     enabled: input.enabled ?? false,
     controlsEnabled: input.controlsEnabled ?? input.enabled ?? false,
@@ -206,8 +261,16 @@ export function createMeteredLaunchDataConfig(
     requireDataWalletReady: input.requireDataWalletReady ?? true,
     mode: input.mode ?? "newest",
     rollingTrackerEnabled: input.rollingTrackerEnabled ?? true,
-    maxConcurrentMints:
-      input.maxConcurrentMints ?? safeMeteredRuntimeDefaults.maxConcurrentMints,
+    reservedNewestSlots,
+    maxProtectedMints:
+      input.maxProtectedMints ?? safeMeteredRuntimeDefaults.maxProtectedMints,
+    schedulerQueueLimit:
+      input.schedulerQueueLimit ??
+      safeMeteredRuntimeDefaults.schedulerQueueLimit,
+    schedulerQueueMaxAgeMs:
+      input.schedulerQueueMaxAgeMs ??
+      safeMeteredRuntimeDefaults.schedulerQueueMaxAgeMs,
+    maxConcurrentMints,
     initialTrackMs: input.initialTrackMs ?? 30_000,
     extendedTrackMs: input.extendedTrackMs ?? 300_000,
     minScoreToExtend: input.minScoreToExtend ?? 45,
@@ -254,11 +317,22 @@ export class MeteredLaunchDataService {
   private readonly getLiveDiscoveryActive: (() => boolean) | undefined;
   private readonly hasOpenPaperPosition:
     ((mint: string) => boolean) | undefined;
+  private readonly hasOpenLivePosition: ((mint: string) => boolean) | undefined;
   private readonly providerName: string;
   private readonly recentTradeEvents: StoredMeteredLaunchDataEvent[] = [];
+  private readonly recentSchedulerDecisions: MeteredLaunchDataSchedulerDecision[] =
+    [];
+  private readonly schedulerQueue = new Map<string, QueuedLaunchCandidate>();
   private readonly tracked = new Map<string, InternalTrackedMint>();
   private readonly rateEventTimestamps: number[] = [];
   private budgetReached = false;
+  private schedulerDecisionSequence = 0;
+  private schedulerDroppedCount = 0;
+  private schedulerEvaluationCount = 0;
+  private schedulerMutationCount = 0;
+  private schedulerPreemptionCount = 0;
+  private schedulerQueuedCount = 0;
+  private schedulerReconciling = false;
   private lastStopReason: string | null = null;
   private runtimeStopped = false;
   private sessionAck: {
@@ -277,6 +351,7 @@ export class MeteredLaunchDataService {
     this.getLaunchCandidates = options.getLaunchCandidates;
     this.getLiveDiscoveryActive = options.getLiveDiscoveryActive;
     this.hasOpenPaperPosition = options.hasOpenPaperPosition;
+    this.hasOpenLivePosition = options.hasOpenLivePosition;
     this.providerName = options.providerName;
     this.runtimeStopped = !(
       this.config.startActive && this.isCostAcknowledged()
@@ -297,6 +372,7 @@ export class MeteredLaunchDataService {
     }
 
     this.startedAt = new Date().toISOString();
+    this.reconcileSchedulerQueue();
     saveMeteredLaunchDataSession({
       status: this.config.enabled
         ? this.isReady()
@@ -319,9 +395,10 @@ export class MeteredLaunchDataService {
   stop(): void {
     this.runtimeStopped = true;
     this.lastStopReason = "service_stop";
+    this.schedulerQueue.clear();
 
     for (const mint of this.getTrackedMints()) {
-      this.untrackMint(mint, "service_stop");
+      this.untrackMint(mint, "service_stop", { reconcileQueue: false });
     }
 
     if (!this.startedAt) {
@@ -429,9 +506,12 @@ export class MeteredLaunchDataService {
     this.sessionAck = null;
     this.runtimeStopped = true;
     this.lastStopReason = "session_ack_cleared";
+    this.schedulerQueue.clear();
 
     for (const mint of this.getTrackedMints()) {
-      this.untrackMint(mint, "session_ack_cleared");
+      this.untrackMint(mint, "session_ack_cleared", {
+        reconcileQueue: false
+      });
     }
 
     return this.getStatus();
@@ -439,64 +519,176 @@ export class MeteredLaunchDataService {
 
   evaluateNewLaunchCandidate(
     candidate: LaunchCandidateView,
-    options: { dryRun?: boolean } = {}
+    options: { dryRun?: boolean; fromQueue?: boolean } = {}
   ): MeteredLaunchDataDecision {
     const blockers = this.getSubscriptionBlockers(candidate.mint);
     const score = candidate.snapshot.score;
     const capacityBlocker = "METERED_LAUNCH_DATA_MAX_CONCURRENT_REACHED";
-    let effectiveBlockers = blockers;
-    let preemptedMint: string | null = null;
+    const nonCapacityBlockers = blockers.filter(
+      (blocker) => blocker !== capacityBlocker
+    );
+    const selectionReasonCodes =
+      this.getCandidateSelectionReasonCodes(candidate);
 
-    if (
-      !options.dryRun &&
-      blockers.includes(capacityBlocker) &&
-      blockers.filter((blocker) => blocker !== capacityBlocker).length === 0 &&
-      this.config.rollingTrackerEnabled &&
-      this.shouldTrackCandidate(candidate)
-    ) {
-      const preempted = this.preemptWeakestUnprotectedMint(candidate);
-
-      if (preempted) {
-        preemptedMint = preempted.mint;
-        effectiveBlockers = blockers.filter(
-          (blocker) => blocker !== capacityBlocker
-        );
-      }
-    }
-
-    const reasonCodes = unique([
-      ...effectiveBlockers,
-      ...this.getCandidateSelectionReasonCodes(candidate)
-    ]);
-    const shouldTrack =
-      effectiveBlockers.length === 0 &&
-      this.shouldTrackCandidate(candidate) &&
-      !options.dryRun;
-
-    if (!shouldTrack) {
+    if (nonCapacityBlockers.length > 0) {
       return {
         mint: candidate.mint,
         action: "skip",
         tracked: false,
         reasonCodes: unique([
-          ...reasonCodes,
-          ...(preemptedMint
-            ? [`METERED_LAUNCH_DATA_PREEMPTED_${preemptedMint}`]
-            : []),
+          ...nonCapacityBlockers,
+          ...selectionReasonCodes,
           ...(options.dryRun ? ["METERED_LAUNCH_DATA_EVALUATION_ONLY"] : [])
         ]),
         score,
         mode: this.config.mode,
         trackingState: this.getTrackedMint(candidate.mint),
+        schedulerDecision: null,
         paperOnly: true,
         dataOnly: true,
         tradingDisabled: true
       };
     }
 
+    const plannedDecision = this.planSchedulerDecision(candidate);
+
+    if (options.dryRun) {
+      const schedulerDecision = this.recordSchedulerDecision(
+        plannedDecision,
+        false
+      );
+
+      return {
+        mint: candidate.mint,
+        action: "skip",
+        tracked: plannedDecision.action === "keep",
+        reasonCodes: unique([
+          ...selectionReasonCodes,
+          ...plannedDecision.reasonCodes,
+          "METERED_LAUNCH_DATA_EVALUATION_ONLY"
+        ]),
+        score,
+        mode: this.config.mode,
+        trackingState: this.getTrackedMint(candidate.mint),
+        schedulerDecision,
+        paperOnly: true,
+        dataOnly: true,
+        tradingDisabled: true
+      };
+    }
+
+    if (plannedDecision.action === "keep") {
+      const trackingState = this.getTrackedMint(candidate.mint);
+      const schedulerDecision = this.recordSchedulerDecision(
+        plannedDecision,
+        true
+      );
+
+      return {
+        mint: candidate.mint,
+        action: "track",
+        tracked: trackingState?.status === "tracking",
+        reasonCodes: unique([
+          ...selectionReasonCodes,
+          ...plannedDecision.reasonCodes
+        ]),
+        score,
+        mode: this.config.mode,
+        trackingState,
+        schedulerDecision,
+        paperOnly: true,
+        dataOnly: true,
+        tradingDisabled: true
+      };
+    }
+
+    if (plannedDecision.action === "queue") {
+      const queuedDecision = this.enqueueSchedulerCandidate(
+        candidate,
+        plannedDecision
+      );
+      const schedulerDecision = this.recordSchedulerDecision(
+        queuedDecision,
+        true
+      );
+
+      return {
+        mint: candidate.mint,
+        action: "queue",
+        tracked: false,
+        reasonCodes: unique([
+          ...blockers,
+          ...selectionReasonCodes,
+          ...queuedDecision.reasonCodes,
+          ...(options.fromQueue ? ["SCHEDULER_QUEUE_RECONCILE_DEFERRED"] : [])
+        ]),
+        score,
+        mode: this.config.mode,
+        trackingState: this.getTrackedMint(candidate.mint),
+        schedulerDecision,
+        paperOnly: true,
+        dataOnly: true,
+        tradingDisabled: true
+      };
+    }
+
+    if (plannedDecision.action === "drop") {
+      this.schedulerQueue.delete(candidate.mint);
+      const trackedCandidate = this.getTrackedMint(candidate.mint);
+      const trackingMutation =
+        trackedCandidate?.status === "tracking" &&
+        plannedDecision.reasonCodes.includes("SCHEDULER_DROP_HARD_REJECT");
+
+      if (trackingMutation) {
+        this.untrackMint(candidate.mint, "scheduler_hard_reject", {
+          reconcileQueue: false
+        });
+      }
+
+      const schedulerDecision = this.recordSchedulerDecision(
+        plannedDecision,
+        true,
+        { trackingMutation }
+      );
+
+      if (trackingMutation) {
+        this.reconcileSchedulerQueue();
+      }
+
+      return {
+        mint: candidate.mint,
+        action: "skip",
+        tracked: false,
+        reasonCodes: unique([
+          ...selectionReasonCodes,
+          ...plannedDecision.reasonCodes
+        ]),
+        score,
+        mode: this.config.mode,
+        trackingState: this.getTrackedMint(candidate.mint),
+        schedulerDecision,
+        paperOnly: true,
+        dataOnly: true,
+        tradingDisabled: true
+      };
+    }
+
+    if (plannedDecision.action === "preempt" && plannedDecision.preemptMint) {
+      this.untrackMint(
+        plannedDecision.preemptMint,
+        "scheduler_preempt_for_newest",
+        { reconcileQueue: false }
+      );
+    }
+
+    this.schedulerQueue.delete(candidate.mint);
     const trackingState = this.trackMint(
       candidate.mint,
-      `auto_${this.config.mode}`
+      `scheduler_${plannedDecision.action}_${this.config.mode}`
+    );
+    const schedulerDecision = this.recordSchedulerDecision(
+      plannedDecision,
+      true
     );
 
     return {
@@ -505,11 +697,13 @@ export class MeteredLaunchDataService {
       tracked: true,
       reasonCodes: unique([
         ...trackingState.reasonCodes,
-        ...(preemptedMint ? ["ROLLING_TRACKER_PREEMPTED_WEAK_SLOT"] : [])
+        ...selectionReasonCodes,
+        ...plannedDecision.reasonCodes
       ]),
       score,
       mode: this.config.mode,
       trackingState,
+      schedulerDecision,
       paperOnly: true,
       dataOnly: true,
       tradingDisabled: true
@@ -517,15 +711,77 @@ export class MeteredLaunchDataService {
   }
 
   evaluateCurrentCandidates(limit = 50): MeteredLaunchDataDecision[] {
-    return (this.getLaunchCandidates?.(limit) ?? []).map((candidate) =>
+    return this.getCurrentCandidatesForScheduling(limit).map((candidate) =>
       this.evaluateNewLaunchCandidate(candidate, { dryRun: true })
     );
   }
 
   trackCurrentCandidates(limit = 50): MeteredLaunchDataDecision[] {
-    return (this.getLaunchCandidates?.(limit) ?? []).map((candidate) =>
+    return this.getCurrentCandidatesForScheduling(limit).map((candidate) =>
       this.evaluateNewLaunchCandidate(candidate)
     );
+  }
+
+  getSchedulerStatus(): MeteredLaunchDataSchedulerStatus {
+    this.pruneSchedulerQueue();
+    const maxConcurrentMints = this.getMaxConcurrentMints();
+    const protection = this.getProtectionSummary();
+    const effectiveMaxProtectedMints = Math.min(
+      this.config.maxProtectedMints,
+      Math.max(
+        0,
+        maxConcurrentMints -
+          Math.min(maxConcurrentMints, this.config.reservedNewestSlots)
+      )
+    );
+
+    return {
+      implemented: true,
+      enabled: this.config.rollingTrackerEnabled,
+      active:
+        this.config.rollingTrackerEnabled &&
+        this.getStartBlockers().length === 0 &&
+        !this.runtimeStopped,
+      reservedNewestSlots: Math.min(
+        maxConcurrentMints,
+        this.config.reservedNewestSlots
+      ),
+      configuredMaxProtectedMints: this.config.maxProtectedMints,
+      effectiveMaxProtectedMints,
+      absoluteProtectedMintCount: protection.absolute,
+      softProtectedMintCount: Math.min(
+        protection.soft,
+        Math.max(0, effectiveMaxProtectedMints - protection.absolute)
+      ),
+      queueLimit: this.config.schedulerQueueLimit,
+      queueMaxAgeMs: this.config.schedulerQueueMaxAgeMs,
+      queuedCandidateCount: this.schedulerQueue.size,
+      queuedMints: Array.from(this.schedulerQueue.keys()),
+      evaluationCount: this.schedulerEvaluationCount,
+      trackingMutationCount: this.schedulerMutationCount,
+      preemptionCount: this.schedulerPreemptionCount,
+      queuedCount: this.schedulerQueuedCount,
+      droppedCount: this.schedulerDroppedCount,
+      lastDecision: this.recentSchedulerDecisions[0] ?? null,
+      reasonCodes: unique([
+        "ROLLING_NEWEST_SCHEDULER_IMPLEMENTED",
+        "SCHEDULER_NEWEST_ALWAYS_CONSIDERED",
+        ...(this.config.rollingTrackerEnabled
+          ? ["ROLLING_NEWEST_SCHEDULER_ENABLED"]
+          : ["ROLLING_NEWEST_SCHEDULER_DISABLED"]),
+        ...(this.schedulerQueue.size > 0 ? ["SCHEDULER_QUEUE_PENDING"] : []),
+        "PAPER_ONLY",
+        "TRADING_DISABLED"
+      ]),
+      paperOnly: true,
+      dataOnly: true,
+      tradingDisabled: true
+    };
+  }
+
+  getSchedulerDecisions(limit = 50): MeteredLaunchDataSchedulerDecision[] {
+    const parsedLimit = Math.max(1, Math.min(1000, Math.floor(limit)));
+    return this.recentSchedulerDecisions.slice(0, parsedLimit);
   }
 
   trackMint(mint: string, reason = "manual"): MeteredLaunchDataTrackedMint {
@@ -605,6 +861,7 @@ export class MeteredLaunchDataService {
     };
 
     this.tracked.set(normalizedMint, state);
+    this.schedulerQueue.delete(normalizedMint);
     this.scheduleInitialReview(normalizedMint);
     this.scheduleStaleNoTradesReview(normalizedMint);
     this.persistSubscription(state);
@@ -613,7 +870,8 @@ export class MeteredLaunchDataService {
 
   untrackMint(
     mint: string,
-    reason = "manual_delete"
+    reason = "manual_delete",
+    options: { reconcileQueue?: boolean } = {}
   ): MeteredLaunchDataTrackedMint | null {
     const normalizedMint = mint.trim();
     const existing = this.tracked.get(normalizedMint);
@@ -647,6 +905,11 @@ export class MeteredLaunchDataService {
     this.lastStopReason = reason;
     this.tracked.set(normalizedMint, state);
     this.persistSubscription(state, subscription);
+
+    if (options.reconcileQueue !== false) {
+      this.reconcileSchedulerQueue();
+    }
+
     return this.toTrackedMint(state);
   }
 
@@ -698,8 +961,13 @@ export class MeteredLaunchDataService {
     this.recentTradeEvents.splice(100);
     this.persistSubscription(tracked);
 
-    if (tracked.eventCount >= this.config.maxEventsPerMint) {
-      this.untrackMint(event.mint, "max_events_per_mint");
+    const reachedPerMintCap =
+      tracked.eventCount >= this.config.maxEventsPerMint;
+
+    if (reachedPerMintCap) {
+      this.untrackMint(event.mint, "max_events_per_mint", {
+        reconcileQueue: false
+      });
     }
 
     if (this.totalEventsThisSession >= this.getMaxEventsPerSession()) {
@@ -710,6 +978,12 @@ export class MeteredLaunchDataService {
     if (this.getEstimatedCostSol() >= this.getMaxSessionCostSol()) {
       this.budgetReached = true;
       this.untrackAll("max_session_cost");
+    }
+
+    if (this.budgetReached) {
+      this.schedulerQueue.clear();
+    } else if (reachedPerMintCap) {
+      this.reconcileSchedulerQueue();
     }
 
     return this.getTrackedMint(event.mint) ?? undefined;
@@ -724,17 +998,9 @@ export class MeteredLaunchDataService {
     const capabilityConfigured = this.isCapabilityConfigured(dataWallet);
     const active =
       this.config.enabled && acknowledgedCost && !this.runtimeStopped;
-    const protectedMintCount = this.getTrackedMints().filter((mint) => {
-      const tracked = this.tracked.get(mint);
-
-      return (
-        tracked !== undefined &&
-        this.getTrackedMintProtectionReason(
-          tracked,
-          this.getLaunchCandidate?.(mint) ?? null
-        ) !== null
-      );
-    }).length;
+    const scheduler = this.getSchedulerStatus();
+    const protectedMintCount =
+      scheduler.absoluteProtectedMintCount + scheduler.softProtectedMintCount;
 
     return {
       enabled: this.config.enabled,
@@ -773,6 +1039,7 @@ export class MeteredLaunchDataService {
       maxConcurrentMints: this.getMaxConcurrentMints(),
       trackedMintCount: this.getTrackedMints().length,
       protectedMintCount,
+      scheduler,
       initialTrackMs: this.config.initialTrackMs,
       extendedTrackMs: this.config.extendedTrackMs,
       protectedMaxAgeMs: this.config.protectedMaxAgeMs,
@@ -914,58 +1181,279 @@ export class MeteredLaunchDataService {
     return candidate.snapshot.score >= this.config.minScoreToTrack;
   }
 
-  private preemptWeakestUnprotectedMint(
-    incomingCandidate: LaunchCandidateView
-  ): MeteredLaunchDataTrackedMint | null {
-    const candidates = this.getTrackedMints()
-      .map((mint) => {
-        const tracked = this.tracked.get(mint);
-        const candidate = this.getLaunchCandidate?.(mint) ?? null;
+  private planSchedulerDecision(
+    candidate: LaunchCandidateView
+  ): TrackingSchedulerDecision {
+    const now = new Date();
 
-        if (!tracked || tracked.status !== "tracking") {
-          return null;
-        }
+    return scheduleNewestCandidate({
+      candidate: {
+        mint: candidate.mint,
+        discoveredAt: candidate.discoveredAt,
+        observedAt: this.getSchedulerCandidateObservedAt(candidate),
+        score: candidate.snapshot.score,
+        phase: candidate.snapshot.phase,
+        hardRejected: this.isHardRejectedCandidate(candidate),
+        migration: candidate.eventType === "migration",
+        eligible: this.shouldTrackCandidate(candidate)
+      },
+      tracked: this.getSchedulerTrackedMints(),
+      policy: {
+        enabled: this.config.rollingTrackerEnabled,
+        maxConcurrentMints: this.getMaxConcurrentMints(),
+        reservedNewestSlots: this.config.reservedNewestSlots,
+        maxProtectedMints: this.config.maxProtectedMints,
+        queueLimit: this.config.schedulerQueueLimit,
+        queueMaxAgeMs: this.config.schedulerQueueMaxAgeMs,
+        staleNoTradesMs: this.config.staleNoTradesMs,
+        maxTrackingAgeMs: this.config.extendedTrackMs
+      },
+      now
+    });
+  }
 
-        return {
-          candidate,
-          protectedReason: this.getTrackedMintProtectionReason(
+  private getSchedulerTrackedMints(): TrackingSchedulerTrackedMint[] {
+    return this.getTrackedMints().flatMap((mint) => {
+      const tracked = this.tracked.get(mint);
+
+      if (!tracked || tracked.status !== "tracking") {
+        return [];
+      }
+
+      const candidate = this.getLaunchCandidate?.(mint) ?? null;
+
+      return [
+        {
+          mint,
+          subscribedAt: tracked.subscribedAt ?? new Date().toISOString(),
+          score: candidate?.snapshot.score ?? 0,
+          phase: candidate?.snapshot.phase ?? "unknown",
+          eventCount: tracked.eventCount,
+          latestTradeAt: tracked.latestTradeAt,
+          hardRejected:
+            candidate !== null && this.isHardRejectedCandidate(candidate),
+          protectionReason: this.getTrackedMintProtectionReason(
             tracked,
             candidate
-          ),
-          score: candidate?.snapshot.score ?? 0,
-          tracked
-        };
-      })
-      .filter(
-        (
-          value
-        ): value is {
-          candidate: LaunchCandidateView | null;
-          protectedReason: string | null;
-          score: number;
-          tracked: InternalTrackedMint;
-        } => value !== null
-      )
-      .filter((value) => value.protectedReason === null)
-      .sort((left, right) => left.score - right.score);
+          )
+        }
+      ];
+    });
+  }
 
-    const weakest = candidates[0];
+  private enqueueSchedulerCandidate(
+    candidate: LaunchCandidateView,
+    decision: TrackingSchedulerDecision
+  ): TrackingSchedulerDecision {
+    this.pruneSchedulerQueue();
+    this.schedulerQueue.delete(candidate.mint);
+    let rotatedOldest = false;
 
-    if (!weakest) {
-      return null;
+    while (
+      this.schedulerQueue.size >= this.config.schedulerQueueLimit &&
+      this.schedulerQueue.size > 0
+    ) {
+      const oldestMint = this.schedulerQueue.keys().next().value as
+        string | undefined;
+
+      if (!oldestMint) {
+        break;
+      }
+
+      this.schedulerQueue.delete(oldestMint);
+      rotatedOldest = true;
     }
 
-    if (incomingCandidate.snapshot.score < weakest.score) {
-      return null;
+    this.schedulerQueue.set(candidate.mint, {
+      candidate,
+      enqueuedAt: new Date().toISOString()
+    });
+
+    return rotatedOldest
+      ? {
+          ...decision,
+          reasonCodes: unique([
+            ...decision.reasonCodes,
+            "SCHEDULER_QUEUE_ROTATED_OLDEST"
+          ])
+        }
+      : decision;
+  }
+
+  private recordSchedulerDecision(
+    decision: TrackingSchedulerDecision,
+    executed: boolean,
+    options: { trackingMutation?: boolean } = {}
+  ): MeteredLaunchDataSchedulerDecision {
+    this.schedulerEvaluationCount += 1;
+
+    if (executed && decision.action === "preempt") {
+      this.schedulerPreemptionCount += 1;
     }
 
-    return this.untrackMint(weakest.tracked.mint, "rolling_preempt_weak_slot");
+    if (
+      executed &&
+      (decision.action === "preempt" ||
+        decision.action === "track" ||
+        options.trackingMutation === true)
+    ) {
+      this.schedulerMutationCount += 1;
+    }
+
+    if (executed && decision.action === "queue") {
+      this.schedulerQueuedCount += 1;
+    }
+
+    if (executed && decision.action === "drop") {
+      this.schedulerDroppedCount += 1;
+    }
+
+    const record: MeteredLaunchDataSchedulerDecision = {
+      ...decision,
+      decisionId: ++this.schedulerDecisionSequence,
+      decidedAt: new Date().toISOString(),
+      executed,
+      queueDepthAfter: this.schedulerQueue.size
+    };
+
+    this.recentSchedulerDecisions.unshift(record);
+    this.recentSchedulerDecisions.splice(100);
+    return record;
+  }
+
+  private pruneSchedulerQueue(nowMs = Date.now()): void {
+    for (const [mint, queued] of this.schedulerQueue) {
+      const enqueuedAtMs = Date.parse(queued.enqueuedAt);
+      const expired =
+        this.config.schedulerQueueMaxAgeMs > 0 &&
+        Number.isFinite(enqueuedAtMs) &&
+        nowMs - enqueuedAtMs > this.config.schedulerQueueMaxAgeMs;
+      const tracked = this.tracked.get(mint)?.status === "tracking";
+
+      if (expired || tracked) {
+        this.schedulerQueue.delete(mint);
+      }
+    }
+  }
+
+  private reconcileSchedulerQueue(): void {
+    if (this.schedulerReconciling || this.runtimeStopped) {
+      return;
+    }
+
+    this.pruneSchedulerQueue();
+    const queued = Array.from(this.schedulerQueue.values()).sort(
+      (left, right) =>
+        Date.parse(this.getSchedulerCandidateObservedAt(right.candidate)) -
+          Date.parse(this.getSchedulerCandidateObservedAt(left.candidate)) ||
+        Date.parse(right.enqueuedAt) - Date.parse(left.enqueuedAt)
+    )[0];
+
+    if (!queued) {
+      return;
+    }
+
+    const nonCapacityBlockers = this.getSubscriptionBlockers(
+      queued.candidate.mint
+    ).filter(
+      (blocker) => blocker !== "METERED_LAUNCH_DATA_MAX_CONCURRENT_REACHED"
+    );
+
+    if (nonCapacityBlockers.length > 0) {
+      return;
+    }
+
+    this.schedulerQueue.delete(queued.candidate.mint);
+    this.schedulerReconciling = true;
+
+    try {
+      this.evaluateNewLaunchCandidate(
+        this.getLaunchCandidate?.(queued.candidate.mint) ?? queued.candidate,
+        { fromQueue: true }
+      );
+    } finally {
+      this.schedulerReconciling = false;
+    }
+  }
+
+  private getProtectionSummary(): { absolute: number; soft: number } {
+    let absolute = 0;
+    let soft = 0;
+    const nowMs = Date.now();
+
+    for (const mint of this.getTrackedMints()) {
+      const tracked = this.tracked.get(mint);
+
+      if (!tracked) {
+        continue;
+      }
+
+      const candidate = this.getLaunchCandidate?.(mint) ?? null;
+      const subscribedAtMs = tracked.subscribedAt
+        ? Date.parse(tracked.subscribedAt)
+        : NaN;
+      const ageMs = Number.isFinite(subscribedAtMs)
+        ? Math.max(0, nowMs - subscribedAtMs)
+        : Number.POSITIVE_INFINITY;
+      const hardRejected =
+        candidate !== null && this.isHardRejectedCandidate(candidate);
+      const trackingAgeExpired =
+        this.config.extendedTrackMs > 0 && ageMs >= this.config.extendedTrackMs;
+      const staleNoTrades =
+        this.config.staleNoTradesMs > 0 &&
+        ageMs >= this.config.staleNoTradesMs &&
+        tracked.eventCount === 0;
+
+      if (hardRejected || trackingAgeExpired || staleNoTrades) {
+        continue;
+      }
+
+      const reason = this.getTrackedMintProtectionReason(tracked, candidate);
+
+      if (reason === "paper_position" || reason === "live_position") {
+        absolute += 1;
+      } else if (reason !== null) {
+        soft += 1;
+      }
+    }
+
+    return { absolute, soft };
+  }
+
+  private isHardRejectedCandidate(candidate: LaunchCandidateView): boolean {
+    return (
+      candidate.snapshot.phase === "rejected" ||
+      candidate.snapshot.blockers.includes("HARD_REJECT")
+    );
+  }
+
+  private getCurrentCandidatesForScheduling(
+    limit: number
+  ): LaunchCandidateView[] {
+    return [...(this.getLaunchCandidates?.(limit) ?? [])].sort(
+      (left, right) =>
+        Date.parse(this.getSchedulerCandidateObservedAt(left)) -
+          Date.parse(this.getSchedulerCandidateObservedAt(right)) ||
+        left.mint.localeCompare(right.mint)
+    );
+  }
+
+  private getSchedulerCandidateObservedAt(
+    candidate: LaunchCandidateView
+  ): string {
+    return candidate.eventType === "migration"
+      ? candidate.latestEventAt
+      : candidate.discoveredAt;
   }
 
   private getTrackedMintProtectionReason(
     tracked: InternalTrackedMint,
     candidate: LaunchCandidateView | null
-  ): string | null {
+  ): TrackingProtectionReason | null {
+    if (this.hasOpenLivePosition?.(tracked.mint) === true) {
+      return "live_position";
+    }
+
     if (this.hasOpenPaperPosition?.(tracked.mint) === true) {
       return "paper_position";
     }
@@ -978,12 +1466,11 @@ export class MeteredLaunchDataService {
       : Number.POSITIVE_INFINITY;
 
     if (
+      candidate?.eventType === "migration" &&
       Number.isFinite(ageMs) &&
-      ageMs <= this.config.protectedMaxAgeMs &&
-      candidate?.snapshot.score !== undefined &&
-      candidate.snapshot.score >= this.config.minScoreToProtect
+      ageMs <= this.config.protectedMaxAgeMs
     ) {
-      return "protected_score";
+      return "migration";
     }
 
     if (
@@ -998,6 +1485,15 @@ export class MeteredLaunchDataService {
       candidate.snapshot.score >= this.config.minScoreToProtect
     ) {
       return "hot";
+    }
+
+    if (
+      Number.isFinite(ageMs) &&
+      ageMs <= this.config.protectedMaxAgeMs &&
+      candidate?.snapshot.score !== undefined &&
+      candidate.snapshot.score >= this.config.minScoreToProtect
+    ) {
+      return "protected_score";
     }
 
     return null;
@@ -1149,7 +1645,7 @@ export class MeteredLaunchDataService {
 
   private untrackAll(reason: string): void {
     for (const mint of this.getTrackedMints()) {
-      this.untrackMint(mint, reason);
+      this.untrackMint(mint, reason, { reconcileQueue: false });
     }
   }
 

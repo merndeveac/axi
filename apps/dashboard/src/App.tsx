@@ -355,6 +355,22 @@ type MeteredLaunchDataStatus = {
   dataWalletEstimatedEventsRemaining: number | null;
   maxConcurrentMints: number;
   trackedMintCount: number;
+  scheduler: {
+    implemented: true;
+    enabled: boolean;
+    active: boolean;
+    reservedNewestSlots: number;
+    effectiveMaxProtectedMints: number;
+    queuedCandidateCount: number;
+    evaluationCount: number;
+    trackingMutationCount: number;
+    preemptionCount: number;
+    lastDecision: {
+      action: "track" | "keep" | "preempt" | "queue" | "drop";
+      incomingMint: string;
+      decidedAt: string;
+    } | null;
+  };
   maxEventsPerMint: number;
   maxEventsPerSession: number;
   maxUiSessionCostSol?: number;
@@ -535,6 +551,7 @@ type RuntimeContract = {
     discoveryAndLaunchScoring: string;
     subscriptionPolicy: string;
     subscriptionTransport: string;
+    trackingScheduler: string;
     trackingCommandRoute: string;
   };
   configuration: {
@@ -583,7 +600,7 @@ type RuntimeCapacityReport = {
     initialObservationMs: number;
     extendedObservationMs: number;
     newestAlwaysConsidered: true;
-    schedulerMutationApplied: false;
+    schedulerMutationApplied: boolean;
   };
   reasonCodes: string[];
   paperOnly: true;
@@ -2084,6 +2101,25 @@ function HeaderControlCenter({
             runtimeCapacity
               ? `required/newest · ${runtimeCapacity.slots.protectedMintCount} protected`
               : "scheduler unchanged"
+          }
+        />
+        <HeaderMetric
+          label="Scheduler"
+          value={
+            meteredLaunchDataStatus
+              ? meteredLaunchDataStatus.scheduler.active
+                ? "ACTIVE"
+                : !meteredLaunchDataStatus.scheduler.enabled
+                  ? "OFF"
+                  : meteredLaunchDataStatus.ready
+                    ? "READY"
+                    : "BLOCKED"
+              : "—"
+          }
+          detail={
+            meteredLaunchDataStatus
+              ? `${meteredLaunchDataStatus.scheduler.queuedCandidateCount} queued · ${meteredLaunchDataStatus.scheduler.preemptionCount} preempted`
+              : "policy checking"
           }
         />
         <HeaderMetric

@@ -37,7 +37,13 @@ describe("runtime capacity report", () => {
       runtimeSessionId: "runtime-capacity-test",
       runtimeStartedAt: "2026-07-16T12:00:50.000Z",
       launchDiscoveryTimestamps: ["2026-07-16T12:00:55.000Z"],
-      meteredStatus,
+      meteredStatus: {
+        ...meteredStatus,
+        scheduler: {
+          ...meteredStatus.scheduler,
+          trackingMutationCount: 1
+        }
+      },
       meteredCost,
       rateObservation: { ...rateObservation, eventCount: 10 },
       now
@@ -46,6 +52,7 @@ describe("runtime capacity report", () => {
     expect(report.observation.windowMs).toBe(10_000);
     expect(report.observation.launchRatePerMinute).toBe(6);
     expect(report.observation.observedEventsPerSecond).toBe(1);
+    expect(report.policy.schedulerMutationApplied).toBe(true);
   });
 });
 
@@ -76,6 +83,30 @@ const meteredStatus: MeteredLaunchDataStatus = {
   maxConcurrentMints: 3,
   trackedMintCount: 2,
   protectedMintCount: 0,
+  scheduler: {
+    implemented: true,
+    enabled: true,
+    active: false,
+    reservedNewestSlots: 1,
+    configuredMaxProtectedMints: 2,
+    effectiveMaxProtectedMints: 2,
+    absoluteProtectedMintCount: 0,
+    softProtectedMintCount: 0,
+    queueLimit: 50,
+    queueMaxAgeMs: 30_000,
+    queuedCandidateCount: 0,
+    queuedMints: [],
+    evaluationCount: 0,
+    trackingMutationCount: 0,
+    preemptionCount: 0,
+    queuedCount: 0,
+    droppedCount: 0,
+    lastDecision: null,
+    reasonCodes: [],
+    paperOnly: true,
+    dataOnly: true,
+    tradingDisabled: true
+  },
   initialTrackMs: 30_000,
   extendedTrackMs: 300_000,
   protectedMaxAgeMs: 900_000,
