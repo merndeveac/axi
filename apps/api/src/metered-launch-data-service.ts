@@ -129,6 +129,13 @@ export type MeteredLaunchDataStatus = {
   dataWalletEstimatedEventsRemaining: number | null;
   maxConcurrentMints: number;
   trackedMintCount: number;
+  protectedMintCount: number;
+  initialTrackMs: number;
+  extendedTrackMs: number;
+  protectedMaxAgeMs: number;
+  staleNoTradesMs: number;
+  projectRateWindowMs: number;
+  eventCostSolPer10000: number;
   maxEventsPerMint: number;
   maxEventsPerSession: number;
   maxUiSessionCostSol: number;
@@ -147,6 +154,12 @@ export type MeteredLaunchDataStatus = {
   paperOnly: true;
   dataOnly: true;
   tradingDisabled: true;
+};
+
+export type MeteredLaunchDataRateObservation = {
+  eventCount: number;
+  eventsPerSecond: number;
+  windowMs: number;
 };
 
 export type MeteredLaunchDataServiceOptions = {
@@ -711,6 +724,17 @@ export class MeteredLaunchDataService {
     const capabilityConfigured = this.isCapabilityConfigured(dataWallet);
     const active =
       this.config.enabled && acknowledgedCost && !this.runtimeStopped;
+    const protectedMintCount = this.getTrackedMints().filter((mint) => {
+      const tracked = this.tracked.get(mint);
+
+      return (
+        tracked !== undefined &&
+        this.getTrackedMintProtectionReason(
+          tracked,
+          this.getLaunchCandidate?.(mint) ?? null
+        ) !== null
+      );
+    }).length;
 
     return {
       enabled: this.config.enabled,
@@ -748,6 +772,13 @@ export class MeteredLaunchDataService {
       dataWalletEstimatedEventsRemaining: dataWallet.estimatedEventsRemaining,
       maxConcurrentMints: this.getMaxConcurrentMints(),
       trackedMintCount: this.getTrackedMints().length,
+      protectedMintCount,
+      initialTrackMs: this.config.initialTrackMs,
+      extendedTrackMs: this.config.extendedTrackMs,
+      protectedMaxAgeMs: this.config.protectedMaxAgeMs,
+      staleNoTradesMs: this.config.staleNoTradesMs,
+      projectRateWindowMs: this.config.projectRateWindowMs,
+      eventCostSolPer10000: this.config.eventCostSolPer10000,
       maxEventsPerMint: this.config.maxEventsPerMint,
       maxEventsPerSession: this.getMaxEventsPerSession(),
       maxUiSessionCostSol: this.config.maxUiSessionCostSol,
@@ -817,6 +848,21 @@ export class MeteredLaunchDataService {
 
   getRecentTradeEvents(): StoredMeteredLaunchDataEvent[] {
     return [...this.recentTradeEvents];
+  }
+
+  getRateObservation(nowMs = Date.now()): MeteredLaunchDataRateObservation {
+    this.pruneRateEvents(nowMs);
+
+    return {
+      eventCount: this.rateEventTimestamps.length,
+      eventsPerSecond:
+        this.config.projectRateWindowMs > 0
+          ? (this.rateEventTimestamps.length /
+              this.config.projectRateWindowMs) *
+            1_000
+          : 0,
+      windowMs: this.config.projectRateWindowMs
+    };
   }
 
   getReasonCodes(): string[] {

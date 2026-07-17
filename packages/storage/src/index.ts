@@ -290,6 +290,7 @@ export type StorageStats = {
   lightningTradePlanCount: number;
   runtimeSessionCount: number;
   operatorActionCount: number;
+  capacitySnapshotCount: number;
   pumpPortalWalletStatusSnapshotCount: number;
   riskSnapshotCount: number;
   candidateDecisionCount: number;
@@ -367,6 +368,33 @@ export type StoredOperatorAction = Omit<
 > & {
   id: number;
   safeParameters: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type CapacitySnapshotInput = {
+  snapshotId: string;
+  runtimeSessionId: string;
+  observationWindowMs: number;
+  launchCount: number;
+  launchRatePerMinute: number;
+  trackedMintCount: number;
+  protectedMintCount: number;
+  requiredInitialSlots: number;
+  availableNewestSlots: number;
+  initialCoverageRatio: number;
+  observedEventsPerSecond: number;
+  projectedHourlyEvents: number;
+  projectedHourlyCostSol: number;
+  reasonCodes: string[];
+  payload: unknown;
+  createdAt?: string;
+};
+
+export type StoredCapacitySnapshot = Omit<
+  CapacitySnapshotInput,
+  "createdAt"
+> & {
+  id: number;
   createdAt: string;
 };
 
@@ -1414,6 +1442,26 @@ type OperatorActionRow = {
   created_at: string;
 };
 
+type CapacitySnapshotRow = {
+  id: number;
+  snapshot_id: string;
+  runtime_session_id: string;
+  observation_window_ms: number;
+  launch_count: number;
+  launch_rate_per_minute: number;
+  tracked_mint_count: number;
+  protected_mint_count: number;
+  required_initial_slots: number;
+  available_newest_slots: number;
+  initial_coverage_ratio: number;
+  observed_events_per_second: number;
+  projected_hourly_events: number;
+  projected_hourly_cost_sol: number;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+};
+
 type PumpPortalWalletStatusSnapshotRow = {
   id: number;
   data_wallet_public_key: string | null;
@@ -2045,6 +2093,25 @@ const operatorActionInputSchema = z.object({
   safeParameters: z.object({}).catchall(z.unknown()).default({}),
   outcome: z.enum(["succeeded", "blocked", "failed"]),
   reasonCodes: z.array(z.string().min(1)),
+  createdAt: z.string().datetime().optional()
+});
+
+const capacitySnapshotInputSchema = z.object({
+  snapshotId: z.string().min(1),
+  runtimeSessionId: z.string().min(1),
+  observationWindowMs: z.number().positive(),
+  launchCount: z.number().int().nonnegative(),
+  launchRatePerMinute: z.number().nonnegative(),
+  trackedMintCount: z.number().int().nonnegative(),
+  protectedMintCount: z.number().int().nonnegative(),
+  requiredInitialSlots: z.number().nonnegative(),
+  availableNewestSlots: z.number().int().nonnegative(),
+  initialCoverageRatio: z.number().min(0).max(1),
+  observedEventsPerSecond: z.number().nonnegative(),
+  projectedHourlyEvents: z.number().nonnegative(),
+  projectedHourlyCostSol: z.number().nonnegative(),
+  reasonCodes: z.array(z.string().min(1)),
+  payload: z.unknown(),
   createdAt: z.string().datetime().optional()
 });
 
@@ -4539,6 +4606,81 @@ export function listOperatorActions(limit = 50): StoredOperatorAction[] {
   return rows.map(mapOperatorActionRow);
 }
 
+export function saveCapacitySnapshot(
+  snapshot: CapacitySnapshotInput
+): StoredCapacitySnapshot {
+  const parsed = capacitySnapshotInputSchema.parse(snapshot);
+  const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const payload = sanitizeStoragePayload(parsed.payload);
+  const db = getDb();
+
+  db.prepare(
+    `insert into capacity_snapshots (
+      snapshot_id,
+      runtime_session_id,
+      observation_window_ms,
+      launch_count,
+      launch_rate_per_minute,
+      tracked_mint_count,
+      protected_mint_count,
+      required_initial_slots,
+      available_newest_slots,
+      initial_coverage_ratio,
+      observed_events_per_second,
+      projected_hourly_events,
+      projected_hourly_cost_sol,
+      reason_codes_json,
+      payload_json,
+      created_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    on conflict(snapshot_id) do nothing`
+  ).run(
+    parsed.snapshotId,
+    parsed.runtimeSessionId,
+    parsed.observationWindowMs,
+    parsed.launchCount,
+    parsed.launchRatePerMinute,
+    parsed.trackedMintCount,
+    parsed.protectedMintCount,
+    parsed.requiredInitialSlots,
+    parsed.availableNewestSlots,
+    parsed.initialCoverageRatio,
+    parsed.observedEventsPerSecond,
+    parsed.projectedHourlyEvents,
+    parsed.projectedHourlyCostSol,
+    stringifyJson(parsed.reasonCodes),
+    stringifyJson(payload),
+    createdAt
+  );
+
+  const row = db
+    .prepare("select * from capacity_snapshots where snapshot_id = ?")
+    .get(parsed.snapshotId) as CapacitySnapshotRow | undefined;
+
+  if (!row) {
+    throw new Error(
+      `Capacity snapshot ${parsed.snapshotId} was not persisted.`
+    );
+  }
+
+  return mapCapacitySnapshotRow(row);
+}
+
+export function listCapacitySnapshots(limit = 50): StoredCapacitySnapshot[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from capacity_snapshots
+       order by datetime(created_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as CapacitySnapshotRow[];
+
+  return rows.map(mapCapacitySnapshotRow);
+}
+
 export function listLightningTradePlansByMint(
   mint: string,
   limit = 50
@@ -5687,6 +5829,7 @@ export function getStorageStats(): StorageStats {
     lightningTradePlanCount: countRows(db, "lightning_trade_plans"),
     runtimeSessionCount: countRows(db, "runtime_sessions"),
     operatorActionCount: countRows(db, "operator_actions"),
+    capacitySnapshotCount: countRows(db, "capacity_snapshots"),
     pumpPortalWalletStatusSnapshotCount: countRows(
       db,
       "pumpportal_wallet_status_snapshots"
@@ -6676,6 +6819,41 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(15, "runtime_control_audit", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 16)) {
+    db.exec(`
+      create table if not exists capacity_snapshots (
+        id integer primary key autoincrement,
+        snapshot_id text not null unique,
+        runtime_session_id text not null,
+        observation_window_ms real not null,
+        launch_count integer not null,
+        launch_rate_per_minute real not null,
+        tracked_mint_count integer not null,
+        protected_mint_count integer not null,
+        required_initial_slots real not null,
+        available_newest_slots integer not null,
+        initial_coverage_ratio real not null,
+        observed_events_per_second real not null,
+        projected_hourly_events real not null,
+        projected_hourly_cost_sol real not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_capacity_snapshots_created_at
+        on capacity_snapshots(created_at);
+
+      create index if not exists idx_capacity_snapshots_runtime_session
+        on capacity_snapshots(runtime_session_id);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(16, "capacity_snapshots", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -7439,6 +7617,30 @@ function mapOperatorActionRow(row: OperatorActionRow): StoredOperatorAction {
     >,
     outcome: row.outcome,
     reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    createdAt: row.created_at
+  };
+}
+
+function mapCapacitySnapshotRow(
+  row: CapacitySnapshotRow
+): StoredCapacitySnapshot {
+  return {
+    id: row.id,
+    snapshotId: row.snapshot_id,
+    runtimeSessionId: row.runtime_session_id,
+    observationWindowMs: row.observation_window_ms,
+    launchCount: row.launch_count,
+    launchRatePerMinute: row.launch_rate_per_minute,
+    trackedMintCount: row.tracked_mint_count,
+    protectedMintCount: row.protected_mint_count,
+    requiredInitialSlots: row.required_initial_slots,
+    availableNewestSlots: row.available_newest_slots,
+    initialCoverageRatio: row.initial_coverage_ratio,
+    observedEventsPerSecond: row.observed_events_per_second,
+    projectedHourlyEvents: row.projected_hourly_events,
+    projectedHourlyCostSol: row.projected_hourly_cost_sol,
+    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    payload: JSON.parse(row.payload_json),
     createdAt: row.created_at
   };
 }

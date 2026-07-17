@@ -1507,6 +1507,55 @@ describe("@axi/api", () => {
     expect(body.safety.tradingDisabled).toBe(true);
   });
 
+  it("reports capacity without changing scheduler policy and persists explicit snapshots", async () => {
+    server = createTestServer();
+
+    const reportResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/capacity"
+    });
+    const report = reportResponse.json() as {
+      observation: { launchCount: number; windowMs: number };
+      policy: { schedulerMutationApplied: boolean };
+      scenarios: unknown[];
+      slots: {
+        concurrentSlots: number;
+        initialCoverageRatio: number;
+      };
+      tradingDisabled: boolean;
+    };
+
+    expect(reportResponse.statusCode).toBe(200);
+    expect(report.observation.windowMs).toBeGreaterThan(0);
+    expect(report.slots.concurrentSlots).toBe(3);
+    expect(report.slots.initialCoverageRatio).toBeGreaterThanOrEqual(0);
+    expect(report.scenarios).toHaveLength(9);
+    expect(report.policy.schedulerMutationApplied).toBe(false);
+    expect(report.tradingDisabled).toBe(true);
+
+    const snapshotResponse = await server.app.inject({
+      method: "POST",
+      url: "/runtime/capacity/snapshot"
+    });
+    expect(snapshotResponse.statusCode).toBe(200);
+
+    const snapshotsResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/capacity/snapshots"
+    });
+    const snapshots = snapshotsResponse.json() as {
+      snapshots: Array<{
+        runtimeSessionId: string;
+        initialCoverageRatio: number;
+      }>;
+    };
+
+    expect(snapshots.snapshots).toHaveLength(1);
+    expect(snapshots.snapshots[0]?.initialCoverageRatio).toBe(
+      report.slots.initialCoverageRatio
+    );
+  });
+
   it("a new runtime session never restores a previous paid-data ACK", async () => {
     server = createMeteredLaunchDataTestServer({
       acknowledgedCost: false,

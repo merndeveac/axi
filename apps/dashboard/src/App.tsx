@@ -531,6 +531,7 @@ type RuntimeContract = {
     tradingDisabled: boolean;
   };
   ownership: {
+    capacityModel: string;
     discoveryAndLaunchScoring: string;
     subscriptionPolicy: string;
     subscriptionTransport: string;
@@ -545,6 +546,49 @@ type RuntimeContract = {
       actual: number;
     }>;
   };
+};
+
+type RuntimeCapacityReport = {
+  generatedAt: string;
+  observation: {
+    windowMs: number;
+    launchCount: number;
+    launchRatePerMinute: number;
+    launchConfidence: "none" | "low" | "medium" | "high";
+    tradeEventCount: number;
+    observedEventsPerSecond: number;
+    eventRateConfidence: "none" | "low" | "medium" | "high";
+  };
+  slots: {
+    concurrentSlots: number;
+    trackedMintCount: number;
+    protectedMintCount: number;
+    availableNewestSlots: number;
+    requiredInitialSlotsRoundedUp: number;
+    minimumTotalSlotsForFullInitialCoverage: number;
+    maximumFullyObservedLaunchesPerMinute: number;
+    initialCoverageRatio: number;
+    allLaunchesCanReceiveInitialWindow: boolean;
+  };
+  activity: {
+    projectedEventsPerSecondAtCapacity: number;
+    projectedHourlyEventsAtCapacity: number;
+    projectedHourlyCostSolAtCapacity: number;
+  };
+  budget: {
+    effectiveRemainingEvents: number;
+    bindingConstraint: "none" | "concurrency" | "event_cap" | "cost_cap";
+  };
+  policy: {
+    initialObservationMs: number;
+    extendedObservationMs: number;
+    newestAlwaysConsidered: true;
+    schedulerMutationApplied: false;
+  };
+  reasonCodes: string[];
+  paperOnly: true;
+  dataOnly: true;
+  tradingDisabled: true;
 };
 
 type MeteredLaunchDataTrackedMint = {
@@ -1134,6 +1178,8 @@ export function App() {
     useState<RuntimeControlStatus | null>(null);
   const [runtimeContract, setRuntimeContract] =
     useState<RuntimeContract | null>(null);
+  const [runtimeCapacity, setRuntimeCapacity] =
+    useState<RuntimeCapacityReport | null>(null);
   const [runtimeActionStatus, setRuntimeActionStatus] =
     useState<string>("ready");
   const [liveCardEnrichmentStatus, setLiveCardEnrichmentStatus] =
@@ -1271,6 +1317,7 @@ export function App() {
           nextMeteredLaunchDataTracked,
           nextRuntimeControlStatus,
           nextRuntimeContract,
+          nextRuntimeCapacity,
           nextActualTrades,
           nextLiveCardEnrichmentStatus,
           nextMarketStatus,
@@ -1328,6 +1375,7 @@ export function App() {
           ),
           fetchJson<RuntimeControlStatus>("/runtime/status"),
           fetchJson<RuntimeContract>("/runtime/contracts"),
+          fetchJson<RuntimeCapacityReport>("/runtime/capacity"),
           fetchJson<PumpPortalTradeRow[]>("/actual-data/trades?limit=10"),
           fetchJson<LiveCardEnrichmentStatus>("/enrichment/status"),
           fetchJson<MarketStatus>("/market/status"),
@@ -1374,6 +1422,7 @@ export function App() {
           setMeteredLaunchDataTracked(nextMeteredLaunchDataTracked.current);
           setRuntimeControlStatus(nextRuntimeControlStatus);
           setRuntimeContract(nextRuntimeContract);
+          setRuntimeCapacity(nextRuntimeCapacity);
           setActualTrades(nextActualTrades);
           setLiveCardEnrichmentStatus(nextLiveCardEnrichmentStatus);
           setMarketStatus(nextMarketStatus);
@@ -1638,6 +1687,7 @@ export function App() {
         onToggleDiagnostics={() => setControlPanelOpen((open) => !open)}
         rippingLaunchCount={rippingLaunchCount}
         runtimeActionStatus={runtimeActionStatus}
+        runtimeCapacity={runtimeCapacity}
         runtimeContract={runtimeContract}
         runtimeControlStatus={runtimeControlStatus}
         runRuntimeAction={runRuntimeAction}
@@ -1777,6 +1827,7 @@ function HeaderControlCenter({
   onToggleDiagnostics,
   rippingLaunchCount,
   runtimeActionStatus,
+  runtimeCapacity,
   runtimeContract,
   runtimeControlStatus,
   runRuntimeAction,
@@ -1804,6 +1855,7 @@ function HeaderControlCenter({
   onToggleDiagnostics: () => void;
   rippingLaunchCount: number;
   runtimeActionStatus: string;
+  runtimeCapacity: RuntimeCapacityReport | null;
   runtimeContract: RuntimeContract | null;
   runtimeControlStatus: RuntimeControlStatus | null;
   runRuntimeAction: (
@@ -1850,6 +1902,13 @@ function HeaderControlCenter({
     !runtimeControlStatus?.liveDiscovery.connecting;
   const projectedCostPerHour =
     runtimeControlStatus?.usage.projectedCostPerHourSol ?? null;
+  const capacityHasLaunchSample =
+    (runtimeCapacity?.observation.launchCount ?? 0) > 0;
+  const capacityCoverageValue = runtimeCapacity
+    ? capacityHasLaunchSample
+      ? `${Math.round(runtimeCapacity.slots.initialCoverageRatio * 100)}%`
+      : "NO SAMPLE"
+    : "—";
   const latestMeteredAt =
     meteredPriceAction?.latestEventAt ??
     runtimeControlStatus?.meteredLaunchData.latestEventAt ??
@@ -2004,6 +2063,41 @@ function HeaderControlCenter({
           label="Tracked"
           value={formatCompactNumber(trackedCardCount)}
           detail="metered"
+        />
+        <HeaderMetric
+          label="Coverage"
+          value={capacityCoverageValue}
+          detail={
+            runtimeCapacity
+              ? `${formatCompactNumber(runtimeCapacity.observation.launchRatePerMinute)}/min · ${runtimeCapacity.observation.launchConfidence}`
+              : "model checking"
+          }
+        />
+        <HeaderMetric
+          label="Slots"
+          value={
+            runtimeCapacity
+              ? `${runtimeCapacity.slots.requiredInitialSlotsRoundedUp}/${runtimeCapacity.slots.availableNewestSlots}`
+              : "—"
+          }
+          detail={
+            runtimeCapacity
+              ? `required/newest · ${runtimeCapacity.slots.protectedMintCount} protected`
+              : "scheduler unchanged"
+          }
+        />
+        <HeaderMetric
+          label="Run rate"
+          value={
+            runtimeCapacity
+              ? `${formatCompactNumber(runtimeCapacity.activity.projectedEventsPerSecondAtCapacity)}/s`
+              : "—"
+          }
+          detail={
+            runtimeCapacity
+              ? `${formatSol(runtimeCapacity.activity.projectedHourlyCostSolAtCapacity)}/h projected`
+              : "observed events"
+          }
         />
         <HeaderMetric
           label="Feed"

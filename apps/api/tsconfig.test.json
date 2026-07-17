@@ -6,6 +6,7 @@
     "rootDir": ".",
     "baseUrl": ".",
     "paths": {
+      "@axi/capacity-model": ["../../packages/capacity-model/dist/index.d.ts"],
       "@axi/candidates": ["../../packages/candidates/dist/index.d.ts"],
       "@axi/chain-events": ["../../packages/chain-events/dist/index.d.ts"],
       "@axi/event-bus": ["../../packages/event-bus/dist/index.d.ts"],

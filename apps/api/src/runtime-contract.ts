@@ -59,6 +59,7 @@ export function createRuntimeContract(input: {
       subscriptionPolicy: "MeteredLaunchDataService",
       providerConnection: "PumpPortalFeedProvider",
       rollingMetrics: "@axi/metrics",
+      capacityModel: "@axi/capacity-model",
       paperPortfolio: "@axi/paper-portfolio",
       trackingCommandRoute: "/metered-launch-data/track"
     },
@@ -79,6 +80,11 @@ export function createRuntimeContract(input: {
       expected: safeMeteredRuntimeDefaults,
       drift,
       driftDetected: drift.length > 0
+    },
+    roadmap: {
+      coverageCapacityInstrumentation: "implemented",
+      rollingNewestTokenScheduler: "not_implemented",
+      schedulerMutationApplied: false
     },
     deprecatedMutationRoutes: [
       "/actual-data/subscribe",

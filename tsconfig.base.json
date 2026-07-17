@@ -19,6 +19,7 @@
     "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
+      "@axi/capacity-model": ["packages/capacity-model/src/index.ts"],
       "@axi/candidates": ["packages/candidates/src/index.ts"],
       "@axi/chain-events": ["packages/chain-events/src/index.ts"],
       "@axi/event-bus": ["packages/event-bus/src/index.ts"],

@@ -56,6 +56,9 @@ importers:
       '@axi/candidates':
         specifier: workspace:*
         version: link:../../packages/candidates
+      '@axi/capacity-model':
+        specifier: workspace:*
+        version: link:../../packages/capacity-model
       '@axi/chain-events':
         specifier: workspace:*
         version: link:../../packages/chain-events
@@ -200,6 +203,8 @@ importers:
       '@axi/shared':
         specifier: workspace:*
         version: link:../shared
+
+  packages/capacity-model: {}
 
   packages/chain-events:
     dependencies:

@@ -39,6 +39,7 @@
   },
   "dependencies": {
     "@axi/candidates": "workspace:*",
+    "@axi/capacity-model": "workspace:*",
     "@axi/chain-events": "workspace:*",
     "@axi/data-feeds": "workspace:*",
     "@axi/event-bus": "workspace:*",

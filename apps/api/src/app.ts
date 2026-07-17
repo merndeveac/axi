@@ -73,12 +73,14 @@ import {
   getStorageStats,
   initStorage,
   listChainVerifications,
+  listCapacitySnapshots,
   saveLiveFeedEvent,
   saveLightningTradePlan,
   listPaperOrders,
   listPaperPositions,
   listRecentSignals,
   saveCandidateDecision,
+  saveCapacitySnapshot,
   saveChainVerification,
   saveFeedEvent,
   savePaperOrder,
@@ -218,6 +220,10 @@ import {
   safeMeteredRuntimeDefaults
 } from "./runtime-contract";
 import { createTrackingCommandRouter } from "./tracking-command-router";
+import {
+  createRuntimeCapacityReport,
+  type RuntimeCapacityReport
+} from "./runtime-capacity";
 import {
   createIndexerAdapter,
   type IndexerAdapter,
@@ -1690,6 +1696,27 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     persistRuntimeSession({ stopReason: reason });
   }
 
+  function getRuntimeCapacityReport(now = new Date()): RuntimeCapacityReport {
+    const meteredStatus = meteredLaunchData.getStatus();
+
+    return createRuntimeCapacityReport({
+      runtimeSessionId,
+      runtimeStartedAt: runtimeSessionStartedAt,
+      launchDiscoveryTimestamps: launchScanner
+        .getCandidates(1_000)
+        .filter(
+          (candidate) =>
+            candidate.eventType === "new_token" ||
+            candidate.eventType === "migration"
+        )
+        .map((candidate) => candidate.discoveredAt),
+      meteredStatus,
+      meteredCost: meteredLaunchData.getSessionCost(),
+      rateObservation: meteredLaunchData.getRateObservation(now.getTime()),
+      now
+    });
+  }
+
   persistRuntimeSession();
   const lightningReadiness = createLightningReadinessService({
     config: createLightningReadinessConfig(options.lightning),
@@ -1990,6 +2017,49 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       runtimeSessionId
     })
   );
+
+  app.get("/runtime/capacity", async () => getRuntimeCapacityReport());
+
+  app.post("/runtime/capacity/snapshot", async () => {
+    const report = getRuntimeCapacityReport();
+    const snapshot = saveCapacitySnapshot({
+      snapshotId: `${runtimeSessionId}:${randomUUID()}`,
+      runtimeSessionId,
+      observationWindowMs: report.observation.windowMs,
+      launchCount: report.observation.launchCount,
+      launchRatePerMinute: report.observation.launchRatePerMinute,
+      trackedMintCount: report.slots.trackedMintCount,
+      protectedMintCount: report.slots.protectedMintCount,
+      requiredInitialSlots: report.slots.requiredInitialSlots,
+      availableNewestSlots: report.slots.availableNewestSlots,
+      initialCoverageRatio: report.slots.initialCoverageRatio,
+      observedEventsPerSecond: report.observation.observedEventsPerSecond,
+      projectedHourlyEvents: report.activity.projectedHourlyEventsAtCapacity,
+      projectedHourlyCostSol: report.activity.projectedHourlyCostSolAtCapacity,
+      reasonCodes: report.reasonCodes,
+      payload: report,
+      createdAt: report.generatedAt
+    });
+
+    return {
+      report,
+      snapshot,
+      paperOnly: true,
+      dataOnly: true,
+      tradingDisabled: true
+    };
+  });
+
+  app.get("/runtime/capacity/snapshots", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+
+    return {
+      snapshots: listCapacitySnapshots(query.limit),
+      paperOnly: true,
+      dataOnly: true,
+      tradingDisabled: true
+    };
+  });
 
   app.get("/runtime/operator-actions", async (request) => {
     const query = limitQuerySchema.parse(request.query);

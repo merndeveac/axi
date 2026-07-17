@@ -392,6 +392,36 @@ local machine and, when a browser sends an Origin header, from
 belongs to one process session and is cleared by stop, shutdown, budget failure,
 or restart.
 
+### Coverage and capacity instrumentation
+
+`@axi/capacity-model` turns current-session observations into a deterministic
+coverage report without starting a feed or changing which mints are tracked.
+It combines the free discovery launch rate, metered message rate, configured
+initial observation window, concurrent slots, protected slots, and session
+caps. The dashboard reports observed initial-window coverage, required versus
+available newest-token slots, projected messages per second, and projected SOL
+cost per hour. An empty launch sample is shown as `NO SAMPLE`, not as full
+coverage.
+
+The model uses these relationships:
+
+```text
+required initial slots = launches/second * initial observation seconds
+coverage ratio = available newest slot-seconds / required slot-seconds
+projected SOL cost = projected messages * (0.01 SOL / 10,000 messages)
+```
+
+The scenario matrix evaluates launch intervals of 30, 10, and 5 seconds against
+quiet, average, and viral per-mint message rates. These are planning outputs
+only: `schedulerMutationApplied` remains `false`, and the existing rolling
+tracker policy is unchanged.
+
+Capacity endpoints:
+
+- `GET /runtime/capacity`
+- `POST /runtime/capacity/snapshot`
+- `GET /runtime/capacity/snapshots`
+
 Example `.env.local`:
 
 ```bash

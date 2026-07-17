@@ -56,6 +56,7 @@ import {
   getLaunchCandidate,
   initStorage,
   listCandidateDecisionsForReplay,
+  listCapacitySnapshots,
   listChainVerifications,
   listChainVerificationsForReplay,
   listChainTradeEvents,
@@ -100,6 +101,7 @@ import {
   listWatchPlans,
   listWatchPlansForReplay,
   saveCandidateDecision,
+  saveCapacitySnapshot,
   saveChainVerification,
   saveChainTradeEvent,
   saveChainTransactionEvent,
@@ -174,6 +176,7 @@ describe("@axi/storage", () => {
     expect(stats.lightningTradePlanCount).toBe(0);
     expect(stats.runtimeSessionCount).toBe(0);
     expect(stats.operatorActionCount).toBe(0);
+    expect(stats.capacitySnapshotCount).toBe(0);
     expect(stats.pumpPortalWalletStatusSnapshotCount).toBe(0);
     expect(stats.meteredLaunchDataSessionCount).toBe(0);
     expect(stats.meteredLaunchDataSubscriptionCount).toBe(0);
@@ -259,6 +262,46 @@ describe("@axi/storage", () => {
         operatorActionCount: 1
       })
     );
+  });
+
+  it("persists idempotent sanitized capacity snapshots", () => {
+    initStorage({ databasePath });
+    const input = {
+      snapshotId: "capacity-test:1",
+      runtimeSessionId: "runtime-test",
+      observationWindowMs: 60_000,
+      launchCount: 6,
+      launchRatePerMinute: 6,
+      trackedMintCount: 3,
+      protectedMintCount: 1,
+      requiredInitialSlots: 3,
+      availableNewestSlots: 2,
+      initialCoverageRatio: 2 / 3,
+      observedEventsPerSecond: 2,
+      projectedHourlyEvents: 21_600,
+      projectedHourlyCostSol: 0.0216,
+      reasonCodes: ["INITIAL_COVERAGE_CAPACITY_SHORTFALL"],
+      payload: {
+        apiKey: "must-not-persist",
+        safe: true
+      },
+      createdAt: "2026-07-16T00:00:00.000Z"
+    };
+
+    saveCapacitySnapshot(input);
+    saveCapacitySnapshot(input);
+
+    expect(listCapacitySnapshots()).toEqual([
+      expect.objectContaining({
+        snapshotId: "capacity-test:1",
+        initialCoverageRatio: 2 / 3,
+        payload: {
+          apiKey: "[redacted]",
+          safe: true
+        }
+      })
+    ]);
+    expect(getStorageStats().capacitySnapshotCount).toBe(1);
   });
 
   it("signal can be saved and read", () => {
