@@ -139,6 +139,9 @@ type LaunchScannerOptions = {
   actualData: ActualDataService;
   config?: Partial<LaunchScannerConfig>;
   getRiskSnapshot?: (mint: string) => RiskSnapshot | undefined;
+  onSnapshotPersisted?:
+    | ((snapshot: LaunchMomentumSnapshot, snapshotId: number) => void)
+    | undefined;
   providerName: string;
 };
 
@@ -180,6 +183,9 @@ export class LaunchScannerService {
   private readonly config: LaunchScannerConfig;
   private readonly getRiskSnapshot:
     ((mint: string) => RiskSnapshot | undefined) | undefined;
+  private readonly onSnapshotPersisted:
+    | ((snapshot: LaunchMomentumSnapshot, snapshotId: number) => void)
+    | undefined;
   private readonly providerName: string;
   private scoreSnapshotCount = 0;
   private startedAt: string | null = null;
@@ -188,6 +194,7 @@ export class LaunchScannerService {
     this.actualData = options.actualData;
     this.config = createLaunchScannerConfig(options.config);
     this.getRiskSnapshot = options.getRiskSnapshot;
+    this.onSnapshotPersisted = options.onSnapshotPersisted;
     this.providerName = options.providerName;
   }
 
@@ -739,7 +746,7 @@ export class LaunchScannerService {
   }
 
   private persistSnapshot(snapshot: LaunchMomentumSnapshot): void {
-    saveLaunchScoreSnapshot({
+    const stored = saveLaunchScoreSnapshot({
       mint: snapshot.mint,
       score: snapshot.score,
       label: snapshot.label,
@@ -752,6 +759,7 @@ export class LaunchScannerService {
       evaluatedAt: snapshot.evaluatedAt,
       createdAt: snapshot.evaluatedAt
     });
+    this.onSnapshotPersisted?.(snapshot, stored.id);
     this.scoreSnapshotCount += 1;
   }
 

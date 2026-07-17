@@ -1,5 +1,5 @@
 {
-  "name": "@axi/storage",
+  "name": "@axi/session-capture",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -17,14 +17,6 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@axi/chain-events": "workspace:*",
-    "@axi/data-feeds": "workspace:*",
-    "@axi/market-data": "workspace:*",
-    "@axi/paper-portfolio": "workspace:*",
-    "@axi/session-capture": "workspace:*",
-    "@axi/shared": "workspace:*",
-    "@axi/token-identity": "workspace:*",
-    "@axi/watch-orchestrator": "workspace:*",
-    "zod": "^3.25.0"
+    "@axi/signal-calibration": "workspace:*"
   }
 }

@@ -113,6 +113,9 @@ importers:
       '@axi/scoring':
         specifier: workspace:*
         version: link:../../packages/scoring
+      '@axi/session-capture':
+        specifier: workspace:*
+        version: link:../../packages/session-capture
       '@axi/signal-calibration':
         specifier: workspace:*
         version: link:../../packages/signal-calibration
@@ -268,6 +271,12 @@ importers:
 
   packages/signal-calibration: {}
 
+  packages/session-capture:
+    dependencies:
+      '@axi/signal-calibration':
+        specifier: workspace:*
+        version: link:../signal-calibration
+
   packages/live-state:
     dependencies:
       '@axi/indexer-core':
@@ -376,6 +385,9 @@ importers:
       '@axi/paper-portfolio':
         specifier: workspace:*
         version: link:../paper-portfolio
+      '@axi/session-capture':
+        specifier: workspace:*
+        version: link:../session-capture
       '@axi/shared':
         specifier: workspace:*
         version: link:../shared

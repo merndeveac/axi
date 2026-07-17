@@ -74,8 +74,27 @@ Threshold selection uses training observations only; holdout metrics are
 reported separately. Minimum evidence gates apply to observations, positive
 outcomes, and signaled samples. Even a sufficient holdout result remains an
 inactive candidate pending operator review and captured real-session evidence.
-The next roadmap phase supplies session capture/export rather than fabricating
-outcomes from the current runtime.
+
+Real-session calibration evidence is captured by `@axi/session-capture` through
+an explicitly started local session. Each session is assigned exactly one
+`train` or `validation` partition and is pinned to the reference strategy
+version and capture policy. Eligible launch snapshots are sampled into immutable
+observations while the session is active. Outcomes are materialized only from
+persisted, non-synthetic one-second buckets at the configured forward horizon,
+with a bounded lag; missing buckets remain unavailable instead of carrying a
+stale price forward. JSON, JSONL, and CSV exports contain only completed
+forward observations and include a manifest that accounts for pending,
+unavailable, and excluded records (CSV embeds it in the leading
+`# axi-calibration-manifest=` comment).
+
+Capture is disabled by default, manual and local-only, paper/data-only, and has
+no path to automatic threshold activation or order creation. Exporting is
+read-only and never starts a data feed. A typical offline export is:
+
+```bash
+pnpm --filter @axi/api calibration:export -- --list
+pnpm --filter @axi/api calibration:export -- --session <capture-session-id> --format jsonl
+```
 
 Launch trade tracking uses PumpPortal `subscribeTokenTrade` only for selected
 mints, through the existing one-WebSocket PumpPortal provider and the metered
@@ -657,6 +676,14 @@ Indexer endpoints:
 - `GET /runtime/derivative-strength`
 - `GET /runtime/signal-calibration`
 - `POST /runtime/signal-calibration/evaluate`
+- `GET /runtime/session-capture`
+- `POST /runtime/session-capture/start`
+- `POST /runtime/session-capture/stop`
+- `GET /runtime/session-capture/sessions`
+- `GET /runtime/session-capture/sessions/:sessionId`
+- `GET /runtime/session-capture/sessions/:sessionId/observations`
+- `POST /runtime/session-capture/sessions/:sessionId/materialize`
+- `GET /runtime/session-capture/sessions/:sessionId/export?format=json|jsonl|csv`
 - `GET /indexer/stream/status`
 - `GET /indexer/stream/real-readiness`
 - `GET /indexer/stream/config`

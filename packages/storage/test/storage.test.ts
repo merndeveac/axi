@@ -13,6 +13,12 @@ import type {
   OverlaySignal,
   RiskSnapshot
 } from "@axi/shared";
+import {
+  createCalibrationCaptureSession,
+  createCapturedSignalObservation,
+  materializeCapturedSignalOutcome,
+  stopCalibrationCaptureSession
+} from "@axi/session-capture";
 import { normalizePumpPortalIdentity } from "@axi/token-identity";
 import {
   closeStorage,
@@ -25,6 +31,11 @@ import {
   getChainTradeEvent,
   getChainTransactionEvent,
   getLatestChainVerification,
+  getActiveCalibrationCaptureSessionForRuntime,
+  getCalibrationCaptureSession,
+  getCalibrationCaptureObservationCounts,
+  getCapturedSignalObservation,
+  getLatestCapturedSignalObservationByMint,
   getLatestCandidateDecision,
   getLatestMarketObservation,
   getMarketObservation,
@@ -42,6 +53,8 @@ import {
   listLaunchTimeseriesBucketsByMint,
   listLaunchTrackingEvents,
   listLaunchTrackingSessions,
+  listCalibrationCaptureSessions,
+  listCapturedSignalObservationsBySession,
   listLaunchTradeSamplesByMint,
   listMeteredLaunchDataEvents,
   listMeteredLaunchDataEventsByMint,
@@ -56,6 +69,7 @@ import {
   getStorageStats,
   getLaunchCandidate,
   initStorage,
+  initStorageReadOnly,
   listCandidateDecisionsForReplay,
   listCapacitySnapshots,
   listChainVerifications,
@@ -102,6 +116,8 @@ import {
   listWatchPlans,
   listWatchPlansForReplay,
   saveCandidateDecision,
+  saveCalibrationCaptureSession,
+  saveCapturedSignalObservation,
   saveCapacitySnapshot,
   saveChainVerification,
   saveChainTradeEvent,
@@ -179,6 +195,8 @@ describe("@axi/storage", () => {
     expect(stats.runtimeSessionCount).toBe(0);
     expect(stats.operatorActionCount).toBe(0);
     expect(stats.capacitySnapshotCount).toBe(0);
+    expect(stats.calibrationCaptureSessionCount).toBe(0);
+    expect(stats.calibrationSignalObservationCount).toBe(0);
     expect(stats.pumpPortalWalletStatusSnapshotCount).toBe(0);
     expect(stats.meteredLaunchDataSessionCount).toBe(0);
     expect(stats.meteredLaunchDataSubscriptionCount).toBe(0);
@@ -265,6 +283,144 @@ describe("@axi/storage", () => {
         operatorActionCount: 1
       })
     );
+  });
+
+  it("persists capture sessions and immutable forward observations", () => {
+    initStorage({ databasePath });
+    const session = createCalibrationCaptureSession({
+      sessionId: "capture-storage-test",
+      runtimeSessionId: "runtime-storage-test",
+      partition: "train",
+      config: {
+        horizonMs: 1_000,
+        maxOutcomeLagMs: 1_000,
+        samplingIntervalMs: 1_000
+      },
+      startedAt: "2026-01-01T00:00:00.000Z"
+    });
+    saveCalibrationCaptureSession(session);
+    saveCalibrationCaptureSession(session);
+
+    const captured = createCapturedSignalObservation({
+      session,
+      snapshot: {
+        sourceSnapshotId: 91,
+        mint,
+        evaluatedAt: "2026-01-01T00:00:00.000Z",
+        ageSeconds: 10,
+        tradeSampleCount: 3,
+        priceSol: 100,
+        derivativeScore: {
+          totalScore: 65,
+          strengthLabel: "hot",
+          policySchemaVersion: 1,
+          strategyVersion: "launch-derivative-reference-v1",
+          policyStatus: "reference_only",
+          calibrated: false,
+          confidenceAppliedToSignalScore: false
+        }
+      },
+      capturedAt: "2026-01-01T00:00:00.500Z"
+    });
+
+    if (!captured.accepted) {
+      throw new Error(captured.reasonCodes.join(","));
+    }
+
+    saveCapturedSignalObservation(captured.observation);
+    saveCapturedSignalObservation(captured.observation);
+    const completed = materializeCapturedSignalOutcome({
+      observation: captured.observation,
+      buckets: [
+        {
+          bucketStart: "2026-01-01T00:00:00.000Z",
+          bucketEnd: "2026-01-01T00:00:01.000Z",
+          openSol: 100,
+          highSol: 130,
+          lowSol: 90,
+          closeSol: 125,
+          synthetic: false
+        }
+      ],
+      asOf: "2026-01-01T00:00:01.000Z"
+    });
+    saveCapturedSignalObservation(completed);
+
+    expect(getCalibrationCaptureSession(session.sessionId)).toMatchObject({
+      status: "active",
+      partition: "train"
+    });
+    expect(
+      getActiveCalibrationCaptureSessionForRuntime(session.runtimeSessionId)
+    ).toMatchObject({ sessionId: session.sessionId });
+    expect(listCalibrationCaptureSessions()).toHaveLength(1);
+    expect(getCapturedSignalObservation(completed.observationId)).toMatchObject({
+      status: "complete",
+      outcomePriceSol: 125,
+      forwardReturnPct: 25
+    });
+    expect(
+      getLatestCapturedSignalObservationByMint(session.sessionId, mint)
+    ).toMatchObject({ observationId: completed.observationId });
+    expect(
+      listCapturedSignalObservationsBySession(session.sessionId, {
+        status: "complete"
+      })
+    ).toHaveLength(1);
+    expect(getCalibrationCaptureObservationCounts(session.sessionId)).toEqual({
+      observationCount: 1,
+      completedCount: 1,
+      pendingCount: 0,
+      unavailableCount: 0
+    });
+    expect(() =>
+      saveCapturedSignalObservation({
+        ...completed,
+        mint: "DifferentMint111111111111111111111111111111"
+      })
+    ).toThrow("immutable fields do not match");
+    expect(() =>
+      saveCapturedSignalObservation({
+        ...completed,
+        score: completed.score + 1
+      })
+    ).toThrow("immutable fields do not match");
+    expect(() =>
+      saveCalibrationCaptureSession({
+        ...session,
+        partition: "validation"
+      })
+    ).toThrow("immutable fields do not match");
+
+    saveCalibrationCaptureSession(
+      stopCalibrationCaptureSession(session, {
+        stoppedAt: "2026-01-01T00:01:00.000Z",
+        reason: "test_complete"
+      })
+    );
+    expect(() => saveCalibrationCaptureSession(session)).toThrow(
+      "cannot change after it is closed"
+    );
+    expect(
+      getActiveCalibrationCaptureSessionForRuntime(session.runtimeSessionId)
+    ).toBeNull();
+    expect(getStorageStats()).toMatchObject({
+      calibrationCaptureSessionCount: 1,
+      calibrationSignalObservationCount: 1
+    });
+
+    closeStorage();
+    initStorageReadOnly({ databasePath });
+    expect(getCapturedSignalObservation(completed.observationId)).toMatchObject({
+      status: "complete",
+      targetReached: false
+    });
+    expect(() =>
+      saveCalibrationCaptureSession({
+        ...session,
+        sessionId: "capture-readonly-test"
+      })
+    ).toThrow();
   });
 
   it("persists idempotent sanitized capacity snapshots", () => {

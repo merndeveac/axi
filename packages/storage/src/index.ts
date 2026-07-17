@@ -24,6 +24,11 @@ import type {
   PaperRiskLevel
 } from "@axi/paper-portfolio";
 import type {
+  CalibrationCaptureSession,
+  CapturedObservationStatus,
+  CapturedSignalObservation
+} from "@axi/session-capture";
+import type {
   TokenIdentity,
   TokenIdentityConfidence,
   TokenIdentityDataSource,
@@ -293,6 +298,8 @@ export type StorageStats = {
   runtimeSessionCount: number;
   operatorActionCount: number;
   capacitySnapshotCount: number;
+  calibrationCaptureSessionCount: number;
+  calibrationSignalObservationCount: number;
   pumpPortalWalletStatusSnapshotCount: number;
   riskSnapshotCount: number;
   candidateDecisionCount: number;
@@ -307,6 +314,21 @@ export type StorageStats = {
   exitRuleCount: number;
   exitSignalCount: number;
   lastSignalAt: string | null;
+};
+
+export type StoredCalibrationCaptureSession = CalibrationCaptureSession & {
+  id: number;
+};
+
+export type StoredCapturedSignalObservation = CapturedSignalObservation & {
+  id: number;
+};
+
+export type CalibrationCaptureObservationCounts = {
+  observationCount: number;
+  completedCount: number;
+  pendingCount: number;
+  unavailableCount: number;
 };
 
 export type LightningTradePlanStorageInput = {
@@ -1501,6 +1523,38 @@ type RuntimeSessionRow = {
   created_at: string;
 };
 
+type CalibrationCaptureSessionRow = {
+  id: number;
+  session_id: string;
+  runtime_session_id: string;
+  strategy_version: string;
+  partition: string;
+  status: string;
+  started_at: string;
+  stopped_at: string | null;
+  payload_json: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type CalibrationSignalObservationRow = {
+  id: number;
+  observation_id: string;
+  capture_session_id: string;
+  runtime_session_id: string;
+  mint: string;
+  strategy_version: string;
+  partition: string;
+  source_snapshot_id: number;
+  signal_at: string;
+  score: number;
+  status: CapturedObservationStatus;
+  outcome_at: string | null;
+  payload_json: string;
+  created_at: string;
+  updated_at: string;
+};
+
 type OperatorActionRow = {
   id: number;
   action_id: string;
@@ -2199,6 +2253,78 @@ const runtimeSessionInputSchema = z.object({
   createdAt: z.string().datetime().optional()
 });
 
+const sessionCaptureConfigSchema = z.object({
+  schemaVersion: z.literal(1),
+  horizonMs: z.number().int().min(1_000).max(300_000),
+  targetReturnPct: z.number().min(0).max(1_000),
+  estimatedCostPct: z.number().min(0).max(100),
+  samplingIntervalMs: z.number().int().min(1_000).max(300_000),
+  maxOutcomeLagMs: z.number().int().min(0).max(10_000),
+  minimumTradeSamples: z.number().int().min(3),
+  maxObservationsPerSession: z.number().int().min(1).max(100_000)
+});
+
+const calibrationCaptureSessionSchema = z.object({
+  schemaVersion: z.literal(1),
+  captureVersion: z.literal("calibration-session-capture-v1"),
+  sessionId: z.string().min(1),
+  runtimeSessionId: z.string().min(1),
+  strategyVersion: z.literal("launch-derivative-reference-v1"),
+  partition: z.enum(["train", "validation"]),
+  status: z.enum(["active", "stopped", "interrupted"]),
+  config: sessionCaptureConfigSchema,
+  startedAt: z.string().datetime(),
+  stoppedAt: z.string().datetime().nullable(),
+  stopReason: z.string().min(1).nullable(),
+  reasonCodes: z.array(z.string().min(1)),
+  paperOnly: z.literal(true),
+  dataOnly: z.literal(true),
+  tradingDisabled: z.literal(true),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+});
+
+const capturedSignalObservationSchema = z.object({
+  schemaVersion: z.literal(1),
+  captureVersion: z.literal("calibration-session-capture-v1"),
+  observationId: z.string().min(1),
+  captureSessionId: z.string().min(1),
+  runtimeSessionId: z.string().min(1),
+  mint: z.string().min(1),
+  strategyVersion: z.literal("launch-derivative-reference-v1"),
+  partition: z.enum(["train", "validation"]),
+  sourceSnapshotId: z.number().int().positive(),
+  signalAt: z.string().datetime(),
+  signalAgeSeconds: z.number().nonnegative(),
+  score: z.number().min(0).max(100),
+  label: z.enum(["none", "watch", "hot", "ripping", "reject"]),
+  tradeSampleCount: z.number().int().nonnegative(),
+  entryPriceSol: z.number().positive(),
+  horizonMs: z.number().int().min(1_000).max(300_000),
+  targetReturnPct: z.number().min(0).max(1_000),
+  estimatedCostPct: z.number().min(0).max(100),
+  maxOutcomeLagMs: z.number().int().min(0).max(10_000),
+  status: z.enum(["pending", "complete", "unavailable"]),
+  outcomeAt: z.string().datetime().nullable(),
+  outcomePriceSol: z.number().positive().nullable(),
+  forwardReturnPct: z.number().nullable(),
+  maxFavorableExcursionPct: z.number().nullable(),
+  maxAdverseExcursionPct: z.number().nullable(),
+  targetReached: z.boolean().nullable(),
+  reasonCodes: z.array(z.string().min(1)),
+  paperOnly: z.literal(true),
+  dataOnly: z.literal(true),
+  tradingDisabled: z.literal(true),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+});
+
+const calibrationObservationLimitSchema = z
+  .number()
+  .int()
+  .positive()
+  .max(100_000);
+
 const operatorActionInputSchema = z.object({
   actionId: z.string().min(1),
   action: z.string().min(1),
@@ -2315,10 +2441,15 @@ const limitSchema = z.number().int().positive().max(1000);
 let activeStorage: {
   db: DatabaseSync;
   databasePath: string;
+  readOnly: boolean;
 } | null = null;
 
 export function initStorage(options: StorageOptions = {}): StorageHandle {
   if (activeStorage) {
+    if (activeStorage.readOnly) {
+      throw new Error("Storage is already initialized in read-only mode.");
+    }
+
     return {
       databasePath: activeStorage.databasePath
     };
@@ -2330,12 +2461,45 @@ export function initStorage(options: StorageOptions = {}): StorageHandle {
   const db = new DatabaseSync(databasePath);
   activeStorage = {
     db,
-    databasePath
+    databasePath,
+    readOnly: false
   };
 
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA journal_mode = WAL");
   runMigrations(db);
+
+  return {
+    databasePath
+  };
+}
+
+export function initStorageReadOnly(
+  options: StorageOptions = {}
+): StorageHandle {
+  if (activeStorage) {
+    if (!activeStorage.readOnly) {
+      throw new Error("Storage is already initialized in read-write mode.");
+    }
+
+    return {
+      databasePath: activeStorage.databasePath
+    };
+  }
+
+  const databasePath = resolveDatabasePath(options.databasePath);
+
+  if (!existsSync(databasePath)) {
+    throw new Error(`Storage database ${databasePath} does not exist.`);
+  }
+
+  const db = new DatabaseSync(databasePath, { readOnly: true });
+  activeStorage = {
+    db,
+    databasePath,
+    readOnly: true
+  };
+  db.exec("PRAGMA query_only = ON");
 
   return {
     databasePath
@@ -4762,6 +4926,321 @@ export function listRuntimeSessions(limit = 50): StoredRuntimeSession[] {
   return rows.map(mapRuntimeSessionRow);
 }
 
+export function saveCalibrationCaptureSession(
+  session: CalibrationCaptureSession
+): StoredCalibrationCaptureSession {
+  const parsed = calibrationCaptureSessionSchema.parse(session);
+  assertCalibrationCaptureSessionState(parsed);
+  const existing = getCalibrationCaptureSession(parsed.sessionId);
+
+  if (
+    existing &&
+    calibrationCaptureSessionImmutableFieldsDiffer(existing, parsed)
+  ) {
+    throw new Error(
+      `Calibration capture session ${parsed.sessionId} immutable fields do not match.`
+    );
+  }
+
+  if (
+    existing &&
+    existing.status !== "active" &&
+    (existing.status !== parsed.status ||
+      existing.stoppedAt !== parsed.stoppedAt ||
+      existing.stopReason !== parsed.stopReason ||
+      JSON.stringify(existing.reasonCodes) !==
+        JSON.stringify(parsed.reasonCodes) ||
+      existing.updatedAt !== parsed.updatedAt)
+  ) {
+    throw new Error(
+      `Calibration capture session ${parsed.sessionId} cannot change after it is closed.`
+    );
+  }
+
+  const db = getDb();
+
+  db.prepare(
+    `insert into calibration_capture_sessions (
+      session_id,
+      runtime_session_id,
+      strategy_version,
+      partition,
+      status,
+      started_at,
+      stopped_at,
+      payload_json,
+      created_at,
+      updated_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    on conflict(session_id) do update set
+      status = excluded.status,
+      stopped_at = excluded.stopped_at,
+      payload_json = excluded.payload_json,
+      updated_at = excluded.updated_at`
+  ).run(
+    parsed.sessionId,
+    parsed.runtimeSessionId,
+    parsed.strategyVersion,
+    parsed.partition,
+    parsed.status,
+    parsed.startedAt,
+    parsed.stoppedAt,
+    stringifyJson(parsed),
+    parsed.createdAt,
+    parsed.updatedAt
+  );
+
+  const stored = getCalibrationCaptureSession(parsed.sessionId);
+
+  if (!stored) {
+    throw new Error(`Calibration capture session ${parsed.sessionId} was not persisted.`);
+  }
+
+  return stored;
+}
+
+export function getCalibrationCaptureSession(
+  sessionId: string
+): StoredCalibrationCaptureSession | null {
+  const row = getDb()
+    .prepare("select * from calibration_capture_sessions where session_id = ?")
+    .get(sessionId) as CalibrationCaptureSessionRow | undefined;
+
+  return row ? mapCalibrationCaptureSessionRow(row) : null;
+}
+
+export function getActiveCalibrationCaptureSessionForRuntime(
+  runtimeSessionId: string
+): StoredCalibrationCaptureSession | null {
+  const row = getDb()
+    .prepare(
+      `select *
+       from calibration_capture_sessions
+       where runtime_session_id = ? and status = 'active'
+       order by datetime(started_at) desc, id desc
+       limit 1`
+    )
+    .get(runtimeSessionId) as CalibrationCaptureSessionRow | undefined;
+
+  return row ? mapCalibrationCaptureSessionRow(row) : null;
+}
+
+export function listCalibrationCaptureSessions(
+  limit = 50
+): StoredCalibrationCaptureSession[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from calibration_capture_sessions
+       order by datetime(started_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as CalibrationCaptureSessionRow[];
+
+  return rows.map(mapCalibrationCaptureSessionRow);
+}
+
+export function saveCapturedSignalObservation(
+  observation: CapturedSignalObservation
+): StoredCapturedSignalObservation {
+  const parsed = capturedSignalObservationSchema.parse(observation);
+  assertCapturedSignalObservationState(parsed);
+  const session = getCalibrationCaptureSession(parsed.captureSessionId);
+
+  if (!session) {
+    throw new Error(
+      `Calibration capture session ${parsed.captureSessionId} was not found for observation ${parsed.observationId}.`
+    );
+  }
+
+  if (
+    session.runtimeSessionId !== parsed.runtimeSessionId ||
+    session.strategyVersion !== parsed.strategyVersion ||
+    session.partition !== parsed.partition ||
+    session.config.horizonMs !== parsed.horizonMs ||
+    session.config.targetReturnPct !== parsed.targetReturnPct ||
+    session.config.estimatedCostPct !== parsed.estimatedCostPct ||
+    session.config.maxOutcomeLagMs !== parsed.maxOutcomeLagMs
+  ) {
+    throw new Error(
+      `Captured observation ${parsed.observationId} does not match its capture session policy.`
+    );
+  }
+
+  const existing = getCapturedSignalObservation(parsed.observationId);
+
+  if (
+    existing &&
+    capturedSignalObservationImmutableFieldsDiffer(existing, parsed)
+  ) {
+    throw new Error(
+      `Captured observation ${parsed.observationId} immutable fields do not match.`
+    );
+  }
+
+  if (
+    existing &&
+    (existing.status === "complete" ||
+      (existing.status === "unavailable" && parsed.status === "pending")) &&
+    (existing.status !== parsed.status ||
+      existing.outcomeAt !== parsed.outcomeAt ||
+      existing.outcomePriceSol !== parsed.outcomePriceSol ||
+      existing.forwardReturnPct !== parsed.forwardReturnPct ||
+      existing.maxFavorableExcursionPct !==
+        parsed.maxFavorableExcursionPct ||
+      existing.maxAdverseExcursionPct !== parsed.maxAdverseExcursionPct ||
+      existing.targetReached !== parsed.targetReached ||
+      JSON.stringify(existing.reasonCodes) !==
+        JSON.stringify(parsed.reasonCodes) ||
+      existing.updatedAt !== parsed.updatedAt)
+  ) {
+    throw new Error(
+      `Captured observation ${parsed.observationId} cannot regress or change a completed outcome.`
+    );
+  }
+
+  const db = getDb();
+  db.prepare(
+    `insert into calibration_signal_observations (
+      observation_id,
+      capture_session_id,
+      runtime_session_id,
+      mint,
+      strategy_version,
+      partition,
+      source_snapshot_id,
+      signal_at,
+      score,
+      status,
+      outcome_at,
+      payload_json,
+      created_at,
+      updated_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    on conflict(observation_id) do update set
+      status = excluded.status,
+      outcome_at = excluded.outcome_at,
+      payload_json = excluded.payload_json,
+      updated_at = excluded.updated_at`
+  ).run(
+    parsed.observationId,
+    parsed.captureSessionId,
+    parsed.runtimeSessionId,
+    parsed.mint,
+    parsed.strategyVersion,
+    parsed.partition,
+    parsed.sourceSnapshotId,
+    parsed.signalAt,
+    parsed.score,
+    parsed.status,
+    parsed.outcomeAt,
+    stringifyJson(parsed),
+    parsed.createdAt,
+    parsed.updatedAt
+  );
+
+  const stored = getCapturedSignalObservation(parsed.observationId);
+
+  if (!stored) {
+    throw new Error(`Captured observation ${parsed.observationId} was not persisted.`);
+  }
+
+  return stored;
+}
+
+export function getCapturedSignalObservation(
+  observationId: string
+): StoredCapturedSignalObservation | null {
+  const row = getDb()
+    .prepare(
+      "select * from calibration_signal_observations where observation_id = ?"
+    )
+    .get(observationId) as CalibrationSignalObservationRow | undefined;
+
+  return row ? mapCalibrationSignalObservationRow(row) : null;
+}
+
+export function getLatestCapturedSignalObservationByMint(
+  captureSessionId: string,
+  mint: string
+): StoredCapturedSignalObservation | null {
+  const row = getDb()
+    .prepare(
+      `select *
+       from calibration_signal_observations
+       where capture_session_id = ? and mint = ?
+       order by datetime(signal_at) desc, id desc
+       limit 1`
+    )
+    .get(captureSessionId, mint) as
+    CalibrationSignalObservationRow | undefined;
+
+  return row ? mapCalibrationSignalObservationRow(row) : null;
+}
+
+export function getCalibrationCaptureObservationCounts(
+  captureSessionId: string
+): CalibrationCaptureObservationCounts {
+  const row = getDb()
+    .prepare(
+      `select
+         count(*) as observation_count,
+         coalesce(sum(case when status = 'complete' then 1 else 0 end), 0) as completed_count,
+         coalesce(sum(case when status = 'pending' then 1 else 0 end), 0) as pending_count,
+         coalesce(sum(case when status = 'unavailable' then 1 else 0 end), 0) as unavailable_count
+       from calibration_signal_observations
+       where capture_session_id = ?`
+    )
+    .get(captureSessionId) as {
+    observation_count: number;
+    completed_count: number;
+    pending_count: number;
+    unavailable_count: number;
+  };
+
+  return {
+    observationCount: row.observation_count,
+    completedCount: row.completed_count,
+    pendingCount: row.pending_count,
+    unavailableCount: row.unavailable_count
+  };
+}
+
+export function listCapturedSignalObservationsBySession(
+  captureSessionId: string,
+  options: {
+    limit?: number | undefined;
+    status?: CapturedObservationStatus | undefined;
+  } = {}
+): StoredCapturedSignalObservation[] {
+  const limit = calibrationObservationLimitSchema.parse(options.limit ?? 10_000);
+  const rows = options.status
+    ? (getDb()
+        .prepare(
+          `select *
+           from calibration_signal_observations
+           where capture_session_id = ? and status = ?
+           order by datetime(signal_at) asc, mint asc, id asc
+           limit ?`
+        )
+        .all(captureSessionId, options.status, limit) as
+        CalibrationSignalObservationRow[])
+    : (getDb()
+        .prepare(
+          `select *
+           from calibration_signal_observations
+           where capture_session_id = ?
+           order by datetime(signal_at) asc, mint asc, id asc
+           limit ?`
+        )
+        .all(captureSessionId, limit) as CalibrationSignalObservationRow[]);
+
+  return rows.map(mapCalibrationSignalObservationRow);
+}
+
 export function saveOperatorAction(
   action: OperatorActionInput
 ): StoredOperatorAction {
@@ -6048,6 +6527,14 @@ export function getStorageStats(): StorageStats {
     runtimeSessionCount: countRows(db, "runtime_sessions"),
     operatorActionCount: countRows(db, "operator_actions"),
     capacitySnapshotCount: countRows(db, "capacity_snapshots"),
+    calibrationCaptureSessionCount: countRows(
+      db,
+      "calibration_capture_sessions"
+    ),
+    calibrationSignalObservationCount: countRows(
+      db,
+      "calibration_signal_observations"
+    ),
     pumpPortalWalletStatusSnapshotCount: countRows(
       db,
       "pumpportal_wallet_status_snapshots"
@@ -7104,6 +7591,63 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(17, "canonical_launch_timeseries", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 18)) {
+    db.exec(`
+      create table if not exists calibration_capture_sessions (
+        id integer primary key autoincrement,
+        session_id text not null unique,
+        runtime_session_id text not null,
+        strategy_version text not null,
+        partition text not null,
+        status text not null,
+        started_at text not null,
+        stopped_at text,
+        payload_json text not null,
+        created_at text not null,
+        updated_at text not null
+      );
+
+      create index if not exists idx_calibration_capture_sessions_runtime
+        on calibration_capture_sessions(runtime_session_id);
+
+      create index if not exists idx_calibration_capture_sessions_status
+        on calibration_capture_sessions(status);
+
+      create table if not exists calibration_signal_observations (
+        id integer primary key autoincrement,
+        observation_id text not null unique,
+        capture_session_id text not null,
+        runtime_session_id text not null,
+        mint text not null,
+        strategy_version text not null,
+        partition text not null,
+        source_snapshot_id integer not null,
+        signal_at text not null,
+        score real not null,
+        status text not null,
+        outcome_at text,
+        payload_json text not null,
+        created_at text not null,
+        updated_at text not null,
+        unique(capture_session_id, mint, source_snapshot_id)
+      );
+
+      create index if not exists idx_calibration_observations_session_signal
+        on calibration_signal_observations(capture_session_id, signal_at);
+
+      create index if not exists idx_calibration_observations_session_status
+        on calibration_signal_observations(capture_session_id, status);
+
+      create index if not exists idx_calibration_observations_mint_signal
+        on calibration_signal_observations(mint, signal_at);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(18, "calibration_session_capture", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -7853,6 +8397,128 @@ function mapLightningTradePlanRow(
     request: JSON.parse(row.request_json),
     payload: JSON.parse(row.payload_json),
     createdAt: row.created_at
+  };
+}
+
+function assertCalibrationCaptureSessionState(
+  session: CalibrationCaptureSession
+): void {
+  const activeStateIsValid =
+    session.status === "active" &&
+    session.stoppedAt === null &&
+    session.stopReason === null;
+  const closedStateIsValid =
+    session.status !== "active" &&
+    session.stoppedAt !== null &&
+    session.stopReason !== null &&
+    Date.parse(session.stoppedAt) >= Date.parse(session.startedAt);
+
+  if (!activeStateIsValid && !closedStateIsValid) {
+    throw new Error(
+      `Calibration capture session ${session.sessionId} has an invalid lifecycle state.`
+    );
+  }
+}
+
+function calibrationCaptureSessionImmutableFieldsDiffer(
+  existing: StoredCalibrationCaptureSession,
+  candidate: CalibrationCaptureSession
+): boolean {
+  return (
+    existing.schemaVersion !== candidate.schemaVersion ||
+    existing.captureVersion !== candidate.captureVersion ||
+    existing.runtimeSessionId !== candidate.runtimeSessionId ||
+    existing.strategyVersion !== candidate.strategyVersion ||
+    existing.partition !== candidate.partition ||
+    JSON.stringify(existing.config) !== JSON.stringify(candidate.config) ||
+    existing.startedAt !== candidate.startedAt ||
+    existing.createdAt !== candidate.createdAt ||
+    existing.paperOnly !== candidate.paperOnly ||
+    existing.dataOnly !== candidate.dataOnly ||
+    existing.tradingDisabled !== candidate.tradingDisabled
+  );
+}
+
+function assertCapturedSignalObservationState(
+  observation: CapturedSignalObservation
+): void {
+  const outcomeFields = [
+    observation.outcomeAt,
+    observation.outcomePriceSol,
+    observation.forwardReturnPct,
+    observation.maxFavorableExcursionPct,
+    observation.maxAdverseExcursionPct,
+    observation.targetReached
+  ];
+  const completeStateIsValid =
+    observation.status === "complete" &&
+    outcomeFields.every((value) => value !== null) &&
+    observation.outcomeAt !== null &&
+    Date.parse(observation.outcomeAt) > Date.parse(observation.signalAt);
+  const incompleteStateIsValid =
+    observation.status !== "complete" &&
+    outcomeFields.every((value) => value === null);
+
+  if (!completeStateIsValid && !incompleteStateIsValid) {
+    throw new Error(
+      `Captured observation ${observation.observationId} has an invalid outcome state.`
+    );
+  }
+}
+
+function capturedSignalObservationImmutableFieldsDiffer(
+  existing: StoredCapturedSignalObservation,
+  candidate: CapturedSignalObservation
+): boolean {
+  return (
+    existing.schemaVersion !== candidate.schemaVersion ||
+    existing.captureVersion !== candidate.captureVersion ||
+    existing.captureSessionId !== candidate.captureSessionId ||
+    existing.runtimeSessionId !== candidate.runtimeSessionId ||
+    existing.mint !== candidate.mint ||
+    existing.strategyVersion !== candidate.strategyVersion ||
+    existing.partition !== candidate.partition ||
+    existing.sourceSnapshotId !== candidate.sourceSnapshotId ||
+    existing.signalAt !== candidate.signalAt ||
+    existing.signalAgeSeconds !== candidate.signalAgeSeconds ||
+    existing.score !== candidate.score ||
+    existing.label !== candidate.label ||
+    existing.tradeSampleCount !== candidate.tradeSampleCount ||
+    existing.entryPriceSol !== candidate.entryPriceSol ||
+    existing.horizonMs !== candidate.horizonMs ||
+    existing.targetReturnPct !== candidate.targetReturnPct ||
+    existing.estimatedCostPct !== candidate.estimatedCostPct ||
+    existing.maxOutcomeLagMs !== candidate.maxOutcomeLagMs ||
+    existing.paperOnly !== candidate.paperOnly ||
+    existing.dataOnly !== candidate.dataOnly ||
+    existing.tradingDisabled !== candidate.tradingDisabled ||
+    existing.createdAt !== candidate.createdAt
+  );
+}
+
+function mapCalibrationCaptureSessionRow(
+  row: CalibrationCaptureSessionRow
+): StoredCalibrationCaptureSession {
+  const payload = calibrationCaptureSessionSchema.parse(
+    JSON.parse(row.payload_json)
+  );
+
+  return {
+    ...payload,
+    id: row.id
+  };
+}
+
+function mapCalibrationSignalObservationRow(
+  row: CalibrationSignalObservationRow
+): StoredCapturedSignalObservation {
+  const payload = capturedSignalObservationSchema.parse(
+    JSON.parse(row.payload_json)
+  );
+
+  return {
+    ...payload,
+    id: row.id
   };
 }
 

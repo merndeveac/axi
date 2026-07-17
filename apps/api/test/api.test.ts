@@ -1483,6 +1483,7 @@ describe("@axi/api", () => {
       ownership: Record<string, string>;
       roadmap: {
         canonicalOneSecondTimeseries: string;
+        calibrationSessionCapture: string;
         derivativeCorrectness: string;
         derivativeStrengthNormalization: string;
         signalCalibrationFramework: string;
@@ -1526,7 +1527,17 @@ describe("@axi/api", () => {
         policyStatus: string;
         evaluatorStatus: string;
         outcomeCaptureStatus: string;
+        outcomeCaptureOwner: string;
         automaticThresholdActivation: boolean;
+      };
+      sessionCapture: {
+        implementationStatus: string;
+        activationMode: string;
+        defaultActive: boolean;
+        outcomePolicy: string;
+        futureDataRejected: boolean;
+        automaticThresholdActivation: boolean;
+        tradingDisabled: boolean;
       };
     };
 
@@ -1536,6 +1547,7 @@ describe("@axi/api", () => {
       canonicalDerivatives: "@axi/derivatives",
       canonicalDerivativeStrength: "@axi/derivative-strength",
       signalCalibration: "@axi/signal-calibration",
+      calibrationSessionCapture: "@axi/session-capture",
       canonicalTimeseries: "@axi/timeseries",
       subscriptionTransport: "ActualDataService",
       subscriptionPolicy: "MeteredLaunchDataService",
@@ -1558,6 +1570,7 @@ describe("@axi/api", () => {
     expect(body.roadmap.derivativeCorrectness).toBe("implemented");
     expect(body.roadmap.derivativeStrengthNormalization).toBe("implemented");
     expect(body.roadmap.signalCalibrationFramework).toBe("implemented");
+    expect(body.roadmap.calibrationSessionCapture).toBe("implemented");
     expect(body.roadmap.rollingNewestTokenScheduler).toBe("implemented");
     expect(body.roadmap.schedulerMutationApplied).toBe(false);
     expect(body.timeseries).toMatchObject({
@@ -1582,7 +1595,17 @@ describe("@axi/api", () => {
       strategyVersion: "launch-derivative-reference-v1",
       policyStatus: "reference_only",
       evaluatorStatus: "implemented",
-      outcomeCaptureStatus: "not_implemented",
+      outcomeCaptureStatus: "implemented",
+      outcomeCaptureOwner: "@axi/session-capture",
+      automaticThresholdActivation: false,
+      tradingDisabled: true
+    });
+    expect(body.sessionCapture).toMatchObject({
+      implementationStatus: "implemented",
+      activationMode: "manual_local_only",
+      defaultActive: false,
+      outcomePolicy: "first_real_bucket_at_horizon_with_bounded_lag",
+      futureDataRejected: true,
       automaticThresholdActivation: false,
       tradingDisabled: true
     });
@@ -1602,7 +1625,8 @@ describe("@axi/api", () => {
       strategyVersion: "launch-derivative-reference-v1",
       policyStatus: "reference_only",
       evaluatorStatus: "implemented",
-      outcomeCaptureStatus: "not_implemented",
+      outcomeCaptureStatus: "implemented",
+      outcomeCaptureOwner: "@axi/session-capture",
       automaticThresholdActivation: false,
       tradingDisabled: true
     });
@@ -1643,6 +1667,116 @@ describe("@axi/api", () => {
       candidateValidation: null,
       automaticThresholdActivation: false,
       calibrated: false,
+      tradingDisabled: true
+    });
+  });
+
+  it("runs a manual calibration capture session and exports its manifest", async () => {
+    server = createApiServer({
+      allowMockData: true,
+      dataFeed: "mock",
+      dataFeedMode: "mock",
+      logLevel: false,
+      mockFeedEnabled: true,
+      paperAutoOrder: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const initialStatus = await server.app.inject({
+      method: "GET",
+      url: "/runtime/session-capture"
+    });
+    expect(initialStatus.json()).toMatchObject({
+      active: false,
+      observationCount: 0,
+      contract: {
+        activationMode: "manual_local_only",
+        defaultActive: false,
+        automaticThresholdActivation: false
+      },
+      tradingDisabled: true
+    });
+
+    const startResponse = await server.app.inject({
+      method: "POST",
+      url: "/runtime/session-capture/start",
+      payload: {
+        partition: "validation",
+        config: { horizonMs: 10_000, maxOutcomeLagMs: 1_000 }
+      }
+    });
+    const started = startResponse.json() as {
+      created: boolean;
+      session: { sessionId: string };
+    };
+    expect(startResponse.statusCode).toBe(200);
+    expect(started).toMatchObject({
+      created: true,
+      session: {
+        partition: "validation",
+        status: "active",
+        tradingDisabled: true
+      }
+    });
+
+    const conflictingStartResponse = await server.app.inject({
+      method: "POST",
+      url: "/runtime/session-capture/start",
+      payload: { partition: "train" }
+    });
+    expect(conflictingStartResponse.statusCode).toBe(409);
+    expect(conflictingStartResponse.json()).toMatchObject({
+      error: "CALIBRATION_CAPTURE_SESSION_ALREADY_ACTIVE",
+      tradingDisabled: true
+    });
+
+    const observationsResponse = await server.app.inject({
+      method: "GET",
+      url: `/runtime/session-capture/sessions/${started.session.sessionId}/observations`
+    });
+    expect(observationsResponse.json()).toMatchObject({
+      sessionId: started.session.sessionId,
+      observations: [],
+      tradingDisabled: true
+    });
+
+    const exportResponse = await server.app.inject({
+      method: "GET",
+      url: `/runtime/session-capture/sessions/${started.session.sessionId}/export?format=json`
+    });
+    expect(exportResponse.statusCode).toBe(200);
+    expect(exportResponse.headers["content-disposition"]).toContain(
+      `${started.session.sessionId}.json`
+    );
+    expect(exportResponse.json()).toMatchObject({
+      manifest: {
+        captureSessionId: started.session.sessionId,
+        partition: "validation",
+        observationCount: 0,
+        automaticThresholdActivation: false,
+        tradingDisabled: true
+      },
+      observations: []
+    });
+
+    const stopResponse = await server.app.inject({
+      method: "POST",
+      url: "/runtime/session-capture/stop",
+      payload: { reason: "api_test_complete" }
+    });
+    expect(stopResponse.json()).toMatchObject({
+      stopped: true,
+      session: { status: "stopped", stopReason: "api_test_complete" }
+    });
+
+    const missingResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/session-capture/sessions/missing"
+    });
+    expect(missingResponse.statusCode).toBe(404);
+    expect(missingResponse.json()).toMatchObject({
+      error: "CALIBRATION_CAPTURE_SESSION_NOT_FOUND",
       tradingDisabled: true
     });
   });

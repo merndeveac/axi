@@ -1,6 +1,7 @@
 import type { TradeTimeseriesStatus } from "@axi/timeseries";
 import { getDerivativeStrengthRuntimeContract } from "@axi/derivative-strength";
 import { getSignalCalibrationRuntimeContract } from "@axi/signal-calibration";
+import { getSessionCaptureRuntimeContract } from "@axi/session-capture";
 import type { ActualDataService } from "./actual-data-service";
 import type { MeteredLaunchDataService } from "./metered-launch-data-service";
 
@@ -54,7 +55,7 @@ export function createRuntimeContract(input: {
   );
 
   return {
-    version: 6,
+    version: 7,
     runtimeSessionId: input.runtimeSessionId,
     safety: {
       paperOnly: true,
@@ -75,6 +76,7 @@ export function createRuntimeContract(input: {
       canonicalDerivatives: "@axi/derivatives",
       canonicalDerivativeStrength: "@axi/derivative-strength",
       signalCalibration: "@axi/signal-calibration",
+      calibrationSessionCapture: "@axi/session-capture",
       capacityModel: "@axi/capacity-model",
       trackingScheduler: "@axi/tracking-scheduler",
       paperPortfolio: "@axi/paper-portfolio",
@@ -118,6 +120,7 @@ export function createRuntimeContract(input: {
       onlineCohortPolicy: "same_age_prior_snapshots_only" as const
     },
     signalCalibration: getSignalCalibrationRuntimeContract(),
+    sessionCapture: getSessionCaptureRuntimeContract(),
     roadmap: {
       coverageCapacityInstrumentation: "implemented",
       rollingNewestTokenScheduler: "implemented",
@@ -125,6 +128,7 @@ export function createRuntimeContract(input: {
       derivativeCorrectness: "implemented",
       derivativeStrengthNormalization: "implemented",
       signalCalibrationFramework: "implemented",
+      calibrationSessionCapture: "implemented",
       schedulerMutationApplied:
         meteredStatus.scheduler.trackingMutationCount > 0
     },

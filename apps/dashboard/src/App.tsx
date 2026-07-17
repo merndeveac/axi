@@ -553,6 +553,7 @@ type RuntimeContract = {
     canonicalTimeseries: string;
     discoveryAndLaunchScoring: string;
     signalCalibration: string;
+    calibrationSessionCapture: string;
     subscriptionPolicy: string;
     subscriptionTransport: string;
     trackingScheduler: string;
@@ -600,7 +601,17 @@ type RuntimeContract = {
     policyStatus: "reference_only";
     calibrationStatus: "reference_only";
     evaluatorStatus: "implemented";
-    outcomeCaptureStatus: "not_implemented";
+    outcomeCaptureStatus: "implemented";
+    outcomeCaptureOwner: "@axi/session-capture";
+    automaticThresholdActivation: false;
+  };
+  sessionCapture: {
+    captureVersion: string;
+    implementationStatus: "implemented";
+    activationMode: "manual_local_only";
+    defaultActive: false;
+    outcomePolicy: string;
+    futureDataRejected: true;
     automaticThresholdActivation: false;
   };
 };
@@ -2105,6 +2116,17 @@ function HeaderControlCenter({
                 ? runtimeContract.signalCalibration.policyStatus
                     .replaceAll("_", " ")
                     .toUpperCase()
+                : "CHECKING"
+            }
+          />
+          <StatusChip
+            label="CAPTURE"
+            tone="neutral"
+            value={
+              runtimeContract
+                ? runtimeContract.sessionCapture.defaultActive
+                  ? "ACTIVE"
+                  : "MANUAL"
                 : "CHECKING"
             }
           />

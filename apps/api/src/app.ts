@@ -239,6 +239,11 @@ import {
   type RuntimeCapacityReport
 } from "./runtime-capacity";
 import {
+  CalibrationCaptureServiceError,
+  createCalibrationCaptureService,
+  type CalibrationCaptureService
+} from "./calibration-capture-service";
+import {
   createIndexerAdapter,
   type IndexerAdapter,
   type IndexerAdapterOptions
@@ -1338,6 +1343,7 @@ export type ApiServer = {
   launchScanner: LaunchScannerService;
   meteredLaunchData: MeteredLaunchDataService;
   runtimeControl: RuntimeControlService;
+  calibrationCapture: CalibrationCaptureService;
   pumpPortalDataWallet: PumpPortalDataWalletService;
   pumpPortalWallets: PumpPortalWalletsService;
   lightningReadiness: LightningReadinessService;
@@ -1613,6 +1619,46 @@ const signalCalibrationEvaluationBodySchema = z.object({
     })
     .optional()
 });
+const calibrationCaptureStartBodySchema = z.object({
+  partition: z.enum(["train", "validation"]),
+  config: z
+    .object({
+      horizonMs: z.number().int().min(1_000).max(300_000).optional(),
+      targetReturnPct: z.number().min(0).max(1_000).optional(),
+      estimatedCostPct: z.number().min(0).max(100).optional(),
+      samplingIntervalMs: z
+        .number()
+        .int()
+        .min(1_000)
+        .max(300_000)
+        .optional(),
+      maxOutcomeLagMs: z.number().int().min(0).max(10_000).optional(),
+      minimumTradeSamples: z.number().int().min(3).max(10_000).optional(),
+      maxObservationsPerSession: z
+        .number()
+        .int()
+        .min(1)
+        .max(100_000)
+        .optional()
+    })
+    .optional()
+});
+const calibrationCaptureStopBodySchema = z
+  .object({
+    reason: z.string().min(1).max(200).default("operator_stop")
+  })
+  .default({});
+const calibrationCaptureMaterializeBodySchema = z.object({}).default({});
+const calibrationCaptureSessionParamSchema = z.object({
+  sessionId: z.string().min(1).max(200)
+});
+const calibrationCaptureObservationsQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(100_000).default(10_000),
+  status: z.enum(["pending", "complete", "unavailable"]).optional()
+});
+const calibrationCaptureExportQuerySchema = z.object({
+  format: z.enum(["json", "jsonl", "csv"]).default("json")
+});
 
 export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   return apiConfigSchema.parse(env);
@@ -1732,6 +1778,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     mode: dataFeedMode,
     provider: feed.name
   });
+  const runtimeSessionId = randomUUID();
+  const runtimeSessionStartedAt = new Date().toISOString();
+  const calibrationCapture = createCalibrationCaptureService({
+    runtimeSessionId
+  });
   const configuredIndexer = options.indexer ?? {};
   const onBucketUpdated = configuredIndexer.timeseries?.onBucketUpdated;
   const indexerAdapter = createIndexerAdapter({
@@ -1750,6 +1801,16 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     actualData,
     config: options.launchScanner ?? createLaunchScannerConfig(),
     getRiskSnapshot: (mint) => riskSnapshots.get(mint),
+    onSnapshotPersisted: (snapshot, snapshotId) => {
+      try {
+        calibrationCapture.captureSnapshot(snapshot, snapshotId);
+      } catch (error) {
+        app.log.error(
+          { error, mint: snapshot.mint, snapshotId },
+          "Failed to capture calibration signal snapshot"
+        );
+      }
+    },
     providerName: feed.name
   });
   let hasOpenPaperPositionForMint: (mint: string) => boolean = (mint) => {
@@ -1769,8 +1830,6 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     providerName: feed.name
   });
   const trackingCommands = createTrackingCommandRouter(meteredLaunchData);
-  const runtimeSessionId = randomUUID();
-  const runtimeSessionStartedAt = new Date().toISOString();
   const runtimeConfigFingerprint = createHash("sha256")
     .update(
       JSON.stringify({
@@ -2200,6 +2259,128 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         : {})
     });
   });
+
+  app.get("/runtime/session-capture", async () =>
+    calibrationCapture.getStatus()
+  );
+
+  app.post("/runtime/session-capture/start", async (request, reply) => {
+    const body = calibrationCaptureStartBodySchema.parse(request.body);
+
+    try {
+      return calibrationCapture.start({
+        partition: body.partition,
+        ...(body.config ? { config: body.config } : {})
+      });
+    } catch (error) {
+      return sendCalibrationCaptureError(reply, error);
+    }
+  });
+
+  app.post("/runtime/session-capture/stop", async (request) => {
+    const body = calibrationCaptureStopBodySchema.parse(request.body ?? {});
+    return calibrationCapture.stop(body.reason);
+  });
+
+  app.get("/runtime/session-capture/sessions", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+
+    return {
+      currentRuntimeSessionId: runtimeSessionId,
+      sessions: calibrationCapture.getSessions(query.limit),
+      paperOnly: true,
+      dataOnly: true,
+      tradingDisabled: true
+    };
+  });
+
+  app.get("/runtime/session-capture/sessions/:sessionId", async (request, reply) => {
+    const params = calibrationCaptureSessionParamSchema.parse(request.params);
+    const session = calibrationCapture.getSession(params.sessionId);
+
+    if (!session) {
+      return reply.code(404).send({
+        error: "CALIBRATION_CAPTURE_SESSION_NOT_FOUND",
+        message: `Calibration capture session ${params.sessionId} was not found.`,
+        paperOnly: true,
+        dataOnly: true,
+        tradingDisabled: true
+      });
+    }
+
+    return session;
+  });
+
+  app.get(
+    "/runtime/session-capture/sessions/:sessionId/observations",
+    async (request, reply) => {
+      const params = calibrationCaptureSessionParamSchema.parse(request.params);
+      const query = calibrationCaptureObservationsQuerySchema.parse(
+        request.query
+      );
+
+      try {
+        return {
+          sessionId: params.sessionId,
+          observations: calibrationCapture.getObservations(params.sessionId, {
+            limit: query.limit,
+            ...(query.status ? { status: query.status } : {})
+          }),
+          paperOnly: true,
+          dataOnly: true,
+          tradingDisabled: true
+        };
+      } catch (error) {
+        return sendCalibrationCaptureError(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/runtime/session-capture/sessions/:sessionId/materialize",
+    async (request, reply) => {
+      calibrationCaptureMaterializeBodySchema.parse(request.body ?? {});
+      const params = calibrationCaptureSessionParamSchema.parse(request.params);
+
+      try {
+        return calibrationCapture.materialize(params.sessionId);
+      } catch (error) {
+        return sendCalibrationCaptureError(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/runtime/session-capture/sessions/:sessionId/export",
+    async (request, reply) => {
+      const params = calibrationCaptureSessionParamSchema.parse(request.params);
+      const query = calibrationCaptureExportQuerySchema.parse(request.query);
+
+      try {
+        const exported = calibrationCapture.export(
+          params.sessionId,
+          query.format
+        );
+        const extension = query.format === "jsonl" ? "jsonl" : query.format;
+        const contentType =
+          query.format === "csv"
+            ? "text/csv; charset=utf-8"
+            : query.format === "jsonl"
+              ? "application/x-ndjson; charset=utf-8"
+              : "application/json; charset=utf-8";
+
+        return reply
+          .type(contentType)
+          .header(
+            "content-disposition",
+            `attachment; filename="${safeFileSegment(params.sessionId)}.${extension}"`
+          )
+          .send(exported.serialized);
+      } catch (error) {
+        return sendCalibrationCaptureError(reply, error);
+      }
+    }
+  );
 
   app.post("/runtime/capacity/snapshot", async () => {
     const report = getRuntimeCapacityReport();
@@ -3586,6 +3767,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   app.addHook("onClose", async () => {
     await chainEvents.stop();
     await stopFeed();
+    calibrationCapture.interrupt("runtime_closed");
     paidDataArmed = false;
     persistRuntimeSession({
       stoppedAt: new Date().toISOString(),
@@ -6561,6 +6743,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     getSignals: () => Array.from(signals.values()),
     indexerAdapter,
     launchScanner,
+    calibrationCapture,
     meteredLaunchData,
     metrics: metricsEngine,
     pumpPortalDataWallet,
@@ -6806,6 +6989,24 @@ function getRiskFlags(event: FeedEvent): RiskFlags {
   return event.type === "account_trade"
     ? createFallbackRiskFlags()
     : event.riskFlags;
+}
+
+function sendCalibrationCaptureError(reply: FastifyReply, error: unknown) {
+  if (error instanceof CalibrationCaptureServiceError) {
+    return reply.code(error.statusCode).send({
+      error: error.code,
+      message: error.message,
+      paperOnly: true,
+      dataOnly: true,
+      tradingDisabled: true
+    });
+  }
+
+  throw error;
+}
+
+function safeFileSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/gu, "_").slice(0, 120) || "capture";
 }
 
 function sendWatchedWalletExitError(reply: FastifyReply, error: unknown) {

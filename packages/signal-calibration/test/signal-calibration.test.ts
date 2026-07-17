@@ -185,7 +185,8 @@ describe("@axi/signal-calibration", () => {
       policyStatus: "reference_only",
       calibrationStatus: "reference_only",
       evaluatorStatus: "implemented",
-      outcomeCaptureStatus: "not_implemented",
+      outcomeCaptureStatus: "implemented",
+      outcomeCaptureOwner: "@axi/session-capture",
       automaticThresholdActivation: false,
       tradingDisabled: true
     });

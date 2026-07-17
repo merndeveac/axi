@@ -33,6 +33,7 @@
     "exit:simulate": "tsx --conditions=development src/exit-simulate.ts",
     "exit:cost": "tsx --conditions=development src/exit-cost.ts",
     "paper:backtest": "tsx --conditions=development src/paper-backtest.ts",
+    "calibration:export": "tsx --conditions=development src/calibration-export.ts",
     "tokens:resolve": "tsx --conditions=development src/tokens-resolve.ts",
     "tokens:normalize": "tsx --conditions=development src/tokens-normalize.ts",
     "clean": "rm -rf dist"
@@ -58,6 +59,7 @@
     "@axi/pumpportal-lightning": "workspace:*",
     "@axi/risk": "workspace:*",
     "@axi/scoring": "workspace:*",
+    "@axi/session-capture": "workspace:*",
     "@axi/signal-calibration": "workspace:*",
     "@axi/shared": "workspace:*",
     "@axi/solana-chain": "workspace:*",
