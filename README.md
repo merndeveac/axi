@@ -49,6 +49,16 @@ buyers/sellers, net buy pressure, price OHLC, volume/price/buyer/trade/flow
 derivatives, launch phase, derivative strength, score, drivers, blockers, and
 missing-data reasons.
 
+Derivative strength is normalized by the shared `@axi/derivative-strength`
+engine. It combines conservative absolute reference scales with a bounded
+same-age cohort adjustment once at least five prior peers exist. Cohorts use
+percentile rank plus median/MAD diagnostics and never include future snapshots.
+Every strength exposes its age bucket, direction, confidence components, cohort
+readiness, and both positive/adverse magnitude. Confidence is reported but is
+not applied to the signal score until the signal-calibration phase validates
+that policy from captured data. The absolute scales are conservative reference
+values, not statistically calibrated trading thresholds or evidence of edge.
+
 Launch trade tracking uses PumpPortal `subscribeTokenTrade` only for selected
 mints, through the existing one-WebSocket PumpPortal provider and the metered
 actual-data gates. It never uses account-trade streams, trading APIs, wallet
@@ -130,7 +140,9 @@ are removed, invalid timestamps are rejected, and a computed flat derivative
 remains a real `0`. `/ui/momentum-rows` exposes machine-readable `derivatives`,
 `derivativeStrength`, `strategy`, and `data` objects, and
 `/ui/momentum-diagnostics` reports derivative coverage plus unavailable reason
-counts.
+counts. Strength normalization uses age buckets `0-10s`, `10-30s`, `30-60s`,
+`60-120s`, `120-300s`, and `300s+`. Large negative derivatives remain visible
+as adverse strength but do not contribute positive momentum score.
 
 Sparkline source priority is `trade_samples`, then `curve_marks`, then
 `unavailable`. Trade samples come from the metered/metrics PumpPortal token
@@ -624,6 +636,7 @@ Indexer endpoints:
 - `GET /indexer/derivatives/:mint`
 - `GET /runtime/timeseries`
 - `GET /runtime/derivatives`
+- `GET /runtime/derivative-strength`
 - `GET /indexer/stream/status`
 - `GET /indexer/stream/real-readiness`
 - `GET /indexer/stream/config`
@@ -2276,6 +2289,8 @@ docker compose --profile indexer up -d
 - `@axi/timeseries`: pure indexer-side trade OHLCV and rolling derivatives.
 - `@axi/derivatives`: deterministic, sample-gated event-time first and second
   derivatives with explicit units and unavailable-state diagnostics.
+- `@axi/derivative-strength`: canonical hybrid absolute/robust same-age
+  derivative normalization with confidence and adverse-direction diagnostics.
 - `@axi/launch-momentum`: pure PumpPortal launch-window metrics, derivatives,
   scoring, reason codes, and simulation fixtures.
 - `@axi/stream-core`: provider-agnostic managed Solana stream contracts,

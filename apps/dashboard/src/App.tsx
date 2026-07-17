@@ -549,6 +549,7 @@ type RuntimeContract = {
   ownership: {
     capacityModel: string;
     canonicalDerivatives: string;
+    canonicalDerivativeStrength: string;
     canonicalTimeseries: string;
     discoveryAndLaunchScoring: string;
     subscriptionPolicy: string;
@@ -583,6 +584,15 @@ type RuntimeContract = {
     secondDerivativeMinSamples: number;
     derivativeReadyMintCount: number;
     accelerationReadyMintCount: number;
+  };
+  derivativeStrength: {
+    canonical: true;
+    method: string;
+    minimumRobustCohortSize: number;
+    confidenceReportedSeparately: true;
+    confidenceAppliedToSignalScore: false;
+    calibrationStatus: "pending";
+    onlineCohortPolicy: string;
   };
 };
 
@@ -3420,7 +3430,8 @@ function DerivativeMetricTable({ row }: { row: MomentumScannerRow }) {
             <td>{metric.velocity}</td>
             <td>{metric.acceleration}</td>
             <td className={"derivative-strength " + metric.strength.strength}>
-              {metric.strength.strength} · {metric.strength.direction}
+              {metric.strength.strength} · {metric.strength.direction} ·{" "}
+              {formatPct(metric.strength.confidence.overall * 100)} conf
             </td>
           </tr>
         ))}

@@ -103,6 +103,59 @@ describe("launch momentum evaluator", () => {
     expect(snapshot.reasonCodes).toContain("LAUNCH_RIPPING");
     expect(snapshot.windows["30s"].tradeCount).toBeGreaterThanOrEqual(8);
     expect(snapshot.derivatives.volumeVelocitySolPerSec).toBeGreaterThan(0);
+    expect(snapshot.derivativeStrength.volume).toMatchObject({
+      schemaVersion: 1,
+      method: "hybrid_absolute_robust_age_cohort",
+      ageBucket: "10-30s",
+      cohortReady: false
+    });
+    expect(
+      snapshot.derivativeStrength.volume.confidence.overall
+    ).toBeGreaterThan(0);
+  });
+
+  it("does not reward adverse derivative direction as positive momentum", () => {
+    const trades: LaunchTradeSample[] = [
+      tradeAt("a", 21, 0.0008),
+      tradeAt("b", 25, 0.0005),
+      tradeAt("c", 29, 0.0002)
+    ];
+    const snapshot = evaluateLaunchMomentum({
+      mint,
+      launchedAt,
+      now,
+      trades
+    });
+
+    expect(snapshot.derivativeStrength.price.direction).toBe("down");
+    expect(snapshot.derivativeStrength.price.normalizedScore).toBeGreaterThan(
+      0
+    );
+    expect(snapshot.derivativeStrength.price.positiveScore).toBe(0);
+    expect(snapshot.derivativeScore.components.priceVelocityScore).toBe(0);
+  });
+
+  it("uses only the supplied same-age cohort when enough peers exist", () => {
+    const snapshot = evaluateLaunchMomentum({
+      mint,
+      launchedAt,
+      now,
+      trades: [
+        tradeAt("a", 21, 0.0004),
+        tradeAt("b", 25, 0.0005),
+        tradeAt("c", 29, 0.0006)
+      ],
+      normalizationCohort: {
+        volume_velocity_sol: [0.01, 0.02, 0.03, 0.04, 0.05]
+      }
+    });
+
+    expect(snapshot.derivativeStrength.volume).toMatchObject({
+      cohortReady: true,
+      cohortSampleCount: 5,
+      ageBucket: "30-60s"
+    });
+    expect(snapshot.derivativeStrength.price.cohortReady).toBe(false);
   });
 
   it("keeps weak launches below hot thresholds", () => {
@@ -232,3 +285,20 @@ describe("launch momentum evaluator", () => {
     expect(snapshot.windows["5s"].uniqueBuyers).toBe(0);
   });
 });
+
+function tradeAt(
+  id: string,
+  second: number,
+  priceSol: number
+): LaunchTradeSample {
+  return {
+    mint,
+    side: "buy",
+    trader: `buyer-${id}`,
+    signature: `sig-${id}`,
+    priceSol,
+    volumeSol: 1,
+    tokenAmount: 1_000,
+    timestamp: `2026-01-01T00:00:${String(second).padStart(2, "0")}.000Z`
+  };
+}

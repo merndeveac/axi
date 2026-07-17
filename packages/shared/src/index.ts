@@ -768,10 +768,39 @@ export type MomentumDerivativeSignalLabel =
   | "reject";
 
 export type MomentumDerivativeStrengthEntry = {
+  schemaVersion: 1;
+  method: "hybrid_absolute_robust_age_cohort";
+  metric: string;
+  unit: string;
   rawValue: number | null;
   normalizedScore: number;
+  confidenceAdjustedScore: number;
+  positiveScore: number;
+  adverseScore: number;
+  absoluteScore: number;
+  cohortScore: number | null;
+  cohortPercentile: number | null;
+  robustZScore: number | null;
+  cohortMedian: number | null;
+  cohortMad: number | null;
+  cohortSampleCount: number;
+  cohortReady: boolean;
+  ageBucket:
+    | "0-10s"
+    | "10-30s"
+    | "30-60s"
+    | "60-120s"
+    | "120-300s"
+    | "300s+";
   direction: DerivativeDirection;
   strength: DerivativeStrengthLabel;
+  confidence: {
+    overall: number;
+    sample: number;
+    distinctTimestamp: number;
+    span: number;
+    freshness: number;
+  };
   reasonCodes: string[];
 };
 

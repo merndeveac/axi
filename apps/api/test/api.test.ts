@@ -1484,6 +1484,7 @@ describe("@axi/api", () => {
       roadmap: {
         canonicalOneSecondTimeseries: string;
         derivativeCorrectness: string;
+        derivativeStrengthNormalization: string;
         rollingNewestTokenScheduler: string;
         schedulerMutationApplied: boolean;
       };
@@ -1512,12 +1513,20 @@ describe("@axi/api", () => {
         firstDerivativeMinSamples: number;
         secondDerivativeMinSamples: number;
       };
+      derivativeStrength: {
+        canonical: boolean;
+        method: string;
+        minimumRobustCohortSize: number;
+        confidenceAppliedToSignalScore: boolean;
+        calibrationStatus: string;
+      };
     };
 
     expect(response.statusCode).toBe(200);
     expect(body.ownership).toMatchObject({
       discoveryAndLaunchScoring: "LaunchScannerService",
       canonicalDerivatives: "@axi/derivatives",
+      canonicalDerivativeStrength: "@axi/derivative-strength",
       canonicalTimeseries: "@axi/timeseries",
       subscriptionTransport: "ActualDataService",
       subscriptionPolicy: "MeteredLaunchDataService",
@@ -1538,6 +1547,7 @@ describe("@axi/api", () => {
     expect(body.configuration.driftDetected).toBe(false);
     expect(body.roadmap.canonicalOneSecondTimeseries).toBe("implemented");
     expect(body.roadmap.derivativeCorrectness).toBe("implemented");
+    expect(body.roadmap.derivativeStrengthNormalization).toBe("implemented");
     expect(body.roadmap.rollingNewestTokenScheduler).toBe("implemented");
     expect(body.roadmap.schedulerMutationApplied).toBe(false);
     expect(body.timeseries).toMatchObject({
@@ -1550,6 +1560,13 @@ describe("@axi/api", () => {
       method: "event_time_finite_difference",
       firstDerivativeMinSamples: 2,
       secondDerivativeMinSamples: 3
+    });
+    expect(body.derivativeStrength).toMatchObject({
+      canonical: true,
+      method: "hybrid_absolute_robust_age_cohort",
+      minimumRobustCohortSize: 5,
+      confidenceAppliedToSignalScore: false,
+      calibrationStatus: "pending"
     });
     expect(body.safety.apiHost).toBe("127.0.0.1");
     expect(body.safety.tradingDisabled).toBe(true);
@@ -2984,6 +3001,14 @@ describe("@axi/api", () => {
     expect(row?.volumeAccelerationSolPerSec2).toBeNull();
     expect(row?.priceVelocityPctPerSec).toEqual(expect.any(Number));
     expect(row?.buyerVelocityPerSec).toEqual(expect.any(Number));
+    expect(row?.derivativeStrength.volume).toMatchObject({
+      schemaVersion: 1,
+      method: "hybrid_absolute_robust_age_cohort",
+      cohortReady: false
+    });
+    expect(row?.derivativeStrength.volume.confidence.overall).toBeGreaterThan(
+      0
+    );
     expect(row?.unavailableFields).not.toContain(
       "INSUFFICIENT_SAMPLES_FOR_DERIVATIVE"
     );
@@ -3776,6 +3801,20 @@ describe("@axi/api", () => {
       derivativeReadyMintCount: 0,
       accelerationReadyMintCount: 0,
       unavailableValue: null,
+      tradingDisabled: true
+    });
+
+    const runtimeStrengthResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/derivative-strength"
+    });
+    expect(runtimeStrengthResponse.json()).toMatchObject({
+      canonical: true,
+      method: "hybrid_absolute_robust_age_cohort",
+      onlineCohortPolicy: "same_age_prior_snapshots_only",
+      minimumRobustCohortSize: 5,
+      signalCalibrationRequired: true,
+      calibrationStatus: "pending",
       tradingDisabled: true
     });
 

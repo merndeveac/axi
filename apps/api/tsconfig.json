@@ -21,6 +21,7 @@
     { "path": "../../packages/shared" },
     { "path": "../../packages/scoring" },
     { "path": "../../packages/data-feeds" },
+    { "path": "../../packages/derivative-strength" },
     { "path": "../../packages/execution" },
     { "path": "../../packages/exit-strategy" },
     { "path": "../../packages/market-data" },

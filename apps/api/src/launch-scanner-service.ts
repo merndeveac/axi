@@ -4,6 +4,11 @@ import {
   type LaunchTradeSample
 } from "@axi/launch-momentum";
 import {
+  getDerivativeStrengthAgeBucket,
+  type DerivativeStrengthCohort,
+  type DerivativeStrengthMetricName
+} from "@axi/derivative-strength";
+import {
   type FeedEvent,
   type TokenCreatedEvent,
   type TokenTradeEvent
@@ -267,6 +272,11 @@ export class LaunchScannerService {
       hardReject: this.getRiskSnapshot?.(event.candidate.mint)?.hardReject,
       launchedAt: discoveredAt,
       mint: event.candidate.mint,
+      normalizationCohort: this.getDerivativeStrengthCohort(
+        event.candidate.mint,
+        ageSecondsBetween(discoveredAt, event.timestamp),
+        event.timestamp
+      ),
       now: event.timestamp,
       riskLevel: this.getRiskSnapshot?.(event.candidate.mint)?.riskLevel,
       trades: existing?.trades ?? []
@@ -331,6 +341,11 @@ export class LaunchScannerService {
       hardReject: this.getRiskSnapshot?.(event.mint)?.hardReject,
       launchedAt: discoveredAt,
       mint: event.mint,
+      normalizationCohort: this.getDerivativeStrengthCohort(
+        event.mint,
+        ageSecondsBetween(discoveredAt, event.timestamp),
+        event.timestamp
+      ),
       now: event.timestamp,
       riskLevel: this.getRiskSnapshot?.(event.mint)?.riskLevel,
       trades
@@ -366,10 +381,17 @@ export class LaunchScannerService {
       return null;
     }
 
+    const evaluatedAt = new Date().toISOString();
     const snapshot = evaluateLaunchMomentum({
       hardReject: this.getRiskSnapshot?.(mint)?.hardReject,
       launchedAt: candidate.discoveredAt,
       mint,
+      normalizationCohort: this.getDerivativeStrengthCohort(
+        mint,
+        ageSecondsBetween(candidate.discoveredAt, evaluatedAt),
+        evaluatedAt
+      ),
+      now: evaluatedAt,
       riskLevel: this.getRiskSnapshot?.(mint)?.riskLevel,
       trades: candidate.trades
     });
@@ -657,6 +679,46 @@ export class LaunchScannerService {
     );
   }
 
+  private getDerivativeStrengthCohort(
+    excludedMint: string,
+    ageSeconds: number,
+    evaluatedAt: string
+  ): DerivativeStrengthCohort {
+    const targetBucket = getDerivativeStrengthAgeBucket(ageSeconds);
+    const evaluatedAtMs = Date.parse(evaluatedAt);
+    const cohort: Partial<
+      Record<DerivativeStrengthMetricName, number[]>
+    > = {};
+
+    if (!Number.isFinite(evaluatedAtMs)) {
+      return cohort;
+    }
+
+    for (const candidate of this.candidates.values()) {
+      const snapshot = candidate.snapshot;
+
+      if (
+        candidate.mint === excludedMint ||
+        getDerivativeStrengthAgeBucket(snapshot.ageSeconds) !== targetBucket ||
+        Date.parse(snapshot.evaluatedAt) > evaluatedAtMs
+      ) {
+        continue;
+      }
+
+      for (const [metric, value] of derivativeCohortValues(snapshot)) {
+        if (value === null || !Number.isFinite(value)) {
+          continue;
+        }
+
+        const values = cohort[metric] ?? [];
+        values.push(value);
+        cohort[metric] = values;
+      }
+    }
+
+    return cohort;
+  }
+
   private persistCandidate(candidate: LaunchCandidateState): void {
     saveLaunchCandidate({
       mint: candidate.mint,
@@ -748,6 +810,34 @@ function toLaunchTradeSample(event: TokenTradeEvent): LaunchTradeSample | null {
 
 function isPositiveFinite(value: number | null): boolean {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function derivativeCohortValues(
+  snapshot: LaunchMomentumSnapshot
+): Array<[DerivativeStrengthMetricName, number | null]> {
+  const derivatives = snapshot.derivatives;
+
+  return [
+    ["volume_velocity_sol", derivatives.volumeVelocitySolPerSec],
+    ["volume_acceleration_sol", derivatives.volumeAccelerationSolPerSec2],
+    ["price_velocity_pct", derivatives.priceVelocityPctPerSec],
+    ["price_acceleration_pct", derivatives.priceAccelerationPctPerSec2],
+    ["price_velocity_sol", derivatives.priceSolVelocityPerSec],
+    ["price_acceleration_sol", derivatives.priceSolAccelerationPerSec2],
+    ["buyer_velocity", derivatives.buyerVelocityPerSec],
+    ["buyer_acceleration", derivatives.buyerAccelerationPerSec2],
+    ["trade_velocity", derivatives.tradeVelocityPerSec],
+    ["trade_acceleration", derivatives.tradeAccelerationPerSec2],
+    ["buy_pressure_velocity", derivatives.buyPressureVelocityPerSec],
+    ["buy_pressure_acceleration", derivatives.buyPressureAccelerationPerSec2],
+    ["market_cap_velocity_sol", derivatives.marketCapSolVelocityPerSec],
+    ["liquidity_velocity_sol", derivatives.liquiditySolVelocityPerSec]
+  ];
+}
+
+function ageSecondsBetween(launchedAt: string, evaluatedAt: string): number {
+  const ageSeconds = (Date.parse(evaluatedAt) - Date.parse(launchedAt)) / 1_000;
+  return Number.isFinite(ageSeconds) ? Math.max(0, ageSeconds) : 0;
 }
 
 function round(value: number): number {

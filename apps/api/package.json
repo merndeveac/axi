@@ -42,6 +42,7 @@
     "@axi/capacity-model": "workspace:*",
     "@axi/chain-events": "workspace:*",
     "@axi/data-feeds": "workspace:*",
+    "@axi/derivative-strength": "workspace:*",
     "@axi/event-bus": "workspace:*",
     "@axi/execution": "workspace:*",
     "@axi/exit-strategy": "workspace:*",

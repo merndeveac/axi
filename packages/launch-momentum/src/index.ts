@@ -1,4 +1,13 @@
-import { computeCanonicalDerivatives } from "@axi/derivatives";
+import {
+  normalizeDerivativeStrength,
+  type DerivativeStrengthCohort,
+  type NormalizedDerivativeStrength
+} from "@axi/derivative-strength";
+import {
+  computeCanonicalDerivatives,
+  type CanonicalDerivativeSnapshot,
+  type DerivativeMetric
+} from "@axi/derivatives";
 
 export const launchWindowMs = {
   "5s": 5_000,
@@ -24,14 +33,9 @@ export type LaunchScoreLabel = "none" | "watch" | "hot" | "ripping" | "reject";
 
 export type LaunchTradeSide = "buy" | "sell";
 
-export type DerivativeDirection = "up" | "down" | "flat" | "unavailable";
+export type DerivativeDirection = NormalizedDerivativeStrength["direction"];
 
-export type DerivativeStrengthLabel =
-  | "none"
-  | "weak"
-  | "moderate"
-  | "strong"
-  | "explosive";
+export type DerivativeStrengthLabel = NormalizedDerivativeStrength["strength"];
 
 export type LaunchTradeSample = {
   mint: string;
@@ -104,13 +108,7 @@ export type LaunchDerivatives = {
   d2LiquiditySolPerSec2: number | null;
 };
 
-export type DerivativeStrength = {
-  rawValue: number | null;
-  normalizedScore: number;
-  direction: DerivativeDirection;
-  strength: DerivativeStrengthLabel;
-  reasonCodes: string[];
-};
+export type DerivativeStrength = NormalizedDerivativeStrength;
 
 export type MomentumDerivativeScore = {
   totalScore: number;
@@ -186,6 +184,7 @@ export type EvaluateLaunchMomentumInput = {
   trades?: LaunchTradeSample[] | undefined;
   hardReject?: boolean | undefined;
   riskLevel?: "unknown" | "low" | "medium" | "high" | "critical" | undefined;
+  normalizationCohort?: DerivativeStrengthCohort | undefined;
 };
 
 export type LaunchSimulationFixture =
@@ -228,7 +227,8 @@ export function evaluateLaunchMomentum(
     evaluatedAtMs
   );
   const windows = createWindowRecord(trades, evaluatedAtMs);
-  const derivatives = computeDerivatives(trades, evaluatedAtMs);
+  const derivativeComputation = computeDerivatives(trades, evaluatedAtMs);
+  const derivatives = derivativeComputation.derivatives;
   const components = computeScoreComponents({
     derivatives,
     hardReject: input.hardReject === true,
@@ -237,7 +237,11 @@ export function evaluateLaunchMomentum(
     windows
   });
   const derivativeStrength = computeDerivativeStrengths({
+    ageSeconds,
+    canonical: derivativeComputation.canonical,
+    cohort: input.normalizationCohort,
     derivatives,
+    freshnessMs: latestObservationFreshnessMs(trades, evaluatedAtMs),
     hardReject: input.hardReject === true,
     riskLevel: input.riskLevel ?? "unknown",
     tradeSampleCount: trades.length,
@@ -472,7 +476,10 @@ function computeFromTrades(trades: LaunchTradeSample[]): LaunchWindowMetrics {
 function computeDerivatives(
   trades: LaunchTradeSample[],
   evaluatedAtMs: number
-): LaunchDerivatives {
+): {
+  canonical: CanonicalDerivativeSnapshot;
+  derivatives: LaunchDerivatives;
+} {
   const snapshot = computeCanonicalDerivatives({
     mint: trades[0]?.mint ?? "unknown",
     evaluatedAt: evaluatedAtMs,
@@ -489,7 +496,7 @@ function computeDerivatives(
   const window5s = snapshot.windows["5s"].metrics;
   const window30s = snapshot.windows["30s"].metrics;
 
-  return {
+  const derivatives: LaunchDerivatives = {
     volumeVelocitySolPerSec: primary.volumeVelocitySolPerSec.value,
     volumeAccelerationSolPerSec2:
       primary.volumeAccelerationSolPerSec2.value,
@@ -529,6 +536,8 @@ function computeDerivatives(
     dLiquiditySolPerSec: null,
     d2LiquiditySolPerSec2: null
   };
+
+  return { canonical: snapshot, derivatives };
 }
 
 function computeScoreComponents(input: {
@@ -564,107 +573,84 @@ function computeScoreComponents(input: {
 }
 
 function computeDerivativeStrengths(input: {
+  ageSeconds: number;
+  canonical: CanonicalDerivativeSnapshot;
+  cohort: DerivativeStrengthCohort | undefined;
   derivatives: LaunchDerivatives;
+  freshnessMs: number | null;
   hardReject: boolean;
   riskLevel: string;
   tradeSampleCount: number;
   windows: Record<LaunchWindowLabel, LaunchWindowMetrics>;
 }): LaunchDerivativeStrengths {
-  const volume = toDerivativeStrength(input.derivatives.volumeVelocitySolPerSec, {
-    unavailableCode: "VOLUME_VELOCITY_UNAVAILABLE",
-    weakAt: 0.03,
-    moderateAt: 0.1,
-    strongAt: 0.3,
-    explosiveAt: 0.75
-  });
-  const volumeAcceleration = toDerivativeStrength(
-    input.derivatives.volumeAccelerationSolPerSec2,
-    {
-      unavailableCode: "VOLUME_ACCELERATION_UNAVAILABLE",
-      weakAt: 0.005,
-      moderateAt: 0.02,
-      strongAt: 0.05,
-      explosiveAt: 0.12
-    }
+  const metrics = input.canonical.windows["10s"].metrics;
+  const normalize = (
+    metricName: Parameters<typeof normalizeDerivativeStrength>[0]["metric"],
+    metric: DerivativeMetric
+  ) => {
+    const cohortValues = input.cohort?.[metricName];
+
+    return normalizeDerivativeStrength({
+      metric: metricName,
+      rawValue: metric.value,
+      ageSeconds: input.ageSeconds,
+      ...(cohortValues ? { cohortValues } : {}),
+      availabilityStatus: metric.status,
+      sampleCount: metric.sampleCount,
+      distinctTimestampCount: metric.distinctTimestampCount,
+      spanMs: metric.spanMs,
+      windowMs: 10_000,
+      freshnessMs: input.freshnessMs
+    });
+  };
+  const unavailable = (metricName: Parameters<typeof normalize>[0]) => {
+    const cohortValues = input.cohort?.[metricName];
+
+    return normalizeDerivativeStrength({
+      metric: metricName,
+      rawValue: null,
+      ageSeconds: input.ageSeconds,
+      ...(cohortValues ? { cohortValues } : {}),
+      availabilityStatus: "source_unavailable",
+      sampleCount: 0,
+      distinctTimestampCount: 0,
+      spanMs: null,
+      windowMs: 10_000,
+      freshnessMs: input.freshnessMs
+    });
+  };
+  const volume = normalize(
+    "volume_velocity_sol",
+    metrics.volumeVelocitySolPerSec
   );
-  const price = toDerivativeStrength(input.derivatives.priceVelocityPctPerSec, {
-    unavailableCode: "PRICE_VELOCITY_UNAVAILABLE",
-    weakAt: 0.05,
-    moderateAt: 0.2,
-    strongAt: 0.65,
-    explosiveAt: 1.4
-  });
-  const priceAcceleration = toDerivativeStrength(
-    input.derivatives.priceAccelerationPctPerSec2,
-    {
-      unavailableCode: "PRICE_ACCELERATION_UNAVAILABLE",
-      weakAt: 0.01,
-      moderateAt: 0.05,
-      strongAt: 0.15,
-      explosiveAt: 0.35
-    }
+  const volumeAcceleration = normalize(
+    "volume_acceleration_sol",
+    metrics.volumeAccelerationSolPerSec2
   );
-  const priceSol = toDerivativeStrength(input.derivatives.priceSolVelocityPerSec, {
-    unavailableCode: "PRICE_SOL_VELOCITY_UNAVAILABLE",
-    weakAt: 0.000001,
-    moderateAt: 0.00001,
-    strongAt: 0.00005,
-    explosiveAt: 0.0002
-  });
-  const buyers = toDerivativeStrength(input.derivatives.buyerVelocityPerSec, {
-    unavailableCode: "BUYER_VELOCITY_UNAVAILABLE",
-    weakAt: 0.03,
-    moderateAt: 0.1,
-    strongAt: 0.25,
-    explosiveAt: 0.5
-  });
-  const buyerAcceleration = toDerivativeStrength(
-    input.derivatives.buyerAccelerationPerSec2,
-    {
-      unavailableCode: "BUYER_ACCELERATION_UNAVAILABLE",
-      weakAt: 0.003,
-      moderateAt: 0.015,
-      strongAt: 0.04,
-      explosiveAt: 0.1
-    }
+  const price = normalize(
+    "price_velocity_pct",
+    metrics.priceVelocityPctPerSec
   );
-  const trades = toDerivativeStrength(input.derivatives.tradeVelocityPerSec, {
-    unavailableCode: "TRADE_VELOCITY_UNAVAILABLE",
-    weakAt: 0.08,
-    moderateAt: 0.2,
-    strongAt: 0.45,
-    explosiveAt: 0.8
-  });
-  const buyPressure = toDerivativeStrength(
-    input.derivatives.buyPressureVelocityPerSec,
-    {
-      unavailableCode: "BUY_PRESSURE_DERIVATIVE_UNAVAILABLE",
-      weakAt: 0.005,
-      moderateAt: 0.02,
-      strongAt: 0.06,
-      explosiveAt: 0.12
-    }
+  const priceAcceleration = normalize(
+    "price_acceleration_pct",
+    metrics.priceAccelerationPctPerSec2
   );
-  const marketCap = toDerivativeStrength(
-    input.derivatives.marketCapSolVelocityPerSec,
-    {
-      unavailableCode: "MARKET_CAP_DERIVATIVE_UNAVAILABLE",
-      weakAt: 0.05,
-      moderateAt: 0.2,
-      strongAt: 0.6,
-      explosiveAt: 1.5
-    }
+  const priceSol = normalize(
+    "price_velocity_sol",
+    metrics.priceSolVelocityPerSec
   );
-  const liquidity = toDerivativeStrength(
-    input.derivatives.liquiditySolVelocityPerSec,
-    {
-      unavailableCode: "LIQUIDITY_DERIVATIVE_UNAVAILABLE",
-      weakAt: 0.05,
-      moderateAt: 0.2,
-      strongAt: 0.6,
-      explosiveAt: 1.5
-    }
+  const buyers = normalize("buyer_velocity", metrics.buyerVelocityPerSec);
+  const buyerAcceleration = normalize(
+    "buyer_acceleration",
+    metrics.buyerAccelerationPerSec2
   );
+  const trades = normalize("trade_velocity", metrics.tradeVelocityPerSec);
+  const buyPressure = normalize(
+    "buy_pressure_velocity",
+    metrics.buyPressureVelocityPerSec
+  );
+  const marketCap = unavailable("market_cap_velocity_sol");
+  const liquidity = unavailable("liquidity_velocity_sol");
   const combinedDerivativeScore = computeMomentumDerivativeScore({
     buyerAcceleration,
     buyers,
@@ -712,14 +698,14 @@ function computeMomentumDerivativeScore(input: {
 }): MomentumDerivativeScore {
   const reasonCodes: string[] = [];
   const components = {
-    volumeVelocityScore: round(input.volume.normalizedScore * 0.16),
-    volumeAccelerationScore: round(input.volumeAcceleration.normalizedScore * 0.12),
-    priceVelocityScore: round(input.price.normalizedScore * 0.16),
-    priceAccelerationScore: round(input.priceAcceleration.normalizedScore * 0.1),
-    buyerVelocityScore: round(input.buyers.normalizedScore * 0.14),
-    buyerAccelerationScore: round(input.buyerAcceleration.normalizedScore * 0.08),
-    tradeVelocityScore: round(input.trades.normalizedScore * 0.1),
-    buyPressureScore: round(Math.max(input.buyPressure.normalizedScore, 0) * 0.14),
+    volumeVelocityScore: round(input.volume.positiveScore * 0.16),
+    volumeAccelerationScore: round(input.volumeAcceleration.positiveScore * 0.12),
+    priceVelocityScore: round(input.price.positiveScore * 0.16),
+    priceAccelerationScore: round(input.priceAcceleration.positiveScore * 0.1),
+    buyerVelocityScore: round(input.buyers.positiveScore * 0.14),
+    buyerAccelerationScore: round(input.buyerAcceleration.positiveScore * 0.08),
+    tradeVelocityScore: round(input.trades.positiveScore * 0.1),
+    buyPressureScore: round(input.buyPressure.positiveScore * 0.14),
     sellPressurePenalty:
       input.windows["10s"].netBuyPressure <= -0.2 ||
       input.windows["30s"].netBuyPressure <= -0.25
@@ -774,53 +760,6 @@ function computeMomentumDerivativeScore(input: {
     }),
     components,
     reasonCodes: uniqueStrings(reasonCodes)
-  };
-}
-
-function toDerivativeStrength(
-  rawValue: number | null,
-  thresholds: {
-    unavailableCode: string;
-    weakAt: number;
-    moderateAt: number;
-    strongAt: number;
-    explosiveAt: number;
-  }
-): DerivativeStrength {
-  if (rawValue === null || !Number.isFinite(rawValue)) {
-    return {
-      rawValue: null,
-      normalizedScore: 0,
-      direction: "unavailable",
-      strength: "none",
-      reasonCodes: [thresholds.unavailableCode]
-    };
-  }
-
-  const absoluteValue = Math.abs(rawValue);
-  const normalizedScore = round(clamp((absoluteValue / thresholds.explosiveAt) * 100, 0, 100));
-  const strength =
-    absoluteValue >= thresholds.explosiveAt
-      ? "explosive"
-      : absoluteValue >= thresholds.strongAt
-        ? "strong"
-        : absoluteValue >= thresholds.moderateAt
-          ? "moderate"
-          : absoluteValue >= thresholds.weakAt
-            ? "weak"
-            : "none";
-  const direction =
-    rawValue > 0 ? "up" : rawValue < 0 ? "down" : ("flat" as const);
-
-  return {
-    rawValue: round(rawValue),
-    normalizedScore,
-    direction,
-    strength,
-    reasonCodes:
-      strength === "none"
-        ? ["DERIVATIVE_STRENGTH_NONE"]
-        : [`DERIVATIVE_STRENGTH_${strength.toUpperCase()}`]
   };
 }
 
@@ -932,6 +871,17 @@ function tradeIdentity(trade: LaunchTradeSample): string {
       trade.tokenAmount ?? "unknown"
     ].join(":")
   );
+}
+
+function latestObservationFreshnessMs(
+  trades: LaunchTradeSample[],
+  evaluatedAtMs: number
+): number | null {
+  const latest = trades.at(-1);
+
+  return latest
+    ? Math.max(0, evaluatedAtMs - parseTime(latest.timestamp))
+    : null;
 }
 
 function emptyWindow(): LaunchWindowMetrics {

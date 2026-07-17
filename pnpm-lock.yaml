@@ -65,6 +65,9 @@ importers:
       '@axi/data-feeds':
         specifier: workspace:*
         version: link:../../packages/data-feeds
+      '@axi/derivative-strength':
+        specifier: workspace:*
+        version: link:../../packages/derivative-strength
       '@axi/event-bus':
         specifier: workspace:*
         version: link:../../packages/event-bus
@@ -224,6 +227,8 @@ importers:
         specifier: ^8.18.0
         version: 8.21.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
 
+  packages/derivative-strength: {}
+
   packages/derivatives: {}
 
   packages/event-bus:
@@ -248,6 +253,9 @@ importers:
 
   packages/launch-momentum:
     dependencies:
+      '@axi/derivative-strength':
+        specifier: workspace:*
+        version: link:../derivative-strength
       '@axi/derivatives':
         specifier: workspace:*
         version: link:../derivatives

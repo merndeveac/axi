@@ -1,4 +1,5 @@
 import type { TradeTimeseriesStatus } from "@axi/timeseries";
+import { getDerivativeStrengthRuntimeContract } from "@axi/derivative-strength";
 import type { ActualDataService } from "./actual-data-service";
 import type { MeteredLaunchDataService } from "./metered-launch-data-service";
 
@@ -52,7 +53,7 @@ export function createRuntimeContract(input: {
   );
 
   return {
-    version: 4,
+    version: 5,
     runtimeSessionId: input.runtimeSessionId,
     safety: {
       paperOnly: true,
@@ -71,6 +72,7 @@ export function createRuntimeContract(input: {
       rollingMetrics: "@axi/metrics",
       canonicalTimeseries: "@axi/timeseries",
       canonicalDerivatives: "@axi/derivatives",
+      canonicalDerivativeStrength: "@axi/derivative-strength",
       capacityModel: "@axi/capacity-model",
       trackingScheduler: "@axi/tracking-scheduler",
       paperPortfolio: "@axi/paper-portfolio",
@@ -109,11 +111,16 @@ export function createRuntimeContract(input: {
       dataOnly: true,
       tradingDisabled: true
     },
+    derivativeStrength: {
+      ...getDerivativeStrengthRuntimeContract(),
+      onlineCohortPolicy: "same_age_prior_snapshots_only" as const
+    },
     roadmap: {
       coverageCapacityInstrumentation: "implemented",
       rollingNewestTokenScheduler: "implemented",
       canonicalOneSecondTimeseries: "implemented",
       derivativeCorrectness: "implemented",
+      derivativeStrengthNormalization: "implemented",
       schedulerMutationApplied:
         meteredStatus.scheduler.trackingMutationCount > 0
     },

@@ -16,6 +16,11 @@ import {
   type TokenFeedProvider
 } from "@axi/data-feeds";
 import {
+  getDerivativeStrengthRuntimeContract,
+  normalizeDerivativeStrength,
+  type DerivativeStrengthMetricName
+} from "@axi/derivative-strength";
+import {
   createCandidateLifecycleEngine,
   type CandidateLifecycleEngine,
   type CandidateState
@@ -2110,6 +2115,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     };
   });
 
+  app.get("/runtime/derivative-strength", async () => ({
+    ...getDerivativeStrengthRuntimeContract(),
+    onlineCohortPolicy: "same_age_prior_snapshots_only",
+    signalCalibrationRequired: true
+  }));
+
   app.post("/runtime/capacity/snapshot", async () => {
     const report = getRuntimeCapacityReport();
     const snapshot = saveCapacitySnapshot({
@@ -3851,15 +3862,22 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     };
     const derivativeReasonSet = uniqueReasonCodes([
       ...derivativeReasonCodes,
-      ...(card.launchDerivativeScore?.reasonCodes ?? []),
-      ...(card.launchDerivativeStrength?.volume.reasonCodes ?? []),
-      ...(card.launchDerivativeStrength?.volumeAcceleration.reasonCodes ?? []),
-      ...(card.launchDerivativeStrength?.price.reasonCodes ?? []),
-      ...(card.launchDerivativeStrength?.priceAcceleration.reasonCodes ?? []),
-      ...(card.launchDerivativeStrength?.buyers.reasonCodes ?? []),
-      ...(card.launchDerivativeStrength?.buyerAcceleration.reasonCodes ?? []),
-      ...(card.launchDerivativeStrength?.trades.reasonCodes ?? []),
-      ...(card.launchDerivativeStrength?.buyPressure.reasonCodes ?? [])
+      ...(card.launchTradeSampleCount >= 2
+        ? [
+            ...(card.launchDerivativeScore?.reasonCodes ?? []),
+            ...(card.launchDerivativeStrength?.volume.reasonCodes ?? []),
+            ...(card.launchDerivativeStrength?.volumeAcceleration.reasonCodes ??
+              []),
+            ...(card.launchDerivativeStrength?.price.reasonCodes ?? []),
+            ...(card.launchDerivativeStrength?.priceAcceleration.reasonCodes ??
+              []),
+            ...(card.launchDerivativeStrength?.buyers.reasonCodes ?? []),
+            ...(card.launchDerivativeStrength?.buyerAcceleration.reasonCodes ??
+              []),
+            ...(card.launchDerivativeStrength?.trades.reasonCodes ?? []),
+            ...(card.launchDerivativeStrength?.buyPressure.reasonCodes ?? [])
+          ]
+        : [])
     ]);
     const rowDerivatives: MomentumScannerRow["derivatives"] = {
       dVol5sSolPerSec: chooseDerivativeValue(
@@ -3954,12 +3972,24 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       ),
       reasonCodes: derivativeReasonSet
     };
+    const eligibleLaunchDerivativeStrength =
+      card.launchTradeSampleCount >= 2
+        ? card.launchDerivativeStrength
+        : null;
     const rowDerivativeStrength =
-      card.launchDerivativeStrength ??
-      createMomentumDerivativeStrengthFallback(rowDerivatives);
-    const rowDerivativeScore =
-      card.launchDerivativeScore ??
-      rowDerivativeStrength.combinedDerivativeScore;
+      eligibleLaunchDerivativeStrength ??
+      createMomentumDerivativeStrengthFallback(rowDerivatives, {
+        ageSeconds: card.launchAgeSeconds ?? card.ageSeconds,
+        freshnessMs:
+          card.latestTradeAgeSeconds === null
+            ? null
+            : card.latestTradeAgeSeconds * 1_000,
+        sampleCount: derivativeSampleCount
+      });
+    const rowDerivativeScore = eligibleLaunchDerivativeStrength
+      ? (card.launchDerivativeScore ??
+        rowDerivativeStrength.combinedDerivativeScore)
+      : rowDerivativeStrength.combinedDerivativeScore;
     const isProtected =
       card.paperPositionSummary.hasPosition ||
       card.launchPhase === "hot" ||
@@ -7788,76 +7818,75 @@ function chooseDerivativeValue(
 }
 
 function createMomentumDerivativeStrengthFallback(
-  derivatives: MomentumScannerRow["derivatives"]
+  derivatives: MomentumScannerRow["derivatives"],
+  options: {
+    ageSeconds: number;
+    freshnessMs: number | null;
+    sampleCount: number;
+  }
 ): MomentumScannerRow["derivativeStrength"] {
-  const volume = createMomentumDerivativeStrengthEntry(
-    derivatives.dVol10sSolPerSec,
-    "VOLUME_VELOCITY_UNAVAILABLE",
-    0.75
+  const normalize = (
+    metric: DerivativeStrengthMetricName,
+    rawValue: number | null
+  ) =>
+    normalizeDerivativeStrength({
+      metric,
+      rawValue,
+      ageSeconds: options.ageSeconds,
+      availabilityStatus:
+        rawValue === null ? "source_unavailable" : "available",
+      sampleCount: options.sampleCount,
+      windowMs: 10_000,
+      freshnessMs: options.freshnessMs
+    });
+  const volume = normalize(
+    "volume_velocity_sol",
+    derivatives.dVol10sSolPerSec
   );
-  const volumeAcceleration = createMomentumDerivativeStrengthEntry(
-    derivatives.d2VolSolPerSec2,
-    "VOLUME_ACCELERATION_UNAVAILABLE",
-    0.12
+  const volumeAcceleration = normalize(
+    "volume_acceleration_sol",
+    derivatives.d2VolSolPerSec2
   );
-  const price = createMomentumDerivativeStrengthEntry(
-    derivatives.dPricePctPerSec,
-    "PRICE_VELOCITY_UNAVAILABLE",
-    1.4
+  const price = normalize("price_velocity_pct", derivatives.dPricePctPerSec);
+  const priceAcceleration = normalize(
+    "price_acceleration_pct",
+    derivatives.d2PricePctPerSec2
   );
-  const priceAcceleration = createMomentumDerivativeStrengthEntry(
-    derivatives.d2PricePctPerSec2,
-    "PRICE_ACCELERATION_UNAVAILABLE",
-    0.35
+  const priceSol = normalize(
+    "price_velocity_sol",
+    derivatives.dPriceSolPerSec
   );
-  const priceSol = createMomentumDerivativeStrengthEntry(
-    derivatives.dPriceSolPerSec,
-    "PRICE_SOL_VELOCITY_UNAVAILABLE",
-    0.0002
+  const buyers = normalize("buyer_velocity", derivatives.dBuyersPerSec);
+  const buyerAcceleration = normalize(
+    "buyer_acceleration",
+    derivatives.d2BuyersPerSec2
   );
-  const buyers = createMomentumDerivativeStrengthEntry(
-    derivatives.dBuyersPerSec,
-    "BUYER_VELOCITY_UNAVAILABLE",
-    0.5
+  const trades = normalize("trade_velocity", derivatives.dTradesPerSec);
+  const buyPressure = normalize(
+    "buy_pressure_velocity",
+    derivatives.dBuyPressurePerSec
   );
-  const buyerAcceleration = createMomentumDerivativeStrengthEntry(
-    derivatives.d2BuyersPerSec2,
-    "BUYER_ACCELERATION_UNAVAILABLE",
-    0.1
+  const marketCap = normalize(
+    "market_cap_velocity_sol",
+    derivatives.dMarketCapSolPerSec
   );
-  const trades = createMomentumDerivativeStrengthEntry(
-    derivatives.dTradesPerSec,
-    "TRADE_VELOCITY_UNAVAILABLE",
-    0.8
-  );
-  const buyPressure = createMomentumDerivativeStrengthEntry(
-    derivatives.dBuyPressurePerSec,
-    "BUY_PRESSURE_DERIVATIVE_UNAVAILABLE",
-    0.12
-  );
-  const marketCap = createMomentumDerivativeStrengthEntry(
-    derivatives.dMarketCapSolPerSec,
-    "MARKET_CAP_DERIVATIVE_UNAVAILABLE",
-    1.5
-  );
-  const liquidity = createMomentumDerivativeStrengthEntry(
-    derivatives.dLiquiditySolPerSec,
-    "LIQUIDITY_DERIVATIVE_UNAVAILABLE",
-    1.5
+  const liquidity = normalize(
+    "liquidity_velocity_sol",
+    derivatives.dLiquiditySolPerSec
   );
   const components = {
-    volumeVelocityScore: roundScore(volume.normalizedScore * 0.16),
+    volumeVelocityScore: roundScore(volume.positiveScore * 0.16),
     volumeAccelerationScore: roundScore(
-      volumeAcceleration.normalizedScore * 0.12
+      volumeAcceleration.positiveScore * 0.12
     ),
-    priceVelocityScore: roundScore(price.normalizedScore * 0.16),
-    priceAccelerationScore: roundScore(priceAcceleration.normalizedScore * 0.1),
-    buyerVelocityScore: roundScore(buyers.normalizedScore * 0.14),
+    priceVelocityScore: roundScore(price.positiveScore * 0.16),
+    priceAccelerationScore: roundScore(priceAcceleration.positiveScore * 0.1),
+    buyerVelocityScore: roundScore(buyers.positiveScore * 0.14),
     buyerAccelerationScore: roundScore(
-      buyerAcceleration.normalizedScore * 0.08
+      buyerAcceleration.positiveScore * 0.08
     ),
-    tradeVelocityScore: roundScore(trades.normalizedScore * 0.1),
-    buyPressureScore: roundScore(buyPressure.normalizedScore * 0.14),
+    tradeVelocityScore: roundScore(trades.positiveScore * 0.1),
+    buyPressureScore: roundScore(buyPressure.positiveScore * 0.14),
     sellPressurePenalty: (derivatives.dBuyPressurePerSec ?? 0) < 0 ? 14 : 0,
     missingDataPenalty: derivatives.dVol10sSolPerSec === null ? 22 : 0,
     riskPenalty: 0
@@ -7882,7 +7911,7 @@ function createMomentumDerivativeStrengthFallback(
     reasonCodes: uniqueReasonCodes([
       ...derivatives.reasonCodes,
       ...(totalScore > 0
-        ? ["DERIVATIVE_SCORE_FALLBACK"]
+        ? ["DERIVATIVE_SCORE_CANONICAL_STRENGTH_FALLBACK"]
         : ["DERIVATIVE_SCORE_UNAVAILABLE"])
     ])
   };
@@ -7900,48 +7929,6 @@ function createMomentumDerivativeStrengthFallback(
     marketCap,
     liquidity,
     combinedDerivativeScore
-  };
-}
-
-function createMomentumDerivativeStrengthEntry(
-  rawValue: number | null,
-  unavailableCode: string,
-  explosiveAt: number
-): MomentumScannerRow["derivativeStrength"]["volume"] {
-  if (rawValue === null || !Number.isFinite(rawValue)) {
-    return {
-      rawValue: null,
-      normalizedScore: 0,
-      direction: "unavailable",
-      strength: "none",
-      reasonCodes: [unavailableCode]
-    };
-  }
-
-  const absoluteValue = Math.abs(rawValue);
-  const normalizedScore = roundScore(
-    clampNumber((absoluteValue / explosiveAt) * 100, 0, 100)
-  );
-  const strength =
-    normalizedScore >= 90
-      ? "explosive"
-      : normalizedScore >= 70
-        ? "strong"
-        : normalizedScore >= 40
-          ? "moderate"
-          : normalizedScore > 0
-            ? "weak"
-            : "none";
-
-  return {
-    rawValue,
-    normalizedScore,
-    direction: rawValue > 0 ? "up" : rawValue < 0 ? "down" : "flat",
-    strength,
-    reasonCodes:
-      strength === "none"
-        ? ["DERIVATIVE_STRENGTH_NONE"]
-        : [`DERIVATIVE_STRENGTH_${strength.toUpperCase()}`]
   };
 }
 

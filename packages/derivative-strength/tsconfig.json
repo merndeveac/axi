@@ -6,9 +6,5 @@
     "rootDir": "src",
     "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
   },
-  "include": ["src"],
-  "references": [
-    { "path": "../derivative-strength" },
-    { "path": "../derivatives" }
-  ]
+  "include": ["src"]
 }
