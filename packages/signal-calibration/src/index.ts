@@ -479,6 +479,8 @@ export function getSignalCalibrationRuntimeContract() {
     evaluatorStatus: "implemented" as const,
     outcomeCaptureStatus: "implemented" as const,
     outcomeCaptureOwner: "@axi/session-capture" as const,
+    paperStrategyEvaluationStatus: "implemented" as const,
+    paperStrategyEvaluationOwner: "@axi/paper-strategy-evaluation" as const,
     selectionPartition: "train_only" as const,
     validationPartition: "holdout_only" as const,
     weights: launchDerivativeReferencePolicy.weights,

@@ -38,6 +38,9 @@
       ],
       "@axi/market-data": ["packages/market-data/src/index.ts"],
       "@axi/paper-portfolio": ["packages/paper-portfolio/src/index.ts"],
+      "@axi/paper-strategy-evaluation": [
+        "packages/paper-strategy-evaluation/src/index.ts"
+      ],
       "@axi/pumpfun-decoder": ["packages/pumpfun-decoder/src/index.ts"],
       "@axi/pumpportal-lightning": [
         "packages/pumpportal-lightning/src/index.ts"

@@ -554,6 +554,7 @@ type RuntimeContract = {
     discoveryAndLaunchScoring: string;
     signalCalibration: string;
     calibrationSessionCapture: string;
+    paperStrategyEvaluation: string;
     subscriptionPolicy: string;
     subscriptionTransport: string;
     trackingScheduler: string;
@@ -603,6 +604,8 @@ type RuntimeContract = {
     evaluatorStatus: "implemented";
     outcomeCaptureStatus: "implemented";
     outcomeCaptureOwner: "@axi/session-capture";
+    paperStrategyEvaluationStatus: "implemented";
+    paperStrategyEvaluationOwner: "@axi/paper-strategy-evaluation";
     automaticThresholdActivation: false;
   };
   sessionCapture: {
@@ -613,6 +616,15 @@ type RuntimeContract = {
     outcomePolicy: string;
     futureDataRejected: true;
     automaticThresholdActivation: false;
+  };
+  paperStrategyEvaluation: {
+    evaluationVersion: string;
+    implementationStatus: "implemented";
+    activationMode: "offline_local_only";
+    temporalHoldoutRequired: true;
+    incompleteOutcomesRejected: true;
+    automaticThresholdActivation: false;
+    automaticPaperTradingActivation: false;
   };
 };
 
@@ -2127,6 +2139,18 @@ function HeaderControlCenter({
                 ? runtimeContract.sessionCapture.defaultActive
                   ? "ACTIVE"
                   : "MANUAL"
+                : "CHECKING"
+            }
+          />
+          <StatusChip
+            label="PAPER EVAL"
+            tone="neutral"
+            value={
+              runtimeContract
+                ? runtimeContract.paperStrategyEvaluation.activationMode ===
+                  "offline_local_only"
+                  ? "OFFLINE"
+                  : "CHECK"
                 : "CHECKING"
             }
           />

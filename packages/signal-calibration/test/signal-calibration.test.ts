@@ -187,6 +187,8 @@ describe("@axi/signal-calibration", () => {
       evaluatorStatus: "implemented",
       outcomeCaptureStatus: "implemented",
       outcomeCaptureOwner: "@axi/session-capture",
+      paperStrategyEvaluationStatus: "implemented",
+      paperStrategyEvaluationOwner: "@axi/paper-strategy-evaluation",
       automaticThresholdActivation: false,
       tradingDisabled: true
     });

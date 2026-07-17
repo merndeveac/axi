@@ -101,6 +101,9 @@ importers:
       '@axi/paper-portfolio':
         specifier: workspace:*
         version: link:../../packages/paper-portfolio
+      '@axi/paper-strategy-evaluation':
+        specifier: workspace:*
+        version: link:../../packages/paper-strategy-evaluation
       '@axi/pumpfun-decoder':
         specifier: workspace:*
         version: link:../../packages/pumpfun-decoder
@@ -116,12 +119,12 @@ importers:
       '@axi/session-capture':
         specifier: workspace:*
         version: link:../../packages/session-capture
-      '@axi/signal-calibration':
-        specifier: workspace:*
-        version: link:../../packages/signal-calibration
       '@axi/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@axi/signal-calibration':
+        specifier: workspace:*
+        version: link:../../packages/signal-calibration
       '@axi/solana-chain':
         specifier: workspace:*
         version: link:../../packages/solana-chain
@@ -269,14 +272,6 @@ importers:
         specifier: workspace:*
         version: link:../signal-calibration
 
-  packages/signal-calibration: {}
-
-  packages/session-capture:
-    dependencies:
-      '@axi/signal-calibration':
-        specifier: workspace:*
-        version: link:../signal-calibration
-
   packages/live-state:
     dependencies:
       '@axi/indexer-core':
@@ -330,6 +325,15 @@ importers:
 
   packages/paper-portfolio: {}
 
+  packages/paper-strategy-evaluation:
+    dependencies:
+      '@axi/session-capture':
+        specifier: workspace:*
+        version: link:../session-capture
+      '@axi/signal-calibration':
+        specifier: workspace:*
+        version: link:../signal-calibration
+
   packages/pumpfun-decoder:
     dependencies:
       '@axi/indexer-core':
@@ -350,11 +354,19 @@ importers:
         specifier: workspace:*
         version: link:../shared
 
+  packages/session-capture:
+    dependencies:
+      '@axi/signal-calibration':
+        specifier: workspace:*
+        version: link:../signal-calibration
+
   packages/shared:
     dependencies:
       zod:
         specifier: ^3.25.0
         version: 3.25.76
+
+  packages/signal-calibration: {}
 
   packages/solana-chain:
     dependencies:
@@ -385,6 +397,9 @@ importers:
       '@axi/paper-portfolio':
         specifier: workspace:*
         version: link:../paper-portfolio
+      '@axi/paper-strategy-evaluation':
+        specifier: workspace:*
+        version: link:../paper-strategy-evaluation
       '@axi/session-capture':
         specifier: workspace:*
         version: link:../session-capture

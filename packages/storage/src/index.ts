@@ -24,6 +24,10 @@ import type {
   PaperRiskLevel
 } from "@axi/paper-portfolio";
 import type {
+  PaperStrategyEvaluationReport,
+  PaperStrategyEvaluationStatus
+} from "@axi/paper-strategy-evaluation";
+import type {
   CalibrationCaptureSession,
   CapturedObservationStatus,
   CapturedSignalObservation
@@ -300,6 +304,7 @@ export type StorageStats = {
   capacitySnapshotCount: number;
   calibrationCaptureSessionCount: number;
   calibrationSignalObservationCount: number;
+  paperStrategyEvaluationCount: number;
   pumpPortalWalletStatusSnapshotCount: number;
   riskSnapshotCount: number;
   candidateDecisionCount: number;
@@ -329,6 +334,10 @@ export type CalibrationCaptureObservationCounts = {
   completedCount: number;
   pendingCount: number;
   unavailableCount: number;
+};
+
+export type StoredPaperStrategyEvaluation = PaperStrategyEvaluationReport & {
+  id: number;
 };
 
 export type LightningTradePlanStorageInput = {
@@ -1555,6 +1564,19 @@ type CalibrationSignalObservationRow = {
   updated_at: string;
 };
 
+type PaperStrategyEvaluationRow = {
+  id: number;
+  evaluation_id: string;
+  evaluation_version: string;
+  strategy_version: string;
+  status: PaperStrategyEvaluationStatus;
+  selected_threshold: number | null;
+  capture_session_ids_json: string;
+  payload_json: string;
+  evaluated_at: string;
+  created_at: string;
+};
+
 type OperatorActionRow = {
   id: number;
   action_id: string;
@@ -2318,6 +2340,73 @@ const capturedSignalObservationSchema = z.object({
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
 });
+
+const paperStrategyEvaluationSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    evaluationVersion: z.literal("paper-strategy-evaluation-v1"),
+    evaluationId: z.string().min(1),
+    evaluatedAt: z.string().datetime(),
+    strategyVersion: z.literal("launch-derivative-reference-v1"),
+    policyStatus: z.literal("reference_only"),
+    evaluationPolicy: z.literal("fixed_horizon_score_threshold"),
+    selectionPolicy: z.literal("training_only_then_single_temporal_holdout"),
+    datasetIds: z.array(z.string().min(1)).min(1),
+    captureSessionIds: z.array(z.string().min(1)).min(1),
+    config: z.object({
+      schemaVersion: z.literal(1),
+      startingCapitalSol: z.number().positive(),
+      positionSizeSol: z.number().positive(),
+      minimumDatasetCompletenessRatio: z.number().min(0).max(1),
+      maximumUnavailableOutcomeRatio: z.number().min(0).max(1),
+      confidenceLevel: z.literal(0.95),
+      confidenceZScore: z.literal(1.96),
+      minimumValidationExpectancyPct: z.literal(0),
+      minimumValidationProfitFactor: z.literal(1),
+      minimumValidationConfidenceLowerBoundPct: z.literal(0)
+    }),
+    datasetAudit: z
+      .object({
+        integrityValid: z.boolean(),
+        qualitySufficient: z.boolean(),
+        temporalHoldoutValid: z.boolean().nullable()
+      })
+      .passthrough(),
+    calibration: z
+      .object({
+        schemaVersion: z.literal(1),
+        automaticThresholdActivation: z.literal(false),
+        tradingDisabled: z.literal(true)
+      })
+      .passthrough(),
+    selectedThreshold: z.number().min(0).max(100).nullable(),
+    trainingPerformance: z.unknown().nullable(),
+    validationPerformance: z.unknown().nullable(),
+    acceptanceGates: z.array(
+      z.object({
+        gate: z.string().min(1),
+        passed: z.boolean(),
+        actual: z.union([z.number(), z.string(), z.boolean()]).nullable(),
+        required: z.string().min(1)
+      })
+    ),
+    evaluationStatus: z.enum([
+      "invalid_dataset",
+      "data_quality_failed",
+      "insufficient_evidence",
+      "holdout_rejected",
+      "paper_observation_candidate"
+    ]),
+    automaticThresholdActivation: z.literal(false),
+    automaticPaperTradingActivation: z.literal(false),
+    calibrated: z.literal(false),
+    paperOnly: z.literal(true),
+    dataOnly: z.literal(true),
+    tradingDisabled: z.literal(true),
+    liveExecutionDisabled: z.literal(true),
+    reasonCodes: z.array(z.string().min(1))
+  })
+  .passthrough();
 
 const calibrationObservationLimitSchema = z
   .number()
@@ -5241,6 +5330,87 @@ export function listCapturedSignalObservationsBySession(
   return rows.map(mapCalibrationSignalObservationRow);
 }
 
+export function savePaperStrategyEvaluation(
+  report: PaperStrategyEvaluationReport
+): StoredPaperStrategyEvaluation {
+  const parsed = parsePaperStrategyEvaluation(report);
+  const existing = getPaperStrategyEvaluation(parsed.evaluationId);
+
+  if (existing) {
+    const { id: _id, ...existingReport } = existing;
+    void _id;
+
+    if (stringifyJson(existingReport) !== stringifyJson(parsed)) {
+      throw new Error(
+        `Paper strategy evaluation ${parsed.evaluationId} is immutable and already exists with different data.`
+      );
+    }
+
+    return existing;
+  }
+
+  const db = getDb();
+  db.prepare(
+    `insert into paper_strategy_evaluations (
+      evaluation_id,
+      evaluation_version,
+      strategy_version,
+      status,
+      selected_threshold,
+      capture_session_ids_json,
+      payload_json,
+      evaluated_at,
+      created_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    parsed.evaluationId,
+    parsed.evaluationVersion,
+    parsed.strategyVersion,
+    parsed.evaluationStatus,
+    parsed.selectedThreshold,
+    stringifyJson(parsed.captureSessionIds),
+    stringifyJson(parsed),
+    parsed.evaluatedAt,
+    parsed.evaluatedAt
+  );
+
+  const stored = getPaperStrategyEvaluation(parsed.evaluationId);
+
+  if (!stored) {
+    throw new Error(
+      `Paper strategy evaluation ${parsed.evaluationId} was not persisted.`
+    );
+  }
+
+  return stored;
+}
+
+export function getPaperStrategyEvaluation(
+  evaluationId: string
+): StoredPaperStrategyEvaluation | null {
+  const row = getDb()
+    .prepare("select * from paper_strategy_evaluations where evaluation_id = ?")
+    .get(evaluationId) as PaperStrategyEvaluationRow | undefined;
+
+  return row ? mapPaperStrategyEvaluationRow(row) : null;
+}
+
+export function listPaperStrategyEvaluations(
+  limit = 50
+): StoredPaperStrategyEvaluation[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select * from paper_strategy_evaluations
+       order by datetime(evaluated_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as PaperStrategyEvaluationRow[];
+
+  return rows.map(mapPaperStrategyEvaluationRow);
+}
+
 export function saveOperatorAction(
   action: OperatorActionInput
 ): StoredOperatorAction {
@@ -6535,6 +6705,7 @@ export function getStorageStats(): StorageStats {
       db,
       "calibration_signal_observations"
     ),
+    paperStrategyEvaluationCount: countRows(db, "paper_strategy_evaluations"),
     pumpPortalWalletStatusSnapshotCount: countRows(
       db,
       "pumpportal_wallet_status_snapshots"
@@ -7648,6 +7819,34 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(18, "calibration_session_capture", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 19)) {
+    db.exec(`
+      create table if not exists paper_strategy_evaluations (
+        id integer primary key autoincrement,
+        evaluation_id text not null unique,
+        evaluation_version text not null,
+        strategy_version text not null,
+        status text not null,
+        selected_threshold real,
+        capture_session_ids_json text not null,
+        payload_json text not null,
+        evaluated_at text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_paper_strategy_evaluations_status
+        on paper_strategy_evaluations(status);
+
+      create index if not exists idx_paper_strategy_evaluations_evaluated_at
+        on paper_strategy_evaluations(evaluated_at);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(19, "paper_strategy_evaluation", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -8494,6 +8693,23 @@ function capturedSignalObservationImmutableFieldsDiffer(
     existing.tradingDisabled !== candidate.tradingDisabled ||
     existing.createdAt !== candidate.createdAt
   );
+}
+
+function parsePaperStrategyEvaluation(
+  value: unknown
+): PaperStrategyEvaluationReport {
+  return paperStrategyEvaluationSchema.parse(
+    value
+  ) as unknown as PaperStrategyEvaluationReport;
+}
+
+function mapPaperStrategyEvaluationRow(
+  row: PaperStrategyEvaluationRow
+): StoredPaperStrategyEvaluation {
+  return {
+    ...parsePaperStrategyEvaluation(JSON.parse(row.payload_json)),
+    id: row.id
+  };
 }
 
 function mapCalibrationCaptureSessionRow(

@@ -244,6 +244,11 @@ import {
   type CalibrationCaptureService
 } from "./calibration-capture-service";
 import {
+  createPaperStrategyEvaluationService,
+  PaperStrategyEvaluationServiceError,
+  type PaperStrategyEvaluationService
+} from "./paper-strategy-evaluation-service";
+import {
   createIndexerAdapter,
   type IndexerAdapter,
   type IndexerAdapterOptions
@@ -1344,6 +1349,7 @@ export type ApiServer = {
   meteredLaunchData: MeteredLaunchDataService;
   runtimeControl: RuntimeControlService;
   calibrationCapture: CalibrationCaptureService;
+  paperStrategyEvaluation: PaperStrategyEvaluationService;
   pumpPortalDataWallet: PumpPortalDataWalletService;
   pumpPortalWallets: PumpPortalWalletsService;
   lightningReadiness: LightningReadinessService;
@@ -1580,44 +1586,37 @@ const signalCalibrationObservationSchema = z.object({
   maxFavorableExcursionPct: z.number().finite().optional(),
   maxAdverseExcursionPct: z.number().finite().optional()
 });
+const calibrationEvidenceRequirementsSchema = z.object({
+  minimumTrainingObservations: z
+    .number()
+    .int()
+    .min(defaultCalibrationEvidenceRequirements.minimumTrainingObservations)
+    .optional(),
+  minimumValidationObservations: z
+    .number()
+    .int()
+    .min(defaultCalibrationEvidenceRequirements.minimumValidationObservations)
+    .optional(),
+  minimumPositiveOutcomes: z
+    .number()
+    .int()
+    .min(defaultCalibrationEvidenceRequirements.minimumPositiveOutcomes)
+    .optional(),
+  minimumSignalsPerThreshold: z
+    .number()
+    .int()
+    .min(defaultCalibrationEvidenceRequirements.minimumSignalsPerThreshold)
+    .optional(),
+  minimumTrainingExpectancyPct: z.number().finite().nonnegative().optional()
+});
+const calibrationThresholdCandidatesSchema = z
+  .array(z.number().finite().min(0).max(100))
+  .min(1)
+  .max(100);
 const signalCalibrationEvaluationBodySchema = z.object({
   observations: z.array(signalCalibrationObservationSchema).max(10_000),
-  thresholdCandidates: z
-    .array(z.number().finite().min(0).max(100))
-    .min(1)
-    .max(100)
-    .optional(),
-  evidenceRequirements: z
-    .object({
-      minimumTrainingObservations: z
-        .number()
-        .int()
-        .min(
-          defaultCalibrationEvidenceRequirements.minimumTrainingObservations
-        )
-        .optional(),
-      minimumValidationObservations: z
-        .number()
-        .int()
-        .min(
-          defaultCalibrationEvidenceRequirements.minimumValidationObservations
-        )
-        .optional(),
-      minimumPositiveOutcomes: z
-        .number()
-        .int()
-        .min(defaultCalibrationEvidenceRequirements.minimumPositiveOutcomes)
-        .optional(),
-      minimumSignalsPerThreshold: z
-        .number()
-        .int()
-        .min(
-          defaultCalibrationEvidenceRequirements.minimumSignalsPerThreshold
-        )
-        .optional(),
-      minimumTrainingExpectancyPct: z.number().finite().nonnegative().optional()
-    })
-    .optional()
+  thresholdCandidates: calibrationThresholdCandidatesSchema.optional(),
+  evidenceRequirements: calibrationEvidenceRequirementsSchema.optional()
 });
 const calibrationCaptureStartBodySchema = z.object({
   partition: z.enum(["train", "validation"]),
@@ -1658,6 +1657,20 @@ const calibrationCaptureObservationsQuerySchema = z.object({
 });
 const calibrationCaptureExportQuerySchema = z.object({
   format: z.enum(["json", "jsonl", "csv"]).default("json")
+});
+const paperStrategyEvaluationBodySchema = z.object({
+  captureSessionIds: z.array(z.string().trim().min(1).max(200)).min(1).max(100),
+  config: z
+    .object({
+      startingCapitalSol: z.number().positive().max(1_000).optional(),
+      positionSizeSol: z.number().positive().max(0.01).optional()
+    })
+    .optional(),
+  thresholdCandidates: calibrationThresholdCandidatesSchema.optional(),
+  evidenceRequirements: calibrationEvidenceRequirementsSchema.optional()
+});
+const paperStrategyEvaluationParamSchema = z.object({
+  evaluationId: z.string().min(1).max(200)
 });
 
 export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
@@ -1783,6 +1796,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const calibrationCapture = createCalibrationCaptureService({
     runtimeSessionId
   });
+  const paperStrategyEvaluation = createPaperStrategyEvaluationService();
   const configuredIndexer = options.indexer ?? {};
   const onBucketUpdated = configuredIndexer.timeseries?.onBucketUpdated;
   const indexerAdapter = createIndexerAdapter({
@@ -2379,6 +2393,98 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       } catch (error) {
         return sendCalibrationCaptureError(reply, error);
       }
+    }
+  );
+
+  app.get("/runtime/paper-strategy-evaluation", async () =>
+    paperStrategyEvaluation.getStatus()
+  );
+
+  app.post(
+    "/runtime/paper-strategy-evaluation/evaluate",
+    async (request, reply) => {
+      const body = paperStrategyEvaluationBodySchema.parse(request.body);
+
+      try {
+        return paperStrategyEvaluation.evaluate({
+          captureSessionIds: body.captureSessionIds,
+          ...(body.config ? { config: body.config } : {}),
+          ...(body.thresholdCandidates
+            ? { thresholdCandidates: body.thresholdCandidates }
+            : {}),
+          ...(body.evidenceRequirements
+            ? { evidenceRequirements: body.evidenceRequirements }
+            : {})
+        });
+      } catch (error) {
+        return sendPaperStrategyEvaluationError(reply, error);
+      }
+    }
+  );
+
+  app.get("/runtime/paper-strategy-evaluation/evaluations", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+
+    return {
+      evaluations: paperStrategyEvaluation.getEvaluations(query.limit),
+      automaticThresholdActivation: false,
+      automaticPaperTradingActivation: false,
+      paperOnly: true,
+      dataOnly: true,
+      tradingDisabled: true,
+      liveExecutionDisabled: true
+    };
+  });
+
+  app.get(
+    "/runtime/paper-strategy-evaluation/evaluations/:evaluationId",
+    async (request, reply) => {
+      const params = paperStrategyEvaluationParamSchema.parse(request.params);
+      const evaluation = paperStrategyEvaluation.getEvaluation(
+        params.evaluationId
+      );
+
+      if (!evaluation) {
+        return reply.code(404).send({
+          error: "PAPER_STRATEGY_EVALUATION_NOT_FOUND",
+          message: `Paper strategy evaluation ${params.evaluationId} was not found.`,
+          paperOnly: true,
+          dataOnly: true,
+          tradingDisabled: true,
+          liveExecutionDisabled: true
+        });
+      }
+
+      return evaluation;
+    }
+  );
+
+  app.get(
+    "/runtime/paper-strategy-evaluation/evaluations/:evaluationId/export",
+    async (request, reply) => {
+      const params = paperStrategyEvaluationParamSchema.parse(request.params);
+      const evaluation = paperStrategyEvaluation.getEvaluation(
+        params.evaluationId
+      );
+
+      if (!evaluation) {
+        return reply.code(404).send({
+          error: "PAPER_STRATEGY_EVALUATION_NOT_FOUND",
+          message: `Paper strategy evaluation ${params.evaluationId} was not found.`,
+          paperOnly: true,
+          dataOnly: true,
+          tradingDisabled: true,
+          liveExecutionDisabled: true
+        });
+      }
+
+      return reply
+        .type("application/json; charset=utf-8")
+        .header(
+          "content-disposition",
+          `attachment; filename="${safeFileSegment(params.evaluationId)}.json"`
+        )
+        .send(JSON.stringify(evaluation, null, 2));
     }
   );
 
@@ -6744,6 +6850,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     indexerAdapter,
     launchScanner,
     calibrationCapture,
+    paperStrategyEvaluation,
     meteredLaunchData,
     metrics: metricsEngine,
     pumpPortalDataWallet,
@@ -6989,6 +7096,23 @@ function getRiskFlags(event: FeedEvent): RiskFlags {
   return event.type === "account_trade"
     ? createFallbackRiskFlags()
     : event.riskFlags;
+}
+
+function sendPaperStrategyEvaluationError(reply: FastifyReply, error: unknown) {
+  if (error instanceof PaperStrategyEvaluationServiceError) {
+    return reply.code(error.statusCode).send({
+      error: error.code,
+      message: error.message,
+      automaticThresholdActivation: false,
+      automaticPaperTradingActivation: false,
+      paperOnly: true,
+      dataOnly: true,
+      tradingDisabled: true,
+      liveExecutionDisabled: true
+    });
+  }
+
+  throw error;
 }
 
 function sendCalibrationCaptureError(reply: FastifyReply, error: unknown) {

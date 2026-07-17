@@ -13,12 +13,14 @@ import type {
   OverlaySignal,
   RiskSnapshot
 } from "@axi/shared";
+import type { CalibrationDataset } from "@axi/session-capture";
 import {
   createCalibrationCaptureSession,
   createCapturedSignalObservation,
   materializeCapturedSignalOutcome,
   stopCalibrationCaptureSession
 } from "@axi/session-capture";
+import { evaluatePaperStrategy } from "@axi/paper-strategy-evaluation";
 import { normalizePumpPortalIdentity } from "@axi/token-identity";
 import {
   closeStorage,
@@ -36,6 +38,7 @@ import {
   getCalibrationCaptureObservationCounts,
   getCapturedSignalObservation,
   getLatestCapturedSignalObservationByMint,
+  getPaperStrategyEvaluation,
   getLatestCandidateDecision,
   getLatestMarketObservation,
   getMarketObservation,
@@ -55,6 +58,7 @@ import {
   listLaunchTrackingSessions,
   listCalibrationCaptureSessions,
   listCapturedSignalObservationsBySession,
+  listPaperStrategyEvaluations,
   listLaunchTradeSamplesByMint,
   listMeteredLaunchDataEvents,
   listMeteredLaunchDataEventsByMint,
@@ -118,6 +122,7 @@ import {
   saveCandidateDecision,
   saveCalibrationCaptureSession,
   saveCapturedSignalObservation,
+  savePaperStrategyEvaluation,
   saveCapacitySnapshot,
   saveChainVerification,
   saveChainTradeEvent,
@@ -197,6 +202,7 @@ describe("@axi/storage", () => {
     expect(stats.capacitySnapshotCount).toBe(0);
     expect(stats.calibrationCaptureSessionCount).toBe(0);
     expect(stats.calibrationSignalObservationCount).toBe(0);
+    expect(stats.paperStrategyEvaluationCount).toBe(0);
     expect(stats.pumpPortalWalletStatusSnapshotCount).toBe(0);
     expect(stats.meteredLaunchDataSessionCount).toBe(0);
     expect(stats.meteredLaunchDataSubscriptionCount).toBe(0);
@@ -421,6 +427,43 @@ describe("@axi/storage", () => {
         sessionId: "capture-readonly-test"
       })
     ).toThrow();
+  });
+
+  it("persists immutable paper strategy evaluation reports", () => {
+    initStorage({ databasePath });
+    const report = evaluatePaperStrategy({
+      evaluationId: "paper-evaluation-storage-test",
+      evaluatedAt: "2026-01-03T00:00:00.000Z",
+      datasets: [
+        createPaperEvaluationDataset("train", "2026-01-01T00:00:00.000Z"),
+        createPaperEvaluationDataset("validation", "2026-01-02T00:00:00.000Z")
+      ],
+      thresholdCandidates: [75]
+    });
+
+    savePaperStrategyEvaluation(report);
+    savePaperStrategyEvaluation(report);
+
+    expect(getPaperStrategyEvaluation(report.evaluationId)).toMatchObject({
+      evaluationStatus: "insufficient_evidence",
+      selectedThreshold: null,
+      automaticPaperTradingActivation: false
+    });
+    expect(listPaperStrategyEvaluations()).toHaveLength(1);
+    expect(getStorageStats().paperStrategyEvaluationCount).toBe(1);
+    expect(() =>
+      savePaperStrategyEvaluation({
+        ...report,
+        evaluatedAt: "2026-01-03T00:00:01.000Z"
+      })
+    ).toThrow("immutable");
+
+    closeStorage();
+    initStorageReadOnly({ databasePath });
+    expect(getPaperStrategyEvaluation(report.evaluationId)).toMatchObject({
+      evaluationVersion: "paper-strategy-evaluation-v1",
+      tradingDisabled: true
+    });
   });
 
   it("persists idempotent sanitized capacity snapshots", () => {
@@ -2264,6 +2307,56 @@ function createLaunchTimeseriesBucket() {
     paperOnly: true as const,
     dataOnly: true as const,
     tradingDisabled: true as const
+  };
+}
+
+function createPaperEvaluationDataset(
+  partition: "train" | "validation",
+  signalAt: string
+): CalibrationDataset {
+  const captureSessionId = `paper-evaluation-${partition}`;
+  const outcomeAt = new Date(Date.parse(signalAt) + 60_000).toISOString();
+
+  return {
+    manifest: {
+      schemaVersion: 1,
+      captureVersion: "calibration-session-capture-v1",
+      datasetId: `${captureSessionId}:launch-derivative-reference-v1:60000`,
+      captureSessionId,
+      runtimeSessionId: `runtime-${partition}`,
+      strategyVersion: "launch-derivative-reference-v1",
+      partition,
+      generatedAt: "2026-01-03T00:00:00.000Z",
+      horizonMs: 60_000,
+      targetReturnPct: 5,
+      estimatedCostPct: 1,
+      observationCount: 1,
+      completedObservationCount: 1,
+      pendingObservationCount: 0,
+      unavailableObservationCount: 0,
+      excludedObservationCount: 0,
+      automaticThresholdActivation: false,
+      calibrated: false,
+      paperOnly: true,
+      dataOnly: true,
+      tradingDisabled: true,
+      reasonCodes: ["CALIBRATION_DATASET_FORWARD_ONLY"]
+    },
+    observations: [
+      {
+        observationId: `${captureSessionId}-1`,
+        partition,
+        strategyVersion: "launch-derivative-reference-v1",
+        signalAt,
+        outcomeAt,
+        score: 85,
+        targetReached: true,
+        forwardReturnPct: 10,
+        estimatedCostPct: 1,
+        maxFavorableExcursionPct: 12,
+        maxAdverseExcursionPct: -2
+      }
+    ]
   };
 }
 

@@ -50,6 +50,9 @@ export type PaperBacktestTradeResult = {
 
 export type PaperBacktestResult = {
   source: "launch-fixture" | "launch-snapshots";
+  evaluationUse: "fixture_smoke_only";
+  evidenceEligible: false;
+  evidenceReasonCodes: string[];
   fixture: LaunchSimulationFixture | null;
   tradeCount: number;
   entryCount: number;
@@ -83,7 +86,9 @@ export function runPaperBacktest(
   const fixture = input.fixture ?? null;
   const snapshots =
     input.snapshots ??
-    (fixture ? [fromLaunchSnapshot(simulateLaunchMomentumFixture(fixture))] : []);
+    (fixture
+      ? [fromLaunchSnapshot(simulateLaunchMomentumFixture(fixture))]
+      : []);
   const positionSizeSol = input.positionSizeSol ?? 0.005;
   const minScore = input.minScore ?? 75;
   const minTradeSamples = input.minTradeSamples ?? 3;
@@ -91,7 +96,8 @@ export function runPaperBacktest(
   const stopLossPct = input.stopLossPct ?? -25;
   const engine = createPaperPortfolioEngine({
     ...defaultBacktestConfig,
-    startingCashSol: input.startingCashSol ?? defaultBacktestConfig.startingCashSol,
+    startingCashSol:
+      input.startingCashSol ?? defaultBacktestConfig.startingCashSol,
     now: () => new Date("2026-01-01T00:00:00.000Z")
   });
   const trades: PaperBacktestTradeResult[] = [];
@@ -124,7 +130,9 @@ export function runPaperBacktest(
         reasonCodes: uniqueStrings([
           ...reasonCodes,
           ...(marketPrice ? [] : [paperPortfolioReasonCodes.priceMissing]),
-          ...(snapshot.score >= minScore ? [] : ["PAPER_BACKTEST_SCORE_TOO_LOW"]),
+          ...(snapshot.score >= minScore
+            ? []
+            : ["PAPER_BACKTEST_SCORE_TOO_LOW"]),
           ...(snapshot.tradeSampleCount >= minTradeSamples
             ? []
             : ["PAPER_BACKTEST_INSUFFICIENT_SAMPLES"]),
@@ -208,6 +216,13 @@ export function runPaperBacktest(
 
   return {
     source: fixture ? "launch-fixture" : "launch-snapshots",
+    evaluationUse: "fixture_smoke_only",
+    evidenceEligible: false,
+    evidenceReasonCodes: [
+      "PAPER_BACKTEST_FIXTURE_SMOKE_ONLY",
+      "PAPER_BACKTEST_NOT_CALIBRATION_EVIDENCE",
+      "LIVE_EXECUTION_DISABLED"
+    ],
     fixture,
     tradeCount: trades.length,
     entryCount: trades.filter((trade) => trade.entered).length,

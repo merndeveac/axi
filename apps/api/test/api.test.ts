@@ -763,6 +763,9 @@ describe("@axi/api", () => {
     });
     const body = response.json() as {
       entryCount: number;
+      evaluationUse: string;
+      evidenceEligible: boolean;
+      evidenceReasonCodes: string[];
       fixture: string;
       liveExecutionDisabled: boolean;
       paperOnly: boolean;
@@ -774,6 +777,11 @@ describe("@axi/api", () => {
 
     expect(response.statusCode).toBe(200);
     expect(body.source).toBe("launch-fixture");
+    expect(body.evaluationUse).toBe("fixture_smoke_only");
+    expect(body.evidenceEligible).toBe(false);
+    expect(body.evidenceReasonCodes).toContain(
+      "PAPER_BACKTEST_NOT_CALIBRATION_EVIDENCE"
+    );
     expect(body.fixture).toBe("strong-ripper");
     expect(body.entryCount).toBeGreaterThanOrEqual(1);
     expect(body.snapshot.totalTrades).toBeGreaterThanOrEqual(1);
@@ -1484,6 +1492,7 @@ describe("@axi/api", () => {
       roadmap: {
         canonicalOneSecondTimeseries: string;
         calibrationSessionCapture: string;
+        paperStrategyEvaluation: string;
         derivativeCorrectness: string;
         derivativeStrengthNormalization: string;
         signalCalibrationFramework: string;
@@ -1528,6 +1537,8 @@ describe("@axi/api", () => {
         evaluatorStatus: string;
         outcomeCaptureStatus: string;
         outcomeCaptureOwner: string;
+        paperStrategyEvaluationStatus: string;
+        paperStrategyEvaluationOwner: string;
         automaticThresholdActivation: boolean;
       };
       sessionCapture: {
@@ -1539,6 +1550,15 @@ describe("@axi/api", () => {
         automaticThresholdActivation: boolean;
         tradingDisabled: boolean;
       };
+      paperStrategyEvaluation: {
+        implementationStatus: string;
+        activationMode: string;
+        temporalHoldoutRequired: boolean;
+        incompleteOutcomesRejected: boolean;
+        automaticThresholdActivation: boolean;
+        automaticPaperTradingActivation: boolean;
+        tradingDisabled: boolean;
+      };
     };
 
     expect(response.statusCode).toBe(200);
@@ -1548,6 +1568,7 @@ describe("@axi/api", () => {
       canonicalDerivativeStrength: "@axi/derivative-strength",
       signalCalibration: "@axi/signal-calibration",
       calibrationSessionCapture: "@axi/session-capture",
+      paperStrategyEvaluation: "@axi/paper-strategy-evaluation",
       canonicalTimeseries: "@axi/timeseries",
       subscriptionTransport: "ActualDataService",
       subscriptionPolicy: "MeteredLaunchDataService",
@@ -1571,6 +1592,7 @@ describe("@axi/api", () => {
     expect(body.roadmap.derivativeStrengthNormalization).toBe("implemented");
     expect(body.roadmap.signalCalibrationFramework).toBe("implemented");
     expect(body.roadmap.calibrationSessionCapture).toBe("implemented");
+    expect(body.roadmap.paperStrategyEvaluation).toBe("implemented");
     expect(body.roadmap.rollingNewestTokenScheduler).toBe("implemented");
     expect(body.roadmap.schedulerMutationApplied).toBe(false);
     expect(body.timeseries).toMatchObject({
@@ -1597,6 +1619,8 @@ describe("@axi/api", () => {
       evaluatorStatus: "implemented",
       outcomeCaptureStatus: "implemented",
       outcomeCaptureOwner: "@axi/session-capture",
+      paperStrategyEvaluationStatus: "implemented",
+      paperStrategyEvaluationOwner: "@axi/paper-strategy-evaluation",
       automaticThresholdActivation: false,
       tradingDisabled: true
     });
@@ -1607,6 +1631,15 @@ describe("@axi/api", () => {
       outcomePolicy: "first_real_bucket_at_horizon_with_bounded_lag",
       futureDataRejected: true,
       automaticThresholdActivation: false,
+      tradingDisabled: true
+    });
+    expect(body.paperStrategyEvaluation).toMatchObject({
+      implementationStatus: "implemented",
+      activationMode: "offline_local_only",
+      temporalHoldoutRequired: true,
+      incompleteOutcomesRejected: true,
+      automaticThresholdActivation: false,
+      automaticPaperTradingActivation: false,
       tradingDisabled: true
     });
     expect(body.safety.apiHost).toBe("127.0.0.1");
@@ -1627,6 +1660,8 @@ describe("@axi/api", () => {
       evaluatorStatus: "implemented",
       outcomeCaptureStatus: "implemented",
       outcomeCaptureOwner: "@axi/session-capture",
+      paperStrategyEvaluationStatus: "implemented",
+      paperStrategyEvaluationOwner: "@axi/paper-strategy-evaluation",
       automaticThresholdActivation: false,
       tradingDisabled: true
     });
@@ -1778,6 +1813,104 @@ describe("@axi/api", () => {
     expect(missingResponse.json()).toMatchObject({
       error: "CALIBRATION_CAPTURE_SESSION_NOT_FOUND",
       tradingDisabled: true
+    });
+  });
+
+  it("evaluates finalized capture sessions without activating paper trading", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+
+    const trainStart = await server.app.inject({
+      method: "POST",
+      url: "/runtime/session-capture/start",
+      payload: { partition: "train" }
+    });
+    const trainSessionId = (
+      trainStart.json() as {
+        session: { sessionId: string };
+      }
+    ).session.sessionId;
+    await server.app.inject({
+      method: "POST",
+      url: "/runtime/session-capture/stop",
+      payload: { reason: "train_complete" }
+    });
+
+    const validationStart = await server.app.inject({
+      method: "POST",
+      url: "/runtime/session-capture/start",
+      payload: { partition: "validation" }
+    });
+    const validationSessionId = (
+      validationStart.json() as {
+        session: { sessionId: string };
+      }
+    ).session.sessionId;
+    await server.app.inject({
+      method: "POST",
+      url: "/runtime/session-capture/stop",
+      payload: { reason: "validation_complete" }
+    });
+
+    const evaluationResponse = await server.app.inject({
+      method: "POST",
+      url: "/runtime/paper-strategy-evaluation/evaluate",
+      payload: {
+        captureSessionIds: [trainSessionId, validationSessionId],
+        thresholdCandidates: [75]
+      }
+    });
+    const evaluation = evaluationResponse.json() as {
+      evaluationId: string;
+    };
+    expect(evaluationResponse.statusCode).toBe(200);
+    expect(evaluation).toMatchObject({
+      evaluationStatus: "insufficient_evidence",
+      selectedThreshold: null,
+      automaticThresholdActivation: false,
+      automaticPaperTradingActivation: false,
+      tradingDisabled: true,
+      liveExecutionDisabled: true
+    });
+
+    const statusResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/paper-strategy-evaluation"
+    });
+    expect(statusResponse.json()).toMatchObject({
+      evaluationCount: 1,
+      statusCounts: { insufficient_evidence: 1 },
+      contract: {
+        temporalHoldoutRequired: true,
+        automaticPaperTradingActivation: false
+      },
+      tradingDisabled: true
+    });
+
+    const exportResponse = await server.app.inject({
+      method: "GET",
+      url: `/runtime/paper-strategy-evaluation/evaluations/${evaluation.evaluationId}/export`
+    });
+    expect(exportResponse.statusCode).toBe(200);
+    expect(exportResponse.headers["content-disposition"]).toContain(
+      `${evaluation.evaluationId}.json`
+    );
+    expect(exportResponse.json()).toMatchObject({
+      evaluationId: evaluation.evaluationId,
+      automaticPaperTradingActivation: false
+    });
+
+    const missingResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/paper-strategy-evaluation/evaluations/missing"
+    });
+    expect(missingResponse.statusCode).toBe(404);
+    expect(missingResponse.json()).toMatchObject({
+      error: "PAPER_STRATEGY_EVALUATION_NOT_FOUND",
+      liveExecutionDisabled: true
     });
   });
 

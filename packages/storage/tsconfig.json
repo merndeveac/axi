@@ -14,6 +14,7 @@
     { "path": "../data-feeds" },
     { "path": "../market-data" },
     { "path": "../paper-portfolio" },
+    { "path": "../paper-strategy-evaluation" },
     { "path": "../session-capture" },
     { "path": "../token-identity" },
     { "path": "../watch-orchestrator" }

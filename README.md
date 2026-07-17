@@ -96,6 +96,27 @@ pnpm --filter @axi/api calibration:export -- --list
 pnpm --filter @axi/api calibration:export -- --session <capture-session-id> --format jsonl
 ```
 
+Completed capture sessions can be evaluated by the versioned
+`@axi/paper-strategy-evaluation` package. It selects one score threshold from
+training data, applies that threshold once to a strictly later validation
+holdout, deducts the captured cost assumption, and reports expectancy, a 95%
+normal-approximation confidence interval, profit factor, drawdown, consecutive
+losses, PnL, and MFE/MAE. Dataset manifests must be internally consistent and
+have no pending or excluded outcomes, at least 95% completion, no more than 5%
+unavailable outcomes, and a training outcome boundary before the first
+validation signal.
+
+Every report is immutable and remains `reference_only`. A
+`paper_observation_candidate` means the evidence gates passed; it does not
+activate the threshold, enable automatic paper entries, or enable live trading.
+The fixed-horizon simulation uses independent fixed-size positions and does not
+yet model overlapping portfolio exposure or an exit strategy. The API persists
+reports; the read-only CLI only prints an ad hoc report:
+
+```bash
+pnpm --filter @axi/api paper:strategy:evaluate -- --train-session <train-id> --validation-session <validation-id>
+```
+
 Launch trade tracking uses PumpPortal `subscribeTokenTrade` only for selected
 mints, through the existing one-WebSocket PumpPortal provider and the metered
 actual-data gates. It never uses account-trade streams, trading APIs, wallet
@@ -355,6 +376,10 @@ pnpm --filter @axi/api paper:backtest -- --fixture strong-ripper
 pnpm --filter @axi/api paper:backtest -- --source launch-fixture sell-pressure
 pnpm --filter @axi/api paper:backtest -- --from-db .data/axi.sqlite --limit 100
 ```
+
+This replay helper is fixture/smoke testing only. Its output is explicitly
+`evidenceEligible: false`; use finalized calibration capture sessions and the
+paper strategy evaluator for evidence reports.
 
 The dashboard has a PORTFOLIO tab for simulated cash, deployed SOL, equity,
 realized/unrealized PnL, fees, positions, orders, fills, and best/worst closed
@@ -684,6 +709,11 @@ Indexer endpoints:
 - `GET /runtime/session-capture/sessions/:sessionId/observations`
 - `POST /runtime/session-capture/sessions/:sessionId/materialize`
 - `GET /runtime/session-capture/sessions/:sessionId/export?format=json|jsonl|csv`
+- `GET /runtime/paper-strategy-evaluation`
+- `POST /runtime/paper-strategy-evaluation/evaluate`
+- `GET /runtime/paper-strategy-evaluation/evaluations`
+- `GET /runtime/paper-strategy-evaluation/evaluations/:evaluationId`
+- `GET /runtime/paper-strategy-evaluation/evaluations/:evaluationId/export`
 - `GET /indexer/stream/status`
 - `GET /indexer/stream/real-readiness`
 - `GET /indexer/stream/config`
@@ -2000,6 +2030,11 @@ Endpoints:
 - `POST /paper-portfolio/manual-entry`
 - `POST /paper-portfolio/manual-exit`
 - `POST /paper-portfolio/backtest`
+- `GET /runtime/paper-strategy-evaluation`
+- `POST /runtime/paper-strategy-evaluation/evaluate`
+- `GET /runtime/paper-strategy-evaluation/evaluations`
+- `GET /runtime/paper-strategy-evaluation/evaluations/:evaluationId`
+- `GET /runtime/paper-strategy-evaluation/evaluations/:evaluationId/export`
 - `GET /exit/status`
 - `GET /exit/wallets`
 - `POST /exit/wallets`
