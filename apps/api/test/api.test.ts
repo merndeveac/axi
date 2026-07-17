@@ -1485,6 +1485,7 @@ describe("@axi/api", () => {
         canonicalOneSecondTimeseries: string;
         derivativeCorrectness: string;
         derivativeStrengthNormalization: string;
+        signalCalibrationFramework: string;
         rollingNewestTokenScheduler: string;
         schedulerMutationApplied: boolean;
       };
@@ -1520,6 +1521,13 @@ describe("@axi/api", () => {
         confidenceAppliedToSignalScore: boolean;
         calibrationStatus: string;
       };
+      signalCalibration: {
+        strategyVersion: string;
+        policyStatus: string;
+        evaluatorStatus: string;
+        outcomeCaptureStatus: string;
+        automaticThresholdActivation: boolean;
+      };
     };
 
     expect(response.statusCode).toBe(200);
@@ -1527,6 +1535,7 @@ describe("@axi/api", () => {
       discoveryAndLaunchScoring: "LaunchScannerService",
       canonicalDerivatives: "@axi/derivatives",
       canonicalDerivativeStrength: "@axi/derivative-strength",
+      signalCalibration: "@axi/signal-calibration",
       canonicalTimeseries: "@axi/timeseries",
       subscriptionTransport: "ActualDataService",
       subscriptionPolicy: "MeteredLaunchDataService",
@@ -1548,6 +1557,7 @@ describe("@axi/api", () => {
     expect(body.roadmap.canonicalOneSecondTimeseries).toBe("implemented");
     expect(body.roadmap.derivativeCorrectness).toBe("implemented");
     expect(body.roadmap.derivativeStrengthNormalization).toBe("implemented");
+    expect(body.roadmap.signalCalibrationFramework).toBe("implemented");
     expect(body.roadmap.rollingNewestTokenScheduler).toBe("implemented");
     expect(body.roadmap.schedulerMutationApplied).toBe(false);
     expect(body.timeseries).toMatchObject({
@@ -1568,8 +1578,73 @@ describe("@axi/api", () => {
       confidenceAppliedToSignalScore: false,
       calibrationStatus: "pending"
     });
+    expect(body.signalCalibration).toMatchObject({
+      strategyVersion: "launch-derivative-reference-v1",
+      policyStatus: "reference_only",
+      evaluatorStatus: "implemented",
+      outcomeCaptureStatus: "not_implemented",
+      automaticThresholdActivation: false,
+      tradingDisabled: true
+    });
     expect(body.safety.apiHost).toBe("127.0.0.1");
     expect(body.safety.tradingDisabled).toBe(true);
+  });
+
+  it("evaluates versioned calibration observations without activating thresholds", async () => {
+    server = createTestServer();
+
+    const runtimeResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/signal-calibration"
+    });
+    expect(runtimeResponse.json()).toMatchObject({
+      canonicalPolicy: true,
+      strategyVersion: "launch-derivative-reference-v1",
+      policyStatus: "reference_only",
+      evaluatorStatus: "implemented",
+      outcomeCaptureStatus: "not_implemented",
+      automaticThresholdActivation: false,
+      tradingDisabled: true
+    });
+
+    const evaluationResponse = await server.app.inject({
+      method: "POST",
+      url: "/runtime/signal-calibration/evaluate",
+      payload: {
+        observations: [
+          {
+            observationId: "train-1",
+            partition: "train",
+            signalAt: "2026-01-01T00:00:00.000Z",
+            outcomeAt: "2026-01-01T00:01:00.000Z",
+            score: 80,
+            targetReached: true,
+            forwardReturnPct: 5,
+            estimatedCostPct: 1
+          },
+          {
+            observationId: "validation-1",
+            partition: "validation",
+            signalAt: "2026-01-01T00:02:00.000Z",
+            outcomeAt: "2026-01-01T00:03:00.000Z",
+            score: 80,
+            targetReached: true,
+            forwardReturnPct: 4,
+            estimatedCostPct: 1
+          }
+        ],
+        thresholdCandidates: [75]
+      }
+    });
+    expect(evaluationResponse.statusCode).toBe(200);
+    expect(evaluationResponse.json()).toMatchObject({
+      evaluationStatus: "insufficient_evidence",
+      trainingCandidate: null,
+      candidateValidation: null,
+      automaticThresholdActivation: false,
+      calibrated: false,
+      tradingDisabled: true
+    });
   });
 
   it("reports the rolling scheduler policy and current-session decisions", async () => {

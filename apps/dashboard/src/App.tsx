@@ -552,6 +552,7 @@ type RuntimeContract = {
     canonicalDerivativeStrength: string;
     canonicalTimeseries: string;
     discoveryAndLaunchScoring: string;
+    signalCalibration: string;
     subscriptionPolicy: string;
     subscriptionTransport: string;
     trackingScheduler: string;
@@ -593,6 +594,14 @@ type RuntimeContract = {
     confidenceAppliedToSignalScore: false;
     calibrationStatus: "pending";
     onlineCohortPolicy: string;
+  };
+  signalCalibration: {
+    strategyVersion: string;
+    policyStatus: "reference_only";
+    calibrationStatus: "reference_only";
+    evaluatorStatus: "implemented";
+    outcomeCaptureStatus: "not_implemented";
+    automaticThresholdActivation: false;
   };
 };
 
@@ -2085,6 +2094,17 @@ function HeaderControlCenter({
                 ? runtimeContract.configuration.driftDetected
                   ? "DRIFT"
                   : "ALIGNED"
+                : "CHECKING"
+            }
+          />
+          <StatusChip
+            label="SIGNAL POLICY"
+            tone="warn"
+            value={
+              runtimeContract
+                ? runtimeContract.signalCalibration.policyStatus
+                    .replaceAll("_", " ")
+                    .toUpperCase()
                 : "CHECKING"
             }
           />

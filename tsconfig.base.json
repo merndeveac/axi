@@ -54,6 +54,9 @@
       "@axi/derivative-strength": [
         "packages/derivative-strength/src/index.ts"
       ],
+      "@axi/signal-calibration": [
+        "packages/signal-calibration/src/index.ts"
+      ],
       "@axi/execution": ["packages/execution/src/index.ts"],
       "@axi/metrics": ["packages/metrics/src/index.ts"],
       "@axi/risk": ["packages/risk/src/index.ts"],

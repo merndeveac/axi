@@ -20,6 +20,7 @@
     { "path": "../../packages/managed-stream-clients" },
     { "path": "../../packages/shared" },
     { "path": "../../packages/scoring" },
+    { "path": "../../packages/signal-calibration" },
     { "path": "../../packages/data-feeds" },
     { "path": "../../packages/derivative-strength" },
     { "path": "../../packages/execution" },

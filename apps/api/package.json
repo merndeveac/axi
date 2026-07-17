@@ -58,6 +58,7 @@
     "@axi/pumpportal-lightning": "workspace:*",
     "@axi/risk": "workspace:*",
     "@axi/scoring": "workspace:*",
+    "@axi/signal-calibration": "workspace:*",
     "@axi/shared": "workspace:*",
     "@axi/solana-chain": "workspace:*",
     "@axi/storage": "workspace:*",

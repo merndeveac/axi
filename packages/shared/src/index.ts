@@ -821,6 +821,11 @@ export type MomentumDerivativeScore = {
     riskPenalty: number;
   };
   reasonCodes: string[];
+  policySchemaVersion: 1;
+  strategyVersion: string;
+  policyStatus: "reference_only";
+  calibrated: false;
+  confidenceAppliedToSignalScore: false;
 };
 
 export type LiveCardLaunchDerivativeStrengths = {

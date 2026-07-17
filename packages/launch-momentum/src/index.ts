@@ -8,6 +8,11 @@ import {
   type CanonicalDerivativeSnapshot,
   type DerivativeMetric
 } from "@axi/derivatives";
+import {
+  classifySignalScore,
+  scoreLaunchDerivativeSignal,
+  type SignalScoreResult
+} from "@axi/signal-calibration";
 
 export const launchWindowMs = {
   "5s": 5_000,
@@ -110,24 +115,7 @@ export type LaunchDerivatives = {
 
 export type DerivativeStrength = NormalizedDerivativeStrength;
 
-export type MomentumDerivativeScore = {
-  totalScore: number;
-  strengthLabel: LaunchScoreLabel;
-  components: {
-    volumeVelocityScore: number;
-    volumeAccelerationScore: number;
-    priceVelocityScore: number;
-    priceAccelerationScore: number;
-    buyerVelocityScore: number;
-    buyerAccelerationScore: number;
-    tradeVelocityScore: number;
-    buyPressureScore: number;
-    sellPressurePenalty: number;
-    missingDataPenalty: number;
-    riskPenalty: number;
-  };
-  reasonCodes: string[];
-};
+export type MomentumDerivativeScore = SignalScoreResult;
 
 export type LaunchDerivativeStrengths = {
   volume: DerivativeStrength;
@@ -330,7 +318,7 @@ export function evaluateLaunchMomentum(
     input.hardReject === true
       ? 0
       : round(clamp(Math.max(rawScore, derivativeScore.totalScore), 0, 100));
-  const label = scoreToLabel(score, {
+  const label = classifySignalScore(score, {
     hardReject: input.hardReject === true,
     tradeSampleCount: trades.length
   });
@@ -696,98 +684,30 @@ function computeMomentumDerivativeScore(input: {
   volumeAcceleration: DerivativeStrength;
   windows: Record<LaunchWindowLabel, LaunchWindowMetrics>;
 }): MomentumDerivativeScore {
-  const reasonCodes: string[] = [];
-  const components = {
-    volumeVelocityScore: round(input.volume.positiveScore * 0.16),
-    volumeAccelerationScore: round(input.volumeAcceleration.positiveScore * 0.12),
-    priceVelocityScore: round(input.price.positiveScore * 0.16),
-    priceAccelerationScore: round(input.priceAcceleration.positiveScore * 0.1),
-    buyerVelocityScore: round(input.buyers.positiveScore * 0.14),
-    buyerAccelerationScore: round(input.buyerAcceleration.positiveScore * 0.08),
-    tradeVelocityScore: round(input.trades.positiveScore * 0.1),
-    buyPressureScore: round(input.buyPressure.positiveScore * 0.14),
-    sellPressurePenalty:
-      input.windows["10s"].netBuyPressure <= -0.2 ||
-      input.windows["30s"].netBuyPressure <= -0.25
-        ? 32
-        : input.windows["10s"].netBuyPressure < 0
-          ? 14
-          : 0,
-    missingDataPenalty:
-      input.tradeSampleCount === 0 ? 45 : input.tradeSampleCount < 3 ? 22 : 0,
-    riskPenalty: riskPenaltyFor(input.riskLevel, input.hardReject)
-  };
+  const sellPressure =
+    input.windows["10s"].netBuyPressure <= -0.2 ||
+    input.windows["30s"].netBuyPressure <= -0.25
+      ? "strong"
+      : input.windows["10s"].netBuyPressure < 0
+        ? "mild"
+        : "none";
 
-  if (input.tradeSampleCount === 0) {
-    reasonCodes.push("DISCOVERY_ONLY_NO_DERIVATIVES");
-  }
-
-  if (input.tradeSampleCount < 2) {
-    reasonCodes.push(launchReasonCodes.insufficientSamplesForDerivative);
-  }
-
-  if (input.tradeSampleCount < 3) {
-    reasonCodes.push(launchReasonCodes.insufficientTradeData);
-  }
-
-  if (components.sellPressurePenalty > 0) {
-    reasonCodes.push(launchReasonCodes.sellPressure);
-  }
-
-  if (input.hardReject) {
-    reasonCodes.push(launchReasonCodes.rejected);
-  }
-
-  const rawScore =
-    components.volumeVelocityScore +
-    components.volumeAccelerationScore +
-    components.priceVelocityScore +
-    components.priceAccelerationScore +
-    components.buyerVelocityScore +
-    components.buyerAccelerationScore +
-    components.tradeVelocityScore +
-    components.buyPressureScore -
-    components.sellPressurePenalty -
-    components.missingDataPenalty -
-    components.riskPenalty;
-  const totalScore = input.hardReject ? 0 : round(clamp(rawScore, 0, 100));
-
-  return {
-    totalScore,
-    strengthLabel: scoreToLabel(totalScore, {
-      hardReject: input.hardReject,
-      tradeSampleCount: input.tradeSampleCount
-    }),
-    components,
-    reasonCodes: uniqueStrings(reasonCodes)
-  };
-}
-
-function scoreToLabel(
-  score: number,
-  options: { hardReject: boolean; tradeSampleCount: number }
-): LaunchScoreLabel {
-  if (options.hardReject) {
-    return "reject";
-  }
-
-  if (options.tradeSampleCount < 3) {
-    return score >= 25 ? "watch" : "none";
-  }
-
-  if (score >= 75) {
-    return "ripping";
-  }
-
-  if (score >= 55) {
-    return "hot";
-  }
-
-  if (score >= 25) {
-    return "watch";
-  }
-
-  return "none";
+  return scoreLaunchDerivativeSignal({
+    featureScores: {
+      volumeVelocity: input.volume.positiveScore,
+      volumeAcceleration: input.volumeAcceleration.positiveScore,
+      priceVelocity: input.price.positiveScore,
+      priceAcceleration: input.priceAcceleration.positiveScore,
+      buyerVelocity: input.buyers.positiveScore,
+      buyerAcceleration: input.buyerAcceleration.positiveScore,
+      tradeVelocity: input.trades.positiveScore,
+      buyPressure: input.buyPressure.positiveScore
+    },
+    tradeSampleCount: input.tradeSampleCount,
+    sellPressure,
+    riskLevel: input.riskLevel,
+    hardReject: input.hardReject
+  });
 }
 
 function scoreToPhase(

@@ -103,6 +103,12 @@ describe("launch momentum evaluator", () => {
     expect(snapshot.reasonCodes).toContain("LAUNCH_RIPPING");
     expect(snapshot.windows["30s"].tradeCount).toBeGreaterThanOrEqual(8);
     expect(snapshot.derivatives.volumeVelocitySolPerSec).toBeGreaterThan(0);
+    expect(snapshot.derivativeScore).toMatchObject({
+      strategyVersion: "launch-derivative-reference-v1",
+      policyStatus: "reference_only",
+      calibrated: false,
+      confidenceAppliedToSignalScore: false
+    });
     expect(snapshot.derivativeStrength.volume).toMatchObject({
       schemaVersion: 1,
       method: "hybrid_absolute_robust_age_cohort",

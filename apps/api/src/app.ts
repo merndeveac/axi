@@ -21,6 +21,13 @@ import {
   type DerivativeStrengthMetricName
 } from "@axi/derivative-strength";
 import {
+  defaultCalibrationEvidenceRequirements,
+  evaluateSignalCalibration,
+  getSignalCalibrationRuntimeContract,
+  launchDerivativeReferencePolicy,
+  scoreLaunchDerivativeSignal
+} from "@axi/signal-calibration";
+import {
   createCandidateLifecycleEngine,
   type CandidateLifecycleEngine,
   type CandidateState
@@ -1551,6 +1558,61 @@ const paperPortfolioBacktestBodySchema = z.object({
     .enum(["strong-ripper", "weak-launch", "sell-pressure", "no-trades"])
     .default("strong-ripper")
 });
+const signalCalibrationObservationSchema = z.object({
+  observationId: z.string().min(1).max(200),
+  partition: z.enum(["train", "validation"]),
+  strategyVersion: z
+    .string()
+    .min(1)
+    .default(launchDerivativeReferencePolicy.strategyVersion),
+  signalAt: z.string().datetime(),
+  outcomeAt: z.string().datetime(),
+  score: z.number().finite(),
+  targetReached: z.boolean(),
+  forwardReturnPct: z.number().finite(),
+  estimatedCostPct: z.number().finite().nonnegative().optional(),
+  maxFavorableExcursionPct: z.number().finite().optional(),
+  maxAdverseExcursionPct: z.number().finite().optional()
+});
+const signalCalibrationEvaluationBodySchema = z.object({
+  observations: z.array(signalCalibrationObservationSchema).max(10_000),
+  thresholdCandidates: z
+    .array(z.number().finite().min(0).max(100))
+    .min(1)
+    .max(100)
+    .optional(),
+  evidenceRequirements: z
+    .object({
+      minimumTrainingObservations: z
+        .number()
+        .int()
+        .min(
+          defaultCalibrationEvidenceRequirements.minimumTrainingObservations
+        )
+        .optional(),
+      minimumValidationObservations: z
+        .number()
+        .int()
+        .min(
+          defaultCalibrationEvidenceRequirements.minimumValidationObservations
+        )
+        .optional(),
+      minimumPositiveOutcomes: z
+        .number()
+        .int()
+        .min(defaultCalibrationEvidenceRequirements.minimumPositiveOutcomes)
+        .optional(),
+      minimumSignalsPerThreshold: z
+        .number()
+        .int()
+        .min(
+          defaultCalibrationEvidenceRequirements.minimumSignalsPerThreshold
+        )
+        .optional(),
+      minimumTrainingExpectancyPct: z.number().finite().nonnegative().optional()
+    })
+    .optional()
+});
 
 export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   return apiConfigSchema.parse(env);
@@ -2120,6 +2182,24 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     onlineCohortPolicy: "same_age_prior_snapshots_only",
     signalCalibrationRequired: true
   }));
+
+  app.get("/runtime/signal-calibration", async () =>
+    getSignalCalibrationRuntimeContract()
+  );
+
+  app.post("/runtime/signal-calibration/evaluate", async (request) => {
+    const body = signalCalibrationEvaluationBodySchema.parse(request.body);
+
+    return evaluateSignalCalibration({
+      observations: body.observations,
+      ...(body.thresholdCandidates
+        ? { thresholdCandidates: body.thresholdCandidates }
+        : {}),
+      ...(body.evidenceRequirements
+        ? { evidenceRequirements: body.evidenceRequirements }
+        : {})
+    });
+  });
 
   app.post("/runtime/capacity/snapshot", async () => {
     const report = getRuntimeCapacityReport();
@@ -7874,43 +7954,29 @@ function createMomentumDerivativeStrengthFallback(
     "liquidity_velocity_sol",
     derivatives.dLiquiditySolPerSec
   );
-  const components = {
-    volumeVelocityScore: roundScore(volume.positiveScore * 0.16),
-    volumeAccelerationScore: roundScore(
-      volumeAcceleration.positiveScore * 0.12
-    ),
-    priceVelocityScore: roundScore(price.positiveScore * 0.16),
-    priceAccelerationScore: roundScore(priceAcceleration.positiveScore * 0.1),
-    buyerVelocityScore: roundScore(buyers.positiveScore * 0.14),
-    buyerAccelerationScore: roundScore(
-      buyerAcceleration.positiveScore * 0.08
-    ),
-    tradeVelocityScore: roundScore(trades.positiveScore * 0.1),
-    buyPressureScore: roundScore(buyPressure.positiveScore * 0.14),
-    sellPressurePenalty: (derivatives.dBuyPressurePerSec ?? 0) < 0 ? 14 : 0,
-    missingDataPenalty: derivatives.dVol10sSolPerSec === null ? 22 : 0,
-    riskPenalty: 0
-  };
-  const rawScore =
-    components.volumeVelocityScore +
-    components.volumeAccelerationScore +
-    components.priceVelocityScore +
-    components.priceAccelerationScore +
-    components.buyerVelocityScore +
-    components.buyerAccelerationScore +
-    components.tradeVelocityScore +
-    components.buyPressureScore -
-    components.sellPressurePenalty -
-    components.missingDataPenalty -
-    components.riskPenalty;
-  const totalScore = roundScore(clampNumber(rawScore, 0, 100));
+  const score = scoreLaunchDerivativeSignal({
+    featureScores: {
+      volumeVelocity: volume.positiveScore,
+      volumeAcceleration: volumeAcceleration.positiveScore,
+      priceVelocity: price.positiveScore,
+      priceAcceleration: priceAcceleration.positiveScore,
+      buyerVelocity: buyers.positiveScore,
+      buyerAcceleration: buyerAcceleration.positiveScore,
+      tradeVelocity: trades.positiveScore,
+      buyPressure: buyPressure.positiveScore
+    },
+    tradeSampleCount: options.sampleCount,
+    sellPressure:
+      (derivatives.dBuyPressurePerSec ?? 0) < 0 ? "mild" : "none",
+    riskLevel: "unknown",
+    hardReject: false
+  });
   const combinedDerivativeScore = {
-    totalScore,
-    strengthLabel: getMomentumDerivativeSignalLabel(totalScore, false),
-    components,
+    ...score,
     reasonCodes: uniqueReasonCodes([
+      ...score.reasonCodes,
       ...derivatives.reasonCodes,
-      ...(totalScore > 0
+      ...(score.totalScore > 0
         ? ["DERIVATIVE_SCORE_CANONICAL_STRENGTH_FALLBACK"]
         : ["DERIVATIVE_SCORE_UNAVAILABLE"])
     ])
@@ -7932,35 +7998,8 @@ function createMomentumDerivativeStrengthFallback(
   };
 }
 
-function getMomentumDerivativeSignalLabel(
-  score: number,
-  hardReject: boolean
-): MomentumScannerRow["strategy"]["signalLabel"] {
-  if (hardReject) {
-    return "reject";
-  }
-
-  if (score >= 75) {
-    return "ripping";
-  }
-
-  if (score >= 55) {
-    return "hot";
-  }
-
-  if (score >= 25) {
-    return "watch";
-  }
-
-  return "none";
-}
-
 function roundScore(value: number): number {
   return Number.isFinite(value) ? Math.round(value * 1000) / 1000 : 0;
-}
-
-function clampNumber(value: number, min: number, max: number): number {
-  return Math.min(Math.max(Number.isFinite(value) ? value : 0, min), max);
 }
 
 function createMomentumSparkline(

@@ -59,6 +59,24 @@ not applied to the signal score until the signal-calibration phase validates
 that policy from captured data. The absolute scales are conservative reference
 values, not statistically calibrated trading thresholds or evidence of edge.
 
+Signal scoring is owned by the versioned `@axi/signal-calibration` reference
+policy. Launch scoring and API fallback scoring use the same weights, sample
+gates, penalties, and `watch` / `hot` / `ripping` labels. The policy remains
+explicitly `reference_only`: it is not calibrated, cannot activate a threshold,
+and cannot enable paper or live entries.
+
+The package also provides a deterministic offline threshold evaluator. Each
+observation must name the policy version, an explicit `train` or `validation`
+partition, a signal timestamp, a later outcome timestamp, a forward return,
+estimated costs, and a target outcome. Invalid timestamps, policy-version
+mismatches, non-finite values, and outcomes at or before the signal are rejected.
+Threshold selection uses training observations only; holdout metrics are
+reported separately. Minimum evidence gates apply to observations, positive
+outcomes, and signaled samples. Even a sufficient holdout result remains an
+inactive candidate pending operator review and captured real-session evidence.
+The next roadmap phase supplies session capture/export rather than fabricating
+outcomes from the current runtime.
+
 Launch trade tracking uses PumpPortal `subscribeTokenTrade` only for selected
 mints, through the existing one-WebSocket PumpPortal provider and the metered
 actual-data gates. It never uses account-trade streams, trading APIs, wallet
@@ -637,6 +655,8 @@ Indexer endpoints:
 - `GET /runtime/timeseries`
 - `GET /runtime/derivatives`
 - `GET /runtime/derivative-strength`
+- `GET /runtime/signal-calibration`
+- `POST /runtime/signal-calibration/evaluate`
 - `GET /indexer/stream/status`
 - `GET /indexer/stream/real-readiness`
 - `GET /indexer/stream/config`

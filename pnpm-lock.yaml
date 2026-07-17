@@ -113,6 +113,9 @@ importers:
       '@axi/scoring':
         specifier: workspace:*
         version: link:../../packages/scoring
+      '@axi/signal-calibration':
+        specifier: workspace:*
+        version: link:../../packages/signal-calibration
       '@axi/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -259,6 +262,11 @@ importers:
       '@axi/derivatives':
         specifier: workspace:*
         version: link:../derivatives
+      '@axi/signal-calibration':
+        specifier: workspace:*
+        version: link:../signal-calibration
+
+  packages/signal-calibration: {}
 
   packages/live-state:
     dependencies:

@@ -1,5 +1,5 @@
 {
-  "name": "@axi/launch-momentum",
+  "name": "@axi/signal-calibration",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -15,10 +15,5 @@
     "typecheck": "tsc -b tsconfig.json && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "clean": "rm -rf dist"
-  },
-  "dependencies": {
-    "@axi/derivative-strength": "workspace:*",
-    "@axi/derivatives": "workspace:*",
-    "@axi/signal-calibration": "workspace:*"
   }
 }
