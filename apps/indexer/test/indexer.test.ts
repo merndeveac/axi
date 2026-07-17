@@ -30,6 +30,7 @@ describe("@axi/indexer", () => {
     expect(config.INDEXER_ENABLED).toBe(false);
     expect(config.INDEXER_SOURCE).toBe("mock");
     expect(config.INDEXER_FIXTURE_DIR).toBe("packages/pumpfun-decoder/fixtures");
+    expect(config.TIMESERIES_RETENTION_MS).toBe(300_000);
     expect(config.GEYSER_ENABLED).toBe(false);
     expect(config.MANAGED_STREAM_ENABLED).toBe(false);
     expect(config.MANAGED_STREAM_PROVIDER).toBe("mock");
@@ -138,6 +139,11 @@ describe("@axi/indexer", () => {
     expect(status.pumpfunFixtures?.decodeErrors).toBe(0);
     expect(status.liveState.tokenCount).toBe(1);
     expect(status.liveState.eventsByType.token_migrated).toBe(1);
+    expect(status.timeseries).toMatchObject({
+      canonical: true,
+      bucketMs: 1000,
+      retentionMs: 300_000
+    });
   });
 
   it("managed stream source with mock provider emits Pump.fun fixture events", () => {

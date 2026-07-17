@@ -235,7 +235,7 @@ function parseArgs(argv: string[]): ReplayArgs {
 
       if (!isReplaySource(type)) {
         throw new Error(
-          "--type must be actual_data_sessions, actual_data_subscriptions, candidate_decisions, chain_transaction_events, chain_trade_events, chain_verifications, feed_events, market_observations, pumpportal_token_trade_events, risk_snapshots, signals, token_identities, token_metadata_fetches, watch_actions, or watch_plans"
+          "--type must be actual_data_sessions, actual_data_subscriptions, candidate_decisions, chain_transaction_events, chain_trade_events, chain_verifications, feed_events, launch_timeseries_buckets, market_observations, pumpportal_token_trade_events, risk_snapshots, signals, token_identities, token_metadata_fetches, watch_actions, or watch_plans"
         );
       }
 
@@ -293,6 +293,7 @@ function isReplaySource(value: string): value is ReplaySource {
     value === "chain_trade_events" ||
     value === "chain_verifications" ||
     value === "feed_events" ||
+    value === "launch_timeseries_buckets" ||
     value === "market_observations" ||
     value === "pumpportal_token_trade_events" ||
     value === "token_identities" ||

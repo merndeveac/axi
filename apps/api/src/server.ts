@@ -325,6 +325,9 @@ const options: ApiServerOptions = {
     liveStateEnabled: config.API_INDEXER_LIVE_STATE_ENABLED,
     preferLiveStateCards: config.API_INDEXER_PREFER_LIVE_STATE_CARDS,
     recentEventLimit: config.API_INDEXER_RECENT_EVENT_LIMIT,
+    timeseries: {
+      retentionMs: config.TIMESERIES_RETENTION_MS
+    },
     managedStream: {
       enabled: config.MANAGED_STREAM_ENABLED,
       provider: config.MANAGED_STREAM_PROVIDER,

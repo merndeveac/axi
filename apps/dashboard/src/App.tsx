@@ -548,6 +548,7 @@ type RuntimeContract = {
   };
   ownership: {
     capacityModel: string;
+    canonicalTimeseries: string;
     discoveryAndLaunchScoring: string;
     subscriptionPolicy: string;
     subscriptionTransport: string;
@@ -562,6 +563,16 @@ type RuntimeContract = {
       expected: number;
       actual: number;
     }>;
+  };
+  timeseries: {
+    canonical: true;
+    bucketMs: number;
+    retentionMs: number;
+    mintCount: number;
+    bucketCount: number;
+    acceptedEventCount: number;
+    duplicateEventCount: number;
+    lateEventCount: number;
   };
 };
 
@@ -2120,6 +2131,19 @@ function HeaderControlCenter({
             meteredLaunchDataStatus
               ? `${meteredLaunchDataStatus.scheduler.queuedCandidateCount} queued · ${meteredLaunchDataStatus.scheduler.preemptionCount} preempted`
               : "policy checking"
+          }
+        />
+        <HeaderMetric
+          label="1s buckets"
+          value={
+            runtimeContract
+              ? formatCompactNumber(runtimeContract.timeseries.bucketCount)
+              : "—"
+          }
+          detail={
+            runtimeContract
+              ? `${formatCompactNumber(runtimeContract.timeseries.acceptedEventCount)} trades · ${formatCompactNumber(runtimeContract.timeseries.mintCount)} mints`
+              : "series checking"
           }
         />
         <HeaderMetric

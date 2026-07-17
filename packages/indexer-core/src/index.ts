@@ -253,7 +253,7 @@ export function getEventMint(event: NormalizedIndexerEvent): string | null {
 }
 
 export function getEventTimestamp(event: NormalizedIndexerEvent): string {
-  const candidates = [event.processedAt, event.blockTime, event.receivedAt];
+  const candidates = [event.blockTime, event.processedAt, event.receivedAt];
 
   for (const candidate of candidates) {
     const timestamp = normalizeTimestamp(candidate);

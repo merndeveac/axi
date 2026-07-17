@@ -88,6 +88,7 @@ describe("@axi/api", () => {
     expect(config.ROLLING_TRACKER_MAX_PROTECTED_MINTS).toBe(2);
     expect(config.ROLLING_TRACKER_QUEUE_LIMIT).toBe(50);
     expect(config.ROLLING_TRACKER_QUEUE_MAX_AGE_MS).toBe(30_000);
+    expect(config.TIMESERIES_RETENTION_MS).toBe(300_000);
     expect(config.METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT).toBe(250);
     expect(config.METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION).toBe(1000);
     expect(config.METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL).toBe(0.001);
@@ -1481,6 +1482,7 @@ describe("@axi/api", () => {
       configuration: { driftDetected: boolean };
       ownership: Record<string, string>;
       roadmap: {
+        canonicalOneSecondTimeseries: string;
         rollingNewestTokenScheduler: string;
         schedulerMutationApplied: boolean;
       };
@@ -1498,11 +1500,17 @@ describe("@axi/api", () => {
           schedulerQueueMaxAgeMs: number;
         };
       };
+      timeseries: {
+        bucketMs: number;
+        canonical: boolean;
+        retentionMs: number;
+      };
     };
 
     expect(response.statusCode).toBe(200);
     expect(body.ownership).toMatchObject({
       discoveryAndLaunchScoring: "LaunchScannerService",
+      canonicalTimeseries: "@axi/timeseries",
       subscriptionTransport: "ActualDataService",
       subscriptionPolicy: "MeteredLaunchDataService",
       trackingScheduler: "@axi/tracking-scheduler",
@@ -1520,8 +1528,14 @@ describe("@axi/api", () => {
       maxUiSessionCostSol: 0.001
     });
     expect(body.configuration.driftDetected).toBe(false);
+    expect(body.roadmap.canonicalOneSecondTimeseries).toBe("implemented");
     expect(body.roadmap.rollingNewestTokenScheduler).toBe("implemented");
     expect(body.roadmap.schedulerMutationApplied).toBe(false);
+    expect(body.timeseries).toMatchObject({
+      bucketMs: 1000,
+      canonical: true,
+      retentionMs: 300_000
+    });
     expect(body.safety.apiHost).toBe("127.0.0.1");
     expect(body.safety.tradingDisabled).toBe(true);
   });
@@ -3666,10 +3680,54 @@ describe("@axi/api", () => {
       url: `/indexer/timeseries/${body.normalizedEvent.mint}`
     });
     const timeseriesBody = timeseriesResponse.json() as {
+      actualBucketCount: number;
+      buckets: Array<{
+        bucketMs: number;
+        bucketStart: string;
+        synthetic: boolean;
+        tradeCount: number;
+      }>;
+      status: { canonical: boolean };
       windows: { "10s": { tradeCount: number; volumeSol: number } };
     };
+    expect(timeseriesBody.actualBucketCount).toBe(1);
+    expect(timeseriesBody.buckets[0]).toMatchObject({
+      bucketMs: 1000,
+      synthetic: false,
+      tradeCount: 1
+    });
+    expect(timeseriesBody.status.canonical).toBe(true);
     expect(timeseriesBody.windows["10s"].tradeCount).toBe(1);
     expect(timeseriesBody.windows["10s"].volumeSol).toBe(1.5);
+
+    const historyResponse = await server.app.inject({
+      method: "GET",
+      url: `/indexer/timeseries/${body.normalizedEvent.mint}/history`
+    });
+    const historyBody = historyResponse.json() as {
+      buckets: Array<{ bucketMs: number; tradeCount: number }>;
+      persisted: boolean;
+    };
+    expect(historyResponse.statusCode).toBe(200);
+    expect(historyBody.persisted).toBe(true);
+    expect(historyBody.buckets).toHaveLength(1);
+    expect(historyBody.buckets[0]).toMatchObject({
+      bucketMs: 1000,
+      tradeCount: 1
+    });
+
+    const runtimeTimeseriesResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/timeseries"
+    });
+    expect(runtimeTimeseriesResponse.json()).toMatchObject({
+      persistedBucketCount: 1,
+      timeseries: {
+        bucketCount: 1,
+        canonical: true
+      },
+      tradingDisabled: true
+    });
 
     const recentResponse = await server.app.inject({
       method: "GET",

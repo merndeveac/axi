@@ -1,3 +1,4 @@
+import type { TradeTimeseriesStatus } from "@axi/timeseries";
 import type { ActualDataService } from "./actual-data-service";
 import type { MeteredLaunchDataService } from "./metered-launch-data-service";
 
@@ -21,6 +22,7 @@ export function createRuntimeContract(input: {
   apiHost: string;
   meteredLaunchData: MeteredLaunchDataService;
   runtimeSessionId: string;
+  timeseries: TradeTimeseriesStatus;
 }) {
   const actualDataStatus = input.actualData.getStatus();
   const meteredStatus = input.meteredLaunchData.getStatus();
@@ -50,7 +52,7 @@ export function createRuntimeContract(input: {
   );
 
   return {
-    version: 2,
+    version: 3,
     runtimeSessionId: input.runtimeSessionId,
     safety: {
       paperOnly: true,
@@ -67,6 +69,7 @@ export function createRuntimeContract(input: {
       subscriptionPolicy: "MeteredLaunchDataService",
       providerConnection: "PumpPortalFeedProvider",
       rollingMetrics: "@axi/metrics",
+      canonicalTimeseries: "@axi/timeseries",
       capacityModel: "@axi/capacity-model",
       trackingScheduler: "@axi/tracking-scheduler",
       paperPortfolio: "@axi/paper-portfolio",
@@ -91,9 +94,11 @@ export function createRuntimeContract(input: {
       drift,
       driftDetected: drift.length > 0
     },
+    timeseries: input.timeseries,
     roadmap: {
       coverageCapacityInstrumentation: "implemented",
       rollingNewestTokenScheduler: "implemented",
+      canonicalOneSecondTimeseries: "implemented",
       schedulerMutationApplied:
         meteredStatus.scheduler.trackingMutationCount > 0
     },

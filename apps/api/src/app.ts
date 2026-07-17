@@ -90,6 +90,7 @@ import {
   listActualDataSubscriptions,
   listLaunchCandidates,
   listLaunchScoreSnapshots,
+  listLaunchTimeseriesBucketsByMint,
   listLaunchTrackingEvents,
   listLaunchTrackingSessions,
   listMeteredLaunchDataEvents,
@@ -105,6 +106,7 @@ import {
   listRuntimeSessions,
   saveOperatorAction,
   saveRuntimeSession,
+  upsertLaunchTimeseriesBucket,
   type StorageHandle,
   type StoredPaperPortfolioPosition,
   type StoredPaperPosition,
@@ -1083,6 +1085,12 @@ export const apiConfigSchema = z.object({
     .int()
     .positive()
     .default(1000),
+  TIMESERIES_RETENTION_MS: z.coerce
+    .number()
+    .int()
+    .min(300_000)
+    .max(86_400_000)
+    .default(300_000),
   MANAGED_STREAM_ENABLED: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(false),
@@ -1330,6 +1338,10 @@ export type ApiServer = {
 
 const limitQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(1000).default(50)
+});
+const timeseriesQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(1000).default(300),
+  fillGaps: z.preprocess(parseBooleanEnv, z.boolean()).default(true)
 });
 const mintParamSchema = z.object({
   mint: z.string().min(32)
@@ -1653,7 +1665,18 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     mode: dataFeedMode,
     provider: feed.name
   });
-  const indexerAdapter = createIndexerAdapter(options.indexer);
+  const configuredIndexer = options.indexer ?? {};
+  const onBucketUpdated = configuredIndexer.timeseries?.onBucketUpdated;
+  const indexerAdapter = createIndexerAdapter({
+    ...configuredIndexer,
+    timeseries: {
+      ...configuredIndexer.timeseries,
+      onBucketUpdated: (bucket) => {
+        upsertLaunchTimeseriesBucket(bucket);
+        onBucketUpdated?.(bucket);
+      }
+    }
+  });
   const signals = new Map<string, OverlaySignal>();
   const riskSnapshots = new Map<string, RiskSnapshot>();
   const launchScanner = createLaunchScannerService({
@@ -2035,7 +2058,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       allowedControlOrigins: Array.from(allowedControlOrigins),
       apiHost,
       meteredLaunchData,
-      runtimeSessionId
+      runtimeSessionId,
+      timeseries: indexerAdapter.getTimeseriesStatus()
     })
   );
 
@@ -2059,6 +2083,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       tradingDisabled: true
     };
   });
+
+  app.get("/runtime/timeseries", async () => ({
+    timeseries: indexerAdapter.getTimeseriesStatus(),
+    persistedBucketCount: getStorageStats().launchTimeseriesBucketCount,
+    paperOnly: true,
+    dataOnly: true,
+    tradingDisabled: true
+  }));
 
   app.post("/runtime/capacity/snapshot", async () => {
     const report = getRuntimeCapacityReport();
@@ -2359,7 +2391,24 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   app.get("/indexer/timeseries/:mint", async (request) => {
     const params = mintParamSchema.parse(request.params);
-    return indexerAdapter.getTimeseries(params.mint);
+    const query = timeseriesQuerySchema.parse(request.query);
+    return indexerAdapter.getTimeseries(params.mint, query);
+  });
+
+  app.get("/indexer/timeseries/:mint/history", async (request) => {
+    const params = mintParamSchema.parse(request.params);
+    const query = timeseriesQuerySchema
+      .pick({ limit: true })
+      .parse(request.query);
+
+    return {
+      mint: params.mint,
+      buckets: listLaunchTimeseriesBucketsByMint(params.mint, query.limit),
+      persisted: true,
+      paperOnly: true,
+      dataOnly: true,
+      tradingDisabled: true
+    };
   });
 
   app.get("/live/tokens", async () => liveTokens.getLiveTokens());

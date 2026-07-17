@@ -40,6 +40,7 @@ export type IndexerAppStatus = {
   streamConnectionState: string;
   streamEnvelopeCount: number;
   streamEventCount: number;
+  timeseries: ReturnType<ReturnType<typeof createTradeTimeseries>["getStatus"]>;
   pumpPortal: ReturnType<typeof getPumpPortalIndexerSourceStatus>;
   paperOnly: true;
   tradingDisabled: true;
@@ -61,7 +62,9 @@ export function createIndexerApp(config: IndexerConfig): IndexerApp {
     recentEventLimit: config.INDEXER_RECENT_EVENT_LIMIT
   });
   const liveState = createLiveTokenStateStore();
-  const timeseries = createTradeTimeseries();
+  const timeseries = createTradeTimeseries({
+    retentionMs: config.TIMESERIES_RETENTION_MS
+  });
   const sink = createInMemoryIndexerSink({ bus, liveState, timeseries });
   let activeSource: IndexerSource | null = null;
   let started = false;
@@ -159,6 +162,7 @@ export function createIndexerApp(config: IndexerConfig): IndexerApp {
         (config.MANAGED_STREAM_ENABLED ? "configured" : "disabled"),
       streamEnvelopeCount: managedStreamSummary?.envelopeCount ?? 0,
       streamEventCount: managedStreamSummary?.normalizedEventCount ?? 0,
+      timeseries: timeseries.getStatus(),
       pumpPortal: getPumpPortalIndexerSourceStatus(),
       paperOnly: true,
       tradingDisabled: true,

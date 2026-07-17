@@ -14,6 +14,12 @@ export const indexerConfigSchema = z.object({
   INDEXER_MODE: z.enum(["local", "paper", "replay"]).default("local"),
   INDEXER_LOG_LEVEL: z.enum(["silent", "error", "warn", "info", "debug"]).default("info"),
   INDEXER_RECENT_EVENT_LIMIT: z.coerce.number().int().positive().default(1000),
+  TIMESERIES_RETENTION_MS: z.coerce
+    .number()
+    .int()
+    .min(300_000)
+    .max(86_400_000)
+    .default(300_000),
   INDEXER_FIXTURE_DIR: z
     .string()
     .min(1)

@@ -42,13 +42,20 @@ import {
   type ManagedStreamProviderKind,
   type ManagedStreamSubscriptionConfig
 } from "@axi/stream-core";
-import { createTradeTimeseries, type TradeTimeseries } from "@axi/timeseries";
+import {
+  createTradeTimeseries,
+  type TradeBucketQuery,
+  type TradeTimeseries,
+  type TradeTimeseriesOptions,
+  type TradeTimeseriesStatus
+} from "@axi/timeseries";
 
 export type IndexerAdapterOptions = {
   enabled?: boolean;
   liveStateEnabled?: boolean;
   preferLiveStateCards?: boolean;
   recentEventLimit?: number;
+  timeseries?: TradeTimeseriesOptions;
   managedStream?: ManagedStreamAdapterConfig;
 };
 
@@ -279,6 +286,7 @@ export type IndexerAdapterStatus = {
   streamConnectionState: string;
   streamEnvelopeCount: number;
   streamEventCount: number;
+  timeseries: TradeTimeseriesStatus;
   paperOnly: true;
   tradingDisabled: true;
   reasonCodes: string[];
@@ -298,11 +306,11 @@ export type IndexerAdapter = {
   buildStreamSubscriptionPreview: (
     request?: ManagedStreamBuildSubscriptionRequest
   ) => ManagedStreamSubscriptionPreview;
-  getTimeseries: (mint: string) => {
-    mint: string;
-    windows: ReturnType<TradeTimeseries["getWindows"]>;
-    rollingStats: ReturnType<TradeTimeseries["getRollingStats"]>;
-  };
+  getTimeseries: (
+    mint: string,
+    query?: TradeBucketQuery
+  ) => ReturnType<TradeTimeseries["getSeries"]>;
+  getTimeseriesStatus: (mint?: string) => TradeTimeseriesStatus;
 };
 
 export function createIndexerAdapter(
@@ -315,7 +323,7 @@ export function createIndexerAdapter(
     recentEventLimit: options.recentEventLimit ?? 1000
   });
   const liveState = createLiveTokenStateStore();
-  const timeseries = createTradeTimeseries();
+  const timeseries = createTradeTimeseries(options.timeseries);
   const streamConfig = normalizeManagedStreamConfig(options.managedStream);
   const streamAdapter = createManagedStreamAdapter({
     providerKind: streamConfig.provider,
@@ -391,6 +399,7 @@ export function createIndexerAdapter(
         .connectionState,
       streamEnvelopeCount: streamAdapter.getAdapterStatus().envelopesReceived,
       streamEventCount: streamAdapter.getAdapterStatus().eventsProduced,
+      timeseries: timeseries.getStatus(),
       paperOnly: true,
       tradingDisabled: true,
       reasonCodes: [
@@ -408,11 +417,8 @@ export function createIndexerAdapter(
     getStreamRealReadiness: () => createManagedStreamRealReadiness(streamConfig),
     buildStreamSubscriptionPreview: (request = {}) =>
       buildManagedStreamSubscriptionPreview(streamConfig, request),
-    getTimeseries: (mint) => ({
-      mint,
-      windows: timeseries.getWindows(mint),
-      rollingStats: timeseries.getRollingStats(mint)
-    })
+    getTimeseries: (mint, query) => timeseries.getSeries(mint, query),
+    getTimeseriesStatus: (mint) => timeseries.getStatus(mint)
   };
 }
 

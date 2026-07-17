@@ -39,6 +39,7 @@ import {
   listLaunchCandidates,
   listLaunchScoreSnapshots,
   listLaunchScoreSnapshotsByMint,
+  listLaunchTimeseriesBucketsByMint,
   listLaunchTrackingEvents,
   listLaunchTrackingSessions,
   listLaunchTradeSamplesByMint,
@@ -112,6 +113,7 @@ import {
   saveExitSignal,
   saveLaunchCandidate,
   saveLaunchScoreSnapshot,
+  upsertLaunchTimeseriesBucket,
   saveLaunchTrackingEvent,
   saveLaunchTrackingSession,
   saveLaunchTradeSample,
@@ -183,6 +185,7 @@ describe("@axi/storage", () => {
     expect(stats.meteredLaunchDataEventCount).toBe(0);
     expect(stats.launchCandidateCount).toBe(0);
     expect(stats.launchTradeSampleCount).toBe(0);
+    expect(stats.launchTimeseriesBucketCount).toBe(0);
     expect(stats.launchScoreSnapshotCount).toBe(0);
     expect(stats.launchTrackingEventCount).toBe(0);
     expect(stats.launchTrackingSessionCount).toBe(0);
@@ -730,6 +733,43 @@ describe("@axi/storage", () => {
     expect(JSON.stringify(event.payload).toLowerCase()).not.toContain(
       "secret-api-key"
     );
+  });
+
+  it("upserts canonical launch buckets and exposes them for replay", async () => {
+    initStorage({ databasePath });
+    upsertLaunchTimeseriesBucket(createLaunchTimeseriesBucket());
+    upsertLaunchTimeseriesBucket({
+      ...createLaunchTimeseriesBucket(),
+      closeSol: 0.0005,
+      highSol: 0.0005,
+      tradeCount: 2,
+      buyCount: 2,
+      volumeSol: 3,
+      buyVolumeSol: 3,
+      updatedAt: "2026-01-01T00:00:00.900Z"
+    });
+
+    const buckets = listLaunchTimeseriesBucketsByMint(mint, 10);
+    const replayItems = [];
+
+    for await (const item of createReplayStream({
+      limit: 10,
+      speed: 0,
+      type: "launch_timeseries_buckets"
+    })) {
+      replayItems.push(item);
+    }
+
+    expect(buckets).toHaveLength(1);
+    expect(buckets[0]).toMatchObject({
+      bucketMs: 1000,
+      closeSol: 0.0005,
+      tradeCount: 2,
+      volumeSol: 3
+    });
+    expect(getStorageStats().launchTimeseriesBucketCount).toBe(1);
+    expect(replayItems).toHaveLength(1);
+    expect(replayItems[0]?.source).toBe("launch_timeseries_buckets");
   });
 
   it("token identity can be saved, listed, and fetched by mint", () => {
@@ -2025,6 +2065,49 @@ function createCandidateDecision(): CandidateDecision {
     },
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z"
+  };
+}
+
+function createLaunchTimeseriesBucket() {
+  return {
+    schemaVersion: 1 as const,
+    bucketMs: 1000 as const,
+    mint,
+    bucketStart: "2026-01-01T00:00:00.000Z",
+    bucketEnd: "2026-01-01T00:00:01.000Z",
+    firstTradeAt: "2026-01-01T00:00:00.100Z",
+    lastTradeAt: "2026-01-01T00:00:00.500Z",
+    openSol: 0.0004,
+    highSol: 0.0004,
+    lowSol: 0.0004,
+    closeSol: 0.0004,
+    volumeSol: 1,
+    buyVolumeSol: 1,
+    sellVolumeSol: 0,
+    vwapSol: 0.0004,
+    openUsd: null,
+    highUsd: null,
+    lowUsd: null,
+    closeUsd: null,
+    volumeUsd: 0,
+    buyVolumeUsd: 0,
+    sellVolumeUsd: 0,
+    vwapUsd: null,
+    tokenVolume: 1000,
+    tradeCount: 1,
+    buyCount: 1,
+    sellCount: 0,
+    uniqueBuyers: 1,
+    uniqueSellers: 0,
+    sourceCount: 1,
+    sources: ["pumpportal"],
+    confidence: "high" as const,
+    complete: false,
+    synthetic: false,
+    reasonCodes: ["TIMESERIES_BUCKET_1S"],
+    paperOnly: true as const,
+    dataOnly: true as const,
+    tradingDisabled: true as const
   };
 }
 

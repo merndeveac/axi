@@ -81,6 +81,7 @@ export type ReplaySource =
   | "feed_events"
   | "market_observations"
   | "pumpportal_token_trade_events"
+  | "launch_timeseries_buckets"
   | "token_identities"
   | "token_metadata_fetches"
   | "watch_actions"
@@ -268,6 +269,7 @@ export type StorageStats = {
   launchCandidateCount: number;
   launchScoreSnapshotCount: number;
   launchTradeSampleCount: number;
+  launchTimeseriesBucketCount: number;
   launchTrackingEventCount: number;
   launchTrackingSessionCount: number;
   signalCount: number;
@@ -824,6 +826,58 @@ export type StoredLaunchTradeSample = Omit<
   tokenAmount: number | null;
 };
 
+export type LaunchTimeseriesBucketInput = {
+  schemaVersion: 1;
+  bucketMs: 1000;
+  mint: string;
+  bucketStart: string;
+  bucketEnd: string;
+  firstTradeAt: string | null;
+  lastTradeAt: string | null;
+  openSol: number | null;
+  highSol: number | null;
+  lowSol: number | null;
+  closeSol: number | null;
+  volumeSol: number;
+  buyVolumeSol: number;
+  sellVolumeSol: number;
+  vwapSol: number | null;
+  openUsd: number | null;
+  highUsd: number | null;
+  lowUsd: number | null;
+  closeUsd: number | null;
+  volumeUsd: number;
+  buyVolumeUsd: number;
+  sellVolumeUsd: number;
+  vwapUsd: number | null;
+  tokenVolume: number;
+  tradeCount: number;
+  buyCount: number;
+  sellCount: number;
+  uniqueBuyers: number;
+  uniqueSellers: number;
+  sourceCount: number;
+  sources: string[];
+  confidence: "low" | "medium" | "high";
+  complete: boolean;
+  synthetic: boolean;
+  reasonCodes: string[];
+  paperOnly: true;
+  dataOnly: true;
+  tradingDisabled: true;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type StoredLaunchTimeseriesBucket = Omit<
+  LaunchTimeseriesBucketInput,
+  "createdAt" | "updatedAt"
+> & {
+  id: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type LaunchScoreSnapshotInput = {
   mint: string;
   score: number;
@@ -1296,6 +1350,22 @@ type LaunchTradeSampleRow = {
   reason_codes_json: string;
   payload_json: string;
   created_at: string;
+};
+
+type LaunchTimeseriesBucketRow = {
+  id: number;
+  mint: string;
+  bucket_start: string;
+  bucket_end: string;
+  trade_count: number;
+  volume_sol: number;
+  volume_usd: number;
+  close_sol: number | null;
+  close_usd: number | null;
+  reason_codes_json: string;
+  payload_json: string;
+  created_at: string;
+  updated_at: string;
 };
 
 type LaunchScoreSnapshotRow = {
@@ -1891,6 +1961,49 @@ const launchTradeSampleInputSchema = z.object({
   reasonCodes: z.array(z.string().min(1)),
   payload: z.unknown(),
   createdAt: z.string().datetime().optional()
+});
+
+const launchTimeseriesBucketInputSchema = z.object({
+  schemaVersion: z.literal(1),
+  bucketMs: z.literal(1000),
+  mint: z.string().min(1),
+  bucketStart: z.string().datetime(),
+  bucketEnd: z.string().datetime(),
+  firstTradeAt: z.string().datetime().nullable(),
+  lastTradeAt: z.string().datetime().nullable(),
+  openSol: z.number().positive().nullable(),
+  highSol: z.number().positive().nullable(),
+  lowSol: z.number().positive().nullable(),
+  closeSol: z.number().positive().nullable(),
+  volumeSol: z.number().nonnegative(),
+  buyVolumeSol: z.number().nonnegative(),
+  sellVolumeSol: z.number().nonnegative(),
+  vwapSol: z.number().positive().nullable(),
+  openUsd: z.number().positive().nullable(),
+  highUsd: z.number().positive().nullable(),
+  lowUsd: z.number().positive().nullable(),
+  closeUsd: z.number().positive().nullable(),
+  volumeUsd: z.number().nonnegative(),
+  buyVolumeUsd: z.number().nonnegative(),
+  sellVolumeUsd: z.number().nonnegative(),
+  vwapUsd: z.number().positive().nullable(),
+  tokenVolume: z.number().nonnegative(),
+  tradeCount: z.number().int().nonnegative(),
+  buyCount: z.number().int().nonnegative(),
+  sellCount: z.number().int().nonnegative(),
+  uniqueBuyers: z.number().int().nonnegative(),
+  uniqueSellers: z.number().int().nonnegative(),
+  sourceCount: z.number().int().nonnegative(),
+  sources: z.array(z.string().min(1)),
+  confidence: z.enum(["low", "medium", "high"]),
+  complete: z.boolean(),
+  synthetic: z.boolean(),
+  reasonCodes: z.array(z.string().min(1)),
+  paperOnly: z.literal(true),
+  dataOnly: z.literal(true),
+  tradingDisabled: z.literal(true),
+  createdAt: z.string().datetime().optional(),
+  updatedAt: z.string().datetime().optional()
 });
 
 const launchScoreSnapshotInputSchema = z.object({
@@ -3758,6 +3871,106 @@ export function listLaunchTradeSamplesByMint(
   return rows.map(mapLaunchTradeSampleRow);
 }
 
+export function upsertLaunchTimeseriesBucket(
+  bucket: LaunchTimeseriesBucketInput
+): StoredLaunchTimeseriesBucket {
+  const parsed = launchTimeseriesBucketInputSchema.parse(bucket);
+  const createdAt = parsed.createdAt ?? parsed.bucketStart;
+  const updatedAt = parsed.updatedAt ?? parsed.lastTradeAt ?? parsed.bucketEnd;
+  const db = getDb();
+
+  db.prepare(
+    `insert into launch_timeseries_buckets (
+      mint,
+      bucket_start,
+      bucket_end,
+      trade_count,
+      volume_sol,
+      volume_usd,
+      close_sol,
+      close_usd,
+      reason_codes_json,
+      payload_json,
+      created_at,
+      updated_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    on conflict(mint, bucket_start) do update set
+      bucket_end = excluded.bucket_end,
+      trade_count = excluded.trade_count,
+      volume_sol = excluded.volume_sol,
+      volume_usd = excluded.volume_usd,
+      close_sol = excluded.close_sol,
+      close_usd = excluded.close_usd,
+      reason_codes_json = excluded.reason_codes_json,
+      payload_json = excluded.payload_json,
+      updated_at = excluded.updated_at`
+  ).run(
+    parsed.mint,
+    parsed.bucketStart,
+    parsed.bucketEnd,
+    parsed.tradeCount,
+    parsed.volumeSol,
+    parsed.volumeUsd,
+    parsed.closeSol,
+    parsed.closeUsd,
+    stringifyJson(parsed.reasonCodes),
+    stringifyJson(parsed),
+    createdAt,
+    updatedAt
+  );
+
+  const row = db
+    .prepare(
+      `select * from launch_timeseries_buckets
+       where mint = ? and bucket_start = ?`
+    )
+    .get(parsed.mint, parsed.bucketStart) as
+    LaunchTimeseriesBucketRow | undefined;
+
+  if (!row) {
+    throw new Error(
+      `Failed to save launch timeseries bucket for ${parsed.mint} at ${parsed.bucketStart}`
+    );
+  }
+
+  return mapLaunchTimeseriesBucketRow(row);
+}
+
+export function listLaunchTimeseriesBucketsByMint(
+  mint: string,
+  limit = 300
+): StoredLaunchTimeseriesBucket[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from launch_timeseries_buckets
+       where mint = ?
+       order by datetime(bucket_start) desc, id desc
+       limit ?`
+    )
+    .all(mint, parsedLimit) as LaunchTimeseriesBucketRow[];
+
+  return rows.map(mapLaunchTimeseriesBucketRow);
+}
+
+export function listLaunchTimeseriesBucketsForReplay(
+  limit = 300
+): StoredLaunchTimeseriesBucket[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from launch_timeseries_buckets
+       order by datetime(bucket_start) asc, id asc
+       limit ?`
+    )
+    .all(parsedLimit) as LaunchTimeseriesBucketRow[];
+
+  return rows.map(mapLaunchTimeseriesBucketRow);
+}
+
 export function saveLaunchScoreSnapshot(
   snapshot: LaunchScoreSnapshotInput
 ): StoredLaunchScoreSnapshot {
@@ -5215,6 +5428,7 @@ function getReplayPayload(
     | StoredChainTradeEvent
     | StoredChainVerification
     | StoredFeedEvent
+    | StoredLaunchTimeseriesBucket
     | StoredMarketObservation
     | StoredPumpPortalTokenTradeEvent
     | StoredRiskSnapshot
@@ -5245,6 +5459,7 @@ function getReplayRecords(
   | StoredChainTradeEvent
   | StoredChainVerification
   | StoredFeedEvent
+  | StoredLaunchTimeseriesBucket
   | StoredMarketObservation
   | StoredPumpPortalTokenTradeEvent
   | StoredRiskSnapshot
@@ -5277,6 +5492,8 @@ function getReplayRecords(
       return listMarketObservationsForReplay(limit);
     case "pumpportal_token_trade_events":
       return listPumpPortalTokenTradeEventsForReplay(limit);
+    case "launch_timeseries_buckets":
+      return listLaunchTimeseriesBucketsForReplay(limit);
     case "token_identities":
       return listTokenIdentitiesForReplay(limit);
     case "token_metadata_fetches":
@@ -5798,6 +6015,7 @@ export function getStorageStats(): StorageStats {
     launchCandidateCount: countRows(db, "launch_candidates"),
     launchScoreSnapshotCount: countRows(db, "launch_score_snapshots"),
     launchTradeSampleCount: countRows(db, "launch_trade_samples"),
+    launchTimeseriesBucketCount: countRows(db, "launch_timeseries_buckets"),
     launchTrackingEventCount: countRows(db, "launch_tracking_events"),
     launchTrackingSessionCount: countRows(db, "launch_tracking_sessions"),
     signalCount: countRows(db, "signals"),
@@ -6854,6 +7072,38 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(16, "capacity_snapshots", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 17)) {
+    db.exec(`
+      create table if not exists launch_timeseries_buckets (
+        id integer primary key autoincrement,
+        mint text not null,
+        bucket_start text not null,
+        bucket_end text not null,
+        trade_count integer not null,
+        volume_sol real not null,
+        volume_usd real not null,
+        close_sol real,
+        close_usd real,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null,
+        updated_at text not null,
+        unique(mint, bucket_start)
+      );
+
+      create index if not exists idx_launch_timeseries_buckets_start
+        on launch_timeseries_buckets(bucket_start);
+
+      create index if not exists idx_launch_timeseries_buckets_mint_start
+        on launch_timeseries_buckets(mint, bucket_start);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(17, "canonical_launch_timeseries", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -7422,6 +7672,21 @@ function mapLaunchTradeSampleRow(
     reasonCodes: JSON.parse(row.reason_codes_json) as string[],
     payload: JSON.parse(row.payload_json),
     createdAt: row.created_at
+  };
+}
+
+function mapLaunchTimeseriesBucketRow(
+  row: LaunchTimeseriesBucketRow
+): StoredLaunchTimeseriesBucket {
+  const payload = launchTimeseriesBucketInputSchema.parse(
+    JSON.parse(row.payload_json)
+  );
+
+  return {
+    ...payload,
+    id: row.id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
   };
 }
 

@@ -101,7 +101,8 @@ describe("@axi/indexer-core", () => {
       type: "token_metadata",
       mint: "Mint111111111111111111111111111111111111",
       source: "pumpportal",
-      blockTime: 1767225600
+      blockTime: 1767225600,
+      processedAt: "2026-01-01T00:00:05.000Z"
     });
 
     expect(getEventTimestamp(event)).toBe("2026-01-01T00:00:00.000Z");

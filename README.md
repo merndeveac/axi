@@ -333,6 +333,7 @@ DATA_FEED=pumpportal
 PUMPPORTAL_LIVE_DISCOVERY_ENABLED=true
 PUMPPORTAL_SUBSCRIBE_NEW_TOKEN=true
 PUMPPORTAL_SUBSCRIBE_MIGRATION=true
+TIMESERIES_RETENTION_MS=300000
 MANAGED_STREAM_ENABLED=false
 LASERSTREAM_ENABLED=false
 YELLOWSTONE_ENABLED=false
@@ -593,7 +594,13 @@ stream source
 ```
 
 The current API adapter ingests normalized events from the existing local feed
-pipeline and exposes the indexer state through `/indexer/*`. The existing
+pipeline and exposes the indexer state through `/indexer/*`. Usable trades are
+deduplicated by normalized event ID and assigned by event time to canonical
+one-second buckets. The engine retains at least five minutes in memory, handles
+bounded out-of-order events deterministically, materializes zero-activity gaps
+with carried prices, and exposes 1s/5s/10s/30s/60s/2m/5m windows. Actual buckets
+are upserted into SQLite for inspection and local replay; synthetic gap buckets
+are query-time views and are not persisted. The existing
 `/ui/live-token-cards` dashboard endpoint keeps its current response source by
 default. Set `API_INDEXER_PREFER_LIVE_STATE_CARDS=true` only when testing the
 new live-state card adapter.
@@ -605,6 +612,8 @@ Indexer endpoints:
 - `GET /indexer/live-state`
 - `GET /indexer/live-cards`
 - `GET /indexer/timeseries/:mint`
+- `GET /indexer/timeseries/:mint/history`
+- `GET /runtime/timeseries`
 - `GET /indexer/stream/status`
 - `GET /indexer/stream/real-readiness`
 - `GET /indexer/stream/config`
