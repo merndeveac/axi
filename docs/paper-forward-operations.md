@@ -68,7 +68,9 @@ evidence boundary would otherwise be ambiguous.
 ## Restart Drill
 
 Before trusting a long campaign, run a controlled drill in a non-metered local
-environment:
+environment with a disposable deployment. Phase 14 treats every interrupted
+session as an operational rejection to prevent survivorship bias, so do not
+attach the drill to the deployment intended for promotion evidence:
 
 1. Start a forward session and record its ID.
 2. Stop the API without ending the session.
@@ -105,3 +107,18 @@ cost, no safety-control failures, acceptable fill quality/drawdown/loss streaks,
 and forward expectancy whose confidence remains above the approved gate. A
 later live-execution phase requires a separate architecture and explicit human
 authorization.
+
+After enough sessions exist, run the Phase 14 evaluator. The API evaluation
+requires `EVALUATE PAPER FORWARD EVIDENCE <deployment-id>` and automatically
+includes every completed session for that deployment. For a read-only report:
+
+```bash
+pnpm paper:forward:evaluate -- --deployment <deployment-id> --operator <identity> --from-db .data/axi.sqlite
+```
+
+Review the immutable evidence digest, all failed gates, interrupted-session
+disclosures, cost-adjusted PnL, and confidence lower bound. Even
+`manual_live_candidate` is only a prompt for a separate human architecture and
+safety review; it does not enable wallets, signing, transaction construction,
+or live execution. See
+[`paper-forward-evaluation.md`](paper-forward-evaluation.md).

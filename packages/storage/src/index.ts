@@ -33,6 +33,10 @@ import type {
   PaperOperationsSnapshotKind
 } from "@axi/paper-operations";
 import type {
+  PaperForwardEvaluationReport,
+  PaperForwardEvaluationStatus
+} from "@axi/paper-forward-evaluation";
+import type {
   CandidateWatchPlan,
   WatchTarget,
   WatchTargetKind
@@ -334,6 +338,7 @@ export type StorageStats = {
   paperOperationsSessionCount: number;
   paperOperationsSnapshotCount: number;
   paperOperationsAlertCount: number;
+  paperForwardEvaluationCount: number;
   paperExitPolicyEvaluationCount: number;
   pumpPortalWalletStatusSnapshotCount: number;
   riskSnapshotCount: number;
@@ -395,6 +400,10 @@ export type StoredPaperOperationsSnapshot = PaperOperationsSnapshot & {
 };
 
 export type StoredPaperOperationsAlert = PaperOperationsAlert & {
+  id: number;
+};
+
+export type StoredPaperForwardEvaluation = PaperForwardEvaluationReport & {
   id: number;
 };
 
@@ -1724,6 +1733,16 @@ type PaperOperationsAlertRow = {
   created_at: string;
 };
 
+type PaperForwardEvaluationRow = {
+  id: number;
+  evaluation_id: string;
+  deployment_id: string;
+  status: PaperForwardEvaluationStatus;
+  payload_json: string;
+  evaluated_at: string;
+  created_at: string;
+};
+
 type PaperExitPolicyEvaluationRow = {
   id: number;
   evaluation_id: string;
@@ -2877,6 +2896,81 @@ const paperOperationsAlertSchema = z
     dataOnly: z.literal(true),
     tradingDisabled: z.literal(true),
     liveExecutionDisabled: z.literal(true)
+  })
+  .strict();
+
+const paperForwardEvaluationSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    evaluationVersion: z.literal("paper-forward-evaluation-v1"),
+    evaluationId: z.string().min(1),
+    evaluatedAt: z.string().datetime(),
+    evaluatedBy: z.string().min(1),
+    evaluationPolicy: z.literal(
+      "all_completed_same_deployment_forward_sessions"
+    ),
+    evidenceDigestSha256: z.string().regex(/^[a-f0-9]{64}$/),
+    deploymentProvenance: z
+      .object({
+        deploymentId: z.string().min(1),
+        automationVersion: z.literal("paper-automation-v1"),
+        deploymentStatus: z.enum(["approved", "armed", "paused", "revoked"]),
+        validationId: z.string().min(1),
+        strategyEvaluationId: z.string().min(1),
+        selectedThreshold: z.number().min(0).max(100),
+        exitPolicyVersion: z.literal("paper-exit-policy-v1"),
+        validationExpectancyPct: z.number().positive(),
+        validationConfidenceLowerBoundPct: z.number().positive(),
+        approvedAt: z.string().datetime()
+      })
+      .strict(),
+    config: z.object({ schemaVersion: z.literal(1) }).passthrough(),
+    sessionIds: z.array(z.string().min(1)),
+    evidenceReportIds: z.array(z.string().min(1)),
+    evidenceAudit: z
+      .object({
+        integrityValid: z.boolean(),
+        completedSessionCount: z.number().int().nonnegative(),
+        distinctUtcDayCount: z.number().int().nonnegative()
+      })
+      .passthrough(),
+    sessions: z.array(z.object({ sessionId: z.string().min(1) }).passthrough()),
+    cohortMetrics: z
+      .object({
+        closedTradeCount: z.number().int().nonnegative(),
+        signalObservationCount: z.number().int().nonnegative(),
+        totalDataCostSol: z.number().nonnegative(),
+        netPnlAfterDataCostSol: z.number()
+      })
+      .passthrough(),
+    acceptanceGates: z.array(
+      z
+        .object({
+          gate: z.string().min(1),
+          category: z.enum(["evidence", "operational", "edge"]),
+          passed: z.boolean(),
+          actual: z.union([z.number(), z.string(), z.boolean()]).nullable(),
+          required: z.string().min(1),
+          reasonCode: z.string().min(1)
+        })
+        .strict()
+    ),
+    evaluationStatus: z.enum([
+      "insufficient_evidence",
+      "operational_rejected",
+      "edge_rejected",
+      "manual_live_candidate"
+    ]),
+    manualReviewRequired: z.literal(true),
+    automaticLivePromotion: z.literal(false),
+    automaticLiveExecution: z.literal(false),
+    privateKeyAccess: z.literal(false),
+    transactionSigning: z.literal(false),
+    paperOnly: z.literal(true),
+    dataOnly: z.literal(true),
+    tradingDisabled: z.literal(true),
+    liveExecutionDisabled: z.literal(true),
+    reasonCodes: z.array(z.string().min(1))
   })
   .strict();
 
@@ -6462,6 +6556,18 @@ export function listPaperOperationsSessions(
   return rows.map(mapPaperOperationsSessionRow);
 }
 
+export function listPaperOperationsSessionsForEvaluation(
+  deploymentId: string
+): StoredPaperOperationsSession[] {
+  const rows = getDb()
+    .prepare(
+      `select * from paper_operations_sessions where deployment_id = ?
+       order by datetime(started_at) asc, id asc`
+    )
+    .all(deploymentId) as PaperOperationsSessionRow[];
+  return rows.map(mapPaperOperationsSessionRow);
+}
+
 export function savePaperOperationsSnapshot(
   snapshot: PaperOperationsSnapshot
 ): StoredPaperOperationsSnapshot {
@@ -6626,6 +6732,105 @@ export function listPaperOperationsAlertsForExport(
     )
     .all(sessionId) as PaperOperationsAlertRow[];
   return rows.map(mapPaperOperationsAlertRow);
+}
+
+export function savePaperForwardEvaluation(
+  evaluation: PaperForwardEvaluationReport
+): StoredPaperForwardEvaluation {
+  const parsed = parsePaperForwardEvaluation(evaluation);
+  const existing = getPaperForwardEvaluation(parsed.evaluationId);
+  if (existing) {
+    const { id: _id, ...stored } = existing;
+    void _id;
+    if (stringifyJson(stored) !== stringifyJson(parsed)) {
+      throw new Error(
+        `Paper forward evaluation ${parsed.evaluationId} is immutable.`
+      );
+    }
+    return existing;
+  }
+  const deployment = getPaperAutomationDeployment(
+    parsed.deploymentProvenance.deploymentId
+  );
+  if (!deployment) {
+    throw new Error(
+      `Paper forward evaluation ${parsed.evaluationId} references a missing deployment.`
+    );
+  }
+  for (const sessionId of parsed.sessionIds) {
+    const session = getPaperOperationsSession(sessionId);
+    if (
+      !session ||
+      session.status !== "completed" ||
+      session.deploymentId !== deployment.deploymentId
+    ) {
+      throw new Error(
+        `Paper forward evaluation ${parsed.evaluationId} references an invalid completed session ${sessionId}.`
+      );
+    }
+  }
+  getDb()
+    .prepare(
+      `insert into paper_forward_evaluations (
+        evaluation_id, deployment_id, status, payload_json, evaluated_at,
+        created_at
+      ) values (?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.evaluationId,
+      parsed.deploymentProvenance.deploymentId,
+      parsed.evaluationStatus,
+      stringifyJson(parsed),
+      parsed.evaluatedAt,
+      parsed.evaluatedAt
+    );
+  const stored = getPaperForwardEvaluation(parsed.evaluationId);
+  if (!stored) {
+    throw new Error(
+      `Paper forward evaluation ${parsed.evaluationId} was not persisted.`
+    );
+  }
+  return stored;
+}
+
+export function getPaperForwardEvaluation(
+  evaluationId: string
+): StoredPaperForwardEvaluation | null {
+  const row = getDb()
+    .prepare("select * from paper_forward_evaluations where evaluation_id = ?")
+    .get(evaluationId) as PaperForwardEvaluationRow | undefined;
+  return row ? mapPaperForwardEvaluationRow(row) : null;
+}
+
+export function getLatestPaperForwardEvaluation(
+  deploymentId?: string
+): StoredPaperForwardEvaluation | null {
+  const row = deploymentId
+    ? (getDb()
+        .prepare(
+          `select * from paper_forward_evaluations where deployment_id = ?
+           order by datetime(evaluated_at) desc, id desc limit 1`
+        )
+        .get(deploymentId) as PaperForwardEvaluationRow | undefined)
+    : (getDb()
+        .prepare(
+          `select * from paper_forward_evaluations
+           order by datetime(evaluated_at) desc, id desc limit 1`
+        )
+        .get() as PaperForwardEvaluationRow | undefined);
+  return row ? mapPaperForwardEvaluationRow(row) : null;
+}
+
+export function listPaperForwardEvaluations(
+  limit = 50
+): StoredPaperForwardEvaluation[] {
+  const rows = getDb()
+    .prepare(
+      `select * from paper_forward_evaluations
+       order by datetime(evaluated_at) desc, id desc limit ?`
+    )
+    .all(limitSchema.parse(limit)) as PaperForwardEvaluationRow[];
+  return rows.map(mapPaperForwardEvaluationRow);
 }
 
 export function savePaperExitPolicyEvaluation(
@@ -8062,6 +8267,7 @@ export function getStorageStats(): StorageStats {
     paperOperationsSessionCount: countRows(db, "paper_operations_sessions"),
     paperOperationsSnapshotCount: countRows(db, "paper_operations_snapshots"),
     paperOperationsAlertCount: countRows(db, "paper_operations_alerts"),
+    paperForwardEvaluationCount: countRows(db, "paper_forward_evaluations"),
     paperExitPolicyEvaluationCount: countRows(
       db,
       "paper_exit_policy_evaluations"
@@ -9380,6 +9586,30 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(23, "paper_forward_operations_observability", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 24)) {
+    db.exec(`
+      create table if not exists paper_forward_evaluations (
+        id integer primary key autoincrement,
+        evaluation_id text not null unique,
+        deployment_id text not null,
+        status text not null,
+        payload_json text not null,
+        evaluated_at text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_paper_forward_evaluations_deployment
+        on paper_forward_evaluations(deployment_id, evaluated_at);
+      create index if not exists idx_paper_forward_evaluations_status
+        on paper_forward_evaluations(status, evaluated_at);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(24, "paper_forward_evidence_evaluation", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -10401,6 +10631,23 @@ function mapPaperOperationsAlertRow(
 ): StoredPaperOperationsAlert {
   return {
     ...parsePaperOperationsAlert(JSON.parse(row.payload_json)),
+    id: row.id
+  };
+}
+
+function parsePaperForwardEvaluation(
+  value: unknown
+): PaperForwardEvaluationReport {
+  return paperForwardEvaluationSchema.parse(
+    value
+  ) as unknown as PaperForwardEvaluationReport;
+}
+
+function mapPaperForwardEvaluationRow(
+  row: PaperForwardEvaluationRow
+): StoredPaperForwardEvaluation {
+  return {
+    ...parsePaperForwardEvaluation(JSON.parse(row.payload_json)),
     id: row.id
   };
 }

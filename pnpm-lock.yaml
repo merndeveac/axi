@@ -101,6 +101,9 @@ importers:
       '@axi/paper-automation':
         specifier: workspace:*
         version: link:../../packages/paper-automation
+      '@axi/paper-forward-evaluation':
+        specifier: workspace:*
+        version: link:../../packages/paper-forward-evaluation
       '@axi/paper-lifecycle-validation':
         specifier: workspace:*
         version: link:../../packages/paper-lifecycle-validation
@@ -338,6 +341,21 @@ importers:
         specifier: workspace:*
         version: link:../paper-lifecycle-validation
 
+  packages/paper-forward-evaluation:
+    dependencies:
+      '@axi/exit-strategy':
+        specifier: workspace:*
+        version: link:../exit-strategy
+      '@axi/paper-automation':
+        specifier: workspace:*
+        version: link:../paper-automation
+      '@axi/paper-lifecycle-validation':
+        specifier: workspace:*
+        version: link:../paper-lifecycle-validation
+      '@axi/paper-operations':
+        specifier: workspace:*
+        version: link:../paper-operations
+
   packages/paper-lifecycle-validation:
     dependencies:
       '@axi/exit-strategy':
@@ -426,6 +444,9 @@ importers:
       '@axi/paper-automation':
         specifier: workspace:*
         version: link:../paper-automation
+      '@axi/paper-forward-evaluation':
+        specifier: workspace:*
+        version: link:../paper-forward-evaluation
       '@axi/paper-lifecycle-validation':
         specifier: workspace:*
         version: link:../paper-lifecycle-validation

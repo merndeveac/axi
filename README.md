@@ -234,6 +234,44 @@ The complete operator workflow, alert response, restart drill, backup guidance,
 and evidence checklist are in
 [`docs/paper-forward-operations.md`](docs/paper-forward-operations.md).
 
+## Multi-Session Forward Evidence Evaluation
+
+`@axi/paper-forward-evaluation` turns the immutable Phase 13 session bundles
+into one non-activating promotion-governance report. An evaluation always uses
+every completed session for one pinned paper-automation deployment; the API
+does not accept a hand-picked session list. Interrupted sessions are excluded
+from performance calculations, disclosed in the audit, and fail the operational
+gate so they cannot create survivorship bias. Active sessions block evaluation.
+
+The report hashes the normalized evidence cohort with SHA-256 and checks
+minimum independent sessions, UTC days, observed duration, signals, and closed
+trades. Operational gates cover critical alerts, telemetry/time-series gaps,
+session budgets, flat position boundaries, signal latency, rejected entries,
+and missed fills. Edge gates cover drawdown, loss streaks, average return, its
+95% confidence lower bound, validation-expectancy retention, and PnL after paid
+data costs. The only verdicts are `insufficient_evidence`,
+`operational_rejected`, `edge_rejected`, and `manual_live_candidate`.
+`manual_live_candidate` is not authorization and cannot arm a signer or enable
+execution.
+
+Local endpoints:
+
+- `GET /runtime/paper-forward-evaluation`
+- `GET /runtime/paper-forward-evaluations`
+- `GET /runtime/paper-forward-evaluations/:evaluationId`
+- `POST /runtime/paper-forward-evaluation/evaluate`
+
+The POST requires operator identity and the exact confirmation
+`EVALUATE PAPER FORWARD EVIDENCE <deployment-id>`. The offline CLI reads SQLite
+without persisting its result, opening a network connection, or starting feeds:
+
+```bash
+pnpm paper:forward:evaluate -- --deployment <deployment-id> --operator <identity> --from-db .data/axi.sqlite
+```
+
+The evaluation policy and evidence-campaign workflow are documented in
+[`docs/paper-forward-evaluation.md`](docs/paper-forward-evaluation.md).
+
 Launch trade tracking uses PumpPortal `subscribeTokenTrade` only for selected
 mints, through the existing one-WebSocket PumpPortal provider and the metered
 actual-data gates. It never uses account-trade streams, trading APIs, wallet
@@ -2559,6 +2597,10 @@ docker compose --profile indexer up -d
 - `@axi/paper-lifecycle-validation`: deterministic global-event-time lifecycle
   replay with shared portfolio constraints, realistic execution assumptions,
   immutable holdout reports, and fixed non-activating promotion gates.
+- `@axi/paper-operations`: explicit restart-safe forward paper sessions,
+  immutable observability evidence, cost enforcement, and evidence exports.
+- `@axi/paper-forward-evaluation`: immutable multi-session evidence aggregation,
+  statistical/operational promotion gates, and manual-review-only verdicts.
 - `@axi/metrics`: local rolling-window metrics for paper-mode signal features.
 - `@axi/pumpportal-lightning`: pure PumpPortal Lightning request construction,
   safety validation, disabled execution client, and dry-run plan models.

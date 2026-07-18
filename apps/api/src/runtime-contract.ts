@@ -7,6 +7,7 @@ import { getPaperLifecycleValidationRuntimeContract } from "@axi/paper-lifecycle
 import { getPaperExitPolicyRuntimeContract } from "@axi/exit-strategy";
 import { getPaperAutomationRuntimeContract } from "@axi/paper-automation";
 import { getPaperOperationsRuntimeContract } from "@axi/paper-operations";
+import { getPaperForwardEvaluationRuntimeContract } from "@axi/paper-forward-evaluation";
 import type { ActualDataService } from "./actual-data-service";
 import type { MeteredLaunchDataService } from "./metered-launch-data-service";
 
@@ -60,7 +61,7 @@ export function createRuntimeContract(input: {
   );
 
   return {
-    version: 12,
+    version: 13,
     runtimeSessionId: input.runtimeSessionId,
     safety: {
       paperOnly: true,
@@ -86,6 +87,7 @@ export function createRuntimeContract(input: {
       paperLifecycleValidation: "@axi/paper-lifecycle-validation",
       paperAutomation: "@axi/paper-automation",
       paperOperations: "@axi/paper-operations",
+      paperForwardEvaluation: "@axi/paper-forward-evaluation",
       paperExitPolicy: "@axi/exit-strategy",
       capacityModel: "@axi/capacity-model",
       trackingScheduler: "@axi/tracking-scheduler",
@@ -135,6 +137,7 @@ export function createRuntimeContract(input: {
     paperLifecycleValidation: getPaperLifecycleValidationRuntimeContract(),
     paperAutomation: getPaperAutomationRuntimeContract(),
     paperOperations: getPaperOperationsRuntimeContract(),
+    paperForwardEvaluation: getPaperForwardEvaluationRuntimeContract(),
     paperExitPolicy: getPaperExitPolicyRuntimeContract(),
     roadmap: {
       coverageCapacityInstrumentation: "implemented",
@@ -148,6 +151,7 @@ export function createRuntimeContract(input: {
       paperLifecycleValidation: "implemented",
       paperAutomationForwardValidation: "implemented",
       paperForwardOperationsObservability: "implemented",
+      paperForwardEvidenceEvaluation: "implemented",
       paperExitPolicy: "implemented",
       schedulerMutationApplied:
         meteredStatus.scheduler.trackingMutationCount > 0

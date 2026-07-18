@@ -1563,6 +1563,7 @@ describe("@axi/api", () => {
         paperLifecycleValidation: string;
         paperAutomationForwardValidation: string;
         paperForwardOperationsObservability: string;
+        paperForwardEvidenceEvaluation: string;
         paperExitPolicy: string;
         derivativeCorrectness: string;
         derivativeStrengthNormalization: string;
@@ -1669,6 +1670,18 @@ describe("@axi/api", () => {
         automaticLiveExecution: boolean;
         liveExecutionDisabled: boolean;
       };
+      paperForwardEvaluation: {
+        implementationStatus: string;
+        evidencePolicy: string;
+        integrityPolicy: string;
+        candidateMeaning: string;
+        manualReviewRequired: boolean;
+        automaticLivePromotion: boolean;
+        automaticLiveExecution: boolean;
+        privateKeyAccess: boolean;
+        transactionSigning: boolean;
+        liveExecutionDisabled: boolean;
+      };
     };
 
     expect(response.statusCode).toBe(200);
@@ -1682,6 +1695,7 @@ describe("@axi/api", () => {
       paperLifecycleValidation: "@axi/paper-lifecycle-validation",
       paperAutomation: "@axi/paper-automation",
       paperOperations: "@axi/paper-operations",
+      paperForwardEvaluation: "@axi/paper-forward-evaluation",
       paperExitPolicy: "@axi/exit-strategy",
       canonicalTimeseries: "@axi/timeseries",
       subscriptionTransport: "ActualDataService",
@@ -1712,6 +1726,7 @@ describe("@axi/api", () => {
     expect(body.roadmap.paperForwardOperationsObservability).toBe(
       "implemented"
     );
+    expect(body.roadmap.paperForwardEvidenceEvaluation).toBe("implemented");
     expect(body.roadmap.paperExitPolicy).toBe("implemented");
     expect(body.roadmap.rollingNewestTokenScheduler).toBe("implemented");
     expect(body.roadmap.schedulerMutationApplied).toBe(false);
@@ -1799,6 +1814,18 @@ describe("@axi/api", () => {
       automaticMeteredStart: false,
       automaticPaperArm: false,
       automaticLiveExecution: false,
+      liveExecutionDisabled: true
+    });
+    expect(body.paperForwardEvaluation).toMatchObject({
+      implementationStatus: "implemented",
+      evidencePolicy: "all_completed_same_deployment_forward_sessions",
+      integrityPolicy: "immutable_evidence_sha256_manifest",
+      candidateMeaning: "manual_review_only_no_activation",
+      manualReviewRequired: true,
+      automaticLivePromotion: false,
+      automaticLiveExecution: false,
+      privateKeyAccess: false,
+      transactionSigning: false,
       liveExecutionDisabled: true
     });
     expect(body.safety.apiHost).toBe("127.0.0.1");
@@ -1935,6 +1962,54 @@ describe("@axi/api", () => {
       error: "PAPER_OPERATIONS_DEPLOYMENT_NOT_FOUND",
       automaticMeteredStart: false,
       automaticLiveExecution: false,
+      liveExecutionDisabled: true
+    });
+    expect(server.meteredLaunchData.getStatus().active).toBe(false);
+  });
+
+  it("forward evidence evaluation is non-activating and local-only", async () => {
+    server = createTestServer();
+
+    const statusResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/paper-forward-evaluation"
+    });
+    expect(statusResponse.statusCode).toBe(200);
+    expect(statusResponse.json()).toMatchObject({
+      completedSessionCount: 0,
+      activeSessionCount: 0,
+      evaluationCount: 0,
+      latestEvaluation: null,
+      manualReviewRequired: true,
+      automaticLivePromotion: false,
+      automaticLiveExecution: false,
+      privateKeyAccess: false,
+      transactionSigning: false,
+      paperOnly: true,
+      tradingDisabled: true,
+      liveExecutionDisabled: true,
+      contract: {
+        implementationStatus: "implemented",
+        candidateMeaning: "manual_review_only_no_activation"
+      }
+    });
+
+    const evaluationResponse = await server.app.inject({
+      method: "POST",
+      url: "/runtime/paper-forward-evaluation/evaluate",
+      headers: { origin: "http://127.0.0.1:5173" },
+      payload: {
+        deploymentId: "missing-deployment",
+        evaluatedBy: "test-operator",
+        confirmation: "EVALUATE PAPER FORWARD EVIDENCE missing-deployment"
+      }
+    });
+    expect(evaluationResponse.statusCode).toBe(404);
+    expect(evaluationResponse.json()).toMatchObject({
+      error: "PAPER_FORWARD_EVALUATION_DEPLOYMENT_NOT_FOUND",
+      automaticLivePromotion: false,
+      privateKeyAccess: false,
+      transactionSigning: false,
       liveExecutionDisabled: true
     });
     expect(server.meteredLaunchData.getStatus().active).toBe(false);

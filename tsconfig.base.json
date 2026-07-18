@@ -42,6 +42,9 @@
         "packages/paper-lifecycle-validation/src/index.ts"
       ],
       "@axi/paper-automation": ["packages/paper-automation/src/index.ts"],
+      "@axi/paper-forward-evaluation": [
+        "packages/paper-forward-evaluation/src/index.ts"
+      ],
       "@axi/paper-operations": ["packages/paper-operations/src/index.ts"],
       "@axi/paper-strategy-evaluation": [
         "packages/paper-strategy-evaluation/src/index.ts"

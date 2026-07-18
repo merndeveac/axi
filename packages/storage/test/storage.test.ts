@@ -37,11 +37,13 @@ import {
   type PaperAutomationOperation
 } from "@axi/paper-automation";
 import {
+  createPaperOperationsEvidenceReport,
   createPaperOperationsSession,
   createPaperOperationsSnapshot,
   evaluatePaperOperationsAlerts,
   transitionPaperOperationsSession
 } from "@axi/paper-operations";
+import { evaluatePaperForwardEvidence } from "@axi/paper-forward-evaluation";
 import { normalizePumpPortalIdentity } from "@axi/token-identity";
 import {
   closeStorage,
@@ -68,6 +70,7 @@ import {
   getPaperOperationsAlert,
   getPaperOperationsSession,
   getPaperOperationsSnapshot,
+  getPaperForwardEvaluation,
   getPaperExitPolicyEvaluation,
   getLatestCandidateDecision,
   getLatestMarketObservation,
@@ -96,6 +99,7 @@ import {
   listPaperOperationsAlerts,
   listPaperOperationsSessions,
   listPaperOperationsSnapshots,
+  listPaperForwardEvaluations,
   listPaperExitPolicyEvaluations,
   listPaperExitPolicyEvaluationsByMint,
   listLaunchTradeSamplesByMint,
@@ -169,6 +173,7 @@ import {
   savePaperOperationsAlert,
   savePaperOperationsSession,
   savePaperOperationsSnapshot,
+  savePaperForwardEvaluation,
   savePaperExitPolicyEvaluation,
   saveCapacitySnapshot,
   saveChainVerification,
@@ -714,7 +719,9 @@ describe("@axi/storage", () => {
       startedAt: "2026-01-05T00:00:00.000Z"
     });
     savePaperOperationsSession(session);
-    expect(getActivePaperOperationsSession()?.sessionId).toBe(session.sessionId);
+    expect(getActivePaperOperationsSession()?.sessionId).toBe(
+      session.sessionId
+    );
 
     const snapshot = createPaperOperationsSnapshot(session, {
       sampleId: "paper-operations-snapshot-storage-test",
@@ -787,10 +794,37 @@ describe("@axi/storage", () => {
       })
     ).toThrow("immutable pinned fields");
 
+    const forwardEvaluation = evaluatePaperForwardEvidence({
+      evaluationId: "paper-forward-evaluation-storage-test",
+      evaluatedAt: "2026-01-05T00:02:00.000Z",
+      evaluatedBy: "storage-test-operator",
+      deployment,
+      reports: [
+        createPaperOperationsEvidenceReport({
+          reportId: "paper-forward-report-storage-test",
+          generatedAt: "2026-01-05T00:01:00.000Z",
+          session: completed,
+          snapshots: [snapshot],
+          alerts: [alert],
+          automationEvents: [],
+          automationOperations: []
+        })
+      ]
+    });
+    savePaperForwardEvaluation(forwardEvaluation);
+    savePaperForwardEvaluation(forwardEvaluation);
+    expect(() =>
+      savePaperForwardEvaluation({
+        ...forwardEvaluation,
+        evaluatedBy: "mutated-operator"
+      })
+    ).toThrow("immutable");
+
     expect(getStorageStats()).toMatchObject({
       paperOperationsSessionCount: 1,
       paperOperationsSnapshotCount: 1,
-      paperOperationsAlertCount: 1
+      paperOperationsAlertCount: 1,
+      paperForwardEvaluationCount: 1
     });
     expect(listPaperOperationsSessions()).toHaveLength(1);
     expect(listPaperOperationsSnapshots(session.sessionId)).toHaveLength(1);
@@ -798,8 +832,18 @@ describe("@axi/storage", () => {
     expect(getPaperOperationsSession(session.sessionId)?.status).toBe(
       "completed"
     );
-    expect(getPaperOperationsSnapshot(snapshot.sampleId)).toMatchObject(snapshot);
+    expect(getPaperOperationsSnapshot(snapshot.sampleId)).toMatchObject(
+      snapshot
+    );
     expect(getPaperOperationsAlert(alert.alertId)).toMatchObject(alert);
+    expect(listPaperForwardEvaluations()).toHaveLength(1);
+    expect(
+      getPaperForwardEvaluation(forwardEvaluation.evaluationId)
+    ).toMatchObject({
+      evaluationStatus: "operational_rejected",
+      automaticLivePromotion: false,
+      liveExecutionDisabled: true
+    });
 
     closeStorage();
     initStorageReadOnly({ databasePath });
@@ -807,6 +851,13 @@ describe("@axi/storage", () => {
       status: "completed",
       automaticMeteredStart: false,
       automaticPaperArm: false,
+      liveExecutionDisabled: true
+    });
+    expect(
+      getPaperForwardEvaluation(forwardEvaluation.evaluationId)
+    ).toMatchObject({
+      evidenceDigestSha256: forwardEvaluation.evidenceDigestSha256,
+      transactionSigning: false,
       liveExecutionDisabled: true
     });
   });

@@ -558,6 +558,7 @@ type RuntimeContract = {
     paperLifecycleValidation: string;
     paperAutomation: string;
     paperOperations: string;
+    paperForwardEvaluation: string;
     paperExitPolicy: string;
     subscriptionPolicy: string;
     subscriptionTransport: string;
@@ -676,6 +677,18 @@ type RuntimeContract = {
     automaticLiveExecution: false;
     liveExecutionDisabled: true;
   };
+  paperForwardEvaluation: {
+    evaluationVersion: string;
+    implementationStatus: "implemented";
+    evidencePolicy: "all_completed_same_deployment_forward_sessions";
+    candidateMeaning: "manual_review_only_no_activation";
+    manualReviewRequired: true;
+    automaticLivePromotion: false;
+    automaticLiveExecution: false;
+    privateKeyAccess: false;
+    transactionSigning: false;
+    liveExecutionDisabled: true;
+  };
 };
 
 type PaperLifecycleValidationStatus = {
@@ -763,6 +776,66 @@ type PaperOperationsStatus = {
   automaticPaperArm: false;
   automaticLiveExecution: false;
   paperOnly: true;
+  liveExecutionDisabled: true;
+};
+
+type PaperForwardEvaluationStatus = {
+  deploymentId: string | null;
+  deploymentStatus: "approved" | "armed" | "paused" | "revoked" | null;
+  completedSessionCount: number;
+  interruptedSessionCount: number;
+  activeSessionCount: number;
+  eligibleSessionIds: string[];
+  evaluationCount: number;
+  latestEvaluation: {
+    evaluationId: string;
+    evaluatedAt: string;
+    evaluatedBy: string;
+    evaluationStatus:
+      | "insufficient_evidence"
+      | "operational_rejected"
+      | "edge_rejected"
+      | "manual_live_candidate";
+    evidenceDigestSha256: string;
+    evidenceAudit: {
+      completedSessionCount: number;
+      excludedInterruptedSessionCount: number;
+      distinctUtcDayCount: number;
+      integrityValid: boolean;
+    };
+    cohortMetrics: {
+      closedTradeCount: number;
+      signalObservationCount: number;
+      averageNetReturnPct: number | null;
+      netReturnConfidenceLowerBoundPct: number | null;
+      expectancyRetentionRatio: number | null;
+      maximumDrawdownPct: number;
+      rejectedEntryRate: number | null;
+      missedFillRate: number | null;
+      p95SignalLatencyMs: number | null;
+      criticalAlertCount: number;
+      telemetryGapCount: number;
+      dataGapCount: number;
+      totalDataCostSol: number;
+      netPnlAfterDataCostSol: number;
+      dataCostToTradingPnlRatio: number | null;
+      costPerClosedTradeSol: number | null;
+    };
+    acceptanceGates: Array<{
+      gate: string;
+      category: "evidence" | "operational" | "edge";
+      passed: boolean;
+      actual: number | string | boolean | null;
+      required: string;
+    }>;
+    automaticLivePromotion: false;
+    liveExecutionDisabled: true;
+  } | null;
+  manualReviewRequired: true;
+  automaticLivePromotion: false;
+  automaticLiveExecution: false;
+  privateKeyAccess: false;
+  transactionSigning: false;
   liveExecutionDisabled: true;
 };
 
@@ -1404,6 +1477,8 @@ export function App() {
     useState<PaperAutomationStatus | null>(null);
   const [paperOperationsStatus, setPaperOperationsStatus] =
     useState<PaperOperationsStatus | null>(null);
+  const [paperForwardEvaluationStatus, setPaperForwardEvaluationStatus] =
+    useState<PaperForwardEvaluationStatus | null>(null);
   const [runtimeCapacity, setRuntimeCapacity] =
     useState<RuntimeCapacityReport | null>(null);
   const [runtimeActionStatus, setRuntimeActionStatus] =
@@ -1546,6 +1621,7 @@ export function App() {
           nextPaperLifecycleValidationStatus,
           nextPaperAutomationStatus,
           nextPaperOperationsStatus,
+          nextPaperForwardEvaluationStatus,
           nextRuntimeCapacity,
           nextActualTrades,
           nextLiveCardEnrichmentStatus,
@@ -1609,6 +1685,9 @@ export function App() {
           ),
           fetchJson<PaperAutomationStatus>("/runtime/paper-automation"),
           fetchJson<PaperOperationsStatus>("/runtime/paper-operations"),
+          fetchJson<PaperForwardEvaluationStatus>(
+            "/runtime/paper-forward-evaluation"
+          ),
           fetchJson<RuntimeCapacityReport>("/runtime/capacity"),
           fetchJson<PumpPortalTradeRow[]>("/actual-data/trades?limit=10"),
           fetchJson<LiveCardEnrichmentStatus>("/enrichment/status"),
@@ -1659,6 +1738,7 @@ export function App() {
           setPaperLifecycleValidationStatus(nextPaperLifecycleValidationStatus);
           setPaperAutomationStatus(nextPaperAutomationStatus);
           setPaperOperationsStatus(nextPaperOperationsStatus);
+          setPaperForwardEvaluationStatus(nextPaperForwardEvaluationStatus);
           setRuntimeCapacity(nextRuntimeCapacity);
           setActualTrades(nextActualTrades);
           setLiveCardEnrichmentStatus(nextLiveCardEnrichmentStatus);
@@ -1929,6 +2009,7 @@ export function App() {
         paperLifecycleValidationStatus={paperLifecycleValidationStatus}
         paperAutomationStatus={paperAutomationStatus}
         paperOperationsStatus={paperOperationsStatus}
+        paperForwardEvaluationStatus={paperForwardEvaluationStatus}
         runtimeControlStatus={runtimeControlStatus}
         runRuntimeAction={runRuntimeAction}
         trackedCardCount={trackedCardCount}
@@ -2072,6 +2153,7 @@ function HeaderControlCenter({
   paperLifecycleValidationStatus,
   paperAutomationStatus,
   paperOperationsStatus,
+  paperForwardEvaluationStatus,
   runtimeControlStatus,
   runRuntimeAction,
   trackedCardCount,
@@ -2103,6 +2185,7 @@ function HeaderControlCenter({
   paperLifecycleValidationStatus: PaperLifecycleValidationStatus | null;
   paperAutomationStatus: PaperAutomationStatus | null;
   paperOperationsStatus: PaperOperationsStatus | null;
+  paperForwardEvaluationStatus: PaperForwardEvaluationStatus | null;
   runtimeControlStatus: RuntimeControlStatus | null;
   runRuntimeAction: (
     path: string,
@@ -2123,6 +2206,9 @@ function HeaderControlCenter({
   >(null);
   const [forwardOperator, setForwardOperator] = useState("");
   const [forwardConfirmation, setForwardConfirmation] = useState("");
+  const [evaluationModalOpen, setEvaluationModalOpen] = useState(false);
+  const [evaluationOperator, setEvaluationOperator] = useState("");
+  const [evaluationConfirmation, setEvaluationConfirmation] = useState("");
   const meteredControl = getMeteredControlView({
     apiStatus,
     meteredStatus: null,
@@ -2196,6 +2282,13 @@ function HeaderControlCenter({
   const forwardSubmitDisabled =
     forwardConfirmation !== forwardExpectedConfirmation ||
     (forwardModalMode === "start" && forwardOperator.trim().length === 0);
+  const evaluationExpectedConfirmation =
+    paperForwardEvaluationStatus?.deploymentId
+      ? `EVALUATE PAPER FORWARD EVIDENCE ${paperForwardEvaluationStatus.deploymentId}`
+      : "";
+  const evaluationSubmitDisabled =
+    evaluationConfirmation !== evaluationExpectedConfirmation ||
+    evaluationOperator.trim().length === 0;
 
   const submitArmMetered = () => {
     if (armSubmitDisabled) {
@@ -2240,6 +2333,26 @@ function HeaderControlCenter({
         }
       );
     }
+  };
+
+  const submitForwardEvaluation = () => {
+    if (
+      evaluationSubmitDisabled ||
+      !paperForwardEvaluationStatus?.deploymentId
+    ) {
+      return;
+    }
+    setEvaluationModalOpen(false);
+    setEvaluationConfirmation("");
+    void runRuntimeAction(
+      "/runtime/paper-forward-evaluation/evaluate",
+      "Evaluating all completed forward sessions",
+      {
+        deploymentId: paperForwardEvaluationStatus.deploymentId,
+        evaluatedBy: evaluationOperator.trim(),
+        confirmation: evaluationExpectedConfirmation
+      }
+    );
   };
 
   const refreshWallets = async () => {
@@ -2425,6 +2538,31 @@ function HeaderControlCenter({
             }
           />
           <StatusChip
+            label="EVIDENCE"
+            tone={
+              paperForwardEvaluationStatus?.latestEvaluation
+                ?.evaluationStatus === "manual_live_candidate"
+                ? "good"
+                : paperForwardEvaluationStatus?.latestEvaluation
+                      ?.evaluationStatus === "operational_rejected" ||
+                    paperForwardEvaluationStatus?.latestEvaluation
+                      ?.evaluationStatus === "edge_rejected"
+                  ? "bad"
+                  : paperForwardEvaluationStatus?.latestEvaluation
+                    ? "warn"
+                    : "neutral"
+            }
+            value={
+              paperForwardEvaluationStatus?.latestEvaluation
+                ? paperForwardEvaluationStatus.latestEvaluation.evaluationStatus
+                    .replaceAll("_", " ")
+                    .toUpperCase()
+                : runtimeContract
+                  ? "NOT EVALUATED"
+                  : "CHECKING"
+            }
+          />
+          <StatusChip
             label="EXIT POLICY"
             tone="warn"
             value={
@@ -2597,6 +2735,17 @@ function HeaderControlCenter({
           }
         />
         <HeaderMetric
+          label="Evidence cohort"
+          value={formatCompactNumber(
+            paperForwardEvaluationStatus?.completedSessionCount
+          )}
+          detail={
+            paperForwardEvaluationStatus?.latestEvaluation
+              ? `${paperForwardEvaluationStatus.latestEvaluation.cohortMetrics.closedTradeCount} trades · ${paperForwardEvaluationStatus.latestEvaluation.evidenceAudit.distinctUtcDayCount} UTC days`
+              : "all completed sessions"
+          }
+        />
+        <HeaderMetric
           label="Blanks"
           value={formatCompactNumber(unavailableFieldCount)}
           detail={`${formatCompactNumber(momentumDiagnostics?.rowsWithCurvePrice)} curve marks`}
@@ -2666,6 +2815,23 @@ function HeaderControlCenter({
           type="button"
         >
           End Forward Run
+        </button>
+        <button
+          disabled={
+            apiOffline ||
+            !paperForwardEvaluationStatus?.deploymentId ||
+            paperForwardEvaluationStatus.deploymentStatus === "armed" ||
+            paperForwardEvaluationStatus.activeSessionCount > 0 ||
+            paperForwardEvaluationStatus.completedSessionCount === 0
+          }
+          onClick={() => {
+            setEvaluationConfirmation("");
+            setEvaluationModalOpen(true);
+          }}
+          title="Evaluate every completed paper-forward session. This cannot activate live execution."
+          type="button"
+        >
+          Evaluate Evidence
         </button>
         <button
           disabled={!canArmMetered}
@@ -2885,6 +3051,75 @@ function HeaderControlCenter({
         </div>
       ) : null}
 
+      {evaluationModalOpen ? (
+        <div className="modal-backdrop">
+          <div
+            aria-label="Evaluate paper forward evidence"
+            aria-modal="true"
+            className="arm-metered-modal"
+            role="dialog"
+          >
+            <div className="modal-heading">
+              <h2>Evaluate Forward Evidence</h2>
+              <button
+                aria-label="Close"
+                onClick={() => setEvaluationModalOpen(false)}
+                type="button"
+              >
+                x
+              </button>
+            </div>
+            <div className="arm-form">
+              <label>
+                <span>Operator identity</span>
+                <input
+                  maxLength={120}
+                  onChange={(event) =>
+                    setEvaluationOperator(event.target.value)
+                  }
+                  placeholder="operator name"
+                  type="text"
+                  value={evaluationOperator}
+                />
+              </label>
+              <label>
+                <span>Exact confirmation</span>
+                <input
+                  onChange={(event) =>
+                    setEvaluationConfirmation(event.target.value)
+                  }
+                  placeholder={evaluationExpectedConfirmation}
+                  type="text"
+                  value={evaluationConfirmation}
+                />
+              </label>
+              <p>
+                Type <code>{evaluationExpectedConfirmation}</code>. This pins
+                and evaluates all{" "}
+                {paperForwardEvaluationStatus?.completedSessionCount ?? 0}{" "}
+                completed sessions. A passing result is manual-review only and
+                cannot activate signing or live execution.
+              </p>
+            </div>
+            <div className="modal-actions">
+              <button
+                onClick={() => setEvaluationModalOpen(false)}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                disabled={evaluationSubmitDisabled}
+                onClick={submitForwardEvaluation}
+                type="button"
+              >
+                Evaluate Cohort
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {controlPanelOpen ? (
         <div className="control-diagnostics">
           <section>
@@ -2971,6 +3206,105 @@ function HeaderControlCenter({
               </dd>
               <dt>sampling error</dt>
               <dd>{paperOperationsStatus?.lastSamplingError ?? "none"}</dd>
+            </dl>
+          </section>
+          <section>
+            <h2>Forward Evidence Evaluation</h2>
+            <dl>
+              <dt>latest verdict</dt>
+              <dd>
+                {paperForwardEvaluationStatus?.latestEvaluation
+                  ?.evaluationStatus ?? "not evaluated"}{" "}
+                · manual review only
+              </dd>
+              <dt>cohort</dt>
+              <dd>
+                {formatCompactNumber(
+                  paperForwardEvaluationStatus?.completedSessionCount
+                )}{" "}
+                completed ·{" "}
+                {formatCompactNumber(
+                  paperForwardEvaluationStatus?.interruptedSessionCount
+                )}{" "}
+                interrupted excluded
+              </dd>
+              <dt>independent evidence</dt>
+              <dd>
+                {formatCompactNumber(
+                  paperForwardEvaluationStatus?.latestEvaluation?.evidenceAudit
+                    .distinctUtcDayCount
+                )}{" "}
+                UTC days ·{" "}
+                {formatCompactNumber(
+                  paperForwardEvaluationStatus?.latestEvaluation?.cohortMetrics
+                    .closedTradeCount
+                )}{" "}
+                closed trades ·{" "}
+                {formatCompactNumber(
+                  paperForwardEvaluationStatus?.latestEvaluation?.cohortMetrics
+                    .signalObservationCount
+                )}{" "}
+                signals
+              </dd>
+              <dt>edge and confidence</dt>
+              <dd>
+                {paperForwardEvaluationStatus?.latestEvaluation?.cohortMetrics
+                  .averageNetReturnPct ?? "—"}
+                % mean ·{" "}
+                {paperForwardEvaluationStatus?.latestEvaluation?.cohortMetrics
+                  .netReturnConfidenceLowerBoundPct ?? "—"}
+                % lower bound ·{" "}
+                {paperForwardEvaluationStatus?.latestEvaluation?.cohortMetrics
+                  .expectancyRetentionRatio ?? "—"}
+                x retention
+              </dd>
+              <dt>operations</dt>
+              <dd>
+                {paperForwardEvaluationStatus?.latestEvaluation?.cohortMetrics
+                  .p95SignalLatencyMs ?? "—"}
+                ms p95 ·{" "}
+                {paperForwardEvaluationStatus?.latestEvaluation?.cohortMetrics
+                  .criticalAlertCount ?? "—"}{" "}
+                critical ·{" "}
+                {paperForwardEvaluationStatus?.latestEvaluation?.cohortMetrics
+                  .telemetryGapCount ?? "—"}{" "}
+                telemetry gaps ·{" "}
+                {paperForwardEvaluationStatus?.latestEvaluation?.cohortMetrics
+                  .dataGapCount ?? "—"}{" "}
+                data gaps
+              </dd>
+              <dt>cost-adjusted result</dt>
+              <dd>
+                {formatSol(
+                  paperForwardEvaluationStatus?.latestEvaluation?.cohortMetrics
+                    .netPnlAfterDataCostSol
+                )}{" "}
+                after data cost ·{" "}
+                {formatSol(
+                  paperForwardEvaluationStatus?.latestEvaluation?.cohortMetrics
+                    .totalDataCostSol
+                )}{" "}
+                data cost ·{" "}
+                {formatSol(
+                  paperForwardEvaluationStatus?.latestEvaluation?.cohortMetrics
+                    .costPerClosedTradeSol
+                )}{" "}
+                / trade
+              </dd>
+              <dt>failed gates</dt>
+              <dd>
+                {paperForwardEvaluationStatus?.latestEvaluation?.acceptanceGates
+                  .filter((gate) => !gate.passed)
+                  .map((gate) => gate.gate)
+                  .join(", ") || "none recorded"}
+              </dd>
+              <dt>evidence digest</dt>
+              <dd className="mono">
+                {paperForwardEvaluationStatus?.latestEvaluation
+                  ?.evidenceDigestSha256 ?? "—"}
+              </dd>
+              <dt>safety boundary</dt>
+              <dd>no promotion, private keys, signing, or live execution</dd>
             </dl>
           </section>
           <section>
