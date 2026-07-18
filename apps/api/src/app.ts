@@ -1033,12 +1033,32 @@ export const apiConfigSchema = z.object({
     .preprocess(parseBooleanEnv, z.boolean())
     .default(true),
   PAPER_EXIT_MIN_PROFIT_PCT: z.coerce.number().default(25),
+  PAPER_EXIT_TAKE_PROFIT_STAGE_1_SELL_PCT: z.coerce
+    .number()
+    .positive()
+    .max(100)
+    .default(50),
   PAPER_EXIT_TAKE_PROFIT_PCT: z.coerce.number().default(50),
   PAPER_EXIT_STOP_LOSS_PCT: z.coerce.number().default(-25),
   PAPER_EXIT_TRAILING_STOP_PCT: z.preprocess(
     (value) => (value === "" ? undefined : value),
     z.coerce.number().positive().optional()
   ),
+  PAPER_EXIT_TRAILING_ACTIVATION_PCT: z.coerce
+    .number()
+    .nonnegative()
+    .default(20),
+  PAPER_EXIT_MAX_HOLD_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(300000),
+  PAPER_EXIT_ADVANCED_SIGNALS_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(true),
+  PAPER_EXIT_MIGRATION_TRANSITION_ENABLED: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
   PAPER_EXIT_COOLDOWN_MS: z.coerce.number().int().nonnegative().default(60000),
   LIVE_CARD_ENRICHMENT_ENABLED: z
     .preprocess(parseBooleanEnv, z.boolean())
@@ -1672,6 +1692,9 @@ const paperStrategyEvaluationBodySchema = z.object({
 const paperStrategyEvaluationParamSchema = z.object({
   evaluationId: z.string().min(1).max(200)
 });
+const paperExitPolicyEvaluationParamSchema = z.object({
+  evaluationId: z.string().min(1).max(240)
+});
 
 export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   return apiConfigSchema.parse(env);
@@ -1916,6 +1939,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     config: createPaperPortfolioServiceConfig(options.paperPortfolio),
     getCurrentPriceSol: getCurrentPaperPriceSol,
     getLaunchCandidate: (mint) => launchScanner.getCandidate(mint),
+    getRiskSnapshot: (mint) => riskSnapshots.get(mint),
     getRecentSignals: () => Array.from(signals.values())
   });
   hasOpenPaperPositionForMint = (mint: string): boolean =>
@@ -3724,6 +3748,70 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   app.get("/paper/positions", async () => listPaperPositions());
 
   app.get("/paper-portfolio/status", async () => paperPortfolio.getStatus());
+
+  app.get("/runtime/paper-exit-policy", async () =>
+    paperPortfolio.getExitPolicyStatus()
+  );
+
+  app.get("/runtime/paper-exit-policy/evaluations", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+
+    return {
+      evaluations: paperPortfolio.getExitPolicyEvaluations(query.limit),
+      automaticPaperExitActivation: false,
+      automaticLiveExecution: false,
+      paperOnly: true,
+      liveExecutionDisabled: true
+    };
+  });
+
+  app.get(
+    "/runtime/paper-exit-policy/evaluations/:evaluationId",
+    async (request, reply) => {
+      const params = paperExitPolicyEvaluationParamSchema.parse(request.params);
+      const evaluation = paperPortfolio.getExitPolicyEvaluation(
+        params.evaluationId
+      );
+
+      if (!evaluation) {
+        return reply.code(404).send({
+          error: "PAPER_EXIT_POLICY_EVALUATION_NOT_FOUND",
+          message: `Paper exit policy evaluation ${params.evaluationId} was not found.`,
+          paperOnly: true,
+          liveExecutionDisabled: true
+        });
+      }
+
+      return evaluation;
+    }
+  );
+
+  app.get(
+    "/runtime/paper-exit-policy/evaluations/:evaluationId/export",
+    async (request, reply) => {
+      const params = paperExitPolicyEvaluationParamSchema.parse(request.params);
+      const evaluation = paperPortfolio.getExitPolicyEvaluation(
+        params.evaluationId
+      );
+
+      if (!evaluation) {
+        return reply.code(404).send({
+          error: "PAPER_EXIT_POLICY_EVALUATION_NOT_FOUND",
+          message: `Paper exit policy evaluation ${params.evaluationId} was not found.`,
+          paperOnly: true,
+          liveExecutionDisabled: true
+        });
+      }
+
+      return reply
+        .type("application/json; charset=utf-8")
+        .header(
+          "content-disposition",
+          `attachment; filename="${safeFileSegment(params.evaluationId)}.json"`
+        )
+        .send(JSON.stringify(evaluation, null, 2));
+    }
+  );
 
   app.get("/paper-portfolio/snapshot", async () => ({
     snapshot: paperPortfolio.getSnapshot(),

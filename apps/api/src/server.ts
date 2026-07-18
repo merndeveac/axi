@@ -266,7 +266,21 @@ const options: ApiServerOptions = {
       takeProfitPct: config.PAPER_EXIT_TAKE_PROFIT_PCT,
       stopLossPct: config.PAPER_EXIT_STOP_LOSS_PCT,
       trailingStopPct: config.PAPER_EXIT_TRAILING_STOP_PCT ?? null,
-      cooldownMs: config.PAPER_EXIT_COOLDOWN_MS
+      cooldownMs: config.PAPER_EXIT_COOLDOWN_MS,
+      policy: {
+        takeProfitStage1SellPct: config.PAPER_EXIT_TAKE_PROFIT_STAGE_1_SELL_PCT,
+        trailingActivationPct: config.PAPER_EXIT_TRAILING_ACTIVATION_PCT,
+        maximumHoldMs: config.PAPER_EXIT_MAX_HOLD_MS,
+        enableLiquidityDeterioration:
+          config.PAPER_EXIT_ADVANCED_SIGNALS_ENABLED,
+        enableDerivativeReversal: config.PAPER_EXIT_ADVANCED_SIGNALS_ENABLED,
+        enableMomentumDecay: config.PAPER_EXIT_ADVANCED_SIGNALS_ENABLED,
+        enableBuyerReversal: config.PAPER_EXIT_ADVANCED_SIGNALS_ENABLED,
+        enableVolumeCollapse: config.PAPER_EXIT_ADVANCED_SIGNALS_ENABLED,
+        enableMaximumHold: config.PAPER_EXIT_ADVANCED_SIGNALS_ENABLED,
+        enableMigrationTransition:
+          config.PAPER_EXIT_MIGRATION_TRANSITION_ENABLED
+      }
     }
   },
   pumpPortalDataWallet: {

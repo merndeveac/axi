@@ -104,6 +104,19 @@ describe("@axi/paper-portfolio", () => {
     expect(engine.getSnapshot().unrealizedPnlSol).toBeGreaterThan(0);
   });
 
+  it("retains the peak mark for trailing-stop evaluation", () => {
+    const engine = createPaperPortfolioEngine();
+    const entry = entryIntent({ mint: mintA });
+    engine.applyFill(engine.simulateBuy(entry, 0.001), entry);
+    const peak = engine.updateMarkPrice(mintA, 0.002);
+    const pulledBack = engine.updateMarkPrice(mintA, 0.0015);
+
+    expect(peak?.peakPriceSol).toBe(0.002);
+    expect(pulledBack?.currentPriceSol).toBe(0.0015);
+    expect(pulledBack?.peakPriceSol).toBe(0.002);
+    expect(pulledBack?.peakUnrealizedPnlPct).toBe(peak?.peakUnrealizedPnlPct);
+  });
+
   it("applies fee and slippage", () => {
     const engine = createPaperPortfolioEngine({
       feeBps: 100,

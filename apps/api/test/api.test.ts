@@ -743,8 +743,75 @@ describe("@axi/api", () => {
     expect(evaluations[0]?.blocked).toBe(false);
     expect(evaluations[0]?.fill?.fillStatus).toBe("filled");
     expect(evaluations[0]?.position?.status).toBe("closed");
+    expect(evaluations[0]?.exitPolicyEvaluation).toMatchObject({
+      evaluationStatus: "paper_exit_candidate",
+      selectedAction: { ruleId: "watched-wallet-buy" },
+      automaticLiveExecution: false
+    });
     expect(evaluations[0]?.paperOnly).toBe(true);
     expect(evaluations[0]?.liveExecutionDisabled).toBe(true);
+
+    const evaluationId = evaluations[0]?.exitPolicyEvaluation?.evaluationId;
+    expect(evaluationId).toBeTruthy();
+
+    const statusResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/paper-exit-policy"
+    });
+    expect(statusResponse.json()).toMatchObject({
+      enabled: true,
+      evaluationCount: 1,
+      contract: {
+        policyVersion: "paper-exit-policy-v1",
+        automaticLiveExecution: false
+      },
+      liveExecutionDisabled: true
+    });
+
+    const listResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/paper-exit-policy/evaluations?limit=10"
+    });
+    expect(listResponse.json()).toMatchObject({
+      evaluations: [{ evaluationId }],
+      automaticLiveExecution: false,
+      liveExecutionDisabled: true
+    });
+
+    const evaluationResponse = await server.app.inject({
+      method: "GET",
+      url: `/runtime/paper-exit-policy/evaluations/${evaluationId}`
+    });
+    expect(evaluationResponse.statusCode).toBe(200);
+    expect(evaluationResponse.json()).toMatchObject({
+      evaluationId,
+      selectedAction: { ruleId: "watched-wallet-buy" },
+      automaticLiveExecution: false
+    });
+
+    const exportResponse = await server.app.inject({
+      method: "GET",
+      url: `/runtime/paper-exit-policy/evaluations/${evaluationId}/export`
+    });
+    expect(exportResponse.statusCode).toBe(200);
+    expect(exportResponse.headers["content-disposition"]).toContain(
+      `${evaluationId}.json`
+    );
+    expect(exportResponse.json()).toMatchObject({
+      evaluationId,
+      selectedAction: { ruleId: "watched-wallet-buy" },
+      automaticLiveExecution: false
+    });
+
+    const missingResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/paper-exit-policy/evaluations/missing"
+    });
+    expect(missingResponse.statusCode).toBe(404);
+    expect(missingResponse.json()).toMatchObject({
+      error: "PAPER_EXIT_POLICY_EVALUATION_NOT_FOUND",
+      liveExecutionDisabled: true
+    });
   });
 
   it("POST /paper-portfolio/backtest replays launch fixtures locally", async () => {
@@ -1493,6 +1560,7 @@ describe("@axi/api", () => {
         canonicalOneSecondTimeseries: string;
         calibrationSessionCapture: string;
         paperStrategyEvaluation: string;
+        paperExitPolicy: string;
         derivativeCorrectness: string;
         derivativeStrengthNormalization: string;
         signalCalibrationFramework: string;
@@ -1559,6 +1627,15 @@ describe("@axi/api", () => {
         automaticPaperTradingActivation: boolean;
         tradingDisabled: boolean;
       };
+      paperExitPolicy: {
+        implementationStatus: string;
+        policyStatus: string;
+        evaluationMode: string;
+        automaticPaperExitActivation: boolean;
+        automaticLiveExecution: boolean;
+        operatorConfiguredPaperExecutionRequired: boolean;
+        liveExecutionDisabled: boolean;
+      };
     };
 
     expect(response.statusCode).toBe(200);
@@ -1569,6 +1646,7 @@ describe("@axi/api", () => {
       signalCalibration: "@axi/signal-calibration",
       calibrationSessionCapture: "@axi/session-capture",
       paperStrategyEvaluation: "@axi/paper-strategy-evaluation",
+      paperExitPolicy: "@axi/exit-strategy",
       canonicalTimeseries: "@axi/timeseries",
       subscriptionTransport: "ActualDataService",
       subscriptionPolicy: "MeteredLaunchDataService",
@@ -1593,6 +1671,7 @@ describe("@axi/api", () => {
     expect(body.roadmap.signalCalibrationFramework).toBe("implemented");
     expect(body.roadmap.calibrationSessionCapture).toBe("implemented");
     expect(body.roadmap.paperStrategyEvaluation).toBe("implemented");
+    expect(body.roadmap.paperExitPolicy).toBe("implemented");
     expect(body.roadmap.rollingNewestTokenScheduler).toBe("implemented");
     expect(body.roadmap.schedulerMutationApplied).toBe(false);
     expect(body.timeseries).toMatchObject({
@@ -1641,6 +1720,15 @@ describe("@axi/api", () => {
       automaticThresholdActivation: false,
       automaticPaperTradingActivation: false,
       tradingDisabled: true
+    });
+    expect(body.paperExitPolicy).toMatchObject({
+      implementationStatus: "implemented",
+      policyStatus: "reference_only",
+      evaluationMode: "deterministic_paper_and_replay",
+      automaticPaperExitActivation: false,
+      automaticLiveExecution: false,
+      operatorConfiguredPaperExecutionRequired: true,
+      liveExecutionDisabled: true
     });
     expect(body.safety.apiHost).toBe("127.0.0.1");
     expect(body.safety.tradingDisabled).toBe(true);

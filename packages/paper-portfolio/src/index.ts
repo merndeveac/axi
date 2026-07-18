@@ -5,6 +5,7 @@ export type PaperOrderSource =
   | "watched_wallet_exit"
   | "take_profit"
   | "stop_loss"
+  | "paper_exit_policy"
   | "manual_paper"
   | "replay";
 export type PaperFillStatus = "filled" | "rejected" | "partial";
@@ -69,6 +70,8 @@ export type PaperPosition = {
   entryPriceSol: number;
   averageEntryPriceSol: number;
   currentPriceSol?: number | null;
+  peakPriceSol?: number | null;
+  peakUnrealizedPnlPct?: number | null;
   sizeSol: number;
   remainingSizeSol: number;
   tokenAmount: number;
@@ -142,6 +145,7 @@ export const paperPortfolioReasonCodes = {
   pnlUpdated: "PAPER_PNL_UPDATED",
   stopLossTriggered: "PAPER_STOP_LOSS_TRIGGERED",
   takeProfitTriggered: "PAPER_TAKE_PROFIT_TRIGGERED",
+  exitPolicyTriggered: "PAPER_EXIT_POLICY_TRIGGERED",
   paperOnlyNoLiveExecution: "PAPER_ONLY_NO_LIVE_EXECUTION",
   duplicatePosition: "PAPER_DUPLICATE_POSITION_BLOCKED",
   insufficientCash: "PAPER_INSUFFICIENT_CASH",
@@ -542,6 +546,8 @@ class DefaultPaperPortfolioEngine implements PaperPortfolioEngine {
       entryPriceSol: fill.effectivePriceSol,
       averageEntryPriceSol: fill.effectivePriceSol,
       currentPriceSol: fill.priceSol,
+      peakPriceSol: fill.priceSol,
+      peakUnrealizedPnlPct: 0,
       sizeSol: fill.sizeSol,
       remainingSizeSol: fill.sizeSol,
       tokenAmount: fill.tokenAmount,
@@ -759,12 +765,25 @@ function recalculatePositionPnl(position: PaperPosition): PaperPosition {
   const unrealizedValue =
     currentPrice === null ? position.remainingSizeSol : position.remainingTokenAmount * currentPrice;
   const unrealizedPnlSol = roundSol(unrealizedValue - position.remainingSizeSol);
+  const unrealizedPnlPct = pct(unrealizedPnlSol, position.remainingSizeSol);
+  const priorPeakPrice = positiveOrNull(position.peakPriceSol);
+  const peakPriceSol =
+    currentPrice === null
+      ? priorPeakPrice
+      : Math.max(priorPeakPrice ?? currentPrice, currentPrice);
+  const priorPeakPnlPct = finiteOrNull(position.peakUnrealizedPnlPct);
+  const peakUnrealizedPnlPct = Math.max(
+    priorPeakPnlPct ?? unrealizedPnlPct,
+    unrealizedPnlPct
+  );
 
   return {
     ...position,
     entryPriceSol: roundPrice(position.entryPriceSol),
     averageEntryPriceSol: roundPrice(position.averageEntryPriceSol),
     currentPriceSol: currentPrice,
+    peakPriceSol: peakPriceSol === null ? null : roundPrice(peakPriceSol),
+    peakUnrealizedPnlPct: roundPct(peakUnrealizedPnlPct),
     sizeSol: roundSol(position.sizeSol),
     remainingSizeSol: roundSol(position.remainingSizeSol),
     tokenAmount: roundToken(position.tokenAmount),
@@ -772,7 +791,7 @@ function recalculatePositionPnl(position: PaperPosition): PaperPosition {
     realizedPnlSol: roundSol(position.realizedPnlSol),
     unrealizedPnlSol,
     realizedPnlPct: pct(position.realizedPnlSol, position.sizeSol),
-    unrealizedPnlPct: pct(unrealizedPnlSol, position.remainingSizeSol),
+    unrealizedPnlPct,
     totalFeesSol: roundSol(position.totalFeesSol),
     entryReasonCodes: uniqueReasonCodes(position.entryReasonCodes),
     exitReasonCodes: uniqueReasonCodes(position.exitReasonCodes)

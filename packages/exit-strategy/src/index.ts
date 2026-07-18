@@ -1,3 +1,5 @@
+export * from "./paper-exit-policy";
+
 export type WatchedWalletSource = "manual" | "imported" | "test";
 export type WatchedWalletTradeSource =
   | "pumpportal_account_trade"

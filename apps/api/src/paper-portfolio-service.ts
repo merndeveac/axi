@@ -1,6 +1,15 @@
-import type { ExitSignal } from "@axi/exit-strategy";
+import {
+  createPaperExitPolicyConfig,
+  evaluatePaperExitPolicy,
+  getPaperExitPolicyRuntimeContract,
+  paperExitRuleCompletionReasonCode,
+  type ExitSignal,
+  type PaperExitMarketContext,
+  type PaperExitPolicyConfig,
+  type PaperExitPolicyConfigInput
+} from "@axi/exit-strategy";
 import type { LaunchCandidateView } from "./launch-scanner-service";
-import type { OverlaySignal, RiskLevel } from "@axi/shared";
+import type { OverlaySignal, RiskLevel, RiskSnapshot } from "@axi/shared";
 import {
   createEntryIntentFromLaunchSignal,
   createExitIntentFromExitSignal,
@@ -16,8 +25,10 @@ import {
   type PaperRiskLevel
 } from "@axi/paper-portfolio";
 import {
+  getPaperExitPolicyEvaluation,
   getPaperPortfolioPosition,
   getStorageStats,
+  listPaperExitPolicyEvaluations,
   listPaperPortfolioFills,
   listPaperPortfolioOrders,
   listPaperPortfolioPositions,
@@ -25,11 +36,13 @@ import {
   savePaperPortfolioFill,
   savePaperPortfolioOrder,
   savePaperPortfolioSnapshot,
+  savePaperExitPolicyEvaluation,
   upsertPaperPortfolioPosition,
   type StoredPaperPortfolioFill,
   type StoredPaperPortfolioOrder,
   type StoredPaperPortfolioPosition,
-  type StoredPaperPortfolioSnapshot
+  type StoredPaperPortfolioSnapshot,
+  type StoredPaperExitPolicyEvaluation
 } from "@axi/storage";
 
 export type PaperEntryPolicyConfig = {
@@ -48,7 +61,7 @@ export type PaperEntryPolicyConfig = {
   cooldownByMintMs: number;
 };
 
-export type PaperExitPolicyConfig = {
+export type PaperExitExecutionPolicyConfig = {
   enabled: boolean;
   allowWatchedWalletSignals: boolean;
   defaultSellPct: number;
@@ -58,13 +71,14 @@ export type PaperExitPolicyConfig = {
   stopLossPct: number;
   trailingStopPct: number | null;
   cooldownMs: number;
+  policy?: PaperExitPolicyConfigInput | undefined;
 };
 
 export type PaperPortfolioServiceConfig = PaperPortfolioConfig & {
   enabled: boolean;
   resetEnabled: boolean;
   entry: PaperEntryPolicyConfig;
-  exit: PaperExitPolicyConfig;
+  exit: PaperExitExecutionPolicyConfig;
 };
 
 export type PaperPortfolioStatus = {
@@ -81,6 +95,8 @@ export type PaperPortfolioStatus = {
   unrealizedPnlSol: number;
   winRate: number;
   maxDrawdownSol: number;
+  exitPolicyVersion: string;
+  exitPolicyEvaluationCount: number;
   paperOnly: true;
   liveExecutionDisabled: true;
   reasonCodes: string[];
@@ -95,6 +111,7 @@ export type PaperPortfolioEvaluation = {
   reasonCodes: string[];
   paperOnly: true;
   liveExecutionDisabled: true;
+  exitPolicyEvaluation?: StoredPaperExitPolicyEvaluation | null | undefined;
 };
 
 export type PaperPositionSummary = {
@@ -102,6 +119,8 @@ export type PaperPositionSummary = {
   status: PaperPosition["status"] | null;
   entryPriceSol: number | null;
   currentPriceSol: number | null;
+  peakPriceSol: number | null;
+  peakUnrealizedPnlPct: number | null;
   unrealizedPnlPct: number | null;
   unrealizedPnlSol: number | null;
   realizedPnlSol: number | null;
@@ -126,6 +145,7 @@ export type PaperPortfolioServiceOptions = {
   config?: Partial<PaperPortfolioServiceConfig>;
   getCurrentPriceSol?: (mint: string) => number | null | undefined;
   getLaunchCandidate?: (mint: string) => LaunchCandidateView | null | undefined;
+  getRiskSnapshot?: (mint: string) => RiskSnapshot | null | undefined;
   getRecentSignals?: () => OverlaySignal[];
   now?: () => Date;
 };
@@ -182,15 +202,15 @@ export function createPaperPortfolioServiceConfig(
     },
     exit: {
       enabled: input.exit?.enabled ?? false,
-      allowWatchedWalletSignals:
-        input.exit?.allowWatchedWalletSignals ?? true,
+      allowWatchedWalletSignals: input.exit?.allowWatchedWalletSignals ?? true,
       defaultSellPct: input.exit?.defaultSellPct ?? 100,
       requirePrice: input.exit?.requirePrice ?? true,
       minProfitPct: input.exit?.minProfitPct ?? 25,
       takeProfitPct: input.exit?.takeProfitPct ?? 50,
       stopLossPct: input.exit?.stopLossPct ?? -25,
       trailingStopPct: input.exit?.trailingStopPct ?? null,
-      cooldownMs: input.exit?.cooldownMs ?? 60_000
+      cooldownMs: input.exit?.cooldownMs ?? 60_000,
+      ...(input.exit?.policy ? { policy: input.exit.policy } : {})
     }
   };
 }
@@ -205,16 +225,18 @@ export class PaperPortfolioService {
   private readonly config: PaperPortfolioServiceConfig;
   private readonly engine: PaperPortfolioEngine;
   private readonly getCurrentPriceSol:
-    | ((mint: string) => number | null | undefined)
-    | undefined;
+    ((mint: string) => number | null | undefined) | undefined;
   private readonly getLaunchCandidate:
-    | ((mint: string) => LaunchCandidateView | null | undefined)
-    | undefined;
+    ((mint: string) => LaunchCandidateView | null | undefined) | undefined;
+  private readonly getRiskSnapshot:
+    ((mint: string) => RiskSnapshot | null | undefined) | undefined;
   private readonly getRecentSignals: (() => OverlaySignal[]) | undefined;
+  private readonly exitPolicyConfig: PaperExitPolicyConfig;
   private readonly now: () => Date;
   private readonly entryCooldowns = new Map<string, number>();
   private readonly exitCooldowns = new Map<string, number>();
   private readonly latestExitSignals = new Map<string, ExitSignal>();
+  private exitPolicySequence = 0;
   private started = false;
 
   constructor(options: PaperPortfolioServiceOptions = {}) {
@@ -226,7 +248,21 @@ export class PaperPortfolioService {
     });
     this.getCurrentPriceSol = options.getCurrentPriceSol;
     this.getLaunchCandidate = options.getLaunchCandidate;
+    this.getRiskSnapshot = options.getRiskSnapshot;
     this.getRecentSignals = options.getRecentSignals;
+    this.exitPolicyConfig = createPaperExitPolicyConfig({
+      stopLossPct: this.config.exit.stopLossPct,
+      takeProfitStage1Pct: Math.min(
+        this.config.exit.minProfitPct,
+        this.config.exit.takeProfitPct
+      ),
+      takeProfitStage1SellPct: 50,
+      takeProfitStage2Pct: this.config.exit.takeProfitPct,
+      takeProfitStage2SellPct: this.config.exit.defaultSellPct,
+      trailingStopPct: this.config.exit.trailingStopPct,
+      watchedWalletMinimumProfitPct: this.config.exit.minProfitPct,
+      ...(this.config.exit.policy ?? {})
+    });
   }
 
   start(): void {
@@ -254,23 +290,66 @@ export class PaperPortfolioService {
       exitPolicyEnabled: this.config.exit.enabled,
       openPositionCount: snapshot.openPositionCount,
       closedPositionCount: snapshot.closedPositionCount,
-      orderCount: Math.max(stats.paperPortfolioOrderCount, this.engine.getOrderHistory().length),
-      fillCount: Math.max(stats.paperPortfolioFillCount, this.engine.getFillHistory().length),
+      orderCount: Math.max(
+        stats.paperPortfolioOrderCount,
+        this.engine.getOrderHistory().length
+      ),
+      fillCount: Math.max(
+        stats.paperPortfolioFillCount,
+        this.engine.getFillHistory().length
+      ),
       snapshotCount: stats.paperPortfolioSnapshotCount,
       totalPnlSol: snapshot.totalPnlSol,
       realizedPnlSol: snapshot.realizedPnlSol,
       unrealizedPnlSol: snapshot.unrealizedPnlSol,
       winRate: snapshot.winRate,
       maxDrawdownSol: snapshot.maxDrawdownSol,
+      exitPolicyVersion: getPaperExitPolicyRuntimeContract().policyVersion,
+      exitPolicyEvaluationCount: stats.paperExitPolicyEvaluationCount,
       paperOnly: true,
       liveExecutionDisabled: true,
       reasonCodes: uniqueStrings([
-        this.config.enabled ? "PAPER_PORTFOLIO_ENABLED" : "PAPER_PORTFOLIO_DISABLED",
-        this.config.entry.enabled ? "PAPER_ENTRY_POLICY_ENABLED" : "PAPER_ENTRY_POLICY_DISABLED",
-        this.config.exit.enabled ? "PAPER_EXIT_POLICY_ENABLED" : "PAPER_EXIT_POLICY_DISABLED",
+        this.config.enabled
+          ? "PAPER_PORTFOLIO_ENABLED"
+          : "PAPER_PORTFOLIO_DISABLED",
+        this.config.entry.enabled
+          ? "PAPER_ENTRY_POLICY_ENABLED"
+          : "PAPER_ENTRY_POLICY_DISABLED",
+        this.config.exit.enabled
+          ? "PAPER_EXIT_POLICY_ENABLED"
+          : "PAPER_EXIT_POLICY_DISABLED",
         paperPortfolioReasonCodes.paperOnlyNoLiveExecution
       ])
     };
+  }
+
+  getExitPolicyStatus() {
+    const evaluations = listPaperExitPolicyEvaluations(1);
+
+    return {
+      enabled: this.config.exit.enabled,
+      executionMode: this.config.exit.enabled
+        ? ("operator_configured_paper" as const)
+        : ("evaluation_only" as const),
+      evaluationCount: getStorageStats().paperExitPolicyEvaluationCount,
+      latestEvaluation: evaluations[0] ?? null,
+      config: this.exitPolicyConfig,
+      contract: getPaperExitPolicyRuntimeContract(),
+      automaticPaperExitActivation: false as const,
+      automaticLiveExecution: false as const,
+      paperOnly: true as const,
+      liveExecutionDisabled: true as const
+    };
+  }
+
+  getExitPolicyEvaluation(
+    evaluationId: string
+  ): StoredPaperExitPolicyEvaluation | null {
+    return getPaperExitPolicyEvaluation(evaluationId);
+  }
+
+  getExitPolicyEvaluations(limit = 50): StoredPaperExitPolicyEvaluation[] {
+    return listPaperExitPolicyEvaluations(limit);
   }
 
   getSnapshot(): PaperPortfolioSnapshot {
@@ -318,7 +397,9 @@ export class PaperPortfolioService {
     };
   }
 
-  evaluateEntries(signals = this.getRecentSignals?.() ?? []): PaperPortfolioEvaluation[] {
+  evaluateEntries(
+    signals = this.getRecentSignals?.() ?? []
+  ): PaperPortfolioEvaluation[] {
     return signals.map((signal) => this.evaluateEntrySignal(signal));
   }
 
@@ -370,7 +451,10 @@ export class PaperPortfolioService {
       this.latestExitSignals.set(signal.mint, signal);
     }
 
-    if (!this.config.exit.enabled || !this.config.exit.allowWatchedWalletSignals) {
+    if (
+      !this.config.exit.enabled ||
+      !this.config.exit.allowWatchedWalletSignals
+    ) {
       return signals.map(() =>
         this.noopEvaluation([
           this.config.exit.enabled
@@ -380,7 +464,25 @@ export class PaperPortfolioService {
       );
     }
 
-    return signals.map((signal) => this.evaluateExitSignal(signal));
+    return signals.map((signal) => {
+      if (signal.blocked) {
+        return this.noopEvaluation([
+          "WATCHED_WALLET_EXIT_SIGNAL_BLOCKED",
+          ...signal.blockers
+        ]);
+      }
+
+      const position = this.engine.getPosition(signal.mint);
+      const marked = position
+        ? (this.updateMarkPrice(signal.mint, this.getPrice(signal.mint)) ??
+          position)
+        : null;
+      const evaluation = this.evaluateExitPolicyForPosition(marked, signal);
+
+      return evaluation.selectedAction
+        ? this.executeExitPolicyEvaluation(evaluation, marked, signal)
+        : this.noopEvaluation(evaluation.reasonCodes, evaluation);
+    });
   }
 
   evaluateExits(): PaperPortfolioEvaluation[] {
@@ -391,32 +493,16 @@ export class PaperPortfolioService {
     }
 
     for (const position of this.engine.getOpenPositions()) {
-      const marked = this.updateMarkPrice(position.mint, this.getPrice(position.mint)) ?? position;
-      const pnlPct = marked.unrealizedPnlPct;
-      const source: PaperOrderSource | null =
-        pnlPct >= this.config.exit.takeProfitPct
-          ? "take_profit"
-          : pnlPct <= this.config.exit.stopLossPct
-            ? "stop_loss"
-            : null;
+      const marked =
+        this.updateMarkPrice(position.mint, this.getPrice(position.mint)) ??
+        position;
+      const evaluation = this.evaluateExitPolicyForPosition(marked, null);
 
-      if (!source) {
-        continue;
+      if (evaluation.selectedAction) {
+        results.push(
+          this.executeExitPolicyEvaluation(evaluation, marked, null)
+        );
       }
-
-      const reasonCode =
-        source === "take_profit"
-          ? paperPortfolioReasonCodes.takeProfitTriggered
-          : paperPortfolioReasonCodes.stopLossTriggered;
-      results.push(
-        this.createExitForPosition({
-          position: marked,
-          reason: source === "take_profit" ? "take profit" : "stop loss",
-          reasonCodes: [reasonCode],
-          sellPct: this.config.exit.defaultSellPct,
-          source
-        })
-      );
     }
 
     return results;
@@ -485,7 +571,10 @@ export class PaperPortfolioService {
     });
   }
 
-  updateMarkPrice(mint: string, priceSol?: number | null): PaperPosition | null {
+  updateMarkPrice(
+    mint: string,
+    priceSol?: number | null
+  ): PaperPosition | null {
     const updated = this.engine.updateMarkPrice(mint, priceSol);
 
     if (updated) {
@@ -507,6 +596,8 @@ export class PaperPortfolioService {
       status: position?.status ?? null,
       entryPriceSol: position?.entryPriceSol ?? null,
       currentPriceSol: position?.currentPriceSol ?? null,
+      peakPriceSol: position?.peakPriceSol ?? null,
+      peakUnrealizedPnlPct: position?.peakUnrealizedPnlPct ?? null,
       unrealizedPnlPct: position?.unrealizedPnlPct ?? null,
       unrealizedPnlSol: position?.unrealizedPnlSol ?? null,
       realizedPnlSol: position?.realizedPnlSol ?? null,
@@ -556,59 +647,122 @@ export class PaperPortfolioService {
     };
   }
 
-  private evaluateExitSignal(signal: ExitSignal): PaperPortfolioEvaluation {
-    if (signal.blocked) {
-      return this.noopEvaluation([
-        "WATCHED_WALLET_EXIT_SIGNAL_BLOCKED",
-        ...signal.blockers
-      ]);
+  private evaluateExitPolicyForPosition(
+    position: PaperPosition | null,
+    signal: ExitSignal | null
+  ): StoredPaperExitPolicyEvaluation {
+    const evaluatedAt = this.now().toISOString();
+    const mint = position?.mint ?? signal?.mint ?? "";
+    const candidate = this.getLaunchCandidate?.(mint) ?? null;
+    const snapshot = candidate?.snapshot ?? null;
+    const risk = this.getRiskSnapshot?.(mint) ?? null;
+    const currentPriceSol =
+      positiveOrNull(position?.currentPriceSol) ?? this.getPrice(mint) ?? 0;
+    const entryPriceSol = positiveOrNull(position?.averageEntryPriceSol) ?? 0;
+    const peakPriceSol =
+      positiveOrNull(position?.peakPriceSol) ??
+      Math.max(currentPriceSol, entryPriceSol);
+    const market: PaperExitMarketContext = {
+      launchScore: snapshot?.score ?? null,
+      launchPhase: snapshot?.phase ?? null,
+      priceVelocityPctPerSec:
+        snapshot?.derivatives.priceVelocityPctPerSec ?? null,
+      priceAccelerationPctPerSec2:
+        snapshot?.derivatives.priceAccelerationPctPerSec2 ?? null,
+      volume5sSol: snapshot?.windows["5s"].volumeSol ?? null,
+      volume30sSol: snapshot?.windows["30s"].volumeSol ?? null,
+      volumeAccelerationSolPerSec2:
+        snapshot?.derivatives.volumeAccelerationSolPerSec2 ?? null,
+      buyerAccelerationPerSec2:
+        snapshot?.derivatives.buyerAccelerationPerSec2 ?? null,
+      netBuyPressure: snapshot?.windows["10s"].netBuyPressure ?? null,
+      liquidityVelocitySolPerSec:
+        snapshot?.derivatives.liquiditySolVelocityPerSec ?? null,
+      estimatedSellSlippagePct: risk?.flags.estimatedSellSlippagePct ?? null,
+      riskLevel: risk?.riskLevel ?? "unknown",
+      hardReject: risk?.hardReject ?? false,
+      migrationDetected:
+        candidate?.eventType.toLowerCase().includes("migration") === true ||
+        candidate?.reasonCodes.some((code) =>
+          code.toUpperCase().includes("MIGRATION")
+        ) === true,
+      watchedWalletSignal: signal
+        ? {
+            signalId: signal.id,
+            side: signal.triggerEvent.side,
+            usable: signal.triggerEvent.usableForExitStrategy,
+            blocked: signal.blocked,
+            sellPct: signal.sellPct
+          }
+        : null,
+      reasonCodes: uniqueStrings([
+        ...(snapshot?.reasonCodes ?? []),
+        ...(risk?.reasonCodes ?? []),
+        ...(signal?.reasonCodes ?? [])
+      ])
+    };
+    this.exitPolicySequence += 1;
+    const evaluation = evaluatePaperExitPolicy({
+      evaluationId: [
+        "paper-exit",
+        safeId(mint),
+        evaluatedAt.replace(/[^0-9]/gu, ""),
+        String(this.exitPolicySequence).padStart(6, "0")
+      ].join("-"),
+      evaluatedAt,
+      position: {
+        mint,
+        status:
+          position?.status === "partially_closed" ? "partially_closed" : "open",
+        openedAt: position?.openedAt ?? evaluatedAt,
+        entryPriceSol,
+        currentPriceSol,
+        peakPriceSol,
+        unrealizedPnlPct: position?.unrealizedPnlPct ?? 0,
+        peakUnrealizedPnlPct:
+          position?.peakUnrealizedPnlPct ?? position?.unrealizedPnlPct ?? 0,
+        remainingSizeSol: position?.remainingSizeSol ?? 0,
+        remainingTokenAmount: position?.remainingTokenAmount ?? 0,
+        completedRuleIds: completedExitPolicyRuleIds(
+          position?.exitReasonCodes ?? []
+        )
+      },
+      market,
+      config: this.exitPolicyConfig
+    });
+
+    return savePaperExitPolicyEvaluation(evaluation);
+  }
+
+  private executeExitPolicyEvaluation(
+    evaluation: StoredPaperExitPolicyEvaluation,
+    position: PaperPosition | null,
+    signal: ExitSignal | null
+  ): PaperPortfolioEvaluation {
+    const action = evaluation.selectedAction;
+
+    if (!action) {
+      return this.noopEvaluation(evaluation.reasonCodes, evaluation);
     }
 
-    const position = this.engine.getPosition(signal.mint);
-    const minProfitBlocker =
-      position && position.unrealizedPnlPct < this.config.exit.minProfitPct
-        ? "PAPER_EXIT_MIN_PROFIT_NOT_MET"
-        : null;
-
-    if (minProfitBlocker) {
-      const intent = createExitIntentFromExitSignal(signal, {
-        reasonCodes: [minProfitBlocker, ...signal.reasonCodes],
-        createdAt: this.now().toISOString()
-      });
-      const fill = {
-        ...this.engine.simulateSell(intent, position, this.getPrice(signal.mint)),
-        rejectionReason: minProfitBlocker,
-        fillStatus: "rejected" as const,
-        reasonCodes: uniqueStrings([
-          paperPortfolioReasonCodes.fillRejected,
-          minProfitBlocker,
-          paperPortfolioReasonCodes.paperOnlyNoLiveExecution,
-          ...intent.reasonCodes
-        ])
-      };
-      this.persistAndApply(intent, fill);
-
-      return {
-        intent,
-        fill,
-        position: null,
-        snapshot: this.persistSnapshot(),
-        blocked: true,
-        reasonCodes: fill.reasonCodes,
-        paperOnly: true,
-        liveExecutionDisabled: true
-      };
-    }
+    const watchedWalletTrigger = action.trigger.startsWith("watched_wallet_");
 
     return this.createExitForPosition({
       position,
-      reason: signal.sellReason,
-      reasonCodes: signal.reasonCodes,
-      sellPct: signal.sellPct,
-      source: "watched_wallet_exit",
-      signal,
+      reason: action.reason,
+      reasonCodes: uniqueStrings([
+        ...action.reasonCodes,
+        paperExitRuleCompletionReasonCode(action.ruleId),
+        paperPortfolioReasonCodes.exitPolicyTriggered
+      ]),
+      sellPct: action.sellPct,
+      source: watchedWalletTrigger
+        ? "watched_wallet_exit"
+        : "paper_exit_policy",
+      ...(signal ? { signal } : {}),
       marketPriceSol:
-        signal.triggerEvent.priceSol ?? position?.currentPriceSol ?? null
+        signal?.triggerEvent.priceSol ?? position?.currentPriceSol ?? null,
+      exitPolicyEvaluation: evaluation
     });
   }
 
@@ -620,6 +774,7 @@ export class PaperPortfolioService {
     source: PaperOrderSource;
     signal?: ExitSignal;
     marketPriceSol?: number | null;
+    exitPolicyEvaluation?: StoredPaperExitPolicyEvaluation | null;
   }): PaperPortfolioEvaluation {
     const mint = input.position?.mint ?? input.signal?.mint ?? "";
     const cooldownKey = `${input.source}:${mint}`;
@@ -627,7 +782,10 @@ export class PaperPortfolioService {
     const lastExitAt = this.exitCooldowns.get(cooldownKey) ?? 0;
 
     if (lastExitAt > 0 && nowMs - lastExitAt < this.config.exit.cooldownMs) {
-      return this.noopEvaluation(["PAPER_EXIT_COOLDOWN_ACTIVE"]);
+      return this.noopEvaluation(
+        ["PAPER_EXIT_COOLDOWN_ACTIVE"],
+        input.exitPolicyEvaluation
+      );
     }
 
     const intent =
@@ -640,7 +798,7 @@ export class PaperPortfolioService {
             createdAt: this.now().toISOString()
           })
         : ({
-            id: `${input.source}-${safeId(mint)}-${Date.now()}`,
+            id: `${input.source}-${safeId(mint)}-${nowMs}`,
             type: "exit",
             side: "sell",
             mint,
@@ -678,7 +836,10 @@ export class PaperPortfolioService {
       blocked: fill.fillStatus === "rejected",
       reasonCodes: fill.reasonCodes,
       paperOnly: true,
-      liveExecutionDisabled: true
+      liveExecutionDisabled: true,
+      ...(input.exitPolicyEvaluation
+        ? { exitPolicyEvaluation: input.exitPolicyEvaluation }
+        : {})
     };
   }
 
@@ -808,7 +969,8 @@ export class PaperPortfolioService {
       (snapshot?.tradeSampleCount ?? 0) <= 0
         ? ["PAPER_ENTRY_TRADE_TRACKING_REQUIRED"]
         : []),
-      ...((snapshot?.tradeSampleCount ?? 0) >= this.config.entry.minValidTradeSamples
+      ...((snapshot?.tradeSampleCount ?? 0) >=
+      this.config.entry.minValidTradeSamples
         ? []
         : ["PAPER_ENTRY_INSUFFICIENT_SAMPLES"]),
       ...((window10s?.buySellRatio ?? 0) >= this.config.entry.minBuySellRatio
@@ -838,7 +1000,10 @@ export class PaperPortfolioService {
       : null;
   }
 
-  private noopEvaluation(reasonCodes: string[]): PaperPortfolioEvaluation {
+  private noopEvaluation(
+    reasonCodes: string[],
+    exitPolicyEvaluation?: StoredPaperExitPolicyEvaluation | null
+  ): PaperPortfolioEvaluation {
     return {
       intent: null,
       fill: null,
@@ -847,7 +1012,8 @@ export class PaperPortfolioService {
       blocked: true,
       reasonCodes,
       paperOnly: true,
-      liveExecutionDisabled: true
+      liveExecutionDisabled: true,
+      ...(exitPolicyEvaluation ? { exitPolicyEvaluation } : {})
     };
   }
 }
@@ -869,6 +1035,9 @@ function storedPositionToPaperPosition(
     entryPriceSol: stored.entryPriceSol,
     averageEntryPriceSol: stored.averageEntryPriceSol,
     currentPriceSol: stored.currentPriceSol,
+    peakPriceSol: payload.peakPriceSol ?? stored.currentPriceSol,
+    peakUnrealizedPnlPct:
+      payload.peakUnrealizedPnlPct ?? stored.unrealizedPnlPct,
     sizeSol: stored.sizeSol,
     remainingSizeSol: stored.remainingSizeSol,
     tokenAmount: stored.tokenAmount,
@@ -912,7 +1081,27 @@ function riskRank(value: RiskLevel): number {
 
 function uniqueStrings(values: readonly string[]): string[] {
   return Array.from(
-    new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))
+    new Set(
+      values.map((value) => value.trim()).filter((value) => value.length > 0)
+    )
+  );
+}
+
+function positiveOrNull(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : null;
+}
+
+function completedExitPolicyRuleIds(reasonCodes: readonly string[]): string[] {
+  const prefix = "PAPER_EXIT_RULE_COMPLETED_";
+
+  return uniqueStrings(
+    reasonCodes
+      .filter((reasonCode) => reasonCode.startsWith(prefix))
+      .map((reasonCode) =>
+        reasonCode.slice(prefix.length).toLowerCase().replaceAll("_", "-")
+      )
   );
 }
 

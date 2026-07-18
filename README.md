@@ -109,9 +109,11 @@ validation signal.
 Every report is immutable and remains `reference_only`. A
 `paper_observation_candidate` means the evidence gates passed; it does not
 activate the threshold, enable automatic paper entries, or enable live trading.
-The fixed-horizon simulation uses independent fixed-size positions and does not
-yet model overlapping portfolio exposure or an exit strategy. The API persists
-reports; the read-only CLI only prints an ad hoc report:
+The fixed-horizon strategy-evaluation report uses independent fixed-size
+positions and does not model overlapping portfolio exposure. Exit-policy
+replay is handled separately by the versioned paper exit evaluator described
+below. The API persists strategy reports; the read-only CLI only prints an ad
+hoc report:
 
 ```bash
 pnpm --filter @axi/api paper:strategy:evaluate -- --train-session <train-id> --validation-session <validation-id>
@@ -326,10 +328,10 @@ Exit endpoints:
 
 The paper portfolio layer is a pure simulated portfolio/PnL engine plus local
 SQLite persistence and API/dashboard read models. It can turn launch scanner
-signals into simulated paper entries and watched-wallet/take-profit/stop-loss
-signals into simulated paper exits, but both policy loops are disabled by
-default. Manual paper entry/exit endpoints are simulation-only and require a
-market price when no safe local price is available.
+signals into simulated paper entries and versioned exit-policy candidates into
+simulated paper exits, but both policy loops are disabled by default. Manual
+paper entry/exit endpoints are simulation-only and require a market price when
+no safe local price is available.
 
 This feature does not sign, send, prepare, or broadcast transactions. It does
 not load wallets, expose API keys, call PumpPortal Lightning execution, call
@@ -350,9 +352,40 @@ PAPER_PORTFOLIO_FEE_BPS=100
 PAPER_PORTFOLIO_SLIPPAGE_BPS=300
 PAPER_ENTRY_MIN_LAUNCH_SCORE=80
 PAPER_ENTRY_POSITION_SIZE_SOL=0.005
+PAPER_EXIT_MIN_PROFIT_PCT=25
+PAPER_EXIT_TAKE_PROFIT_STAGE_1_SELL_PCT=50
 PAPER_EXIT_TAKE_PROFIT_PCT=50
 PAPER_EXIT_STOP_LOSS_PCT=-25
+PAPER_EXIT_TRAILING_STOP_PCT=
+PAPER_EXIT_TRAILING_ACTIVATION_PCT=20
+PAPER_EXIT_MAX_HOLD_MS=300000
+PAPER_EXIT_ADVANCED_SIGNALS_ENABLED=true
+PAPER_EXIT_MIGRATION_TRANSITION_ENABLED=false
 ```
+
+### Versioned Paper Exit Policy
+
+`paper-exit-policy-v1` evaluates emergency hard risk, liquidity deterioration,
+stop loss, watched-wallet sells, trailing stops, derivative reversal, momentum
+decay, buyer reversal, volume collapse, watched-wallet buys, two take-profit
+stages, maximum hold time, and migration transitions. It is deterministic: the
+first eligible rule in ascending documented priority wins. Completed partial
+stages are recorded on the position and cannot fire twice.
+
+Every evaluation, including holds and invalid inputs, is stored immutably with
+the full configuration, market context, rule decisions, selected action, and
+reason codes. The policy is `reference_only`, uncalibrated, and cannot activate
+itself. `PAPER_EXIT_ENABLED=false` remains the default; setting it to `true`
+authorizes only local simulated fills. Trailing stops additionally require an
+explicit percentage, and migration exits remain independently disabled by
+default. There is no live-execution path.
+
+Read-only policy audit endpoints:
+
+- `GET /runtime/paper-exit-policy`
+- `GET /runtime/paper-exit-policy/evaluations`
+- `GET /runtime/paper-exit-policy/evaluations/:evaluationId`
+- `GET /runtime/paper-exit-policy/evaluations/:evaluationId/export`
 
 Paper portfolio endpoints:
 
@@ -375,11 +408,15 @@ Replay/backtest examples:
 pnpm --filter @axi/api paper:backtest -- --fixture strong-ripper
 pnpm --filter @axi/api paper:backtest -- --source launch-fixture sell-pressure
 pnpm --filter @axi/api paper:backtest -- --from-db .data/axi.sqlite --limit 100
+pnpm --filter @axi/api paper:exit:evaluate -- --fixture trailing-stop
+pnpm --filter @axi/api paper:exit:evaluate -- --fixture derivative-reversal
 ```
 
-This replay helper is fixture/smoke testing only. Its output is explicitly
-`evidenceEligible: false`; use finalized calibration capture sessions and the
-paper strategy evaluator for evidence reports.
+The portfolio backtest helper is fixture/smoke testing only. Its output is
+explicitly `evidenceEligible: false`; use finalized calibration capture
+sessions and the paper strategy evaluator for evidence reports. The exit-policy
+replay command is deterministic and `reference_only`; it evaluates a local
+fixture and cannot place a paper or live order.
 
 The dashboard has a PORTFOLIO tab for simulated cash, deployed SOL, equity,
 realized/unrealized PnL, fees, positions, orders, fills, and best/worst closed
@@ -714,6 +751,10 @@ Indexer endpoints:
 - `GET /runtime/paper-strategy-evaluation/evaluations`
 - `GET /runtime/paper-strategy-evaluation/evaluations/:evaluationId`
 - `GET /runtime/paper-strategy-evaluation/evaluations/:evaluationId/export`
+- `GET /runtime/paper-exit-policy`
+- `GET /runtime/paper-exit-policy/evaluations`
+- `GET /runtime/paper-exit-policy/evaluations/:evaluationId`
+- `GET /runtime/paper-exit-policy/evaluations/:evaluationId/export`
 - `GET /indexer/stream/status`
 - `GET /indexer/stream/real-readiness`
 - `GET /indexer/stream/config`
@@ -2386,8 +2427,8 @@ docker compose --profile indexer up -d
 - `@axi/token-identity`: local token identity normalization and source
   confidence helpers.
 - `@axi/execution`: in-memory paper execution only.
-- `@axi/exit-strategy`: pure deterministic watched-wallet paper exit
-  evaluation and simulation fixtures.
+- `@axi/exit-strategy`: pure deterministic watched-wallet signals plus the
+  versioned multi-rule paper/replay exit policy and explicit precedence.
 - `@axi/paper-portfolio`: pure simulated portfolio/PnL engine with fee,
   slippage, position history, and paper-only order/fill models.
 - `@axi/metrics`: local rolling-window metrics for paper-mode signal features.

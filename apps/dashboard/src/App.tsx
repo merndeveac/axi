@@ -555,6 +555,7 @@ type RuntimeContract = {
     signalCalibration: string;
     calibrationSessionCapture: string;
     paperStrategyEvaluation: string;
+    paperExitPolicy: string;
     subscriptionPolicy: string;
     subscriptionTransport: string;
     trackingScheduler: string;
@@ -625,6 +626,15 @@ type RuntimeContract = {
     incompleteOutcomesRejected: true;
     automaticThresholdActivation: false;
     automaticPaperTradingActivation: false;
+  };
+  paperExitPolicy: {
+    policyVersion: string;
+    implementationStatus: "implemented";
+    policyStatus: "reference_only";
+    evaluationMode: "deterministic_paper_and_replay";
+    automaticPaperExitActivation: false;
+    automaticLiveExecution: false;
+    operatorConfiguredPaperExecutionRequired: true;
   };
 };
 
@@ -1008,6 +1018,8 @@ type PaperPortfolioStatus = {
   orderCount: number;
   fillCount: number;
   snapshotCount: number;
+  exitPolicyVersion: string;
+  exitPolicyEvaluationCount: number;
   totalPnlSol: number;
   realizedPnlSol: number;
   unrealizedPnlSol: number;
@@ -2151,6 +2163,17 @@ function HeaderControlCenter({
                   "offline_local_only"
                   ? "OFFLINE"
                   : "CHECK"
+                : "CHECKING"
+            }
+          />
+          <StatusChip
+            label="EXIT POLICY"
+            tone="warn"
+            value={
+              runtimeContract
+                ? runtimeContract.paperExitPolicy.policyStatus
+                    .replaceAll("_", " ")
+                    .toUpperCase()
                 : "CHECKING"
             }
           />
@@ -3641,7 +3664,7 @@ function PortfolioTab({
         <MetricValue
           label="exit policy"
           value={status?.exitPolicyEnabled ? "ON" : "OFF"}
-          detail="watched wallets / stops"
+          detail={`${formatCompactNumber(status?.exitPolicyEvaluationCount)} evals / ${status?.exitPolicyVersion ?? "—"}`}
           tone={status?.exitPolicyEnabled ? "warn" : "neutral"}
         />
         <MetricValue

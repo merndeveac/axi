@@ -19,6 +19,7 @@
   "dependencies": {
     "@axi/chain-events": "workspace:*",
     "@axi/data-feeds": "workspace:*",
+    "@axi/exit-strategy": "workspace:*",
     "@axi/market-data": "workspace:*",
     "@axi/paper-portfolio": "workspace:*",
     "@axi/paper-strategy-evaluation": "workspace:*",

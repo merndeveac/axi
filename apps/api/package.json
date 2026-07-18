@@ -33,6 +33,7 @@
     "exit:simulate": "tsx --conditions=development src/exit-simulate.ts",
     "exit:cost": "tsx --conditions=development src/exit-cost.ts",
     "paper:backtest": "tsx --conditions=development src/paper-backtest.ts",
+    "paper:exit:evaluate": "tsx --conditions=development src/paper-exit-evaluate.ts",
     "paper:strategy:evaluate": "tsx --conditions=development src/paper-strategy-evaluate.ts",
     "calibration:export": "tsx --conditions=development src/calibration-export.ts",
     "tokens:resolve": "tsx --conditions=development src/tokens-resolve.ts",

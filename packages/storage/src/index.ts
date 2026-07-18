@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import type { FeedEvent, TokenTradeEvent } from "@axi/data-feeds";
+import type { PaperExitPolicyEvaluation } from "@axi/exit-strategy";
 import type {
   ChainTransactionEvent,
   NormalizedChainTradeEvent
@@ -305,6 +306,7 @@ export type StorageStats = {
   calibrationCaptureSessionCount: number;
   calibrationSignalObservationCount: number;
   paperStrategyEvaluationCount: number;
+  paperExitPolicyEvaluationCount: number;
   pumpPortalWalletStatusSnapshotCount: number;
   riskSnapshotCount: number;
   candidateDecisionCount: number;
@@ -337,6 +339,10 @@ export type CalibrationCaptureObservationCounts = {
 };
 
 export type StoredPaperStrategyEvaluation = PaperStrategyEvaluationReport & {
+  id: number;
+};
+
+export type StoredPaperExitPolicyEvaluation = PaperExitPolicyEvaluation & {
   id: number;
 };
 
@@ -1577,6 +1583,18 @@ type PaperStrategyEvaluationRow = {
   created_at: string;
 };
 
+type PaperExitPolicyEvaluationRow = {
+  id: number;
+  evaluation_id: string;
+  policy_version: string;
+  mint: string;
+  status: PaperExitPolicyEvaluation["evaluationStatus"];
+  selected_rule_id: string | null;
+  payload_json: string;
+  evaluated_at: string;
+  created_at: string;
+};
+
 type OperatorActionRow = {
   id: number;
   action_id: string;
@@ -1739,6 +1757,7 @@ const paperPortfolioOrderInputSchema = z.object({
     "watched_wallet_exit",
     "take_profit",
     "stop_loss",
+    "paper_exit_policy",
     "manual_paper",
     "replay"
   ]),
@@ -2403,6 +2422,56 @@ const paperStrategyEvaluationSchema = z
     paperOnly: z.literal(true),
     dataOnly: z.literal(true),
     tradingDisabled: z.literal(true),
+    liveExecutionDisabled: z.literal(true),
+    reasonCodes: z.array(z.string().min(1))
+  })
+  .passthrough();
+
+const paperExitPolicyEvaluationSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    policyVersion: z.literal("paper-exit-policy-v1"),
+    evaluationId: z.string().min(1),
+    evaluatedAt: z.string().datetime(),
+    mint: z.string().min(1),
+    policyStatus: z.literal("reference_only"),
+    evaluationStatus: z.enum(["invalid_input", "hold", "paper_exit_candidate"]),
+    precedencePolicy: z.literal("first_eligible_rule_by_ascending_priority"),
+    config: z.object({ schemaVersion: z.literal(1) }).passthrough(),
+    position: z.object({ mint: z.string().min(1) }).passthrough(),
+    market: z.object({ hardReject: z.boolean() }).passthrough(),
+    positionAgeMs: z.number().nonnegative(),
+    trailingDrawdownPct: z.number().nonnegative(),
+    volumeRateRatio5sTo30s: z.number().nullable(),
+    ruleEvaluations: z.array(
+      z.object({
+        ruleId: z.string().min(1),
+        trigger: z.string().min(1),
+        priority: z.number(),
+        enabled: z.boolean(),
+        matched: z.boolean(),
+        eligible: z.boolean(),
+        sellPct: z.number().min(1).max(100),
+        actual: z.union([z.number(), z.string(), z.boolean()]).nullable(),
+        required: z.string().min(1),
+        blockers: z.array(z.string()),
+        reasonCodes: z.array(z.string())
+      })
+    ),
+    selectedAction: z
+      .object({
+        ruleId: z.string().min(1),
+        trigger: z.string().min(1),
+        priority: z.number(),
+        sellPct: z.number().min(1).max(100),
+        reason: z.string().min(1),
+        reasonCodes: z.array(z.string().min(1))
+      })
+      .nullable(),
+    automaticPaperExitActivation: z.literal(false),
+    automaticLiveExecution: z.literal(false),
+    calibrated: z.literal(false),
+    paperOnly: z.literal(true),
     liveExecutionDisabled: z.literal(true),
     reasonCodes: z.array(z.string().min(1))
   })
@@ -5083,7 +5152,9 @@ export function saveCalibrationCaptureSession(
   const stored = getCalibrationCaptureSession(parsed.sessionId);
 
   if (!stored) {
-    throw new Error(`Calibration capture session ${parsed.sessionId} was not persisted.`);
+    throw new Error(
+      `Calibration capture session ${parsed.sessionId} was not persisted.`
+    );
   }
 
   return stored;
@@ -5177,8 +5248,7 @@ export function saveCapturedSignalObservation(
       existing.outcomeAt !== parsed.outcomeAt ||
       existing.outcomePriceSol !== parsed.outcomePriceSol ||
       existing.forwardReturnPct !== parsed.forwardReturnPct ||
-      existing.maxFavorableExcursionPct !==
-        parsed.maxFavorableExcursionPct ||
+      existing.maxFavorableExcursionPct !== parsed.maxFavorableExcursionPct ||
       existing.maxAdverseExcursionPct !== parsed.maxAdverseExcursionPct ||
       existing.targetReached !== parsed.targetReached ||
       JSON.stringify(existing.reasonCodes) !==
@@ -5234,7 +5304,9 @@ export function saveCapturedSignalObservation(
   const stored = getCapturedSignalObservation(parsed.observationId);
 
   if (!stored) {
-    throw new Error(`Captured observation ${parsed.observationId} was not persisted.`);
+    throw new Error(
+      `Captured observation ${parsed.observationId} was not persisted.`
+    );
   }
 
   return stored;
@@ -5264,8 +5336,7 @@ export function getLatestCapturedSignalObservationByMint(
        order by datetime(signal_at) desc, id desc
        limit 1`
     )
-    .get(captureSessionId, mint) as
-    CalibrationSignalObservationRow | undefined;
+    .get(captureSessionId, mint) as CalibrationSignalObservationRow | undefined;
 
   return row ? mapCalibrationSignalObservationRow(row) : null;
 }
@@ -5305,7 +5376,9 @@ export function listCapturedSignalObservationsBySession(
     status?: CapturedObservationStatus | undefined;
   } = {}
 ): StoredCapturedSignalObservation[] {
-  const limit = calibrationObservationLimitSchema.parse(options.limit ?? 10_000);
+  const limit = calibrationObservationLimitSchema.parse(
+    options.limit ?? 10_000
+  );
   const rows = options.status
     ? (getDb()
         .prepare(
@@ -5315,8 +5388,11 @@ export function listCapturedSignalObservationsBySession(
            order by datetime(signal_at) asc, mint asc, id asc
            limit ?`
         )
-        .all(captureSessionId, options.status, limit) as
-        CalibrationSignalObservationRow[])
+        .all(
+          captureSessionId,
+          options.status,
+          limit
+        ) as CalibrationSignalObservationRow[])
     : (getDb()
         .prepare(
           `select *
@@ -5409,6 +5485,105 @@ export function listPaperStrategyEvaluations(
     .all(parsedLimit) as PaperStrategyEvaluationRow[];
 
   return rows.map(mapPaperStrategyEvaluationRow);
+}
+
+export function savePaperExitPolicyEvaluation(
+  evaluation: PaperExitPolicyEvaluation
+): StoredPaperExitPolicyEvaluation {
+  const parsed = parsePaperExitPolicyEvaluation(evaluation);
+  const existing = getPaperExitPolicyEvaluation(parsed.evaluationId);
+
+  if (existing) {
+    const { id: _id, ...existingEvaluation } = existing;
+    void _id;
+
+    if (stringifyJson(existingEvaluation) !== stringifyJson(parsed)) {
+      throw new Error(
+        `Paper exit policy evaluation ${parsed.evaluationId} is immutable and already exists with different data.`
+      );
+    }
+
+    return existing;
+  }
+
+  getDb()
+    .prepare(
+      `insert into paper_exit_policy_evaluations (
+        evaluation_id,
+        policy_version,
+        mint,
+        status,
+        selected_rule_id,
+        payload_json,
+        evaluated_at,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.evaluationId,
+      parsed.policyVersion,
+      parsed.mint,
+      parsed.evaluationStatus,
+      parsed.selectedAction?.ruleId ?? null,
+      stringifyJson(parsed),
+      parsed.evaluatedAt,
+      parsed.evaluatedAt
+    );
+
+  const stored = getPaperExitPolicyEvaluation(parsed.evaluationId);
+
+  if (!stored) {
+    throw new Error(
+      `Paper exit policy evaluation ${parsed.evaluationId} was not persisted.`
+    );
+  }
+
+  return stored;
+}
+
+export function getPaperExitPolicyEvaluation(
+  evaluationId: string
+): StoredPaperExitPolicyEvaluation | null {
+  const row = getDb()
+    .prepare(
+      "select * from paper_exit_policy_evaluations where evaluation_id = ?"
+    )
+    .get(evaluationId) as PaperExitPolicyEvaluationRow | undefined;
+
+  return row ? mapPaperExitPolicyEvaluationRow(row) : null;
+}
+
+export function listPaperExitPolicyEvaluations(
+  limit = 50
+): StoredPaperExitPolicyEvaluation[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select * from paper_exit_policy_evaluations
+       order by datetime(evaluated_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as PaperExitPolicyEvaluationRow[];
+
+  return rows.map(mapPaperExitPolicyEvaluationRow);
+}
+
+export function listPaperExitPolicyEvaluationsByMint(
+  mint: string,
+  limit = 50
+): StoredPaperExitPolicyEvaluation[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select * from paper_exit_policy_evaluations
+       where mint = ?
+       order by datetime(evaluated_at) desc, id desc
+       limit ?`
+    )
+    .all(mint, parsedLimit) as PaperExitPolicyEvaluationRow[];
+
+  return rows.map(mapPaperExitPolicyEvaluationRow);
 }
 
 export function saveOperatorAction(
@@ -6706,6 +6881,10 @@ export function getStorageStats(): StorageStats {
       "calibration_signal_observations"
     ),
     paperStrategyEvaluationCount: countRows(db, "paper_strategy_evaluations"),
+    paperExitPolicyEvaluationCount: countRows(
+      db,
+      "paper_exit_policy_evaluations"
+    ),
     pumpPortalWalletStatusSnapshotCount: countRows(
       db,
       "pumpportal_wallet_status_snapshots"
@@ -7847,6 +8026,33 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(19, "paper_strategy_evaluation", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 20)) {
+    db.exec(`
+      create table if not exists paper_exit_policy_evaluations (
+        id integer primary key autoincrement,
+        evaluation_id text not null unique,
+        policy_version text not null,
+        mint text not null,
+        status text not null,
+        selected_rule_id text,
+        payload_json text not null,
+        evaluated_at text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_paper_exit_policy_evaluations_mint
+        on paper_exit_policy_evaluations(mint, evaluated_at);
+
+      create index if not exists idx_paper_exit_policy_evaluations_status
+        on paper_exit_policy_evaluations(status, evaluated_at);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(20, "paper_exit_policy_evaluation", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -8708,6 +8914,23 @@ function mapPaperStrategyEvaluationRow(
 ): StoredPaperStrategyEvaluation {
   return {
     ...parsePaperStrategyEvaluation(JSON.parse(row.payload_json)),
+    id: row.id
+  };
+}
+
+function parsePaperExitPolicyEvaluation(
+  value: unknown
+): PaperExitPolicyEvaluation {
+  return paperExitPolicyEvaluationSchema.parse(
+    value
+  ) as unknown as PaperExitPolicyEvaluation;
+}
+
+function mapPaperExitPolicyEvaluationRow(
+  row: PaperExitPolicyEvaluationRow
+): StoredPaperExitPolicyEvaluation {
+  return {
+    ...parsePaperExitPolicyEvaluation(JSON.parse(row.payload_json)),
     id: row.id
   };
 }

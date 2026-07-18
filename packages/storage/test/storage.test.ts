@@ -21,6 +21,7 @@ import {
   stopCalibrationCaptureSession
 } from "@axi/session-capture";
 import { evaluatePaperStrategy } from "@axi/paper-strategy-evaluation";
+import { evaluatePaperExitPolicy } from "@axi/exit-strategy";
 import { normalizePumpPortalIdentity } from "@axi/token-identity";
 import {
   closeStorage,
@@ -39,6 +40,7 @@ import {
   getCapturedSignalObservation,
   getLatestCapturedSignalObservationByMint,
   getPaperStrategyEvaluation,
+  getPaperExitPolicyEvaluation,
   getLatestCandidateDecision,
   getLatestMarketObservation,
   getMarketObservation,
@@ -59,6 +61,8 @@ import {
   listCalibrationCaptureSessions,
   listCapturedSignalObservationsBySession,
   listPaperStrategyEvaluations,
+  listPaperExitPolicyEvaluations,
+  listPaperExitPolicyEvaluationsByMint,
   listLaunchTradeSamplesByMint,
   listMeteredLaunchDataEvents,
   listMeteredLaunchDataEventsByMint,
@@ -123,6 +127,7 @@ import {
   saveCalibrationCaptureSession,
   saveCapturedSignalObservation,
   savePaperStrategyEvaluation,
+  savePaperExitPolicyEvaluation,
   saveCapacitySnapshot,
   saveChainVerification,
   saveChainTradeEvent,
@@ -203,6 +208,7 @@ describe("@axi/storage", () => {
     expect(stats.calibrationCaptureSessionCount).toBe(0);
     expect(stats.calibrationSignalObservationCount).toBe(0);
     expect(stats.paperStrategyEvaluationCount).toBe(0);
+    expect(stats.paperExitPolicyEvaluationCount).toBe(0);
     expect(stats.pumpPortalWalletStatusSnapshotCount).toBe(0);
     expect(stats.meteredLaunchDataSessionCount).toBe(0);
     expect(stats.meteredLaunchDataSubscriptionCount).toBe(0);
@@ -360,11 +366,13 @@ describe("@axi/storage", () => {
       getActiveCalibrationCaptureSessionForRuntime(session.runtimeSessionId)
     ).toMatchObject({ sessionId: session.sessionId });
     expect(listCalibrationCaptureSessions()).toHaveLength(1);
-    expect(getCapturedSignalObservation(completed.observationId)).toMatchObject({
-      status: "complete",
-      outcomePriceSol: 125,
-      forwardReturnPct: 25
-    });
+    expect(getCapturedSignalObservation(completed.observationId)).toMatchObject(
+      {
+        status: "complete",
+        outcomePriceSol: 125,
+        forwardReturnPct: 25
+      }
+    );
     expect(
       getLatestCapturedSignalObservationByMint(session.sessionId, mint)
     ).toMatchObject({ observationId: completed.observationId });
@@ -417,10 +425,12 @@ describe("@axi/storage", () => {
 
     closeStorage();
     initStorageReadOnly({ databasePath });
-    expect(getCapturedSignalObservation(completed.observationId)).toMatchObject({
-      status: "complete",
-      targetReached: false
-    });
+    expect(getCapturedSignalObservation(completed.observationId)).toMatchObject(
+      {
+        status: "complete",
+        targetReached: false
+      }
+    );
     expect(() =>
       saveCalibrationCaptureSession({
         ...session,
@@ -464,6 +474,74 @@ describe("@axi/storage", () => {
       evaluationVersion: "paper-strategy-evaluation-v1",
       tradingDisabled: true
     });
+  });
+
+  it("persists immutable paper exit policy evaluations", () => {
+    initStorage({ databasePath });
+    const evaluation = evaluatePaperExitPolicy({
+      evaluationId: "paper-exit-storage-test",
+      evaluatedAt: "2026-01-01T00:01:00.000Z",
+      position: {
+        mint,
+        status: "open",
+        openedAt: "2026-01-01T00:00:00.000Z",
+        entryPriceSol: 1,
+        currentPriceSol: 1.6,
+        peakPriceSol: 1.6,
+        unrealizedPnlPct: 60,
+        peakUnrealizedPnlPct: 60,
+        remainingSizeSol: 0.005,
+        remainingTokenAmount: 0.005,
+        completedRuleIds: []
+      },
+      market: {
+        launchScore: 80,
+        launchPhase: "ripping",
+        priceVelocityPctPerSec: 1,
+        priceAccelerationPctPerSec2: 0.1,
+        volume5sSol: 5,
+        volume30sSol: 20,
+        volumeAccelerationSolPerSec2: 0.1,
+        buyerAccelerationPerSec2: 0.1,
+        netBuyPressure: 0.5,
+        liquidityVelocitySolPerSec: null,
+        estimatedSellSlippagePct: null,
+        riskLevel: "low",
+        hardReject: false,
+        migrationDetected: false,
+        watchedWalletSignal: null,
+        reasonCodes: []
+      }
+    });
+
+    savePaperExitPolicyEvaluation(evaluation);
+    savePaperExitPolicyEvaluation(evaluation);
+
+    expect(getPaperExitPolicyEvaluation(evaluation.evaluationId)).toMatchObject(
+      {
+        evaluationStatus: "paper_exit_candidate",
+        selectedAction: { ruleId: "take-profit-stage-2" },
+        automaticLiveExecution: false
+      }
+    );
+    expect(listPaperExitPolicyEvaluations()).toHaveLength(1);
+    expect(listPaperExitPolicyEvaluationsByMint(mint)).toHaveLength(1);
+    expect(getStorageStats().paperExitPolicyEvaluationCount).toBe(1);
+    expect(() =>
+      savePaperExitPolicyEvaluation({
+        ...evaluation,
+        evaluatedAt: "2026-01-01T00:01:01.000Z"
+      })
+    ).toThrow("immutable");
+
+    closeStorage();
+    initStorageReadOnly({ databasePath });
+    expect(getPaperExitPolicyEvaluation(evaluation.evaluationId)).toMatchObject(
+      {
+        policyVersion: "paper-exit-policy-v1",
+        liveExecutionDisabled: true
+      }
+    );
   });
 
   it("persists idempotent sanitized capacity snapshots", () => {

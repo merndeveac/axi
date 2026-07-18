@@ -3,6 +3,7 @@ import { getDerivativeStrengthRuntimeContract } from "@axi/derivative-strength";
 import { getSignalCalibrationRuntimeContract } from "@axi/signal-calibration";
 import { getSessionCaptureRuntimeContract } from "@axi/session-capture";
 import { getPaperStrategyEvaluationRuntimeContract } from "@axi/paper-strategy-evaluation";
+import { getPaperExitPolicyRuntimeContract } from "@axi/exit-strategy";
 import type { ActualDataService } from "./actual-data-service";
 import type { MeteredLaunchDataService } from "./metered-launch-data-service";
 
@@ -56,7 +57,7 @@ export function createRuntimeContract(input: {
   );
 
   return {
-    version: 8,
+    version: 9,
     runtimeSessionId: input.runtimeSessionId,
     safety: {
       paperOnly: true,
@@ -79,6 +80,7 @@ export function createRuntimeContract(input: {
       signalCalibration: "@axi/signal-calibration",
       calibrationSessionCapture: "@axi/session-capture",
       paperStrategyEvaluation: "@axi/paper-strategy-evaluation",
+      paperExitPolicy: "@axi/exit-strategy",
       capacityModel: "@axi/capacity-model",
       trackingScheduler: "@axi/tracking-scheduler",
       paperPortfolio: "@axi/paper-portfolio",
@@ -124,6 +126,7 @@ export function createRuntimeContract(input: {
     signalCalibration: getSignalCalibrationRuntimeContract(),
     sessionCapture: getSessionCaptureRuntimeContract(),
     paperStrategyEvaluation: getPaperStrategyEvaluationRuntimeContract(),
+    paperExitPolicy: getPaperExitPolicyRuntimeContract(),
     roadmap: {
       coverageCapacityInstrumentation: "implemented",
       rollingNewestTokenScheduler: "implemented",
@@ -133,6 +136,7 @@ export function createRuntimeContract(input: {
       signalCalibrationFramework: "implemented",
       calibrationSessionCapture: "implemented",
       paperStrategyEvaluation: "implemented",
+      paperExitPolicy: "implemented",
       schedulerMutationApplied:
         meteredStatus.scheduler.trackingMutationCount > 0
     },

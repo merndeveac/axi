@@ -12,6 +12,7 @@
     { "path": "../shared" },
     { "path": "../chain-events" },
     { "path": "../data-feeds" },
+    { "path": "../exit-strategy" },
     { "path": "../market-data" },
     { "path": "../paper-portfolio" },
     { "path": "../paper-strategy-evaluation" },

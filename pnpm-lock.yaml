@@ -391,6 +391,9 @@ importers:
       '@axi/data-feeds':
         specifier: workspace:*
         version: link:../data-feeds
+      '@axi/exit-strategy':
+        specifier: workspace:*
+        version: link:../exit-strategy
       '@axi/market-data':
         specifier: workspace:*
         version: link:../market-data
