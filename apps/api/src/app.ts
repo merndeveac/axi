@@ -182,6 +182,12 @@ import {
   type PaperAutomationService
 } from "./paper-automation-service";
 import type { PaperAutomationForwardConfigInput } from "@axi/paper-automation";
+import {
+  createPaperOperationsService,
+  PaperOperationsServiceError,
+  type PaperOperationsService
+} from "./paper-operations-service";
+import type { PaperOperationsConfigInput } from "@axi/paper-operations";
 import { runPaperBacktest } from "./paper-backtest-lib";
 import {
   createLiveTokenService,
@@ -1389,6 +1395,7 @@ export type ApiServer = {
   watchedWalletExit: WatchedWalletExitService;
   paperPortfolio: PaperPortfolioService;
   paperAutomation: PaperAutomationService;
+  paperOperations: PaperOperationsService;
   indexerAdapter: IndexerAdapter;
   liveTokens: LiveTokenService;
   tokenIdentity: TokenIdentityService;
@@ -1793,6 +1800,35 @@ const paperAutomationControlBodySchema = z.object({
 const paperAutomationPauseBodySchema = z.object({
   reason: z.string().trim().min(1).max(160).optional()
 });
+const paperOperationsSessionParamSchema = z.object({
+  sessionId: z.string().min(1).max(360)
+});
+const paperOperationsStartBodySchema = z.object({
+  deploymentId: z.string().trim().min(1).max(300),
+  startedBy: z.string().trim().min(1).max(120),
+  confirmation: z.string().min(1).max(600),
+  config: z
+    .object({
+      maximumSessionCostSol: z.number().positive().max(0.001).optional(),
+      budgetWarningRatio: z.number().min(0.01).max(0.8).optional(),
+      maximumFeedSilenceMs: z.number().int().min(1_000).max(15_000).optional(),
+      maximumTelemetryGapMs: z.number().int().min(1_000).max(30_000).optional(),
+      maximumSignalLatencyMs: z.number().int().min(1).max(5_000).optional(),
+      maximumSessionDurationMs: z
+        .number()
+        .int()
+        .min(60_000)
+        .max(86_400_000)
+        .optional()
+    })
+    .strict()
+    .optional()
+});
+const paperOperationsEndBodySchema = z.object({
+  sessionId: z.string().trim().min(1).max(360),
+  confirmation: z.string().min(1).max(600),
+  reason: z.string().trim().min(1).max(240).optional()
+});
 const paperExitPolicyEvaluationParamSchema = z.object({
   evaluationId: z.string().min(1).max(240)
 });
@@ -2049,6 +2085,22 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     getRecentSignals: () => Array.from(signals.values())
   });
   const paperAutomation = createPaperAutomationService({ paperPortfolio });
+  const paperOperations = createPaperOperationsService({
+    runtimeSessionId,
+    paperAutomation,
+    meteredLaunchData,
+    getFeedStatus,
+    getTimeseriesStatus: () => indexerAdapter.getTimeseriesStatus(),
+    getTimeseriesGapCount: () =>
+      meteredLaunchData
+        .getTrackedMints()
+        .reduce(
+          (total, mint) =>
+            total + indexerAdapter.getTimeseries(mint).gapBucketCount,
+          0
+        )
+  });
+  paperOperations.start();
   hasOpenPaperPositionForMint = (mint: string): boolean =>
     paperPortfolio.getPositionSummaryForMint(mint).hasPosition;
   const watchedWalletExit = createWatchedWalletExitService({
@@ -2174,6 +2226,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const liveStatus = liveTokens.getStatus();
     const paperPortfolioStatus = paperPortfolio.getStatus();
     const paperAutomationStatus = paperAutomation.getStatus();
+    const paperOperationsStatus = paperOperations.getStatus();
     const dataWalletStatus = await pumpPortalDataWallet.refreshBalance();
     const pumpPortalWalletsStatus = await pumpPortalWallets.refreshBalances();
     const meteredLaunchDataStatus = meteredLaunchData.getStatus();
@@ -2242,9 +2295,13 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         watchedWalletExit.getStatus().accountTradeMonitoringEnabled,
       paperPortfolio: paperPortfolioStatus,
       paperAutomation: paperAutomationStatus,
+      paperOperations: paperOperationsStatus,
       paperAutomationDeploymentCount: stats.paperAutomationDeploymentCount,
       paperAutomationEventCount: stats.paperAutomationEventCount,
       paperAutomationOperationCount: stats.paperAutomationOperationCount,
+      paperOperationsSessionCount: stats.paperOperationsSessionCount,
+      paperOperationsSnapshotCount: stats.paperOperationsSnapshotCount,
+      paperOperationsAlertCount: stats.paperOperationsAlertCount,
       paperPortfolioEnabled: paperPortfolioStatus.enabled,
       paperEntryEnabled: paperPortfolioStatus.entryPolicyEnabled,
       paperExitEnabled: paperPortfolioStatus.exitPolicyEnabled,
@@ -2839,6 +2896,94 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       );
     }
   );
+
+  app.get("/runtime/paper-operations", async () => paperOperations.getStatus());
+
+  app.get("/runtime/paper-operations/sessions", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return {
+      sessions: paperOperations.getSessions(query.limit),
+      paperOnly: true,
+      dataOnly: true,
+      tradingDisabled: true,
+      liveExecutionDisabled: true
+    };
+  });
+
+  app.get(
+    "/runtime/paper-operations/sessions/:sessionId/snapshots",
+    async (request) => {
+      const params = paperOperationsSessionParamSchema.parse(request.params);
+      const query = limitQuerySchema.parse(request.query);
+      return {
+        snapshots: paperOperations.getSnapshots(params.sessionId, query.limit),
+        paperOnly: true,
+        liveExecutionDisabled: true
+      };
+    }
+  );
+
+  app.get(
+    "/runtime/paper-operations/sessions/:sessionId/alerts",
+    async (request) => {
+      const params = paperOperationsSessionParamSchema.parse(request.params);
+      const query = limitQuerySchema.parse(request.query);
+      return {
+        alerts: paperOperations.getAlerts(params.sessionId, query.limit),
+        paperOnly: true,
+        liveExecutionDisabled: true
+      };
+    }
+  );
+
+  app.get(
+    "/runtime/paper-operations/sessions/:sessionId/report",
+    async (request, reply) => {
+      const params = paperOperationsSessionParamSchema.parse(request.params);
+      try {
+        return paperOperations.buildEvidenceReport(params.sessionId);
+      } catch (error) {
+        return sendPaperOperationsError(reply, error);
+      }
+    }
+  );
+
+  app.post("/runtime/paper-operations/start", async (request, reply) => {
+    const body = paperOperationsStartBodySchema.parse(request.body);
+    try {
+      return paperOperations.startSession({
+        deploymentId: body.deploymentId,
+        startedBy: body.startedBy,
+        confirmation: body.confirmation,
+        ...(body.config
+          ? { config: body.config as PaperOperationsConfigInput }
+          : {})
+      });
+    } catch (error) {
+      return sendPaperOperationsError(reply, error);
+    }
+  });
+
+  app.post("/runtime/paper-operations/end", async (request, reply) => {
+    const body = paperOperationsEndBodySchema.parse(request.body);
+    try {
+      return paperOperations.endSession({
+        sessionId: body.sessionId,
+        confirmation: body.confirmation,
+        ...(body.reason ? { reason: body.reason } : {})
+      });
+    } catch (error) {
+      return sendPaperOperationsError(reply, error);
+    }
+  });
+
+  app.post("/runtime/paper-operations/sample", async (_request, reply) => {
+    try {
+      return paperOperations.sampleNow();
+    } catch (error) {
+      return sendPaperOperationsError(reply, error);
+    }
+  });
 
   app.post("/runtime/capacity/snapshot", async () => {
     const report = getRuntimeCapacityReport();
@@ -4289,6 +4434,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   app.addHook("onClose", async () => {
     await chainEvents.stop();
     await stopFeed();
+    paperOperations.stop("server shutdown");
     calibrationCapture.interrupt("runtime_closed");
     paperAutomation.stop();
     paidDataArmed = false;
@@ -4319,6 +4465,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     meteredLaunchData.prepare();
     paperPortfolio.start();
     paperAutomation.start();
+    paperOperations.start();
     watchedWalletExit.start();
     void feed.start(handleFeedEvent);
     void chainEvents.start();
@@ -4330,6 +4477,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     }
 
     feedStarted = false;
+    paperOperations.stop("runtime feed stopped");
     meteredLaunchData.stop();
     disarmPaidData("feed_stop");
     launchScanner.stop();
@@ -6757,6 +6905,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     });
     const storedSignal = saveSignal(signal);
     cacheSignal(signal);
+    paperOperations.observeSignal(signal);
     paperAutomation.observeSignal(signal);
     paperPortfolio.evaluateEntrySignal(signal);
     paperPortfolio.evaluateExits();
@@ -6929,6 +7078,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     });
     saveSignal(signal);
     cacheSignal(signal);
+    paperOperations.observeSignal(signal);
     paperAutomation.observeSignal(signal);
     paperPortfolio.evaluateEntrySignal(signal);
     paperPortfolio.evaluateExits();
@@ -7274,6 +7424,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     paperStrategyEvaluation,
     paperLifecycleValidation,
     paperAutomation,
+    paperOperations,
     meteredLaunchData,
     metrics: metricsEngine,
     pumpPortalDataWallet,
@@ -7613,6 +7764,25 @@ function sendPaperAutomationError(reply: FastifyReply, error: unknown) {
       reasonCodes: error.reasonCodes,
       automaticLiveExecution: false,
       paperOnly: true,
+      tradingDisabled: true,
+      liveExecutionDisabled: true
+    });
+  }
+
+  throw error;
+}
+
+function sendPaperOperationsError(reply: FastifyReply, error: unknown) {
+  if (error instanceof PaperOperationsServiceError) {
+    return reply.code(error.statusCode).send({
+      error: error.code,
+      message: error.message,
+      reasonCodes: error.reasonCodes,
+      automaticMeteredStart: false,
+      automaticPaperArm: false,
+      automaticLiveExecution: false,
+      paperOnly: true,
+      dataOnly: true,
       tradingDisabled: true,
       liveExecutionDisabled: true
     });

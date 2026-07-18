@@ -189,6 +189,51 @@ status CLI never starts a feed or modifies SQLite:
 pnpm paper:automation:status -- --from-db .data/axi.sqlite
 ```
 
+## Forward Paper Operations And Evidence
+
+`@axi/paper-operations` owns explicit, versioned forward-validation sessions
+around an approved paper-automation deployment. Starting a forward session does
+not start PumpPortal metered tracking and does not arm paper automation. Those
+remain separate local operator actions with their existing acknowledgement and
+confirmation gates. Only one forward session can be active, its configuration
+pins a conservative cost ceiling and health thresholds, and an active session
+is marked `interrupted` after a process restart instead of being resumed.
+
+While a session is active, the API records immutable runtime and signal-latency
+snapshots. Evidence includes feed connection/silence, telemetry gaps, tracked
+mints, event counts, estimated SOL cost, paper-automation state and health,
+pending operations, forward PnL/drawdown, canonical time-series quality, and
+storage counters. Warnings and critical alerts are append-only. A provider or
+session budget breach stops metered tracking and pauses armed paper automation;
+feed, telemetry, automation-health, storage, and duration failures pause paper
+automation fail-closed. No check can enable a feed, arm automation, or execute a
+live trade.
+
+Local operations endpoints:
+
+- `GET /runtime/paper-operations`
+- `GET /runtime/paper-operations/sessions`
+- `GET /runtime/paper-operations/sessions/:sessionId/snapshots`
+- `GET /runtime/paper-operations/sessions/:sessionId/alerts`
+- `GET /runtime/paper-operations/sessions/:sessionId/report`
+- `POST /runtime/paper-operations/start`
+- `POST /runtime/paper-operations/end`
+- `POST /runtime/paper-operations/sample`
+
+Starting requires `START PAPER FORWARD SESSION <deployment-id>` and ending
+requires `END PAPER FORWARD SESSION <session-id>`. Completed or interrupted
+sessions can be exported read-only as JSON, JSONL, or CSV. The CLI never opens
+a network connection or writes SQLite:
+
+```bash
+pnpm paper:forward:export -- --list --from-db .data/axi.sqlite
+pnpm paper:forward:export -- --session <session-id> --format jsonl --from-db .data/axi.sqlite
+```
+
+The complete operator workflow, alert response, restart drill, backup guidance,
+and evidence checklist are in
+[`docs/paper-forward-operations.md`](docs/paper-forward-operations.md).
+
 Launch trade tracking uses PumpPortal `subscribeTokenTrade` only for selected
 mints, through the existing one-WebSocket PumpPortal provider and the metered
 actual-data gates. It never uses account-trade streams, trading APIs, wallet

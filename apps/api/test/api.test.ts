@@ -1562,6 +1562,7 @@ describe("@axi/api", () => {
         paperStrategyEvaluation: string;
         paperLifecycleValidation: string;
         paperAutomationForwardValidation: string;
+        paperForwardOperationsObservability: string;
         paperExitPolicy: string;
         derivativeCorrectness: string;
         derivativeStrengthNormalization: string;
@@ -1657,6 +1658,17 @@ describe("@axi/api", () => {
         automaticLiveExecution: boolean;
         liveExecutionDisabled: boolean;
       };
+      paperOperations: {
+        implementationStatus: string;
+        activationMode: string;
+        restartPolicy: string;
+        meteredStartPolicy: string;
+        budgetEnforcement: string;
+        automaticMeteredStart: boolean;
+        automaticPaperArm: boolean;
+        automaticLiveExecution: boolean;
+        liveExecutionDisabled: boolean;
+      };
     };
 
     expect(response.statusCode).toBe(200);
@@ -1669,6 +1681,7 @@ describe("@axi/api", () => {
       paperStrategyEvaluation: "@axi/paper-strategy-evaluation",
       paperLifecycleValidation: "@axi/paper-lifecycle-validation",
       paperAutomation: "@axi/paper-automation",
+      paperOperations: "@axi/paper-operations",
       paperExitPolicy: "@axi/exit-strategy",
       canonicalTimeseries: "@axi/timeseries",
       subscriptionTransport: "ActualDataService",
@@ -1696,6 +1709,9 @@ describe("@axi/api", () => {
     expect(body.roadmap.paperStrategyEvaluation).toBe("implemented");
     expect(body.roadmap.paperLifecycleValidation).toBe("implemented");
     expect(body.roadmap.paperAutomationForwardValidation).toBe("implemented");
+    expect(body.roadmap.paperForwardOperationsObservability).toBe(
+      "implemented"
+    );
     expect(body.roadmap.paperExitPolicy).toBe("implemented");
     expect(body.roadmap.rollingNewestTokenScheduler).toBe("implemented");
     expect(body.roadmap.schedulerMutationApplied).toBe(false);
@@ -1771,6 +1787,17 @@ describe("@axi/api", () => {
       restartPolicy: "fail_closed_rearm_required",
       forwardValidation: true,
       driftKillSwitch: true,
+      automaticLiveExecution: false,
+      liveExecutionDisabled: true
+    });
+    expect(body.paperOperations).toMatchObject({
+      implementationStatus: "implemented",
+      activationMode: "explicit_local_operator_session",
+      restartPolicy: "active_session_interrupted_fail_closed",
+      meteredStartPolicy: "manual_only",
+      budgetEnforcement: "stop_metered_and_pause_paper_automation",
+      automaticMeteredStart: false,
+      automaticPaperArm: false,
       automaticLiveExecution: false,
       liveExecutionDisabled: true
     });
@@ -1864,6 +1891,53 @@ describe("@axi/api", () => {
         liveExecutionDisabled: true
       }
     });
+  });
+
+  it("paper forward operations are inactive, local-only, and never auto-start paid data", async () => {
+    server = createTestServer();
+
+    const statusResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/paper-operations"
+    });
+    expect(statusResponse.statusCode).toBe(200);
+    expect(statusResponse.json()).toMatchObject({
+      started: true,
+      session: null,
+      active: false,
+      automaticMeteredStart: false,
+      automaticPaperArm: false,
+      automaticLiveExecution: false,
+      paperOnly: true,
+      dataOnly: true,
+      tradingDisabled: true,
+      liveExecutionDisabled: true,
+      contract: {
+        implementationStatus: "implemented",
+        meteredStartPolicy: "manual_only",
+        budgetEnforcement: "stop_metered_and_pause_paper_automation"
+      }
+    });
+    expect(server.meteredLaunchData.getStatus().active).toBe(false);
+
+    const startResponse = await server.app.inject({
+      method: "POST",
+      url: "/runtime/paper-operations/start",
+      headers: { origin: "http://127.0.0.1:5173" },
+      payload: {
+        deploymentId: "missing-deployment",
+        startedBy: "test-operator",
+        confirmation: "START PAPER FORWARD SESSION missing-deployment"
+      }
+    });
+    expect(startResponse.statusCode).toBe(404);
+    expect(startResponse.json()).toMatchObject({
+      error: "PAPER_OPERATIONS_DEPLOYMENT_NOT_FOUND",
+      automaticMeteredStart: false,
+      automaticLiveExecution: false,
+      liveExecutionDisabled: true
+    });
+    expect(server.meteredLaunchData.getStatus().active).toBe(false);
   });
 
   it("runs a manual calibration capture session and exports its manifest", async () => {

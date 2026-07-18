@@ -104,6 +104,9 @@ importers:
       '@axi/paper-lifecycle-validation':
         specifier: workspace:*
         version: link:../../packages/paper-lifecycle-validation
+      '@axi/paper-operations':
+        specifier: workspace:*
+        version: link:../../packages/paper-operations
       '@axi/paper-portfolio':
         specifier: workspace:*
         version: link:../../packages/paper-portfolio
@@ -344,6 +347,8 @@ importers:
         specifier: workspace:*
         version: link:../paper-portfolio
 
+  packages/paper-operations: {}
+
   packages/paper-portfolio: {}
 
   packages/paper-strategy-evaluation:
@@ -424,6 +429,9 @@ importers:
       '@axi/paper-lifecycle-validation':
         specifier: workspace:*
         version: link:../paper-lifecycle-validation
+      '@axi/paper-operations':
+        specifier: workspace:*
+        version: link:../paper-operations
       '@axi/paper-portfolio':
         specifier: workspace:*
         version: link:../paper-portfolio

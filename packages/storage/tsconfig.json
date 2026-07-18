@@ -16,6 +16,7 @@
     { "path": "../market-data" },
     { "path": "../paper-lifecycle-validation" },
     { "path": "../paper-automation" },
+    { "path": "../paper-operations" },
     { "path": "../paper-portfolio" },
     { "path": "../paper-strategy-evaluation" },
     { "path": "../session-capture" },

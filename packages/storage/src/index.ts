@@ -25,6 +25,14 @@ import type {
   PaperAutomationOperationStatus
 } from "@axi/paper-automation";
 import type {
+  PaperOperationsAlert,
+  PaperOperationsAlertSeverity,
+  PaperOperationsSession,
+  PaperOperationsSessionStatus,
+  PaperOperationsSnapshot,
+  PaperOperationsSnapshotKind
+} from "@axi/paper-operations";
+import type {
   CandidateWatchPlan,
   WatchTarget,
   WatchTargetKind
@@ -323,6 +331,9 @@ export type StorageStats = {
   paperAutomationDeploymentCount: number;
   paperAutomationEventCount: number;
   paperAutomationOperationCount: number;
+  paperOperationsSessionCount: number;
+  paperOperationsSnapshotCount: number;
+  paperOperationsAlertCount: number;
   paperExitPolicyEvaluationCount: number;
   pumpPortalWalletStatusSnapshotCount: number;
   riskSnapshotCount: number;
@@ -372,6 +383,18 @@ export type StoredPaperAutomationEvent = PaperAutomationEvent & {
 };
 
 export type StoredPaperAutomationOperation = PaperAutomationOperation & {
+  id: number;
+};
+
+export type StoredPaperOperationsSession = PaperOperationsSession & {
+  id: number;
+};
+
+export type StoredPaperOperationsSnapshot = PaperOperationsSnapshot & {
+  id: number;
+};
+
+export type StoredPaperOperationsAlert = PaperOperationsAlert & {
   id: number;
 };
 
@@ -1667,6 +1690,40 @@ type PaperAutomationOperationRow = {
   updated_at: string;
 };
 
+type PaperOperationsSessionRow = {
+  id: number;
+  session_id: string;
+  deployment_id: string;
+  runtime_session_id: string;
+  status: PaperOperationsSessionStatus;
+  payload_json: string;
+  started_at: string;
+  ended_at: string | null;
+  updated_at: string;
+};
+
+type PaperOperationsSnapshotRow = {
+  id: number;
+  sample_id: string;
+  session_id: string;
+  kind: PaperOperationsSnapshotKind;
+  payload_json: string;
+  observed_at: string;
+  created_at: string;
+};
+
+type PaperOperationsAlertRow = {
+  id: number;
+  alert_id: string;
+  session_id: string;
+  sample_id: string;
+  severity: PaperOperationsAlertSeverity;
+  code: string;
+  payload_json: string;
+  observed_at: string;
+  created_at: string;
+};
+
 type PaperExitPolicyEvaluationRow = {
   id: number;
   evaluation_id: string;
@@ -2697,6 +2754,128 @@ const paperAutomationOperationSchema = z
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
     paperOnly: z.literal(true),
+    liveExecutionDisabled: z.literal(true)
+  })
+  .strict();
+
+const paperOperationsConfigSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    maximumSessionCostSol: z.number().positive().max(0.001),
+    budgetWarningRatio: z.number().min(0.01).max(0.8),
+    maximumFeedSilenceMs: z.number().int().min(1_000).max(15_000),
+    maximumTelemetryGapMs: z.number().int().min(1_000).max(30_000),
+    maximumSignalLatencyMs: z.number().int().min(1).max(5_000),
+    maximumSessionDurationMs: z.number().int().min(60_000).max(86_400_000)
+  })
+  .strict();
+
+const paperOperationsSessionSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    operationsVersion: z.literal("paper-operations-v1"),
+    sessionId: z.string().min(1),
+    deploymentId: z.string().min(1),
+    runtimeSessionId: z.string().min(1),
+    status: z.enum(["active", "completed", "interrupted"]),
+    config: paperOperationsConfigSchema,
+    startedBy: z.string().min(1),
+    startingMeteredCostSol: z.number().nonnegative(),
+    startingMeteredEventCount: z.number().int().nonnegative(),
+    startedAt: z.string().datetime(),
+    endedAt: z.string().datetime().nullable(),
+    endReason: z.string().min(1).nullable(),
+    reasonCodes: z.array(z.string().min(1)),
+    updatedAt: z.string().datetime(),
+    automaticMeteredStart: z.literal(false),
+    automaticPaperArm: z.literal(false),
+    automaticLiveExecution: z.literal(false),
+    paperOnly: z.literal(true),
+    dataOnly: z.literal(true),
+    tradingDisabled: z.literal(true),
+    liveExecutionDisabled: z.literal(true)
+  })
+  .strict();
+
+const paperOperationsSnapshotSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    operationsVersion: z.literal("paper-operations-v1"),
+    sampleId: z.string().min(1),
+    sessionId: z.string().min(1),
+    deploymentId: z.string().min(1),
+    runtimeSessionId: z.string().min(1),
+    kind: z.enum([
+      "session_started",
+      "runtime_sample",
+      "signal_latency",
+      "budget_enforced",
+      "session_ended",
+      "restart_reconciled"
+    ]),
+    observedAt: z.string().datetime(),
+    telemetryGapMs: z.number().nonnegative().nullable(),
+    meteredActive: z.boolean(),
+    feedConnected: z.boolean(),
+    lastEventAt: z.string().datetime().nullable(),
+    feedSilenceMs: z.number().nonnegative().nullable(),
+    trackedMintCount: z.number().int().nonnegative(),
+    meteredEventCount: z.number().int().nonnegative(),
+    estimatedCostSol: z.number().nonnegative(),
+    budgetRemainingSol: z.number().nonnegative(),
+    budgetReached: z.boolean(),
+    dataWalletBalanceSol: z.number().nonnegative().nullable(),
+    dataWalletBalanceStatus: z.enum([
+      "unknown",
+      "missing_config",
+      "critical",
+      "low",
+      "ok"
+    ]),
+    signalMint: z.string().min(1).nullable(),
+    signalAt: z.string().datetime().nullable(),
+    signalLatencyMs: z.number().nonnegative().nullable(),
+    automationStatus: z
+      .enum(["approved", "armed", "paused", "revoked"])
+      .nullable(),
+    automationHealthy: z.boolean().nullable(),
+    pendingOperationCount: z.number().int().nonnegative(),
+    closedTradeCount: z.number().int().nonnegative(),
+    winCount: z.number().int().nonnegative(),
+    totalNetPnlSol: z.number(),
+    maximumDrawdownPct: z.number().nonnegative(),
+    timeseriesAcceptedEventCount: z.number().int().nonnegative(),
+    timeseriesDuplicateEventCount: z.number().int().nonnegative(),
+    timeseriesInvalidEventCount: z.number().int().nonnegative(),
+    timeseriesLateEventCount: z.number().int().nonnegative(),
+    timeseriesGapCount: z.number().int().nonnegative(),
+    storageWriteHealthy: z.boolean(),
+    reasonCodes: z.array(z.string().min(1)),
+    payload: z.unknown(),
+    paperOnly: z.literal(true),
+    dataOnly: z.literal(true),
+    tradingDisabled: z.literal(true),
+    liveExecutionDisabled: z.literal(true)
+  })
+  .strict();
+
+const paperOperationsAlertSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    operationsVersion: z.literal("paper-operations-v1"),
+    alertId: z.string().min(1),
+    sessionId: z.string().min(1),
+    sampleId: z.string().min(1),
+    severity: z.enum(["warning", "critical"]),
+    code: z.string().min(1),
+    observedAt: z.string().datetime(),
+    metricValue: z.union([z.number(), z.string(), z.boolean()]).nullable(),
+    threshold: z.union([z.number(), z.string(), z.boolean()]).nullable(),
+    reasonCodes: z.array(z.string().min(1)),
+    payload: z.unknown(),
+    paperOnly: z.literal(true),
+    dataOnly: z.literal(true),
+    tradingDisabled: z.literal(true),
     liveExecutionDisabled: z.literal(true)
   })
   .strict();
@@ -6151,6 +6330,304 @@ export function listPaperAutomationOperations(
   return rows.map(mapPaperAutomationOperationRow);
 }
 
+export function listPaperAutomationOperationsForEvaluation(
+  deploymentId: string
+): StoredPaperAutomationOperation[] {
+  const rows = getDb()
+    .prepare(
+      `select * from paper_automation_operations where deployment_id = ?
+       order by datetime(created_at) asc, id asc`
+    )
+    .all(deploymentId) as PaperAutomationOperationRow[];
+  return rows.map(mapPaperAutomationOperationRow);
+}
+
+export function savePaperOperationsSession(
+  session: PaperOperationsSession
+): StoredPaperOperationsSession {
+  const parsed = parsePaperOperationsSession(session);
+  assertPaperOperationsSessionState(parsed);
+  const existing = getPaperOperationsSession(parsed.sessionId);
+  if (existing) {
+    if (paperOperationsSessionImmutableFieldsDiffer(existing, parsed)) {
+      throw new Error(
+        `Paper operations session ${parsed.sessionId} has immutable pinned fields.`
+      );
+    }
+    if (existing.status === parsed.status) {
+      const { id: _id, ...storedSession } = existing;
+      void _id;
+      if (stringifyJson(storedSession) !== stringifyJson(parsed)) {
+        throw new Error(
+          `Paper operations session ${parsed.sessionId} has immutable lifecycle data.`
+        );
+      }
+      return existing;
+    }
+    if (
+      existing.status !== "active" ||
+      parsed.status === "active"
+    ) {
+      throw new Error(
+        `Paper operations session ${parsed.sessionId} cannot transition from ${existing.status} to ${parsed.status}.`
+      );
+    }
+    if (Date.parse(parsed.updatedAt) < Date.parse(existing.updatedAt)) {
+      throw new Error(
+        `Paper operations session ${parsed.sessionId} cannot move backwards in time.`
+      );
+    }
+    getDb()
+      .prepare(
+        `update paper_operations_sessions
+         set status = ?, payload_json = ?, ended_at = ?, updated_at = ?
+         where session_id = ?`
+      )
+      .run(
+        parsed.status,
+        stringifyJson(parsed),
+        parsed.endedAt,
+        parsed.updatedAt,
+        parsed.sessionId
+      );
+  } else {
+    if (parsed.status !== "active") {
+      throw new Error(
+        `New paper operations session ${parsed.sessionId} must be active.`
+      );
+    }
+    getDb()
+      .prepare(
+        `insert into paper_operations_sessions (
+          session_id, deployment_id, runtime_session_id, status, payload_json,
+          started_at, ended_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        parsed.sessionId,
+        parsed.deploymentId,
+        parsed.runtimeSessionId,
+        parsed.status,
+        stringifyJson(parsed),
+        parsed.startedAt,
+        parsed.endedAt,
+        parsed.updatedAt
+      );
+  }
+  const stored = getPaperOperationsSession(parsed.sessionId);
+  if (!stored) {
+    throw new Error(`Paper operations session ${parsed.sessionId} was not persisted.`);
+  }
+  return stored;
+}
+
+export function getPaperOperationsSession(
+  sessionId: string
+): StoredPaperOperationsSession | null {
+  const row = getDb()
+    .prepare("select * from paper_operations_sessions where session_id = ?")
+    .get(sessionId) as PaperOperationsSessionRow | undefined;
+  return row ? mapPaperOperationsSessionRow(row) : null;
+}
+
+export function getActivePaperOperationsSession(): StoredPaperOperationsSession | null {
+  const row = getDb()
+    .prepare(
+      `select * from paper_operations_sessions where status = 'active'
+       order by datetime(started_at) desc, id desc limit 1`
+    )
+    .get() as PaperOperationsSessionRow | undefined;
+  return row ? mapPaperOperationsSessionRow(row) : null;
+}
+
+export function getLatestPaperOperationsSession(): StoredPaperOperationsSession | null {
+  const row = getDb()
+    .prepare(
+      `select * from paper_operations_sessions
+       order by datetime(started_at) desc, id desc limit 1`
+    )
+    .get() as PaperOperationsSessionRow | undefined;
+  return row ? mapPaperOperationsSessionRow(row) : null;
+}
+
+export function listPaperOperationsSessions(
+  limit = 50
+): StoredPaperOperationsSession[] {
+  const rows = getDb()
+    .prepare(
+      `select * from paper_operations_sessions
+       order by datetime(started_at) desc, id desc limit ?`
+    )
+    .all(limitSchema.parse(limit)) as PaperOperationsSessionRow[];
+  return rows.map(mapPaperOperationsSessionRow);
+}
+
+export function savePaperOperationsSnapshot(
+  snapshot: PaperOperationsSnapshot
+): StoredPaperOperationsSnapshot {
+  const parsed = parsePaperOperationsSnapshot(snapshot);
+  const existing = getPaperOperationsSnapshot(parsed.sampleId);
+  if (existing) {
+    const { id: _id, ...stored } = existing;
+    void _id;
+    if (stringifyJson(stored) !== stringifyJson(parsed)) {
+      throw new Error(
+        `Paper operations snapshot ${parsed.sampleId} is immutable and already exists with different data.`
+      );
+    }
+    return existing;
+  }
+  const session = getPaperOperationsSession(parsed.sessionId);
+  if (!session || session.deploymentId !== parsed.deploymentId) {
+    throw new Error(
+      `Paper operations snapshot ${parsed.sampleId} references an unknown session.`
+    );
+  }
+  getDb()
+    .prepare(
+      `insert into paper_operations_snapshots (
+        sample_id, session_id, kind, payload_json, observed_at, created_at
+      ) values (?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.sampleId,
+      parsed.sessionId,
+      parsed.kind,
+      stringifyJson(parsed),
+      parsed.observedAt,
+      new Date().toISOString()
+    );
+  const stored = getPaperOperationsSnapshot(parsed.sampleId);
+  if (!stored) {
+    throw new Error(`Paper operations snapshot ${parsed.sampleId} was not persisted.`);
+  }
+  return stored;
+}
+
+export function getPaperOperationsSnapshot(
+  sampleId: string
+): StoredPaperOperationsSnapshot | null {
+  const row = getDb()
+    .prepare("select * from paper_operations_snapshots where sample_id = ?")
+    .get(sampleId) as PaperOperationsSnapshotRow | undefined;
+  return row ? mapPaperOperationsSnapshotRow(row) : null;
+}
+
+export function listPaperOperationsSnapshots(
+  sessionId: string,
+  limit = 500
+): StoredPaperOperationsSnapshot[] {
+  const rows = getDb()
+    .prepare(
+      `select * from paper_operations_snapshots where session_id = ?
+       order by datetime(observed_at) desc, id desc limit ?`
+    )
+    .all(sessionId, limitSchema.parse(limit)) as PaperOperationsSnapshotRow[];
+  return rows.map(mapPaperOperationsSnapshotRow).reverse();
+}
+
+export function getLatestPaperOperationsSnapshotForSession(
+  sessionId: string
+): StoredPaperOperationsSnapshot | null {
+  const row = getDb()
+    .prepare(
+      `select * from paper_operations_snapshots where session_id = ?
+       order by datetime(observed_at) desc, id desc limit 1`
+    )
+    .get(sessionId) as PaperOperationsSnapshotRow | undefined;
+  return row ? mapPaperOperationsSnapshotRow(row) : null;
+}
+
+export function listPaperOperationsSnapshotsForExport(
+  sessionId: string
+): StoredPaperOperationsSnapshot[] {
+  const rows = getDb()
+    .prepare(
+      `select * from paper_operations_snapshots where session_id = ?
+       order by datetime(observed_at) asc, id asc`
+    )
+    .all(sessionId) as PaperOperationsSnapshotRow[];
+  return rows.map(mapPaperOperationsSnapshotRow);
+}
+
+export function savePaperOperationsAlert(
+  alert: PaperOperationsAlert
+): StoredPaperOperationsAlert {
+  const parsed = parsePaperOperationsAlert(alert);
+  const existing = getPaperOperationsAlert(parsed.alertId);
+  if (existing) {
+    const { id: _id, ...stored } = existing;
+    void _id;
+    if (stringifyJson(stored) !== stringifyJson(parsed)) {
+      throw new Error(
+        `Paper operations alert ${parsed.alertId} is immutable and already exists with different data.`
+      );
+    }
+    return existing;
+  }
+  if (!getPaperOperationsSnapshot(parsed.sampleId)) {
+    throw new Error(
+      `Paper operations alert ${parsed.alertId} references an unknown snapshot.`
+    );
+  }
+  getDb()
+    .prepare(
+      `insert into paper_operations_alerts (
+        alert_id, session_id, sample_id, severity, code, payload_json,
+        observed_at, created_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.alertId,
+      parsed.sessionId,
+      parsed.sampleId,
+      parsed.severity,
+      parsed.code,
+      stringifyJson(parsed),
+      parsed.observedAt,
+      new Date().toISOString()
+    );
+  const stored = getPaperOperationsAlert(parsed.alertId);
+  if (!stored) {
+    throw new Error(`Paper operations alert ${parsed.alertId} was not persisted.`);
+  }
+  return stored;
+}
+
+export function getPaperOperationsAlert(
+  alertId: string
+): StoredPaperOperationsAlert | null {
+  const row = getDb()
+    .prepare("select * from paper_operations_alerts where alert_id = ?")
+    .get(alertId) as PaperOperationsAlertRow | undefined;
+  return row ? mapPaperOperationsAlertRow(row) : null;
+}
+
+export function listPaperOperationsAlerts(
+  sessionId: string,
+  limit = 500
+): StoredPaperOperationsAlert[] {
+  const rows = getDb()
+    .prepare(
+      `select * from paper_operations_alerts where session_id = ?
+       order by datetime(observed_at) desc, id desc limit ?`
+    )
+    .all(sessionId, limitSchema.parse(limit)) as PaperOperationsAlertRow[];
+  return rows.map(mapPaperOperationsAlertRow).reverse();
+}
+
+export function listPaperOperationsAlertsForExport(
+  sessionId: string
+): StoredPaperOperationsAlert[] {
+  const rows = getDb()
+    .prepare(
+      `select * from paper_operations_alerts where session_id = ?
+       order by datetime(observed_at) asc, id asc`
+    )
+    .all(sessionId) as PaperOperationsAlertRow[];
+  return rows.map(mapPaperOperationsAlertRow);
+}
+
 export function savePaperExitPolicyEvaluation(
   evaluation: PaperExitPolicyEvaluation
 ): StoredPaperExitPolicyEvaluation {
@@ -7582,6 +8059,9 @@ export function getStorageStats(): StorageStats {
     ),
     paperAutomationEventCount: countRows(db, "paper_automation_events"),
     paperAutomationOperationCount: countRows(db, "paper_automation_operations"),
+    paperOperationsSessionCount: countRows(db, "paper_operations_sessions"),
+    paperOperationsSnapshotCount: countRows(db, "paper_operations_snapshots"),
+    paperOperationsAlertCount: countRows(db, "paper_operations_alerts"),
     paperExitPolicyEvaluationCount: countRows(
       db,
       "paper_exit_policy_evaluations"
@@ -8844,6 +9324,62 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(22, "paper_automation_forward_validation", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 23)) {
+    db.exec(`
+      create table if not exists paper_operations_sessions (
+        id integer primary key autoincrement,
+        session_id text not null unique,
+        deployment_id text not null,
+        runtime_session_id text not null,
+        status text not null,
+        payload_json text not null,
+        started_at text not null,
+        ended_at text,
+        updated_at text not null
+      );
+
+      create unique index if not exists idx_paper_operations_active
+        on paper_operations_sessions(status) where status = 'active';
+      create index if not exists idx_paper_operations_deployment
+        on paper_operations_sessions(deployment_id, started_at);
+
+      create table if not exists paper_operations_snapshots (
+        id integer primary key autoincrement,
+        sample_id text not null unique,
+        session_id text not null,
+        kind text not null,
+        payload_json text not null,
+        observed_at text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_paper_operations_snapshots_session
+        on paper_operations_snapshots(session_id, observed_at);
+
+      create table if not exists paper_operations_alerts (
+        id integer primary key autoincrement,
+        alert_id text not null unique,
+        session_id text not null,
+        sample_id text not null,
+        severity text not null,
+        code text not null,
+        payload_json text not null,
+        observed_at text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_paper_operations_alerts_session
+        on paper_operations_alerts(session_id, observed_at);
+      create index if not exists idx_paper_operations_alerts_severity
+        on paper_operations_alerts(session_id, severity, observed_at);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(23, "paper_forward_operations_observability", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -9826,6 +10362,87 @@ function paperAutomationOperationImmutableFieldsDiffer(
     existing.exitEvaluationId !== candidate.exitEvaluationId ||
     existing.createdAt !== candidate.createdAt ||
     existing.paperOnly !== candidate.paperOnly ||
+    existing.liveExecutionDisabled !== candidate.liveExecutionDisabled
+  );
+}
+
+function parsePaperOperationsSession(value: unknown): PaperOperationsSession {
+  return paperOperationsSessionSchema.parse(value) as PaperOperationsSession;
+}
+
+function mapPaperOperationsSessionRow(
+  row: PaperOperationsSessionRow
+): StoredPaperOperationsSession {
+  return {
+    ...parsePaperOperationsSession(JSON.parse(row.payload_json)),
+    id: row.id
+  };
+}
+
+function parsePaperOperationsSnapshot(value: unknown): PaperOperationsSnapshot {
+  return paperOperationsSnapshotSchema.parse(value) as PaperOperationsSnapshot;
+}
+
+function mapPaperOperationsSnapshotRow(
+  row: PaperOperationsSnapshotRow
+): StoredPaperOperationsSnapshot {
+  return {
+    ...parsePaperOperationsSnapshot(JSON.parse(row.payload_json)),
+    id: row.id
+  };
+}
+
+function parsePaperOperationsAlert(value: unknown): PaperOperationsAlert {
+  return paperOperationsAlertSchema.parse(value) as PaperOperationsAlert;
+}
+
+function mapPaperOperationsAlertRow(
+  row: PaperOperationsAlertRow
+): StoredPaperOperationsAlert {
+  return {
+    ...parsePaperOperationsAlert(JSON.parse(row.payload_json)),
+    id: row.id
+  };
+}
+
+function assertPaperOperationsSessionState(session: PaperOperationsSession): void {
+  const active =
+    session.status === "active" &&
+    session.endedAt === null &&
+    session.endReason === null;
+  const closed =
+    session.status !== "active" &&
+    session.endedAt !== null &&
+    session.endReason !== null &&
+    Date.parse(session.endedAt) >= Date.parse(session.startedAt);
+  if (!active && !closed) {
+    throw new Error(
+      `Paper operations session ${session.sessionId} has an invalid lifecycle state.`
+    );
+  }
+}
+
+function paperOperationsSessionImmutableFieldsDiffer(
+  existing: StoredPaperOperationsSession,
+  candidate: PaperOperationsSession
+): boolean {
+  return (
+    existing.schemaVersion !== candidate.schemaVersion ||
+    existing.operationsVersion !== candidate.operationsVersion ||
+    existing.sessionId !== candidate.sessionId ||
+    existing.deploymentId !== candidate.deploymentId ||
+    existing.runtimeSessionId !== candidate.runtimeSessionId ||
+    JSON.stringify(existing.config) !== JSON.stringify(candidate.config) ||
+    existing.startedBy !== candidate.startedBy ||
+    existing.startingMeteredCostSol !== candidate.startingMeteredCostSol ||
+    existing.startingMeteredEventCount !== candidate.startingMeteredEventCount ||
+    existing.startedAt !== candidate.startedAt ||
+    existing.automaticMeteredStart !== candidate.automaticMeteredStart ||
+    existing.automaticPaperArm !== candidate.automaticPaperArm ||
+    existing.automaticLiveExecution !== candidate.automaticLiveExecution ||
+    existing.paperOnly !== candidate.paperOnly ||
+    existing.dataOnly !== candidate.dataOnly ||
+    existing.tradingDisabled !== candidate.tradingDisabled ||
     existing.liveExecutionDisabled !== candidate.liveExecutionDisabled
   );
 }

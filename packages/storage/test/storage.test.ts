@@ -36,6 +36,12 @@ import {
   type PaperAutomationEvent,
   type PaperAutomationOperation
 } from "@axi/paper-automation";
+import {
+  createPaperOperationsSession,
+  createPaperOperationsSnapshot,
+  evaluatePaperOperationsAlerts,
+  transitionPaperOperationsSession
+} from "@axi/paper-operations";
 import { normalizePumpPortalIdentity } from "@axi/token-identity";
 import {
   closeStorage,
@@ -58,6 +64,10 @@ import {
   getLatestPaperAutomationDeployment,
   getPaperAutomationEvent,
   getPaperAutomationOperation,
+  getActivePaperOperationsSession,
+  getPaperOperationsAlert,
+  getPaperOperationsSession,
+  getPaperOperationsSnapshot,
   getPaperExitPolicyEvaluation,
   getLatestCandidateDecision,
   getLatestMarketObservation,
@@ -83,6 +93,9 @@ import {
   listPaperLifecycleValidations,
   listPaperAutomationEvents,
   listPaperAutomationOperations,
+  listPaperOperationsAlerts,
+  listPaperOperationsSessions,
+  listPaperOperationsSnapshots,
   listPaperExitPolicyEvaluations,
   listPaperExitPolicyEvaluationsByMint,
   listLaunchTradeSamplesByMint,
@@ -153,6 +166,9 @@ import {
   savePaperAutomationDeployment,
   savePaperAutomationEvent,
   savePaperAutomationOperation,
+  savePaperOperationsAlert,
+  savePaperOperationsSession,
+  savePaperOperationsSnapshot,
   savePaperExitPolicyEvaluation,
   saveCapacitySnapshot,
   saveChainVerification,
@@ -681,6 +697,116 @@ describe("@axi/storage", () => {
     expect(getLatestPaperAutomationDeployment()).toMatchObject({
       deploymentId: approved.deploymentId,
       status: "armed",
+      liveExecutionDisabled: true
+    });
+  });
+
+  it("persists immutable paper operations evidence and restart-safe sessions", () => {
+    initStorage({ databasePath });
+    const deployment = createPaperAutomationDeploymentFixture();
+    savePaperAutomationDeployment(deployment);
+    const session = createPaperOperationsSession({
+      sessionId: "paper-forward-storage-test",
+      deploymentId: deployment.deploymentId,
+      deploymentStatus: deployment.status,
+      runtimeSessionId: "runtime-storage-test",
+      startedBy: "storage-test-operator",
+      startedAt: "2026-01-05T00:00:00.000Z"
+    });
+    savePaperOperationsSession(session);
+    expect(getActivePaperOperationsSession()?.sessionId).toBe(session.sessionId);
+
+    const snapshot = createPaperOperationsSnapshot(session, {
+      sampleId: "paper-operations-snapshot-storage-test",
+      sessionId: session.sessionId,
+      deploymentId: session.deploymentId,
+      runtimeSessionId: session.runtimeSessionId,
+      kind: "runtime_sample",
+      observedAt: "2026-01-05T00:00:01.000Z",
+      meteredActive: true,
+      feedConnected: true,
+      lastEventAt: "2026-01-05T00:00:00.000Z",
+      trackedMintCount: 1,
+      meteredEventCount: 100,
+      estimatedCostSol: 0.001,
+      budgetReached: true,
+      dataWalletBalanceSol: 1,
+      dataWalletBalanceStatus: "ok",
+      signalMint: null,
+      signalAt: null,
+      signalLatencyMs: null,
+      automationStatus: "approved",
+      automationHealthy: true,
+      pendingOperationCount: 0,
+      closedTradeCount: 0,
+      winCount: 0,
+      totalNetPnlSol: 0,
+      maximumDrawdownPct: 0,
+      timeseriesAcceptedEventCount: 100,
+      timeseriesDuplicateEventCount: 0,
+      timeseriesInvalidEventCount: 0,
+      timeseriesLateEventCount: 0,
+      timeseriesGapCount: 0,
+      storageWriteHealthy: true,
+      reasonCodes: [],
+      payload: {}
+    });
+    savePaperOperationsSnapshot(snapshot);
+    savePaperOperationsSnapshot(snapshot);
+    const alertCandidate = evaluatePaperOperationsAlerts({
+      session,
+      snapshot
+    }).alerts.find(
+      (alert) => alert.code === "PAPER_OPERATIONS_BUDGET_EXCEEDED"
+    );
+    expect(alertCandidate).toBeDefined();
+    const alert = {
+      ...alertCandidate!,
+      alertId: "paper-operations-alert-storage-test"
+    };
+    savePaperOperationsAlert(alert);
+    expect(() =>
+      savePaperOperationsSnapshot({
+        ...snapshot,
+        estimatedCostSol: 0
+      })
+    ).toThrow("immutable");
+
+    const completed = transitionPaperOperationsSession({
+      session,
+      status: "completed",
+      at: "2026-01-05T00:01:00.000Z",
+      reason: "storage test complete",
+      reasonCodes: ["PAPER_OPERATIONS_OPERATOR_COMPLETED"]
+    });
+    savePaperOperationsSession(completed);
+    expect(() =>
+      savePaperOperationsSession({
+        ...completed,
+        startedBy: "mutated"
+      })
+    ).toThrow("immutable pinned fields");
+
+    expect(getStorageStats()).toMatchObject({
+      paperOperationsSessionCount: 1,
+      paperOperationsSnapshotCount: 1,
+      paperOperationsAlertCount: 1
+    });
+    expect(listPaperOperationsSessions()).toHaveLength(1);
+    expect(listPaperOperationsSnapshots(session.sessionId)).toHaveLength(1);
+    expect(listPaperOperationsAlerts(session.sessionId)).toHaveLength(1);
+    expect(getPaperOperationsSession(session.sessionId)?.status).toBe(
+      "completed"
+    );
+    expect(getPaperOperationsSnapshot(snapshot.sampleId)).toMatchObject(snapshot);
+    expect(getPaperOperationsAlert(alert.alertId)).toMatchObject(alert);
+
+    closeStorage();
+    initStorageReadOnly({ databasePath });
+    expect(getPaperOperationsSession(session.sessionId)).toMatchObject({
+      status: "completed",
+      automaticMeteredStart: false,
+      automaticPaperArm: false,
       liveExecutionDisabled: true
     });
   });

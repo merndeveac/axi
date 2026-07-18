@@ -30,6 +30,7 @@
     { "path": "../../packages/metrics" },
     { "path": "../../packages/paper-portfolio" },
     { "path": "../../packages/paper-automation" },
+    { "path": "../../packages/paper-operations" },
     { "path": "../../packages/paper-lifecycle-validation" },
     { "path": "../../packages/paper-strategy-evaluation" },
     { "path": "../../packages/pumpfun-decoder" },

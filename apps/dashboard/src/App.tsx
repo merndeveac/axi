@@ -557,6 +557,7 @@ type RuntimeContract = {
     paperStrategyEvaluation: string;
     paperLifecycleValidation: string;
     paperAutomation: string;
+    paperOperations: string;
     paperExitPolicy: string;
     subscriptionPolicy: string;
     subscriptionTransport: string;
@@ -663,6 +664,18 @@ type RuntimeContract = {
     automaticLiveExecution: false;
     liveExecutionDisabled: true;
   };
+  paperOperations: {
+    operationsVersion: string;
+    implementationStatus: "implemented";
+    activationMode: "explicit_local_operator_session";
+    restartPolicy: "active_session_interrupted_fail_closed";
+    meteredStartPolicy: "manual_only";
+    budgetEnforcement: "stop_metered_and_pause_paper_automation";
+    automaticMeteredStart: false;
+    automaticPaperArm: false;
+    automaticLiveExecution: false;
+    liveExecutionDisabled: true;
+  };
 };
 
 type PaperLifecycleValidationStatus = {
@@ -702,6 +715,53 @@ type PaperAutomationStatus = {
       maximumDrawdownPct: number;
     };
   } | null;
+  paperOnly: true;
+  liveExecutionDisabled: true;
+};
+
+type PaperOperationsStatus = {
+  started: boolean;
+  active: boolean;
+  session: {
+    sessionId: string;
+    deploymentId: string;
+    status: "active" | "completed" | "interrupted";
+    startedAt: string;
+    endedAt: string | null;
+    config: { maximumSessionCostSol: number };
+  } | null;
+  summary: {
+    sampleCount: number;
+    alertCount: number;
+    criticalAlertCount: number;
+    p95SignalLatencyMs: number | null;
+    maximumFeedSilenceMs: number | null;
+    maximumTelemetryGapMs: number | null;
+    finalEstimatedCostSol: number;
+    budgetRemainingSol: number;
+    meteredEventsPerSecond: number | null;
+    costPerSignalSol: number | null;
+    costPerClosedTradeSol: number | null;
+    costPerWinningTradeSol: number | null;
+    dataGapCount: number;
+    duplicateEventCount: number;
+  } | null;
+  latestSample: {
+    observedAt: string;
+    feedConnected: boolean;
+    meteredActive: boolean;
+    automationStatus: string | null;
+  } | null;
+  activeAlerts: Array<{
+    alertId: string;
+    severity: "warning" | "critical";
+    code: string;
+  }>;
+  alertCount: number;
+  lastSamplingError: string | null;
+  automaticMeteredStart: false;
+  automaticPaperArm: false;
+  automaticLiveExecution: false;
   paperOnly: true;
   liveExecutionDisabled: true;
 };
@@ -1342,6 +1402,8 @@ export function App() {
     useState<PaperLifecycleValidationStatus | null>(null);
   const [paperAutomationStatus, setPaperAutomationStatus] =
     useState<PaperAutomationStatus | null>(null);
+  const [paperOperationsStatus, setPaperOperationsStatus] =
+    useState<PaperOperationsStatus | null>(null);
   const [runtimeCapacity, setRuntimeCapacity] =
     useState<RuntimeCapacityReport | null>(null);
   const [runtimeActionStatus, setRuntimeActionStatus] =
@@ -1483,6 +1545,7 @@ export function App() {
           nextRuntimeContract,
           nextPaperLifecycleValidationStatus,
           nextPaperAutomationStatus,
+          nextPaperOperationsStatus,
           nextRuntimeCapacity,
           nextActualTrades,
           nextLiveCardEnrichmentStatus,
@@ -1545,6 +1608,7 @@ export function App() {
             "/runtime/paper-lifecycle-validation"
           ),
           fetchJson<PaperAutomationStatus>("/runtime/paper-automation"),
+          fetchJson<PaperOperationsStatus>("/runtime/paper-operations"),
           fetchJson<RuntimeCapacityReport>("/runtime/capacity"),
           fetchJson<PumpPortalTradeRow[]>("/actual-data/trades?limit=10"),
           fetchJson<LiveCardEnrichmentStatus>("/enrichment/status"),
@@ -1594,6 +1658,7 @@ export function App() {
           setRuntimeContract(nextRuntimeContract);
           setPaperLifecycleValidationStatus(nextPaperLifecycleValidationStatus);
           setPaperAutomationStatus(nextPaperAutomationStatus);
+          setPaperOperationsStatus(nextPaperOperationsStatus);
           setRuntimeCapacity(nextRuntimeCapacity);
           setActualTrades(nextActualTrades);
           setLiveCardEnrichmentStatus(nextLiveCardEnrichmentStatus);
@@ -1863,6 +1928,7 @@ export function App() {
         runtimeContract={runtimeContract}
         paperLifecycleValidationStatus={paperLifecycleValidationStatus}
         paperAutomationStatus={paperAutomationStatus}
+        paperOperationsStatus={paperOperationsStatus}
         runtimeControlStatus={runtimeControlStatus}
         runRuntimeAction={runRuntimeAction}
         trackedCardCount={trackedCardCount}
@@ -2005,6 +2071,7 @@ function HeaderControlCenter({
   runtimeContract,
   paperLifecycleValidationStatus,
   paperAutomationStatus,
+  paperOperationsStatus,
   runtimeControlStatus,
   runRuntimeAction,
   trackedCardCount,
@@ -2035,6 +2102,7 @@ function HeaderControlCenter({
   runtimeContract: RuntimeContract | null;
   paperLifecycleValidationStatus: PaperLifecycleValidationStatus | null;
   paperAutomationStatus: PaperAutomationStatus | null;
+  paperOperationsStatus: PaperOperationsStatus | null;
   runtimeControlStatus: RuntimeControlStatus | null;
   runRuntimeAction: (
     path: string,
@@ -2050,6 +2118,11 @@ function HeaderControlCenter({
   const [armMaxSessionCostSol, setArmMaxSessionCostSol] = useState("0.001");
   const [armMaxConcurrentMints, setArmMaxConcurrentMints] = useState("3");
   const [armMaxEventsPerSession, setArmMaxEventsPerSession] = useState("1000");
+  const [forwardModalMode, setForwardModalMode] = useState<
+    "start" | "end" | null
+  >(null);
+  const [forwardOperator, setForwardOperator] = useState("");
+  const [forwardConfirmation, setForwardConfirmation] = useState("");
   const meteredControl = getMeteredControlView({
     apiStatus,
     meteredStatus: null,
@@ -2114,6 +2187,15 @@ function HeaderControlCenter({
     !Number.isInteger(parsedArmEvents) ||
     parsedArmEvents <= 0 ||
     parsedArmEvents > (meteredPriceAction?.maxEventsPerSession ?? 1000);
+  const forwardExpectedConfirmation =
+    forwardModalMode === "start" && paperAutomationStatus?.deployment
+      ? `START PAPER FORWARD SESSION ${paperAutomationStatus.deployment.deploymentId}`
+      : forwardModalMode === "end" && paperOperationsStatus?.session
+        ? `END PAPER FORWARD SESSION ${paperOperationsStatus.session.sessionId}`
+        : "";
+  const forwardSubmitDisabled =
+    forwardConfirmation !== forwardExpectedConfirmation ||
+    (forwardModalMode === "start" && forwardOperator.trim().length === 0);
 
   const submitArmMetered = () => {
     if (armSubmitDisabled) {
@@ -2131,6 +2213,33 @@ function HeaderControlCenter({
         maxEventsPerSession: parsedArmEvents
       }
     );
+  };
+
+  const submitForwardSession = () => {
+    if (forwardSubmitDisabled || !forwardModalMode) return;
+    const mode = forwardModalMode;
+    setForwardModalMode(null);
+    setForwardConfirmation("");
+    if (mode === "start" && paperAutomationStatus?.deployment) {
+      void runRuntimeAction(
+        "/runtime/paper-operations/start",
+        "Starting forward paper session",
+        {
+          deploymentId: paperAutomationStatus.deployment.deploymentId,
+          startedBy: forwardOperator.trim(),
+          confirmation: forwardExpectedConfirmation
+        }
+      );
+    } else if (mode === "end" && paperOperationsStatus?.session) {
+      void runRuntimeAction(
+        "/runtime/paper-operations/end",
+        "Ending forward paper session",
+        {
+          sessionId: paperOperationsStatus.session.sessionId,
+          confirmation: forwardExpectedConfirmation
+        }
+      );
+    }
   };
 
   const refreshWallets = async () => {
@@ -2297,6 +2406,25 @@ function HeaderControlCenter({
             }
           />
           <StatusChip
+            label="FORWARD OPS"
+            tone={
+              paperOperationsStatus?.summary?.criticalAlertCount
+                ? "bad"
+                : paperOperationsStatus?.session?.status === "active"
+                  ? "good"
+                  : paperOperationsStatus?.session?.status === "interrupted"
+                    ? "warn"
+                    : "neutral"
+            }
+            value={
+              paperOperationsStatus?.session
+                ? `${paperOperationsStatus.session.status.toUpperCase()} · ${paperOperationsStatus.summary?.criticalAlertCount ?? 0} CRIT`
+                : runtimeContract
+                  ? "NO SESSION"
+                  : "CHECKING"
+            }
+          />
+          <StatusChip
             label="EXIT POLICY"
             tone="warn"
             value={
@@ -2445,6 +2573,30 @@ function HeaderControlCenter({
           )} cap`}
         />
         <HeaderMetric
+          label="Forward run"
+          value={
+            paperOperationsStatus?.session
+              ? paperOperationsStatus.session.status.toUpperCase()
+              : "IDLE"
+          }
+          detail={
+            paperOperationsStatus?.summary
+              ? `${paperOperationsStatus.summary.sampleCount} samples · ${paperOperationsStatus.summary.criticalAlertCount} critical`
+              : "explicit operator session"
+          }
+        />
+        <HeaderMetric
+          label="Forward cost"
+          value={formatSol(
+            paperOperationsStatus?.summary?.finalEstimatedCostSol
+          )}
+          detail={
+            paperOperationsStatus?.summary
+              ? `${formatSol(paperOperationsStatus.summary.budgetRemainingSol)} remaining`
+              : "no automatic metered start"
+          }
+        />
+        <HeaderMetric
           label="Blanks"
           value={formatCompactNumber(unavailableFieldCount)}
           detail={`${formatCompactNumber(momentumDiagnostics?.rowsWithCurvePrice)} curve marks`}
@@ -2487,6 +2639,33 @@ function HeaderControlCenter({
           type="button"
         >
           Restart Live Feed
+        </button>
+        <button
+          disabled={
+            apiOffline ||
+            !paperAutomationStatus?.deployment ||
+            paperAutomationStatus.deployment.status === "revoked" ||
+            paperAutomationStatus.deployment.status === "armed" ||
+            paperOperationsStatus?.active === true
+          }
+          onClick={() => {
+            setForwardConfirmation("");
+            setForwardModalMode("start");
+          }}
+          title="Start an evidence session. This does not start metered data or arm paper automation."
+          type="button"
+        >
+          Start Forward Run
+        </button>
+        <button
+          disabled={apiOffline || paperOperationsStatus?.active !== true}
+          onClick={() => {
+            setForwardConfirmation("");
+            setForwardModalMode("end");
+          }}
+          type="button"
+        >
+          End Forward Run
         </button>
         <button
           disabled={!canArmMetered}
@@ -2636,8 +2815,164 @@ function HeaderControlCenter({
         </div>
       ) : null}
 
+      {forwardModalMode ? (
+        <div className="modal-backdrop">
+          <div
+            aria-label={`${forwardModalMode === "start" ? "Start" : "End"} forward paper session`}
+            aria-modal="true"
+            className="arm-metered-modal"
+            role="dialog"
+          >
+            <div className="modal-heading">
+              <h2>
+                {forwardModalMode === "start"
+                  ? "Start Forward Run"
+                  : "End Forward Run"}
+              </h2>
+              <button
+                aria-label="Close"
+                onClick={() => setForwardModalMode(null)}
+                type="button"
+              >
+                x
+              </button>
+            </div>
+            <div className="arm-form">
+              {forwardModalMode === "start" ? (
+                <label>
+                  <span>Operator identity</span>
+                  <input
+                    maxLength={120}
+                    onChange={(event) =>
+                      setForwardOperator(event.target.value)
+                    }
+                    placeholder="operator name"
+                    type="text"
+                    value={forwardOperator}
+                  />
+                </label>
+              ) : null}
+              <label>
+                <span>Exact confirmation</span>
+                <input
+                  onChange={(event) =>
+                    setForwardConfirmation(event.target.value)
+                  }
+                  placeholder={forwardExpectedConfirmation}
+                  type="text"
+                  value={forwardConfirmation}
+                />
+              </label>
+              <p>
+                Type <code>{forwardExpectedConfirmation}</code>. Starting only
+                opens an evidence boundary; it does not start metered data,
+                arm paper automation, or enable live execution.
+              </p>
+            </div>
+            <div className="modal-actions">
+              <button onClick={() => setForwardModalMode(null)} type="button">
+                Cancel
+              </button>
+              <button
+                disabled={forwardSubmitDisabled}
+                onClick={submitForwardSession}
+                type="button"
+              >
+                {forwardModalMode === "start" ? "Start Session" : "End Session"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {controlPanelOpen ? (
         <div className="control-diagnostics">
+          <section>
+            <h2>Forward Paper Operations</h2>
+            <dl>
+              <dt>session</dt>
+              <dd className="mono">
+                {paperOperationsStatus?.session?.sessionId ?? "not started"}
+              </dd>
+              <dt>status</dt>
+              <dd>
+                {paperOperationsStatus?.session?.status ?? "idle"} · live
+                execution disabled
+              </dd>
+              <dt>deployment</dt>
+              <dd className="mono">
+                {paperOperationsStatus?.session?.deploymentId ?? "—"}
+              </dd>
+              <dt>evidence samples</dt>
+              <dd>
+                {formatCompactNumber(
+                  paperOperationsStatus?.summary?.sampleCount
+                )}
+              </dd>
+              <dt>alerts</dt>
+              <dd>
+                {formatCompactNumber(
+                  paperOperationsStatus?.summary?.alertCount
+                )}{" "}
+                total · {formatCompactNumber(
+                  paperOperationsStatus?.summary?.criticalAlertCount
+                )}{" "}
+                critical
+              </dd>
+              <dt>p95 signal latency</dt>
+              <dd>
+                {paperOperationsStatus?.summary?.p95SignalLatencyMs ?? "—"} ms
+              </dd>
+              <dt>max feed silence</dt>
+              <dd>
+                {paperOperationsStatus?.summary?.maximumFeedSilenceMs ?? "—"}{" "}
+                ms
+              </dd>
+              <dt>max telemetry gap</dt>
+              <dd>
+                {paperOperationsStatus?.summary?.maximumTelemetryGapMs ?? "—"}{" "}
+                ms
+              </dd>
+              <dt>data quality</dt>
+              <dd>
+                {formatCompactNumber(
+                  paperOperationsStatus?.summary?.dataGapCount
+                )}{" "}
+                gaps · {formatCompactNumber(
+                  paperOperationsStatus?.summary?.duplicateEventCount
+                )}{" "}
+                duplicates
+              </dd>
+              <dt>estimated cost</dt>
+              <dd>
+                {formatSol(
+                  paperOperationsStatus?.summary?.finalEstimatedCostSol
+                )}{" "}
+                used · {formatSol(
+                  paperOperationsStatus?.summary?.budgetRemainingSol
+                )}{" "}
+                remaining
+              </dd>
+              <dt>cost efficiency</dt>
+              <dd>
+                {formatSol(paperOperationsStatus?.summary?.costPerSignalSol)} /
+                signal · {formatSol(
+                  paperOperationsStatus?.summary?.costPerClosedTradeSol
+                )}{" "}
+                / closed trade · {formatSol(
+                  paperOperationsStatus?.summary?.costPerWinningTradeSol
+                )}{" "}
+                / winner
+              </dd>
+              <dt>observed message rate</dt>
+              <dd>
+                {paperOperationsStatus?.summary?.meteredEventsPerSecond ?? "—"}
+                /s
+              </dd>
+              <dt>sampling error</dt>
+              <dd>{paperOperationsStatus?.lastSamplingError ?? "none"}</dd>
+            </dl>
+          </section>
           <section>
             <h2>Data Wallet</h2>
             <dl>
