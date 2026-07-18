@@ -3,8 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { closeStorage, initStorage } from "@axi/storage";
-import type { PaperExitPolicyConfigInput } from "@axi/exit-strategy";
-import { createPaperPortfolioService } from "../src/paper-portfolio-service";
+import {
+  createPaperExitPolicyConfig,
+  type PaperExitPolicyConfigInput
+} from "@axi/exit-strategy";
+import type { OverlaySignal } from "@axi/shared";
+import {
+  createPaperPortfolioService,
+  createPaperPortfolioServiceConfig
+} from "../src/paper-portfolio-service";
 
 let testDirectory: string;
 
@@ -86,6 +93,70 @@ describe("PaperPortfolioService exit policy", () => {
       evaluationStatus: "hold",
       selectedAction: null
     });
+  });
+
+  it("executes approved paper automation with legacy loops disabled and modeled impact", () => {
+    let priceSol = 1;
+    const service = createPaperPortfolioService({
+      now: () => new Date("2026-01-01T00:01:00.000Z"),
+      getCurrentPriceSol: () => priceSol,
+      getCurrentVolumeSol: () => 10,
+      config: createPaperPortfolioServiceConfig()
+    });
+    const signal = {
+      mint: "approved-paper-automation-mint",
+      symbol: "AUTO",
+      score: 80,
+      hardReject: false,
+      reasonCodes: [],
+      riskLevel: "low"
+    } as unknown as OverlaySignal;
+    const entry = service.executeApprovedAutomationEntry(signal, {
+      deploymentId: "deployment-test",
+      operationId: "entry-operation-test",
+      selectedThreshold: 75,
+      positionSizeSol: 0.005,
+      maximumVolumeParticipationRatio: 0.1,
+      maximumMarketImpactBps: 1_000
+    });
+
+    expect(entry).toMatchObject({
+      blocked: false,
+      fill: { fillStatus: "filled" },
+      position: { status: "open" },
+      paperOnly: true,
+      liveExecutionDisabled: true
+    });
+    expect(entry.intent?.reasonCodes).toContain(
+      "PAPER_AUTOMATION_APPROVED_ENTRY"
+    );
+
+    priceSol = 0.5;
+    const evaluation = service.evaluateApprovedAutomationExit(
+      signal.mint,
+      createPaperExitPolicyConfig()
+    );
+    expect(evaluation?.selectedAction?.ruleId).toBe("stop-loss");
+    const exit = service.executeApprovedAutomationExit(
+      evaluation as NonNullable<typeof evaluation>,
+      {
+        deploymentId: "deployment-test",
+        operationId: "exit-operation-test",
+        positionSizeSol: 0.005,
+        maximumVolumeParticipationRatio: 0.1,
+        maximumMarketImpactBps: 1_000
+      }
+    );
+    expect(exit).toMatchObject({
+      blocked: false,
+      fill: { fillStatus: "filled" },
+      position: { status: "closed" },
+      paperOnly: true,
+      liveExecutionDisabled: true
+    });
+    expect(exit.intent?.reasonCodes).toContain(
+      "PAPER_AUTOMATION_APPROVED_EXIT"
+    );
   });
 });
 

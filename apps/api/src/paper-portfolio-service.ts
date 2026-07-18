@@ -11,6 +11,10 @@ import {
 import type { LaunchCandidateView } from "./launch-scanner-service";
 import type { OverlaySignal, RiskLevel, RiskSnapshot } from "@axi/shared";
 import {
+  paperAutomationMarketImpactBps,
+  type PaperAutomationPortfolioConfig
+} from "@axi/paper-automation";
+import {
   createEntryIntentFromLaunchSignal,
   createExitIntentFromExitSignal,
   createPaperPortfolioEngine,
@@ -30,8 +34,11 @@ import {
   getStorageStats,
   listPaperExitPolicyEvaluations,
   listPaperPortfolioFills,
+  listPaperPortfolioFillsForState,
   listPaperPortfolioOrders,
+  listPaperPortfolioOrdersForState,
   listPaperPortfolioPositions,
+  listPaperPortfolioPositionsForState,
   listPaperPortfolioSnapshots,
   savePaperPortfolioFill,
   savePaperPortfolioOrder,
@@ -114,6 +121,14 @@ export type PaperPortfolioEvaluation = {
   exitPolicyEvaluation?: StoredPaperExitPolicyEvaluation | null | undefined;
 };
 
+export type ApprovedPaperAutomationExecution = {
+  deploymentId: string;
+  operationId: string;
+  positionSizeSol: number;
+  maximumVolumeParticipationRatio: number;
+  maximumMarketImpactBps: number;
+};
+
 export type PaperPositionSummary = {
   hasPosition: boolean;
   status: PaperPosition["status"] | null;
@@ -144,6 +159,7 @@ export type PaperPositionSummary = {
 export type PaperPortfolioServiceOptions = {
   config?: Partial<PaperPortfolioServiceConfig>;
   getCurrentPriceSol?: (mint: string) => number | null | undefined;
+  getCurrentVolumeSol?: (mint: string) => number | null | undefined;
   getLaunchCandidate?: (mint: string) => LaunchCandidateView | null | undefined;
   getRiskSnapshot?: (mint: string) => RiskSnapshot | null | undefined;
   getRecentSignals?: () => OverlaySignal[];
@@ -231,6 +247,8 @@ export class PaperPortfolioService {
   private readonly getRiskSnapshot:
     ((mint: string) => RiskSnapshot | null | undefined) | undefined;
   private readonly getRecentSignals: (() => OverlaySignal[]) | undefined;
+  private readonly getCurrentVolumeSol:
+    ((mint: string) => number | null | undefined) | undefined;
   private readonly exitPolicyConfig: PaperExitPolicyConfig;
   private readonly now: () => Date;
   private readonly entryCooldowns = new Map<string, number>();
@@ -247,6 +265,7 @@ export class PaperPortfolioService {
       now: this.now
     });
     this.getCurrentPriceSol = options.getCurrentPriceSol;
+    this.getCurrentVolumeSol = options.getCurrentVolumeSol;
     this.getLaunchCandidate = options.getLaunchCandidate;
     this.getRiskSnapshot = options.getRiskSnapshot;
     this.getRecentSignals = options.getRecentSignals;
@@ -271,9 +290,13 @@ export class PaperPortfolioService {
     }
 
     this.started = true;
-    this.engine.loadPositions(
-      listPaperPortfolioPositions(1000).map(storedPositionToPaperPosition)
-    );
+    this.engine.loadState({
+      positions: listPaperPortfolioPositionsForState().map(
+        storedPositionToPaperPosition
+      ),
+      orders: listPaperPortfolioOrdersForState().map(storedOrderToPaperOrder),
+      fills: listPaperPortfolioFillsForState().map(storedFillToPaperFill)
+    });
   }
 
   stop(): void {
@@ -320,6 +343,21 @@ export class PaperPortfolioService {
           : "PAPER_EXIT_POLICY_DISABLED",
         paperPortfolioReasonCodes.paperOnlyNoLiveExecution
       ])
+    };
+  }
+
+  getAutomationCompatibilityConfig(): PaperAutomationPortfolioConfig {
+    return {
+      enabled: this.config.enabled,
+      legacyEntryEnabled: this.config.entry.enabled,
+      legacyExitEnabled: this.config.exit.enabled,
+      startingCashSol: this.config.startingCashSol,
+      maxPositionSizeSol: this.config.maxPositionSizeSol,
+      maxOpenPositions: this.config.maxOpenPositions,
+      maxDailySpendSol: this.config.maxDailySpendSol,
+      feeBps: this.config.feeBps,
+      slippageBps: this.config.slippageBps,
+      allowPartialExits: this.config.allowPartialExits
     };
   }
 
@@ -444,6 +482,117 @@ export class PaperPortfolioService {
       paperOnly: true,
       liveExecutionDisabled: true
     };
+  }
+
+  executeApprovedAutomationEntry(
+    signal: OverlaySignal,
+    input: ApprovedPaperAutomationExecution & { selectedThreshold: number }
+  ): PaperPortfolioEvaluation {
+    const price = this.getPrice(signal.mint);
+    const volumeSol = this.getCurrentVolume(signal.mint);
+    const impactBps = paperAutomationMarketImpactBps({
+      sizeSol: input.positionSizeSol,
+      volumeSol,
+      maximumVolumeParticipationRatio: input.maximumVolumeParticipationRatio,
+      maximumMarketImpactBps: input.maximumMarketImpactBps
+    });
+    const blockers = uniqueStrings([
+      ...(this.config.enabled ? [] : ["PAPER_PORTFOLIO_DISABLED"]),
+      ...(signal.score >= input.selectedThreshold
+        ? []
+        : ["PAPER_AUTOMATION_SCORE_BELOW_APPROVED_THRESHOLD"]),
+      ...(signal.hardReject ? ["PAPER_AUTOMATION_HARD_REJECT"] : []),
+      ...(price === null ? [paperPortfolioReasonCodes.priceMissing] : []),
+      ...(impactBps === null ? ["PAPER_AUTOMATION_LIQUIDITY_CAP"] : [])
+    ]);
+    if (blockers.length > 0 || price === null || impactBps === null) {
+      return this.noopEvaluation(blockers);
+    }
+
+    const intent = createEntryIntentFromLaunchSignal(signal, {
+      requestedSizeSol: input.positionSizeSol,
+      reason: `approved paper automation ${input.deploymentId}`,
+      reasonCodes: uniqueStrings([
+        "PAPER_AUTOMATION_APPROVED_ENTRY",
+        `PAPER_AUTOMATION_DEPLOYMENT_${safeId(input.deploymentId)}`,
+        `PAPER_AUTOMATION_OPERATION_${safeId(input.operationId)}`,
+        `PAPER_AUTOMATION_MARKET_IMPACT_BPS_${impactBps}`,
+        paperPortfolioReasonCodes.paperOnlyNoLiveExecution
+      ]),
+      createdAt: this.now().toISOString()
+    });
+    const impactedPrice = price * (1 + impactBps / 10_000);
+    const fill = this.engine.simulateBuy(intent, impactedPrice);
+    const position = this.persistAndApply(intent, fill);
+    return {
+      intent,
+      fill,
+      position,
+      snapshot: this.persistSnapshot(),
+      blocked: fill.fillStatus === "rejected",
+      reasonCodes: uniqueStrings([...blockers, ...fill.reasonCodes]),
+      paperOnly: true,
+      liveExecutionDisabled: true
+    };
+  }
+
+  evaluateApprovedAutomationExit(
+    mint: string,
+    config: PaperExitPolicyConfig
+  ): StoredPaperExitPolicyEvaluation | null {
+    const current = this.engine.getPosition(mint);
+    if (!current || current.status === "closed") return null;
+    const marked = this.updateMarkPrice(mint, this.getPrice(mint)) ?? current;
+    return this.evaluateExitPolicyForPosition(marked, null, config);
+  }
+
+  executeApprovedAutomationExit(
+    evaluation: StoredPaperExitPolicyEvaluation,
+    input: ApprovedPaperAutomationExecution
+  ): PaperPortfolioEvaluation {
+    const position = this.engine.getPosition(evaluation.mint);
+    const action = evaluation.selectedAction;
+    if (!position || !action) {
+      return this.noopEvaluation(
+        ["PAPER_AUTOMATION_EXIT_NO_LONGER_ACTIONABLE"],
+        evaluation
+      );
+    }
+    const price = this.getPrice(evaluation.mint);
+    const volumeSol = this.getCurrentVolume(evaluation.mint);
+    const exitSizeSol =
+      (position.remainingTokenAmount * (price ?? 0) * action.sellPct) / 100;
+    const impactBps = paperAutomationMarketImpactBps({
+      sizeSol: exitSizeSol,
+      volumeSol,
+      maximumVolumeParticipationRatio: input.maximumVolumeParticipationRatio,
+      maximumMarketImpactBps: input.maximumMarketImpactBps
+    });
+    if (price === null || impactBps === null) {
+      return this.noopEvaluation(
+        uniqueStrings([
+          ...(price === null ? [paperPortfolioReasonCodes.priceMissing] : []),
+          ...(impactBps === null ? ["PAPER_AUTOMATION_LIQUIDITY_CAP"] : [])
+        ]),
+        evaluation
+      );
+    }
+    return this.createExitForPosition({
+      position,
+      reason: `approved paper automation ${input.deploymentId}: ${action.reason}`,
+      reasonCodes: uniqueStrings([
+        ...action.reasonCodes,
+        paperExitRuleCompletionReasonCode(action.ruleId),
+        "PAPER_AUTOMATION_APPROVED_EXIT",
+        `PAPER_AUTOMATION_DEPLOYMENT_${safeId(input.deploymentId)}`,
+        `PAPER_AUTOMATION_OPERATION_${safeId(input.operationId)}`,
+        `PAPER_AUTOMATION_MARKET_IMPACT_BPS_${impactBps}`
+      ]),
+      sellPct: action.sellPct,
+      source: "paper_exit_policy",
+      marketPriceSol: price * (1 - impactBps / 10_000),
+      exitPolicyEvaluation: evaluation
+    });
   }
 
   ingestExitSignals(signals: ExitSignal[]): PaperPortfolioEvaluation[] {
@@ -649,7 +798,8 @@ export class PaperPortfolioService {
 
   private evaluateExitPolicyForPosition(
     position: PaperPosition | null,
-    signal: ExitSignal | null
+    signal: ExitSignal | null,
+    config: PaperExitPolicyConfig = this.exitPolicyConfig
   ): StoredPaperExitPolicyEvaluation {
     const evaluatedAt = this.now().toISOString();
     const mint = position?.mint ?? signal?.mint ?? "";
@@ -728,7 +878,7 @@ export class PaperPortfolioService {
         )
       },
       market,
-      config: this.exitPolicyConfig
+      config
     });
 
     return savePaperExitPolicyEvaluation(evaluation);
@@ -1000,6 +1150,13 @@ export class PaperPortfolioService {
       : null;
   }
 
+  private getCurrentVolume(mint: string): number {
+    const volume = this.getCurrentVolumeSol?.(mint);
+    return typeof volume === "number" && Number.isFinite(volume) && volume > 0
+      ? volume
+      : 0;
+  }
+
   private noopEvaluation(
     reasonCodes: string[],
     exitPolicyEvaluation?: StoredPaperExitPolicyEvaluation | null
@@ -1052,6 +1209,51 @@ function storedPositionToPaperPosition(
     closedAt: stored.closedAt,
     entryReasonCodes: payload.entryReasonCodes ?? [],
     exitReasonCodes: payload.exitReasonCodes ?? []
+  };
+}
+
+function storedOrderToPaperOrder(
+  stored: StoredPaperPortfolioOrder
+): PaperOrderIntent {
+  const payload =
+    stored.payload && typeof stored.payload === "object"
+      ? (stored.payload as Partial<PaperOrderIntent>)
+      : {};
+  return {
+    id: stored.orderId,
+    type: stored.type,
+    side: stored.side,
+    mint: stored.mint,
+    symbol: stored.symbol,
+    title: stored.title,
+    reason: payload.reason ?? "persisted paper order",
+    source: stored.source,
+    requestedSizeSol: stored.requestedSizeSol,
+    requestedSellPct: stored.requestedSellPct,
+    signalScore: stored.signalScore,
+    riskLevel: stored.riskLevel,
+    reasonCodes: stored.reasonCodes,
+    createdAt: stored.createdAt
+  };
+}
+
+function storedFillToPaperFill(stored: StoredPaperPortfolioFill): PaperFill {
+  return {
+    id: stored.fillId,
+    orderIntentId: stored.orderId,
+    side: stored.side,
+    mint: stored.mint,
+    priceSol: stored.priceSol,
+    sizeSol: stored.sizeSol,
+    tokenAmount: stored.tokenAmount,
+    feeSol: stored.feeSol,
+    slippageSol: stored.slippageSol,
+    effectivePriceSol: stored.effectivePriceSol,
+    fillStatus: stored.fillStatus,
+    rejectionReason: stored.rejectionReason,
+    reasonCodes: stored.reasonCodes,
+    paperOnly: true,
+    createdAt: stored.createdAt
   };
 }
 

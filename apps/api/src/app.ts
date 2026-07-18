@@ -176,6 +176,12 @@ import {
   type PaperPortfolioService,
   type PaperPortfolioServiceConfig
 } from "./paper-portfolio-service";
+import {
+  createPaperAutomationService,
+  PaperAutomationServiceError,
+  type PaperAutomationService
+} from "./paper-automation-service";
+import type { PaperAutomationForwardConfigInput } from "@axi/paper-automation";
 import { runPaperBacktest } from "./paper-backtest-lib";
 import {
   createLiveTokenService,
@@ -1382,6 +1388,7 @@ export type ApiServer = {
   lightningReadiness: LightningReadinessService;
   watchedWalletExit: WatchedWalletExitService;
   paperPortfolio: PaperPortfolioService;
+  paperAutomation: PaperAutomationService;
   indexerAdapter: IndexerAdapter;
   liveTokens: LiveTokenService;
   tokenIdentity: TokenIdentityService;
@@ -1759,6 +1766,33 @@ const paperLifecycleValidationBodySchema = z.object({
 const paperLifecycleValidationParamSchema = z.object({
   validationId: z.string().min(1).max(240)
 });
+const paperAutomationDeploymentParamSchema = z.object({
+  deploymentId: z.string().min(1).max(300)
+});
+const paperAutomationApproveBodySchema = z.object({
+  validationId: z.string().trim().min(1).max(240),
+  approvedBy: z.string().trim().min(1).max(120),
+  confirmation: z.string().min(1).max(500),
+  forwardConfig: z
+    .object({
+      maximumSignalAgeMs: z.number().int().positive().optional(),
+      minimumClosedTradesForDrift: z.number().int().positive().optional(),
+      minimumExpectancyRetentionRatio: z.number().min(0).max(1).optional(),
+      maximumForwardDrawdownPct: z.number().positive().optional(),
+      maximumConsecutiveLosses: z.number().int().positive().optional(),
+      maximumRejectedEntryRate: z.number().min(0).max(1).optional(),
+      maximumConsecutiveStaleSignals: z.number().int().positive().optional()
+    })
+    .strict()
+    .optional()
+});
+const paperAutomationControlBodySchema = z.object({
+  deploymentId: z.string().trim().min(1).max(300),
+  confirmation: z.string().min(1).max(500)
+});
+const paperAutomationPauseBodySchema = z.object({
+  reason: z.string().trim().min(1).max(160).optional()
+});
 const paperExitPolicyEvaluationParamSchema = z.object({
   evaluationId: z.string().min(1).max(240)
 });
@@ -2006,10 +2040,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const paperPortfolio = createPaperPortfolioService({
     config: createPaperPortfolioServiceConfig(options.paperPortfolio),
     getCurrentPriceSol: getCurrentPaperPriceSol,
+    getCurrentVolumeSol: (mint) =>
+      positiveOrNull(
+        indexerAdapter.getTimeseries(mint).windows["1s"].volumeSol
+      ),
     getLaunchCandidate: (mint) => launchScanner.getCandidate(mint),
     getRiskSnapshot: (mint) => riskSnapshots.get(mint),
     getRecentSignals: () => Array.from(signals.values())
   });
+  const paperAutomation = createPaperAutomationService({ paperPortfolio });
   hasOpenPaperPositionForMint = (mint: string): boolean =>
     paperPortfolio.getPositionSummaryForMint(mint).hasPosition;
   const watchedWalletExit = createWatchedWalletExitService({
@@ -2134,6 +2173,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const feedStatus = getFeedStatus();
     const liveStatus = liveTokens.getStatus();
     const paperPortfolioStatus = paperPortfolio.getStatus();
+    const paperAutomationStatus = paperAutomation.getStatus();
     const dataWalletStatus = await pumpPortalDataWallet.refreshBalance();
     const pumpPortalWalletsStatus = await pumpPortalWallets.refreshBalances();
     const meteredLaunchDataStatus = meteredLaunchData.getStatus();
@@ -2201,6 +2241,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       accountTradeMonitoringEnabled:
         watchedWalletExit.getStatus().accountTradeMonitoringEnabled,
       paperPortfolio: paperPortfolioStatus,
+      paperAutomation: paperAutomationStatus,
+      paperAutomationDeploymentCount: stats.paperAutomationDeploymentCount,
+      paperAutomationEventCount: stats.paperAutomationEventCount,
+      paperAutomationOperationCount: stats.paperAutomationOperationCount,
       paperPortfolioEnabled: paperPortfolioStatus.enabled,
       paperEntryEnabled: paperPortfolioStatus.entryPolicyEnabled,
       paperExitEnabled: paperPortfolioStatus.exitPolicyEnabled,
@@ -2684,6 +2728,115 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           `attachment; filename="${safeFileSegment(params.validationId)}.json"`
         )
         .send(JSON.stringify(validation, null, 2));
+    }
+  );
+
+  app.get("/runtime/paper-automation", async () => paperAutomation.getStatus());
+
+  app.get("/runtime/paper-automation/deployments", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return {
+      deployments: paperAutomation.getDeployments(query.limit),
+      paperOnly: true,
+      tradingDisabled: true,
+      liveExecutionDisabled: true
+    };
+  });
+
+  app.get("/runtime/paper-automation/events", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return {
+      events: paperAutomation.getEvents(query.limit),
+      paperOnly: true,
+      liveExecutionDisabled: true
+    };
+  });
+
+  app.get("/runtime/paper-automation/operations", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return {
+      operations: paperAutomation.getOperations(query.limit),
+      paperOnly: true,
+      liveExecutionDisabled: true
+    };
+  });
+
+  app.post("/runtime/paper-automation/approve", async (request, reply) => {
+    const body = paperAutomationApproveBodySchema.parse(request.body);
+    try {
+      return paperAutomation.approve({
+        validationId: body.validationId,
+        approvedBy: body.approvedBy,
+        confirmation: body.confirmation,
+        ...(body.forwardConfig
+          ? {
+              forwardConfig:
+                body.forwardConfig as PaperAutomationForwardConfigInput
+            }
+          : {})
+      });
+    } catch (error) {
+      return sendPaperAutomationError(reply, error);
+    }
+  });
+
+  app.post("/runtime/paper-automation/arm", async (request, reply) => {
+    const body = paperAutomationControlBodySchema.parse(request.body);
+    try {
+      return paperAutomation.arm(body);
+    } catch (error) {
+      return sendPaperAutomationError(reply, error);
+    }
+  });
+
+  app.post("/runtime/paper-automation/pause", async (request, reply) => {
+    const body = paperAutomationPauseBodySchema.parse(request.body ?? {});
+    try {
+      return paperAutomation.pause([
+        "PAPER_AUTOMATION_OPERATOR_PAUSED",
+        ...(body.reason
+          ? [
+              `PAPER_AUTOMATION_OPERATOR_REASON_${safeFileSegment(body.reason).toUpperCase()}`
+            ]
+          : [])
+      ]);
+    } catch (error) {
+      return sendPaperAutomationError(reply, error);
+    }
+  });
+
+  app.post("/runtime/paper-automation/revoke", async (request, reply) => {
+    const body = paperAutomationControlBodySchema.parse(request.body);
+    try {
+      return paperAutomation.revoke(body);
+    } catch (error) {
+      return sendPaperAutomationError(reply, error);
+    }
+  });
+
+  app.post("/runtime/paper-automation/reconcile", async () => ({
+    operations: paperAutomation.reconcilePendingOperations(),
+    status: paperAutomation.getStatus(),
+    paperOnly: true,
+    tradingDisabled: true,
+    liveExecutionDisabled: true
+  }));
+
+  app.get(
+    "/runtime/paper-automation/deployments/:deploymentId",
+    async (request, reply) => {
+      const params = paperAutomationDeploymentParamSchema.parse(request.params);
+      const deployment = paperAutomation
+        .getDeployments(1000)
+        .find((item) => item.deploymentId === params.deploymentId);
+      return (
+        deployment ??
+        reply.code(404).send({
+          error: "PAPER_AUTOMATION_DEPLOYMENT_NOT_FOUND",
+          paperOnly: true,
+          liveExecutionDisabled: true
+        })
+      );
     }
   );
 
@@ -4137,6 +4290,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     await chainEvents.stop();
     await stopFeed();
     calibrationCapture.interrupt("runtime_closed");
+    paperAutomation.stop();
     paidDataArmed = false;
     persistRuntimeSession({
       stoppedAt: new Date().toISOString(),
@@ -4164,6 +4318,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     launchScanner.start();
     meteredLaunchData.prepare();
     paperPortfolio.start();
+    paperAutomation.start();
     watchedWalletExit.start();
     void feed.start(handleFeedEvent);
     void chainEvents.start();
@@ -4179,6 +4334,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     disarmPaidData("feed_stop");
     launchScanner.stop();
     watchedWalletExit.stop();
+    paperAutomation.stop();
     paperPortfolio.stop();
     actualData.stop();
     await feed.stop();
@@ -6601,6 +6757,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     });
     const storedSignal = saveSignal(signal);
     cacheSignal(signal);
+    paperAutomation.observeSignal(signal);
     paperPortfolio.evaluateEntrySignal(signal);
     paperPortfolio.evaluateExits();
 
@@ -6772,6 +6929,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     });
     saveSignal(signal);
     cacheSignal(signal);
+    paperAutomation.observeSignal(signal);
     paperPortfolio.evaluateEntrySignal(signal);
     paperPortfolio.evaluateExits();
     broadcast({
@@ -7115,6 +7273,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     calibrationCapture,
     paperStrategyEvaluation,
     paperLifecycleValidation,
+    paperAutomation,
     meteredLaunchData,
     metrics: metricsEngine,
     pumpPortalDataWallet,
@@ -7439,6 +7598,22 @@ function sendPaperPortfolioError(reply: FastifyReply, error: unknown) {
       message: error.message,
       reasonCodes: error.reasonCodes,
       paperOnly: true,
+      liveExecutionDisabled: true
+    });
+  }
+
+  throw error;
+}
+
+function sendPaperAutomationError(reply: FastifyReply, error: unknown) {
+  if (error instanceof PaperAutomationServiceError) {
+    return reply.code(error.statusCode).send({
+      error: error.code,
+      message: error.message,
+      reasonCodes: error.reasonCodes,
+      automaticLiveExecution: false,
+      paperOnly: true,
+      tradingDisabled: true,
       liveExecutionDisabled: true
     });
   }

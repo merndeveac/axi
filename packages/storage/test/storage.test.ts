@@ -21,8 +21,21 @@ import {
   stopCalibrationCaptureSession
 } from "@axi/session-capture";
 import { evaluatePaperStrategy } from "@axi/paper-strategy-evaluation";
-import { evaluatePaperLifecycleValidation } from "@axi/paper-lifecycle-validation";
-import { evaluatePaperExitPolicy } from "@axi/exit-strategy";
+import {
+  defaultPaperLifecycleValidationConfig,
+  evaluatePaperLifecycleValidation
+} from "@axi/paper-lifecycle-validation";
+import {
+  createPaperExitPolicyConfig,
+  evaluatePaperExitPolicy
+} from "@axi/exit-strategy";
+import {
+  createPaperAutomationForwardConfig,
+  transitionPaperAutomationDeployment,
+  type PaperAutomationDeployment,
+  type PaperAutomationEvent,
+  type PaperAutomationOperation
+} from "@axi/paper-automation";
 import { normalizePumpPortalIdentity } from "@axi/token-identity";
 import {
   closeStorage,
@@ -42,6 +55,9 @@ import {
   getLatestCapturedSignalObservationByMint,
   getPaperStrategyEvaluation,
   getPaperLifecycleValidation,
+  getLatestPaperAutomationDeployment,
+  getPaperAutomationEvent,
+  getPaperAutomationOperation,
   getPaperExitPolicyEvaluation,
   getLatestCandidateDecision,
   getLatestMarketObservation,
@@ -65,6 +81,8 @@ import {
   listCapturedSignalObservationsBySession,
   listPaperStrategyEvaluations,
   listPaperLifecycleValidations,
+  listPaperAutomationEvents,
+  listPaperAutomationOperations,
   listPaperExitPolicyEvaluations,
   listPaperExitPolicyEvaluationsByMint,
   listLaunchTradeSamplesByMint,
@@ -132,6 +150,9 @@ import {
   saveCapturedSignalObservation,
   savePaperStrategyEvaluation,
   savePaperLifecycleValidation,
+  savePaperAutomationDeployment,
+  savePaperAutomationEvent,
+  savePaperAutomationOperation,
   savePaperExitPolicyEvaluation,
   saveCapacitySnapshot,
   saveChainVerification,
@@ -177,6 +198,82 @@ import {
 } from "../src/index";
 
 const mint = "MockMint9999111111111111111111111111111111";
+
+function createPaperAutomationDeploymentFixture(): PaperAutomationDeployment {
+  return {
+    schemaVersion: 1,
+    automationVersion: "paper-automation-v1",
+    deploymentId: "paper-automation-storage-test",
+    validationId: "paper-lifecycle-candidate-test",
+    validationVersion: "paper-lifecycle-validation-v1",
+    strategyEvaluationId: "paper-evaluation-candidate-test",
+    strategyEvaluationVersion: "paper-strategy-evaluation-v1",
+    selectedThreshold: 75,
+    exitPolicyVersion: "paper-exit-policy-v1",
+    executionConfig: defaultPaperLifecycleValidationConfig,
+    exitPolicyConfig: createPaperExitPolicyConfig(),
+    validationExpectancyPct: 10,
+    validationConfidenceLowerBoundPct: 5,
+    forwardStartingEquitySol: 1,
+    forwardConfig: createPaperAutomationForwardConfig(),
+    approvedBy: "storage-test-operator",
+    approvedAt: "2026-01-04T00:00:00.000Z",
+    status: "approved",
+    statusReasonCodes: ["PAPER_AUTOMATION_OPERATOR_APPROVED"],
+    armedAt: null,
+    pausedAt: null,
+    revokedAt: null,
+    updatedAt: "2026-01-04T00:00:00.000Z",
+    automaticLiveExecution: false,
+    paperOnly: true,
+    tradingDisabled: true,
+    liveExecutionDisabled: true
+  };
+}
+
+function createPaperAutomationEventFixture(): PaperAutomationEvent {
+  return {
+    schemaVersion: 1,
+    eventId: "paper-automation-event-storage-test",
+    deploymentId: "paper-automation-storage-test",
+    operationId: null,
+    kind: "approved",
+    mint: null,
+    observedAt: "2026-01-04T00:00:00.000Z",
+    orderId: null,
+    fillId: null,
+    entryFeeSol: null,
+    positionSizeSol: null,
+    realizedPnlSol: null,
+    positionClosed: null,
+    reasonCodes: ["PAPER_AUTOMATION_OPERATOR_APPROVED"],
+    payload: {},
+    paperOnly: true,
+    liveExecutionDisabled: true
+  };
+}
+
+function createPaperAutomationOperationFixture(): PaperAutomationOperation {
+  return {
+    schemaVersion: 1,
+    operationId: "paper-automation-operation-storage-test",
+    deploymentId: "paper-automation-storage-test",
+    kind: "entry",
+    status: "pending",
+    mint,
+    signalScore: 80,
+    signalHardReject: false,
+    signalAt: "2026-01-04T00:01:00.000Z",
+    executeAfter: "2026-01-04T00:01:01.000Z",
+    expiresAt: "2026-01-04T00:01:06.000Z",
+    exitEvaluationId: null,
+    reasonCodes: ["PAPER_AUTOMATION_ENTRY_SCHEDULED"],
+    createdAt: "2026-01-04T00:01:00.000Z",
+    updatedAt: "2026-01-04T00:01:00.000Z",
+    paperOnly: true,
+    liveExecutionDisabled: true
+  };
+}
 
 let testDirectory: string;
 let databasePath: string;
@@ -520,6 +617,70 @@ describe("@axi/storage", () => {
     expect(getPaperLifecycleValidation(report.validationId)).toMatchObject({
       validationVersion: "paper-lifecycle-validation-v1",
       tradingDisabled: true,
+      liveExecutionDisabled: true
+    });
+  });
+
+  it("persists restart-safe paper automation state and immutable audit events", () => {
+    initStorage({ databasePath });
+    const approved = createPaperAutomationDeploymentFixture();
+    savePaperAutomationDeployment(approved);
+    const armed = transitionPaperAutomationDeployment({
+      deployment: approved,
+      status: "armed",
+      at: "2026-01-04T00:01:00.000Z",
+      reasonCodes: ["PAPER_AUTOMATION_OPERATOR_ARMED"]
+    });
+    savePaperAutomationDeployment(armed);
+
+    const event = createPaperAutomationEventFixture();
+    savePaperAutomationEvent(event);
+    savePaperAutomationEvent(event);
+    expect(() =>
+      savePaperAutomationEvent({
+        ...event,
+        reasonCodes: ["MUTATED"]
+      })
+    ).toThrow("immutable");
+
+    const pending = createPaperAutomationOperationFixture();
+    savePaperAutomationOperation(pending);
+    savePaperAutomationOperation({
+      ...pending,
+      status: "executed",
+      updatedAt: "2026-01-04T00:01:02.000Z",
+      reasonCodes: [...pending.reasonCodes, "PAPER_AUTOMATION_ENTRY_EXECUTED"]
+    });
+    expect(() => savePaperAutomationOperation(pending)).toThrow(
+      "cannot transition"
+    );
+    expect(() =>
+      savePaperAutomationDeployment({
+        ...armed,
+        selectedThreshold: 99,
+        updatedAt: "2026-01-04T00:02:00.000Z"
+      })
+    ).toThrow("immutable pinned fields");
+
+    expect(getStorageStats()).toMatchObject({
+      paperAutomationDeploymentCount: 1,
+      paperAutomationEventCount: 1,
+      paperAutomationOperationCount: 1
+    });
+    expect(listPaperAutomationEvents(approved.deploymentId)).toHaveLength(1);
+    expect(listPaperAutomationOperations(approved.deploymentId)).toHaveLength(
+      1
+    );
+    expect(getPaperAutomationEvent(event.eventId)).toMatchObject(event);
+    expect(getPaperAutomationOperation(pending.operationId)).toMatchObject({
+      status: "executed"
+    });
+
+    closeStorage();
+    initStorageReadOnly({ databasePath });
+    expect(getLatestPaperAutomationDeployment()).toMatchObject({
+      deploymentId: approved.deploymentId,
+      status: "armed",
       liveExecutionDisabled: true
     });
   });

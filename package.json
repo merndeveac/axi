@@ -28,6 +28,7 @@
     "axi:restart:metered": "node scripts/dev/axi-restart-clean.mjs --metered",
     "axi:stop": "node scripts/dev/axi-stop.mjs",
     "axi:logs": "node scripts/dev/axi-logs.mjs",
+    "paper:automation:status": "pnpm --filter @axi/api paper:automation:status",
     "local:stop": "pnpm axi:stop",
     "local:restart": "pnpm axi:restart",
     "local:logs": "pnpm axi:logs"

@@ -22,6 +22,7 @@
     "@axi/exit-strategy": "workspace:*",
     "@axi/market-data": "workspace:*",
     "@axi/paper-lifecycle-validation": "workspace:*",
+    "@axi/paper-automation": "workspace:*",
     "@axi/paper-portfolio": "workspace:*",
     "@axi/paper-strategy-evaluation": "workspace:*",
     "@axi/session-capture": "workspace:*",

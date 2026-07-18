@@ -174,6 +174,37 @@ describe("@axi/paper-portfolio", () => {
     expect(engine.config.paperOnly).toBe(true);
   });
 
+  it("reconciles cash and daily spend from persisted state", () => {
+    const original = createPaperPortfolioEngine({
+      startingCashSol: 1,
+      maxDailySpendSol: 0.01
+    });
+    const entry = entryIntent({ mint: mintA, requestedSizeSol: 0.01 });
+    const fill = original.simulateBuy(entry, 0.001);
+    const position = original.applyFill(fill, entry);
+    const expectedCash = original.getSnapshot().cashSol;
+    const restarted = createPaperPortfolioEngine({
+      startingCashSol: 1,
+      maxDailySpendSol: 0.01
+    });
+
+    restarted.loadState({
+      positions: position ? [position] : [],
+      orders: original.getOrderHistory(),
+      fills: original.getFillHistory()
+    });
+
+    expect(restarted.getSnapshot().cashSol).toBe(expectedCash);
+    expect(restarted.getOpenPositions()).toHaveLength(1);
+    const next = restarted.simulateBuy(
+      entryIntent({ mint: mintB, requestedSizeSol: 0.01 }),
+      0.001
+    );
+    expect(next.reasonCodes).toContain(
+      paperPortfolioReasonCodes.maxDailySpendExceeded
+    );
+  });
+
   it("creates intents from launch and exit signals", () => {
     const entry = createEntryIntentFromLaunchSignal({
       mint: mintA,

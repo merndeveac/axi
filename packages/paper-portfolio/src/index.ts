@@ -125,6 +125,11 @@ export type PaperPortfolioEngine = {
   getOrderHistory: () => PaperOrderIntent[];
   getFillHistory: () => PaperFill[];
   loadPositions: (positions: PaperPosition[]) => void;
+  loadState: (input: {
+    positions: PaperPosition[];
+    orders: PaperOrderIntent[];
+    fills: PaperFill[];
+  }) => void;
   reset: () => void;
 };
 
@@ -520,6 +525,51 @@ class DefaultPaperPortfolioEngine implements PaperPortfolioEngine {
       }
     }
 
+    this.recordEquity(this.now().toISOString());
+  }
+
+  loadState(input: {
+    positions: PaperPosition[];
+    orders: PaperOrderIntent[];
+    fills: PaperFill[];
+  }): void {
+    this.positions.clear();
+    this.closedPositions.length = 0;
+    this.orders.length = 0;
+    this.fills.length = 0;
+    this.equityHistory.length = 0;
+    this.cashSol = this.config.startingCashSol;
+
+    for (const order of input.orders) {
+      const normalized = normalizeIntent(order);
+      if (!this.orders.some((candidate) => candidate.id === normalized.id)) {
+        this.orders.push(normalized);
+      }
+    }
+    for (const fill of input.fills) {
+      const normalized = normalizeFill(fill);
+      if (this.fills.some((candidate) => candidate.id === normalized.id)) {
+        continue;
+      }
+      this.fills.push(normalized);
+      if (normalized.fillStatus !== "rejected") {
+        this.cashSol = roundSol(
+          this.cashSol +
+            (normalized.side === "buy"
+              ? -normalized.sizeSol - normalized.feeSol
+              : normalized.sizeSol - normalized.feeSol)
+        );
+      }
+    }
+    for (const position of input.positions) {
+      const normalized = recalculatePositionPnl({
+        ...position,
+        entryReasonCodes: uniqueReasonCodes(position.entryReasonCodes),
+        exitReasonCodes: uniqueReasonCodes(position.exitReasonCodes)
+      });
+      this.positions.set(normalized.mint, normalized);
+      if (normalized.status === "closed") this.closedPositions.push(normalized);
+    }
     this.recordEquity(this.now().toISOString());
   }
 

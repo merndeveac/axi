@@ -16,6 +16,15 @@ import type {
   PaperLifecycleValidationStatus
 } from "@axi/paper-lifecycle-validation";
 import type {
+  PaperAutomationDeployment,
+  PaperAutomationDeploymentStatus,
+  PaperAutomationEvent,
+  PaperAutomationEventKind,
+  PaperAutomationOperation,
+  PaperAutomationOperationKind,
+  PaperAutomationOperationStatus
+} from "@axi/paper-automation";
+import type {
   CandidateWatchPlan,
   WatchTarget,
   WatchTargetKind
@@ -311,6 +320,9 @@ export type StorageStats = {
   calibrationSignalObservationCount: number;
   paperStrategyEvaluationCount: number;
   paperLifecycleValidationCount: number;
+  paperAutomationDeploymentCount: number;
+  paperAutomationEventCount: number;
+  paperAutomationOperationCount: number;
   paperExitPolicyEvaluationCount: number;
   pumpPortalWalletStatusSnapshotCount: number;
   riskSnapshotCount: number;
@@ -348,6 +360,18 @@ export type StoredPaperStrategyEvaluation = PaperStrategyEvaluationReport & {
 };
 
 export type StoredPaperLifecycleValidation = PaperLifecycleValidationReport & {
+  id: number;
+};
+
+export type StoredPaperAutomationDeployment = PaperAutomationDeployment & {
+  id: number;
+};
+
+export type StoredPaperAutomationEvent = PaperAutomationEvent & {
+  id: number;
+};
+
+export type StoredPaperAutomationOperation = PaperAutomationOperation & {
   id: number;
 };
 
@@ -1605,6 +1629,44 @@ type PaperLifecycleValidationRow = {
   created_at: string;
 };
 
+type PaperAutomationDeploymentRow = {
+  id: number;
+  deployment_id: string;
+  automation_version: string;
+  validation_id: string;
+  status: PaperAutomationDeploymentStatus;
+  selected_threshold: number;
+  payload_json: string;
+  approved_at: string;
+  updated_at: string;
+};
+
+type PaperAutomationEventRow = {
+  id: number;
+  event_id: string;
+  deployment_id: string;
+  operation_id: string | null;
+  kind: PaperAutomationEventKind;
+  mint: string | null;
+  payload_json: string;
+  observed_at: string;
+  created_at: string;
+};
+
+type PaperAutomationOperationRow = {
+  id: number;
+  operation_id: string;
+  deployment_id: string;
+  kind: PaperAutomationOperationKind;
+  status: PaperAutomationOperationStatus;
+  mint: string;
+  execute_after: string;
+  expires_at: string;
+  payload_json: string;
+  created_at: string;
+  updated_at: string;
+};
+
 type PaperExitPolicyEvaluationRow = {
   id: number;
   evaluation_id: string;
@@ -2528,6 +2590,116 @@ const paperLifecycleValidationSchema = z
     reasonCodes: z.array(z.string().min(1))
   })
   .passthrough();
+
+const paperAutomationDeploymentSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    automationVersion: z.literal("paper-automation-v1"),
+    deploymentId: z.string().min(1),
+    validationId: z.string().min(1),
+    validationVersion: z.literal("paper-lifecycle-validation-v1"),
+    strategyEvaluationId: z.string().min(1),
+    strategyEvaluationVersion: z.literal("paper-strategy-evaluation-v1"),
+    selectedThreshold: z.number().min(0).max(100),
+    exitPolicyVersion: z.literal("paper-exit-policy-v1"),
+    executionConfig: z.object({ schemaVersion: z.literal(1) }).passthrough(),
+    exitPolicyConfig: z.object({ schemaVersion: z.literal(1) }).passthrough(),
+    validationExpectancyPct: z.number().positive(),
+    validationConfidenceLowerBoundPct: z.number().positive(),
+    forwardStartingEquitySol: z.number().positive(),
+    forwardConfig: z
+      .object({
+        schemaVersion: z.literal(1),
+        maximumSignalAgeMs: z.number().positive(),
+        minimumClosedTradesForDrift: z.number().int().positive(),
+        minimumExpectancyRetentionRatio: z.number().min(0).max(1),
+        minimumForwardExpectancyPct: z.literal(0),
+        maximumForwardDrawdownPct: z.number().positive(),
+        maximumConsecutiveLosses: z.number().int().positive(),
+        maximumRejectedEntryRate: z.number().min(0).max(1),
+        maximumConsecutiveStaleSignals: z.number().int().positive()
+      })
+      .strict(),
+    approvedBy: z.string().min(1),
+    approvedAt: z.string().datetime(),
+    status: z.enum(["approved", "armed", "paused", "revoked"]),
+    statusReasonCodes: z.array(z.string().min(1)),
+    armedAt: z.string().datetime().nullable(),
+    pausedAt: z.string().datetime().nullable(),
+    revokedAt: z.string().datetime().nullable(),
+    updatedAt: z.string().datetime(),
+    automaticLiveExecution: z.literal(false),
+    paperOnly: z.literal(true),
+    tradingDisabled: z.literal(true),
+    liveExecutionDisabled: z.literal(true)
+  })
+  .strict();
+
+const paperAutomationEventSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    eventId: z.string().min(1),
+    deploymentId: z.string().min(1),
+    operationId: z.string().min(1).nullable(),
+    kind: z.enum([
+      "approved",
+      "armed",
+      "paused",
+      "revoked",
+      "restart_reconciled",
+      "signal_accepted",
+      "signal_rejected",
+      "entry_scheduled",
+      "entry_missed",
+      "entry_executed",
+      "entry_rejected",
+      "entry_expired",
+      "entry_cancelled",
+      "exit_scheduled",
+      "exit_missed",
+      "exit_executed",
+      "exit_rejected",
+      "exit_expired",
+      "exit_cancelled",
+      "drift_detected",
+      "kill_switch_triggered"
+    ]),
+    mint: z.string().min(1).nullable(),
+    observedAt: z.string().datetime(),
+    orderId: z.string().min(1).nullable(),
+    fillId: z.string().min(1).nullable(),
+    entryFeeSol: z.number().nonnegative().nullable(),
+    positionSizeSol: z.number().positive().nullable(),
+    realizedPnlSol: z.number().nullable(),
+    positionClosed: z.boolean().nullable(),
+    reasonCodes: z.array(z.string().min(1)),
+    payload: z.unknown(),
+    paperOnly: z.literal(true),
+    liveExecutionDisabled: z.literal(true)
+  })
+  .strict();
+
+const paperAutomationOperationSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    operationId: z.string().min(1),
+    deploymentId: z.string().min(1),
+    kind: z.enum(["entry", "exit"]),
+    status: z.enum(["pending", "executed", "rejected", "expired", "cancelled"]),
+    mint: z.string().min(1),
+    signalScore: z.number().min(0).max(100),
+    signalHardReject: z.boolean(),
+    signalAt: z.string().datetime(),
+    executeAfter: z.string().datetime(),
+    expiresAt: z.string().datetime(),
+    exitEvaluationId: z.string().min(1).nullable(),
+    reasonCodes: z.array(z.string().min(1)),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+    paperOnly: z.literal(true),
+    liveExecutionDisabled: z.literal(true)
+  })
+  .strict();
 
 const paperExitPolicyEvaluationSchema = z
   .object({
@@ -5701,6 +5873,284 @@ export function listPaperLifecycleValidations(
   return rows.map(mapPaperLifecycleValidationRow);
 }
 
+export function savePaperAutomationDeployment(
+  deployment: PaperAutomationDeployment
+): StoredPaperAutomationDeployment {
+  const parsed = parsePaperAutomationDeployment(deployment);
+  const existing = getPaperAutomationDeployment(parsed.deploymentId);
+
+  if (existing) {
+    if (paperAutomationDeploymentImmutableFieldsDiffer(existing, parsed)) {
+      throw new Error(
+        `Paper automation deployment ${parsed.deploymentId} has immutable pinned fields.`
+      );
+    }
+    if (
+      !paperAutomationStorageTransitionAllowed(existing.status, parsed.status)
+    ) {
+      throw new Error(
+        `Paper automation deployment ${parsed.deploymentId} cannot transition from ${existing.status} to ${parsed.status}.`
+      );
+    }
+    if (Date.parse(parsed.updatedAt) < Date.parse(existing.updatedAt)) {
+      throw new Error(
+        `Paper automation deployment ${parsed.deploymentId} cannot move backwards in time.`
+      );
+    }
+
+    getDb()
+      .prepare(
+        `update paper_automation_deployments
+         set status = ?, payload_json = ?, updated_at = ?
+         where deployment_id = ?`
+      )
+      .run(
+        parsed.status,
+        stringifyJson(parsed),
+        parsed.updatedAt,
+        parsed.deploymentId
+      );
+  } else {
+    getDb()
+      .prepare(
+        `insert into paper_automation_deployments (
+          deployment_id, automation_version, validation_id, status,
+          selected_threshold, payload_json, approved_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        parsed.deploymentId,
+        parsed.automationVersion,
+        parsed.validationId,
+        parsed.status,
+        parsed.selectedThreshold,
+        stringifyJson(parsed),
+        parsed.approvedAt,
+        parsed.updatedAt
+      );
+  }
+
+  const stored = getPaperAutomationDeployment(parsed.deploymentId);
+  if (!stored) {
+    throw new Error(
+      `Paper automation deployment ${parsed.deploymentId} was not persisted.`
+    );
+  }
+  return stored;
+}
+
+export function getPaperAutomationDeployment(
+  deploymentId: string
+): StoredPaperAutomationDeployment | null {
+  const row = getDb()
+    .prepare(
+      "select * from paper_automation_deployments where deployment_id = ?"
+    )
+    .get(deploymentId) as PaperAutomationDeploymentRow | undefined;
+  return row ? mapPaperAutomationDeploymentRow(row) : null;
+}
+
+export function getLatestPaperAutomationDeployment(): StoredPaperAutomationDeployment | null {
+  const row = getDb()
+    .prepare(
+      `select * from paper_automation_deployments
+       order by datetime(approved_at) desc, id desc limit 1`
+    )
+    .get() as PaperAutomationDeploymentRow | undefined;
+  return row ? mapPaperAutomationDeploymentRow(row) : null;
+}
+
+export function listPaperAutomationDeployments(
+  limit = 50
+): StoredPaperAutomationDeployment[] {
+  const rows = getDb()
+    .prepare(
+      `select * from paper_automation_deployments
+       order by datetime(approved_at) desc, id desc limit ?`
+    )
+    .all(limitSchema.parse(limit)) as PaperAutomationDeploymentRow[];
+  return rows.map(mapPaperAutomationDeploymentRow);
+}
+
+export function savePaperAutomationEvent(
+  event: PaperAutomationEvent
+): StoredPaperAutomationEvent {
+  const parsed = parsePaperAutomationEvent(event);
+  const existing = getPaperAutomationEvent(parsed.eventId);
+  if (existing) {
+    const { id: _id, ...storedEvent } = existing;
+    void _id;
+    if (stringifyJson(storedEvent) !== stringifyJson(parsed)) {
+      throw new Error(
+        `Paper automation event ${parsed.eventId} is immutable and already exists with different data.`
+      );
+    }
+    return existing;
+  }
+
+  getDb()
+    .prepare(
+      `insert into paper_automation_events (
+        event_id, deployment_id, operation_id, kind, mint, payload_json,
+        observed_at, created_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.eventId,
+      parsed.deploymentId,
+      parsed.operationId,
+      parsed.kind,
+      parsed.mint,
+      stringifyJson(parsed),
+      parsed.observedAt,
+      new Date().toISOString()
+    );
+  const stored = getPaperAutomationEvent(parsed.eventId);
+  if (!stored)
+    throw new Error(
+      `Paper automation event ${parsed.eventId} was not persisted.`
+    );
+  return stored;
+}
+
+export function getPaperAutomationEvent(
+  eventId: string
+): StoredPaperAutomationEvent | null {
+  const row = getDb()
+    .prepare("select * from paper_automation_events where event_id = ?")
+    .get(eventId) as PaperAutomationEventRow | undefined;
+  return row ? mapPaperAutomationEventRow(row) : null;
+}
+
+export function listPaperAutomationEvents(
+  deploymentId: string,
+  limit = 500
+): StoredPaperAutomationEvent[] {
+  const rows = getDb()
+    .prepare(
+      `select * from paper_automation_events where deployment_id = ?
+       order by datetime(observed_at) asc, id asc limit ?`
+    )
+    .all(deploymentId, limitSchema.parse(limit)) as PaperAutomationEventRow[];
+  return rows.map(mapPaperAutomationEventRow);
+}
+
+export function listPaperAutomationEventsForEvaluation(
+  deploymentId: string
+): StoredPaperAutomationEvent[] {
+  const rows = getDb()
+    .prepare(
+      `select * from paper_automation_events where deployment_id = ?
+       order by datetime(observed_at) asc, id asc`
+    )
+    .all(deploymentId) as PaperAutomationEventRow[];
+  return rows.map(mapPaperAutomationEventRow);
+}
+
+export function savePaperAutomationOperation(
+  operation: PaperAutomationOperation
+): StoredPaperAutomationOperation {
+  const parsed = parsePaperAutomationOperation(operation);
+  const existing = getPaperAutomationOperation(parsed.operationId);
+  if (existing) {
+    if (paperAutomationOperationImmutableFieldsDiffer(existing, parsed)) {
+      throw new Error(
+        `Paper automation operation ${parsed.operationId} has immutable scheduling fields.`
+      );
+    }
+    if (
+      existing.status !== parsed.status &&
+      (existing.status !== "pending" || parsed.status === "pending")
+    ) {
+      throw new Error(
+        `Paper automation operation ${parsed.operationId} cannot transition from ${existing.status} to ${parsed.status}.`
+      );
+    }
+    if (Date.parse(parsed.updatedAt) < Date.parse(existing.updatedAt)) {
+      throw new Error(
+        `Paper automation operation ${parsed.operationId} cannot move backwards in time.`
+      );
+    }
+    getDb()
+      .prepare(
+        `update paper_automation_operations
+         set status = ?, payload_json = ?, updated_at = ? where operation_id = ?`
+      )
+      .run(
+        parsed.status,
+        stringifyJson(parsed),
+        parsed.updatedAt,
+        parsed.operationId
+      );
+  } else {
+    if (parsed.status !== "pending") {
+      throw new Error(
+        `New paper automation operation ${parsed.operationId} must be pending.`
+      );
+    }
+    getDb()
+      .prepare(
+        `insert into paper_automation_operations (
+          operation_id, deployment_id, kind, status, mint, execute_after,
+          expires_at, payload_json, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        parsed.operationId,
+        parsed.deploymentId,
+        parsed.kind,
+        parsed.status,
+        parsed.mint,
+        parsed.executeAfter,
+        parsed.expiresAt,
+        stringifyJson(parsed),
+        parsed.createdAt,
+        parsed.updatedAt
+      );
+  }
+  const stored = getPaperAutomationOperation(parsed.operationId);
+  if (!stored)
+    throw new Error(
+      `Paper automation operation ${parsed.operationId} was not persisted.`
+    );
+  return stored;
+}
+
+export function getPaperAutomationOperation(
+  operationId: string
+): StoredPaperAutomationOperation | null {
+  const row = getDb()
+    .prepare("select * from paper_automation_operations where operation_id = ?")
+    .get(operationId) as PaperAutomationOperationRow | undefined;
+  return row ? mapPaperAutomationOperationRow(row) : null;
+}
+
+export function listPaperAutomationOperations(
+  deploymentId: string,
+  options: { status?: PaperAutomationOperationStatus; limit?: number } = {}
+): StoredPaperAutomationOperation[] {
+  const limit = limitSchema.parse(options.limit ?? 500);
+  const rows = options.status
+    ? (getDb()
+        .prepare(
+          `select * from paper_automation_operations
+           where deployment_id = ? and status = ?
+           order by datetime(created_at) asc, id asc limit ?`
+        )
+        .all(
+          deploymentId,
+          options.status,
+          limit
+        ) as PaperAutomationOperationRow[])
+    : (getDb()
+        .prepare(
+          `select * from paper_automation_operations where deployment_id = ?
+           order by datetime(created_at) asc, id asc limit ?`
+        )
+        .all(deploymentId, limit) as PaperAutomationOperationRow[]);
+  return rows.map(mapPaperAutomationOperationRow);
+}
+
 export function savePaperExitPolicyEvaluation(
   evaluation: PaperExitPolicyEvaluation
 ): StoredPaperExitPolicyEvaluation {
@@ -6750,6 +7200,16 @@ export function listPaperPortfolioOrders(
   return rows.map(mapPaperPortfolioOrderRow);
 }
 
+export function listPaperPortfolioOrdersForState(): StoredPaperPortfolioOrder[] {
+  const rows = getDb()
+    .prepare(
+      `select * from paper_portfolio_orders
+       order by datetime(created_at) asc, id asc`
+    )
+    .all() as PaperPortfolioOrderRow[];
+  return rows.map(mapPaperPortfolioOrderRow);
+}
+
 export function savePaperPortfolioFill(
   fill: PaperPortfolioFillInput
 ): StoredPaperPortfolioFill {
@@ -6829,6 +7289,16 @@ export function listPaperPortfolioFills(
     )
     .all(parsedLimit) as PaperPortfolioFillRow[];
 
+  return rows.map(mapPaperPortfolioFillRow);
+}
+
+export function listPaperPortfolioFillsForState(): StoredPaperPortfolioFill[] {
+  const rows = getDb()
+    .prepare(
+      `select * from paper_portfolio_fills
+       order by datetime(created_at) asc, id asc`
+    )
+    .all() as PaperPortfolioFillRow[];
   return rows.map(mapPaperPortfolioFillRow);
 }
 
@@ -6936,6 +7406,16 @@ export function listPaperPortfolioPositions(
     )
     .all(parsedLimit) as PaperPortfolioPositionRow[];
 
+  return rows.map(mapPaperPortfolioPositionRow);
+}
+
+export function listPaperPortfolioPositionsForState(): StoredPaperPortfolioPosition[] {
+  const rows = getDb()
+    .prepare(
+      `select * from paper_portfolio_positions
+       order by datetime(updated_at) asc, id asc`
+    )
+    .all() as PaperPortfolioPositionRow[];
   return rows.map(mapPaperPortfolioPositionRow);
 }
 
@@ -7096,6 +7576,12 @@ export function getStorageStats(): StorageStats {
     ),
     paperStrategyEvaluationCount: countRows(db, "paper_strategy_evaluations"),
     paperLifecycleValidationCount: countRows(db, "paper_lifecycle_validations"),
+    paperAutomationDeploymentCount: countRows(
+      db,
+      "paper_automation_deployments"
+    ),
+    paperAutomationEventCount: countRows(db, "paper_automation_events"),
+    paperAutomationOperationCount: countRows(db, "paper_automation_operations"),
     paperExitPolicyEvaluationCount: countRows(
       db,
       "paper_exit_policy_evaluations"
@@ -8296,6 +8782,68 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(21, "paper_lifecycle_validation", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 22)) {
+    db.exec(`
+      create table if not exists paper_automation_deployments (
+        id integer primary key autoincrement,
+        deployment_id text not null unique,
+        automation_version text not null,
+        validation_id text not null,
+        status text not null,
+        selected_threshold real not null,
+        payload_json text not null,
+        approved_at text not null,
+        updated_at text not null
+      );
+
+      create unique index if not exists idx_paper_automation_active_validation
+        on paper_automation_deployments(validation_id, deployment_id);
+      create index if not exists idx_paper_automation_deployments_status
+        on paper_automation_deployments(status, approved_at);
+
+      create table if not exists paper_automation_events (
+        id integer primary key autoincrement,
+        event_id text not null unique,
+        deployment_id text not null,
+        operation_id text,
+        kind text not null,
+        mint text,
+        payload_json text not null,
+        observed_at text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_paper_automation_events_deployment
+        on paper_automation_events(deployment_id, observed_at);
+      create index if not exists idx_paper_automation_events_operation
+        on paper_automation_events(operation_id);
+
+      create table if not exists paper_automation_operations (
+        id integer primary key autoincrement,
+        operation_id text not null unique,
+        deployment_id text not null,
+        kind text not null,
+        status text not null,
+        mint text not null,
+        execute_after text not null,
+        expires_at text not null,
+        payload_json text not null,
+        created_at text not null,
+        updated_at text not null
+      );
+
+      create index if not exists idx_paper_automation_operations_pending
+        on paper_automation_operations(deployment_id, status, execute_after);
+      create index if not exists idx_paper_automation_operations_mint
+        on paper_automation_operations(deployment_id, mint, status);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(22, "paper_automation_forward_validation", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -9176,6 +9724,110 @@ function mapPaperLifecycleValidationRow(
     ...parsePaperLifecycleValidation(JSON.parse(row.payload_json)),
     id: row.id
   };
+}
+
+function parsePaperAutomationDeployment(
+  value: unknown
+): PaperAutomationDeployment {
+  return paperAutomationDeploymentSchema.parse(
+    value
+  ) as unknown as PaperAutomationDeployment;
+}
+
+function mapPaperAutomationDeploymentRow(
+  row: PaperAutomationDeploymentRow
+): StoredPaperAutomationDeployment {
+  return {
+    ...parsePaperAutomationDeployment(JSON.parse(row.payload_json)),
+    id: row.id
+  };
+}
+
+function parsePaperAutomationEvent(value: unknown): PaperAutomationEvent {
+  return paperAutomationEventSchema.parse(value) as PaperAutomationEvent;
+}
+
+function mapPaperAutomationEventRow(
+  row: PaperAutomationEventRow
+): StoredPaperAutomationEvent {
+  return {
+    ...parsePaperAutomationEvent(JSON.parse(row.payload_json)),
+    id: row.id
+  };
+}
+
+function parsePaperAutomationOperation(
+  value: unknown
+): PaperAutomationOperation {
+  return paperAutomationOperationSchema.parse(
+    value
+  ) as PaperAutomationOperation;
+}
+
+function mapPaperAutomationOperationRow(
+  row: PaperAutomationOperationRow
+): StoredPaperAutomationOperation {
+  return {
+    ...parsePaperAutomationOperation(JSON.parse(row.payload_json)),
+    id: row.id
+  };
+}
+
+function paperAutomationDeploymentImmutableFieldsDiffer(
+  existing: StoredPaperAutomationDeployment,
+  candidate: PaperAutomationDeployment
+): boolean {
+  const mutableKeys = new Set([
+    "id",
+    "status",
+    "statusReasonCodes",
+    "armedAt",
+    "pausedAt",
+    "revokedAt",
+    "updatedAt"
+  ]);
+  const pinned = (value: Record<string, unknown>) =>
+    Object.fromEntries(
+      Object.entries(value).filter(([key]) => !mutableKeys.has(key))
+    );
+  return (
+    stringifyJson(pinned(existing as unknown as Record<string, unknown>)) !==
+    stringifyJson(pinned(candidate as unknown as Record<string, unknown>))
+  );
+}
+
+function paperAutomationStorageTransitionAllowed(
+  from: PaperAutomationDeploymentStatus,
+  to: PaperAutomationDeploymentStatus
+): boolean {
+  if (from === to) return true;
+  if (from === "revoked") return false;
+  if (to === "revoked") return true;
+  if (from === "approved") return to === "armed" || to === "paused";
+  if (from === "armed") return to === "paused";
+  return to === "armed";
+}
+
+function paperAutomationOperationImmutableFieldsDiffer(
+  existing: StoredPaperAutomationOperation,
+  candidate: PaperAutomationOperation
+): boolean {
+  return (
+    existing.schemaVersion !== candidate.schemaVersion ||
+    existing.operationId !== candidate.operationId ||
+    existing.deploymentId !== candidate.deploymentId ||
+    existing.kind !== candidate.kind ||
+    existing.mint !== candidate.mint ||
+    existing.signalScore !== candidate.signalScore ||
+    existing.signalHardReject !== candidate.signalHardReject ||
+    existing.signalAt !== candidate.signalAt ||
+    existing.executeAfter !== candidate.executeAfter ||
+    existing.expiresAt !== candidate.expiresAt ||
+    existing.exitEvaluationId !== candidate.exitEvaluationId ||
+    existing.createdAt !== candidate.createdAt ||
+    existing.paperOnly !== candidate.paperOnly ||
+    existing.liveExecutionDisabled !== candidate.liveExecutionDisabled
+  );
 }
 
 function parsePaperExitPolicyEvaluation(

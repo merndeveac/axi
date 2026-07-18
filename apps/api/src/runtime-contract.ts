@@ -5,6 +5,7 @@ import { getSessionCaptureRuntimeContract } from "@axi/session-capture";
 import { getPaperStrategyEvaluationRuntimeContract } from "@axi/paper-strategy-evaluation";
 import { getPaperLifecycleValidationRuntimeContract } from "@axi/paper-lifecycle-validation";
 import { getPaperExitPolicyRuntimeContract } from "@axi/exit-strategy";
+import { getPaperAutomationRuntimeContract } from "@axi/paper-automation";
 import type { ActualDataService } from "./actual-data-service";
 import type { MeteredLaunchDataService } from "./metered-launch-data-service";
 
@@ -58,7 +59,7 @@ export function createRuntimeContract(input: {
   );
 
   return {
-    version: 10,
+    version: 11,
     runtimeSessionId: input.runtimeSessionId,
     safety: {
       paperOnly: true,
@@ -82,6 +83,7 @@ export function createRuntimeContract(input: {
       calibrationSessionCapture: "@axi/session-capture",
       paperStrategyEvaluation: "@axi/paper-strategy-evaluation",
       paperLifecycleValidation: "@axi/paper-lifecycle-validation",
+      paperAutomation: "@axi/paper-automation",
       paperExitPolicy: "@axi/exit-strategy",
       capacityModel: "@axi/capacity-model",
       trackingScheduler: "@axi/tracking-scheduler",
@@ -129,6 +131,7 @@ export function createRuntimeContract(input: {
     sessionCapture: getSessionCaptureRuntimeContract(),
     paperStrategyEvaluation: getPaperStrategyEvaluationRuntimeContract(),
     paperLifecycleValidation: getPaperLifecycleValidationRuntimeContract(),
+    paperAutomation: getPaperAutomationRuntimeContract(),
     paperExitPolicy: getPaperExitPolicyRuntimeContract(),
     roadmap: {
       coverageCapacityInstrumentation: "implemented",
@@ -140,6 +143,7 @@ export function createRuntimeContract(input: {
       calibrationSessionCapture: "implemented",
       paperStrategyEvaluation: "implemented",
       paperLifecycleValidation: "implemented",
+      paperAutomationForwardValidation: "implemented",
       paperExitPolicy: "implemented",
       schedulerMutationApplied:
         meteredStatus.scheduler.trackingMutationCount > 0

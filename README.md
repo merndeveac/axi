@@ -141,6 +141,54 @@ writing SQLite or starting feeds:
 pnpm --filter @axi/api paper:lifecycle:validate -- --strategy-evaluation <evaluation-id> --from-db .data/axi.sqlite
 ```
 
+## Approved Paper Automation And Forward Validation
+
+`@axi/paper-automation` is the paper-only promotion controller for a passing
+`paper_automation_candidate`. Approval never activates a report by itself. A
+local operator must approve one immutable lifecycle report and then separately
+arm its generated deployment with an exact confirmation string. The deployment
+pins the upstream evaluation/version, selected score threshold, portfolio
+limits, costs, entry/exit latency, fill-delay and miss assumptions, liquidity
+participation, market impact, exit-policy configuration, and conservative
+forward-validation gates.
+
+Arming fails closed unless the live paper portfolio matches those pinned
+assumptions and both legacy `PAPER_ENTRY_ENABLED` and `PAPER_EXIT_ENABLED` loops
+are off. Approved entries use the canonical current one-second volume bucket for
+participation and market-impact checks. Missing price or one-second liquidity
+rejects the paper operation; it never falls back to a live order. Operations are
+persisted before their modeled latency, expire after the pinned fill-delay, and
+retain immutable scheduling and audit records across restarts.
+
+An armed deployment is automatically paused whenever the API process restarts
+and requires an explicit re-arm. It is also paused by the kill switch for stale
+signal streaks, excessive rejected entries, forward drawdown, consecutive
+losses, or expectancy drift after enough closed trades. Revocation is terminal.
+There is no signing, transaction construction, wallet-secret loading, execution
+API, or live-order path.
+
+Local control and audit endpoints:
+
+- `GET /runtime/paper-automation`
+- `GET /runtime/paper-automation/deployments`
+- `GET /runtime/paper-automation/events`
+- `GET /runtime/paper-automation/operations`
+- `POST /runtime/paper-automation/approve`
+- `POST /runtime/paper-automation/arm`
+- `POST /runtime/paper-automation/pause`
+- `POST /runtime/paper-automation/revoke`
+- `POST /runtime/paper-automation/reconcile`
+
+Approval confirmation is `APPROVE PAPER AUTOMATION <validation-id>`, arming is
+`ARM PAPER AUTOMATION <deployment-id>`, and revocation is
+`REVOKE PAPER AUTOMATION <deployment-id>`. Mutations also pass through the
+existing local-origin control guard and operator-action audit. The read-only
+status CLI never starts a feed or modifies SQLite:
+
+```bash
+pnpm paper:automation:status -- --from-db .data/axi.sqlite
+```
+
 Launch trade tracking uses PumpPortal `subscribeTokenTrade` only for selected
 mints, through the existing one-WebSocket PumpPortal provider and the metered
 actual-data gates. It never uses account-trade streams, trading APIs, wallet

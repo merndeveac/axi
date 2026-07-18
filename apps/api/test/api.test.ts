@@ -1561,6 +1561,7 @@ describe("@axi/api", () => {
         calibrationSessionCapture: string;
         paperStrategyEvaluation: string;
         paperLifecycleValidation: string;
+        paperAutomationForwardValidation: string;
         paperExitPolicy: string;
         derivativeCorrectness: string;
         derivativeStrengthNormalization: string;
@@ -1647,6 +1648,15 @@ describe("@axi/api", () => {
         operatorConfiguredPaperExecutionRequired: boolean;
         liveExecutionDisabled: boolean;
       };
+      paperAutomation: {
+        implementationStatus: string;
+        activationMode: string;
+        restartPolicy: string;
+        forwardValidation: boolean;
+        driftKillSwitch: boolean;
+        automaticLiveExecution: boolean;
+        liveExecutionDisabled: boolean;
+      };
     };
 
     expect(response.statusCode).toBe(200);
@@ -1658,6 +1668,7 @@ describe("@axi/api", () => {
       calibrationSessionCapture: "@axi/session-capture",
       paperStrategyEvaluation: "@axi/paper-strategy-evaluation",
       paperLifecycleValidation: "@axi/paper-lifecycle-validation",
+      paperAutomation: "@axi/paper-automation",
       paperExitPolicy: "@axi/exit-strategy",
       canonicalTimeseries: "@axi/timeseries",
       subscriptionTransport: "ActualDataService",
@@ -1684,6 +1695,7 @@ describe("@axi/api", () => {
     expect(body.roadmap.calibrationSessionCapture).toBe("implemented");
     expect(body.roadmap.paperStrategyEvaluation).toBe("implemented");
     expect(body.roadmap.paperLifecycleValidation).toBe("implemented");
+    expect(body.roadmap.paperAutomationForwardValidation).toBe("implemented");
     expect(body.roadmap.paperExitPolicy).toBe("implemented");
     expect(body.roadmap.rollingNewestTokenScheduler).toBe("implemented");
     expect(body.roadmap.schedulerMutationApplied).toBe(false);
@@ -1753,6 +1765,15 @@ describe("@axi/api", () => {
       operatorConfiguredPaperExecutionRequired: true,
       liveExecutionDisabled: true
     });
+    expect(body.paperAutomation).toMatchObject({
+      implementationStatus: "implemented",
+      activationMode: "operator_approved_paper_only",
+      restartPolicy: "fail_closed_rearm_required",
+      forwardValidation: true,
+      driftKillSwitch: true,
+      automaticLiveExecution: false,
+      liveExecutionDisabled: true
+    });
     expect(body.safety.apiHost).toBe("127.0.0.1");
     expect(body.safety.tradingDisabled).toBe(true);
   });
@@ -1814,6 +1835,34 @@ describe("@axi/api", () => {
       automaticThresholdActivation: false,
       calibrated: false,
       tradingDisabled: true
+    });
+  });
+
+  it("GET /runtime/paper-automation is paper-only and inactive by default", async () => {
+    server = createTestServer();
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/runtime/paper-automation"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      started: true,
+      deployment: null,
+      armed: false,
+      pendingOperations: [],
+      eventCount: 0,
+      automaticLiveExecution: false,
+      paperOnly: true,
+      tradingDisabled: true,
+      liveExecutionDisabled: true,
+      contract: {
+        implementationStatus: "implemented",
+        restartPolicy: "fail_closed_rearm_required",
+        automaticLiveExecution: false,
+        liveExecutionDisabled: true
+      }
     });
   });
 
