@@ -29,6 +29,7 @@
     { "path": "../../packages/market-data" },
     { "path": "../../packages/metrics" },
     { "path": "../../packages/paper-portfolio" },
+    { "path": "../../packages/paper-lifecycle-validation" },
     { "path": "../../packages/paper-strategy-evaluation" },
     { "path": "../../packages/pumpfun-decoder" },
     { "path": "../../packages/pumpportal-lightning" },

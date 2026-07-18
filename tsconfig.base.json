@@ -38,6 +38,9 @@
       ],
       "@axi/market-data": ["packages/market-data/src/index.ts"],
       "@axi/paper-portfolio": ["packages/paper-portfolio/src/index.ts"],
+      "@axi/paper-lifecycle-validation": [
+        "packages/paper-lifecycle-validation/src/index.ts"
+      ],
       "@axi/paper-strategy-evaluation": [
         "packages/paper-strategy-evaluation/src/index.ts"
       ],

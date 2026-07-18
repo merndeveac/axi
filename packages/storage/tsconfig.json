@@ -14,6 +14,7 @@
     { "path": "../data-feeds" },
     { "path": "../exit-strategy" },
     { "path": "../market-data" },
+    { "path": "../paper-lifecycle-validation" },
     { "path": "../paper-portfolio" },
     { "path": "../paper-strategy-evaluation" },
     { "path": "../session-capture" },

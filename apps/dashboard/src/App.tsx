@@ -555,6 +555,7 @@ type RuntimeContract = {
     signalCalibration: string;
     calibrationSessionCapture: string;
     paperStrategyEvaluation: string;
+    paperLifecycleValidation: string;
     paperExitPolicy: string;
     subscriptionPolicy: string;
     subscriptionTransport: string;
@@ -627,6 +628,21 @@ type RuntimeContract = {
     automaticThresholdActivation: false;
     automaticPaperTradingActivation: false;
   };
+  paperLifecycleValidation: {
+    validationVersion: string;
+    implementationStatus: "implemented";
+    activationMode: "offline_local_only";
+    validationPolicy: "global_event_time_portfolio_replay";
+    sharedCapitalModeled: true;
+    latencyModeled: true;
+    feesAndSlippageModeled: true;
+    liquidityParticipationModeled: true;
+    missedFillsModeled: true;
+    benchmarkRequired: true;
+    automaticPaperTradingActivation: false;
+    automaticLiveExecution: false;
+    liveExecutionDisabled: true;
+  };
   paperExitPolicy: {
     policyVersion: string;
     implementationStatus: "implemented";
@@ -636,6 +652,22 @@ type RuntimeContract = {
     automaticLiveExecution: false;
     operatorConfiguredPaperExecutionRequired: true;
   };
+};
+
+type PaperLifecycleValidationStatus = {
+  validationCount: number;
+  latestValidation: {
+    validationId: string;
+    validationStatus:
+      | "invalid_input"
+      | "data_quality_failed"
+      | "insufficient_evidence"
+      | "holdout_rejected"
+      | "paper_automation_candidate";
+  } | null;
+  automaticPaperTradingActivation: false;
+  automaticLiveExecution: false;
+  liveExecutionDisabled: true;
 };
 
 type RuntimeCapacityReport = {
@@ -1270,6 +1302,8 @@ export function App() {
     useState<RuntimeControlStatus | null>(null);
   const [runtimeContract, setRuntimeContract] =
     useState<RuntimeContract | null>(null);
+  const [paperLifecycleValidationStatus, setPaperLifecycleValidationStatus] =
+    useState<PaperLifecycleValidationStatus | null>(null);
   const [runtimeCapacity, setRuntimeCapacity] =
     useState<RuntimeCapacityReport | null>(null);
   const [runtimeActionStatus, setRuntimeActionStatus] =
@@ -1409,6 +1443,7 @@ export function App() {
           nextMeteredLaunchDataTracked,
           nextRuntimeControlStatus,
           nextRuntimeContract,
+          nextPaperLifecycleValidationStatus,
           nextRuntimeCapacity,
           nextActualTrades,
           nextLiveCardEnrichmentStatus,
@@ -1467,6 +1502,9 @@ export function App() {
           ),
           fetchJson<RuntimeControlStatus>("/runtime/status"),
           fetchJson<RuntimeContract>("/runtime/contracts"),
+          fetchJson<PaperLifecycleValidationStatus>(
+            "/runtime/paper-lifecycle-validation"
+          ),
           fetchJson<RuntimeCapacityReport>("/runtime/capacity"),
           fetchJson<PumpPortalTradeRow[]>("/actual-data/trades?limit=10"),
           fetchJson<LiveCardEnrichmentStatus>("/enrichment/status"),
@@ -1514,6 +1552,7 @@ export function App() {
           setMeteredLaunchDataTracked(nextMeteredLaunchDataTracked.current);
           setRuntimeControlStatus(nextRuntimeControlStatus);
           setRuntimeContract(nextRuntimeContract);
+          setPaperLifecycleValidationStatus(nextPaperLifecycleValidationStatus);
           setRuntimeCapacity(nextRuntimeCapacity);
           setActualTrades(nextActualTrades);
           setLiveCardEnrichmentStatus(nextLiveCardEnrichmentStatus);
@@ -1781,6 +1820,7 @@ export function App() {
         runtimeActionStatus={runtimeActionStatus}
         runtimeCapacity={runtimeCapacity}
         runtimeContract={runtimeContract}
+        paperLifecycleValidationStatus={paperLifecycleValidationStatus}
         runtimeControlStatus={runtimeControlStatus}
         runRuntimeAction={runRuntimeAction}
         trackedCardCount={trackedCardCount}
@@ -1921,6 +1961,7 @@ function HeaderControlCenter({
   runtimeActionStatus,
   runtimeCapacity,
   runtimeContract,
+  paperLifecycleValidationStatus,
   runtimeControlStatus,
   runRuntimeAction,
   trackedCardCount,
@@ -1949,6 +1990,7 @@ function HeaderControlCenter({
   runtimeActionStatus: string;
   runtimeCapacity: RuntimeCapacityReport | null;
   runtimeContract: RuntimeContract | null;
+  paperLifecycleValidationStatus: PaperLifecycleValidationStatus | null;
   runtimeControlStatus: RuntimeControlStatus | null;
   runRuntimeAction: (
     path: string,
@@ -2164,6 +2206,29 @@ function HeaderControlCenter({
                   ? "OFFLINE"
                   : "CHECK"
                 : "CHECKING"
+            }
+          />
+          <StatusChip
+            label="LIFECYCLE"
+            tone={
+              paperLifecycleValidationStatus?.latestValidation
+                ?.validationStatus === "paper_automation_candidate"
+                ? "good"
+                : paperLifecycleValidationStatus?.latestValidation
+                      ?.validationStatus === "holdout_rejected" ||
+                    paperLifecycleValidationStatus?.latestValidation
+                      ?.validationStatus === "invalid_input"
+                  ? "bad"
+                  : "warn"
+            }
+            value={
+              paperLifecycleValidationStatus?.latestValidation
+                ? paperLifecycleValidationStatus.latestValidation.validationStatus
+                    .replaceAll("_", " ")
+                    .toUpperCase()
+                : runtimeContract
+                  ? "NO REPORT"
+                  : "CHECKING"
             }
           />
           <StatusChip

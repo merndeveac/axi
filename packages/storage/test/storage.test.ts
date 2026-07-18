@@ -21,6 +21,7 @@ import {
   stopCalibrationCaptureSession
 } from "@axi/session-capture";
 import { evaluatePaperStrategy } from "@axi/paper-strategy-evaluation";
+import { evaluatePaperLifecycleValidation } from "@axi/paper-lifecycle-validation";
 import { evaluatePaperExitPolicy } from "@axi/exit-strategy";
 import { normalizePumpPortalIdentity } from "@axi/token-identity";
 import {
@@ -40,6 +41,7 @@ import {
   getCapturedSignalObservation,
   getLatestCapturedSignalObservationByMint,
   getPaperStrategyEvaluation,
+  getPaperLifecycleValidation,
   getPaperExitPolicyEvaluation,
   getLatestCandidateDecision,
   getLatestMarketObservation,
@@ -56,11 +58,13 @@ import {
   listLaunchScoreSnapshots,
   listLaunchScoreSnapshotsByMint,
   listLaunchTimeseriesBucketsByMint,
+  listLaunchTimeseriesBucketsByMintBetween,
   listLaunchTrackingEvents,
   listLaunchTrackingSessions,
   listCalibrationCaptureSessions,
   listCapturedSignalObservationsBySession,
   listPaperStrategyEvaluations,
+  listPaperLifecycleValidations,
   listPaperExitPolicyEvaluations,
   listPaperExitPolicyEvaluationsByMint,
   listLaunchTradeSamplesByMint,
@@ -127,6 +131,7 @@ import {
   saveCalibrationCaptureSession,
   saveCapturedSignalObservation,
   savePaperStrategyEvaluation,
+  savePaperLifecycleValidation,
   savePaperExitPolicyEvaluation,
   saveCapacitySnapshot,
   saveChainVerification,
@@ -208,6 +213,7 @@ describe("@axi/storage", () => {
     expect(stats.calibrationCaptureSessionCount).toBe(0);
     expect(stats.calibrationSignalObservationCount).toBe(0);
     expect(stats.paperStrategyEvaluationCount).toBe(0);
+    expect(stats.paperLifecycleValidationCount).toBe(0);
     expect(stats.paperExitPolicyEvaluationCount).toBe(0);
     expect(stats.pumpPortalWalletStatusSnapshotCount).toBe(0);
     expect(stats.meteredLaunchDataSessionCount).toBe(0);
@@ -473,6 +479,48 @@ describe("@axi/storage", () => {
     expect(getPaperStrategyEvaluation(report.evaluationId)).toMatchObject({
       evaluationVersion: "paper-strategy-evaluation-v1",
       tradingDisabled: true
+    });
+  });
+
+  it("persists immutable paper lifecycle validation reports", () => {
+    initStorage({ databasePath });
+    const report = evaluatePaperLifecycleValidation({
+      validationId: "paper-lifecycle-storage-test",
+      evaluatedAt: "2026-01-03T00:00:00.000Z",
+      strategyProvenance: {
+        evaluationId: "paper-evaluation-upstream-test",
+        evaluationVersion: "paper-strategy-evaluation-v1",
+        evaluationStatus: "paper_observation_candidate",
+        selectedThreshold: 75,
+        captureSessionIds: ["capture-train", "capture-validation"],
+        expectedObservationCount: 0
+      },
+      cases: []
+    });
+
+    savePaperLifecycleValidation(report);
+    savePaperLifecycleValidation(report);
+
+    expect(getPaperLifecycleValidation(report.validationId)).toMatchObject({
+      validationStatus: "invalid_input",
+      selectedThreshold: 75,
+      automaticPaperTradingActivation: false
+    });
+    expect(listPaperLifecycleValidations()).toHaveLength(1);
+    expect(getStorageStats().paperLifecycleValidationCount).toBe(1);
+    expect(() =>
+      savePaperLifecycleValidation({
+        ...report,
+        evaluatedAt: "2026-01-03T00:00:01.000Z"
+      })
+    ).toThrow("immutable");
+
+    closeStorage();
+    initStorageReadOnly({ databasePath });
+    expect(getPaperLifecycleValidation(report.validationId)).toMatchObject({
+      validationVersion: "paper-lifecycle-validation-v1",
+      tradingDisabled: true,
+      liveExecutionDisabled: true
     });
   });
 
@@ -1027,6 +1075,11 @@ describe("@axi/storage", () => {
     });
 
     const buckets = listLaunchTimeseriesBucketsByMint(mint, 10);
+    const boundedBuckets = listLaunchTimeseriesBucketsByMintBetween(
+      mint,
+      "2026-01-01T00:00:00.000Z",
+      "2026-01-01T00:00:01.000Z"
+    );
     const replayItems = [];
 
     for await (const item of createReplayStream({
@@ -1038,6 +1091,7 @@ describe("@axi/storage", () => {
     }
 
     expect(buckets).toHaveLength(1);
+    expect(boundedBuckets).toHaveLength(1);
     expect(buckets[0]).toMatchObject({
       bucketMs: 1000,
       closeSol: 0.0005,

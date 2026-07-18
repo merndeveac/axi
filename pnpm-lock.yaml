@@ -98,6 +98,9 @@ importers:
       '@axi/metrics':
         specifier: workspace:*
         version: link:../../packages/metrics
+      '@axi/paper-lifecycle-validation':
+        specifier: workspace:*
+        version: link:../../packages/paper-lifecycle-validation
       '@axi/paper-portfolio':
         specifier: workspace:*
         version: link:../../packages/paper-portfolio
@@ -323,6 +326,15 @@ importers:
         specifier: workspace:*
         version: link:../shared
 
+  packages/paper-lifecycle-validation:
+    dependencies:
+      '@axi/exit-strategy':
+        specifier: workspace:*
+        version: link:../exit-strategy
+      '@axi/paper-portfolio':
+        specifier: workspace:*
+        version: link:../paper-portfolio
+
   packages/paper-portfolio: {}
 
   packages/paper-strategy-evaluation:
@@ -397,6 +409,9 @@ importers:
       '@axi/market-data':
         specifier: workspace:*
         version: link:../market-data
+      '@axi/paper-lifecycle-validation':
+        specifier: workspace:*
+        version: link:../paper-lifecycle-validation
       '@axi/paper-portfolio':
         specifier: workspace:*
         version: link:../paper-portfolio

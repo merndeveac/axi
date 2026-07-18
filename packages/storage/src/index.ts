@@ -12,6 +12,10 @@ import type {
 } from "@axi/chain-events";
 import type { MarketObservation } from "@axi/market-data";
 import type {
+  PaperLifecycleValidationReport,
+  PaperLifecycleValidationStatus
+} from "@axi/paper-lifecycle-validation";
+import type {
   CandidateWatchPlan,
   WatchTarget,
   WatchTargetKind
@@ -306,6 +310,7 @@ export type StorageStats = {
   calibrationCaptureSessionCount: number;
   calibrationSignalObservationCount: number;
   paperStrategyEvaluationCount: number;
+  paperLifecycleValidationCount: number;
   paperExitPolicyEvaluationCount: number;
   pumpPortalWalletStatusSnapshotCount: number;
   riskSnapshotCount: number;
@@ -339,6 +344,10 @@ export type CalibrationCaptureObservationCounts = {
 };
 
 export type StoredPaperStrategyEvaluation = PaperStrategyEvaluationReport & {
+  id: number;
+};
+
+export type StoredPaperLifecycleValidation = PaperLifecycleValidationReport & {
   id: number;
 };
 
@@ -1583,6 +1592,19 @@ type PaperStrategyEvaluationRow = {
   created_at: string;
 };
 
+type PaperLifecycleValidationRow = {
+  id: number;
+  validation_id: string;
+  validation_version: string;
+  strategy_evaluation_id: string;
+  status: PaperLifecycleValidationStatus;
+  selected_threshold: number;
+  capture_session_ids_json: string;
+  payload_json: string;
+  evaluated_at: string;
+  created_at: string;
+};
+
 type PaperExitPolicyEvaluationRow = {
   id: number;
   evaluation_id: string;
@@ -2418,6 +2440,86 @@ const paperStrategyEvaluationSchema = z
     ]),
     automaticThresholdActivation: z.literal(false),
     automaticPaperTradingActivation: z.literal(false),
+    calibrated: z.literal(false),
+    paperOnly: z.literal(true),
+    dataOnly: z.literal(true),
+    tradingDisabled: z.literal(true),
+    liveExecutionDisabled: z.literal(true),
+    reasonCodes: z.array(z.string().min(1))
+  })
+  .passthrough();
+
+const paperLifecycleValidationSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    validationVersion: z.literal("paper-lifecycle-validation-v1"),
+    validationId: z.string().min(1),
+    evaluatedAt: z.string().datetime(),
+    policyStatus: z.literal("reference_only"),
+    validationPolicy: z.literal("global_event_time_portfolio_replay"),
+    selectionPolicy: z.literal(
+      "upstream_training_threshold_single_temporal_holdout"
+    ),
+    simulationPolicy: z.literal(
+      "shared_capital_latency_cost_liquidity_and_missed_fills"
+    ),
+    strategyProvenance: z
+      .object({
+        evaluationId: z.string().min(1),
+        evaluationVersion: z.literal("paper-strategy-evaluation-v1"),
+        evaluationStatus: z.literal("paper_observation_candidate"),
+        selectedThreshold: z.number().min(0).max(100),
+        captureSessionIds: z.array(z.string().min(1)),
+        expectedObservationCount: z.number().int().nonnegative()
+      })
+      .passthrough(),
+    captureSessionIds: z.array(z.string().min(1)),
+    selectedThreshold: z.number().min(0).max(100),
+    config: z.object({ schemaVersion: z.literal(1) }).passthrough(),
+    exitPolicyVersion: z.literal("paper-exit-policy-v1"),
+    exitPolicyConfig: z.object({ schemaVersion: z.literal(1) }).passthrough(),
+    dataAudit: z
+      .object({
+        integrityValid: z.boolean(),
+        qualitySufficient: z.boolean(),
+        temporalHoldoutValid: z.boolean().nullable(),
+        noLookAheadValid: z.boolean()
+      })
+      .passthrough(),
+    portfolioSnapshot: z
+      .object({
+        cashSol: z.number().nonnegative(),
+        equitySol: z.number(),
+        openPositionCount: z.number().int().nonnegative(),
+        updatedAt: z.string().datetime()
+      })
+      .passthrough(),
+    peakOpenPositionCount: z.number().int().nonnegative(),
+    trades: z.array(
+      z.object({ observationId: z.string().min(1) }).passthrough()
+    ),
+    trainingPerformance: z.unknown().nullable(),
+    validationPerformance: z.unknown().nullable(),
+    validationHorizonBenchmark: z.unknown().nullable(),
+    benchmarkOutperformancePct: z.number().nullable(),
+    acceptanceGates: z.array(
+      z.object({
+        gate: z.string().min(1),
+        passed: z.boolean(),
+        actual: z.union([z.number(), z.string(), z.boolean()]).nullable(),
+        required: z.string().min(1)
+      })
+    ),
+    validationStatus: z.enum([
+      "invalid_input",
+      "data_quality_failed",
+      "insufficient_evidence",
+      "holdout_rejected",
+      "paper_automation_candidate"
+    ]),
+    automaticThresholdActivation: z.literal(false),
+    automaticPaperTradingActivation: z.literal(false),
+    automaticLiveExecution: z.literal(false),
     calibrated: z.literal(false),
     paperOnly: z.literal(true),
     dataOnly: z.literal(true),
@@ -4277,6 +4379,36 @@ export function listLaunchTimeseriesBucketsByMint(
   return rows.map(mapLaunchTimeseriesBucketRow);
 }
 
+export function listLaunchTimeseriesBucketsByMintBetween(
+  mint: string,
+  afterExclusive: string,
+  beforeInclusive: string,
+  limit = 1_000
+): StoredLaunchTimeseriesBucket[] {
+  const parsedMint = z.string().min(1).parse(mint);
+  const parsedAfter = z.string().datetime().parse(afterExclusive);
+  const parsedBefore = z.string().datetime().parse(beforeInclusive);
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select *
+       from launch_timeseries_buckets
+       where mint = ?
+         and datetime(bucket_end) > datetime(?)
+         and datetime(bucket_end) <= datetime(?)
+       order by datetime(bucket_end) asc, id asc
+       limit ?`
+    )
+    .all(
+      parsedMint,
+      parsedAfter,
+      parsedBefore,
+      parsedLimit
+    ) as LaunchTimeseriesBucketRow[];
+
+  return rows.map(mapLaunchTimeseriesBucketRow);
+}
+
 export function listLaunchTimeseriesBucketsForReplay(
   limit = 300
 ): StoredLaunchTimeseriesBucket[] {
@@ -5485,6 +5617,88 @@ export function listPaperStrategyEvaluations(
     .all(parsedLimit) as PaperStrategyEvaluationRow[];
 
   return rows.map(mapPaperStrategyEvaluationRow);
+}
+
+export function savePaperLifecycleValidation(
+  report: PaperLifecycleValidationReport
+): StoredPaperLifecycleValidation {
+  const parsed = parsePaperLifecycleValidation(report);
+  const existing = getPaperLifecycleValidation(parsed.validationId);
+
+  if (existing) {
+    const { id: _id, ...existingReport } = existing;
+    void _id;
+
+    if (stringifyJson(existingReport) !== stringifyJson(parsed)) {
+      throw new Error(
+        `Paper lifecycle validation ${parsed.validationId} is immutable and already exists with different data.`
+      );
+    }
+
+    return existing;
+  }
+
+  getDb()
+    .prepare(
+      `insert into paper_lifecycle_validations (
+        validation_id,
+        validation_version,
+        strategy_evaluation_id,
+        status,
+        selected_threshold,
+        capture_session_ids_json,
+        payload_json,
+        evaluated_at,
+        created_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      parsed.validationId,
+      parsed.validationVersion,
+      parsed.strategyProvenance.evaluationId,
+      parsed.validationStatus,
+      parsed.selectedThreshold,
+      stringifyJson(parsed.captureSessionIds),
+      stringifyJson(parsed),
+      parsed.evaluatedAt,
+      parsed.evaluatedAt
+    );
+
+  const stored = getPaperLifecycleValidation(parsed.validationId);
+  if (!stored) {
+    throw new Error(
+      `Paper lifecycle validation ${parsed.validationId} was not persisted.`
+    );
+  }
+  return stored;
+}
+
+export function getPaperLifecycleValidation(
+  validationId: string
+): StoredPaperLifecycleValidation | null {
+  const row = getDb()
+    .prepare(
+      "select * from paper_lifecycle_validations where validation_id = ?"
+    )
+    .get(validationId) as PaperLifecycleValidationRow | undefined;
+
+  return row ? mapPaperLifecycleValidationRow(row) : null;
+}
+
+export function listPaperLifecycleValidations(
+  limit = 50
+): StoredPaperLifecycleValidation[] {
+  const parsedLimit = limitSchema.parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select * from paper_lifecycle_validations
+       order by datetime(evaluated_at) desc, id desc
+       limit ?`
+    )
+    .all(parsedLimit) as PaperLifecycleValidationRow[];
+
+  return rows.map(mapPaperLifecycleValidationRow);
 }
 
 export function savePaperExitPolicyEvaluation(
@@ -6881,6 +7095,7 @@ export function getStorageStats(): StorageStats {
       "calibration_signal_observations"
     ),
     paperStrategyEvaluationCount: countRows(db, "paper_strategy_evaluations"),
+    paperLifecycleValidationCount: countRows(db, "paper_lifecycle_validations"),
     paperExitPolicyEvaluationCount: countRows(
       db,
       "paper_exit_policy_evaluations"
@@ -8053,6 +8268,34 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(20, "paper_exit_policy_evaluation", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 21)) {
+    db.exec(`
+      create table if not exists paper_lifecycle_validations (
+        id integer primary key autoincrement,
+        validation_id text not null unique,
+        validation_version text not null,
+        strategy_evaluation_id text not null,
+        status text not null,
+        selected_threshold real not null,
+        capture_session_ids_json text not null,
+        payload_json text not null,
+        evaluated_at text not null,
+        created_at text not null
+      );
+
+      create index if not exists idx_paper_lifecycle_validations_status
+        on paper_lifecycle_validations(status, evaluated_at);
+
+      create index if not exists idx_paper_lifecycle_validations_strategy
+        on paper_lifecycle_validations(strategy_evaluation_id, evaluated_at);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(21, "paper_lifecycle_validation", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -8914,6 +9157,23 @@ function mapPaperStrategyEvaluationRow(
 ): StoredPaperStrategyEvaluation {
   return {
     ...parsePaperStrategyEvaluation(JSON.parse(row.payload_json)),
+    id: row.id
+  };
+}
+
+function parsePaperLifecycleValidation(
+  value: unknown
+): PaperLifecycleValidationReport {
+  return paperLifecycleValidationSchema.parse(
+    value
+  ) as unknown as PaperLifecycleValidationReport;
+}
+
+function mapPaperLifecycleValidationRow(
+  row: PaperLifecycleValidationRow
+): StoredPaperLifecycleValidation {
+  return {
+    ...parsePaperLifecycleValidation(JSON.parse(row.payload_json)),
     id: row.id
   };
 }

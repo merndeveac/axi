@@ -249,6 +249,12 @@ import {
   type PaperStrategyEvaluationService
 } from "./paper-strategy-evaluation-service";
 import {
+  createPaperLifecycleValidationService,
+  PaperLifecycleValidationServiceError,
+  type PaperLifecycleValidationInput,
+  type PaperLifecycleValidationService
+} from "./paper-lifecycle-validation-service";
+import {
   createIndexerAdapter,
   type IndexerAdapter,
   type IndexerAdapterOptions
@@ -1370,6 +1376,7 @@ export type ApiServer = {
   runtimeControl: RuntimeControlService;
   calibrationCapture: CalibrationCaptureService;
   paperStrategyEvaluation: PaperStrategyEvaluationService;
+  paperLifecycleValidation: PaperLifecycleValidationService;
   pumpPortalDataWallet: PumpPortalDataWalletService;
   pumpPortalWallets: PumpPortalWalletsService;
   lightningReadiness: LightningReadinessService;
@@ -1692,6 +1699,66 @@ const paperStrategyEvaluationBodySchema = z.object({
 const paperStrategyEvaluationParamSchema = z.object({
   evaluationId: z.string().min(1).max(200)
 });
+const paperLifecycleValidationBodySchema = z.object({
+  paperStrategyEvaluationId: z.string().trim().min(1).max(200),
+  config: z
+    .object({
+      startingCapitalSol: z.number().positive().max(1_000).optional(),
+      positionSizeSol: z.number().positive().max(0.01).optional(),
+      maxOpenPositions: z.number().int().positive().max(100).optional(),
+      maxDailySpendSol: z.number().positive().max(10).optional(),
+      feeBps: z.number().nonnegative().max(10_000).optional(),
+      baseSlippageBps: z.number().nonnegative().max(10_000).optional(),
+      maximumMarketImpactBps: z.number().nonnegative().max(10_000).optional(),
+      maximumVolumeParticipationRatio: z.number().positive().max(1).optional(),
+      entryLatencyMs: z.number().int().nonnegative().max(300_000).optional(),
+      exitLatencyMs: z.number().int().nonnegative().max(300_000).optional(),
+      maximumFillDelayMs: z
+        .number()
+        .int()
+        .nonnegative()
+        .max(300_000)
+        .optional(),
+      entryMissedFillRate: z.number().min(0).max(1).optional(),
+      exitMissedFillRate: z.number().min(0).max(1).optional(),
+      minimumPathCoverageRatio: z.number().positive().max(1).optional()
+    })
+    .strict()
+    .optional(),
+  exitPolicyConfig: z
+    .object({
+      stopLossPct: z.number().min(-100).max(0).optional(),
+      takeProfitStage1Pct: z.number().nonnegative().optional(),
+      takeProfitStage1SellPct: z.number().positive().max(100).optional(),
+      takeProfitStage2Pct: z.number().nonnegative().optional(),
+      takeProfitStage2SellPct: z.number().positive().max(100).optional(),
+      trailingStopPct: z.number().positive().nullable().optional(),
+      trailingActivationPct: z.number().nonnegative().optional(),
+      momentumDecayMinimumAgeMs: z.number().int().nonnegative().optional(),
+      momentumDecayMaximumScore: z.number().min(0).max(100).optional(),
+      volumeCollapseRatio: z.number().min(0).max(1).optional(),
+      buyerReversalMaximumPressure: z.number().min(-1).max(1).optional(),
+      liquidityMaximumSellSlippagePct: z.number().nonnegative().optional(),
+      liquidityMinimumVelocitySolPerSec: z.number().optional(),
+      derivativeReversalMaximumVelocityPctPerSec: z.number().optional(),
+      derivativeReversalMaximumAccelerationPctPerSec2: z.number().optional(),
+      maximumHoldMs: z.number().int().positive().max(300_000).optional(),
+      watchedWalletMinimumProfitPct: z.number().optional(),
+      enableLiquidityDeterioration: z.boolean().optional(),
+      enableDerivativeReversal: z.boolean().optional(),
+      enableMomentumDecay: z.boolean().optional(),
+      enableBuyerReversal: z.boolean().optional(),
+      enableVolumeCollapse: z.boolean().optional(),
+      enableMaximumHold: z.boolean().optional(),
+      enableMigrationTransition: z.boolean().optional(),
+      migrationSellPct: z.number().positive().max(100).optional()
+    })
+    .strict()
+    .optional()
+});
+const paperLifecycleValidationParamSchema = z.object({
+  validationId: z.string().min(1).max(240)
+});
 const paperExitPolicyEvaluationParamSchema = z.object({
   evaluationId: z.string().min(1).max(240)
 });
@@ -1820,6 +1887,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     runtimeSessionId
   });
   const paperStrategyEvaluation = createPaperStrategyEvaluationService();
+  const paperLifecycleValidation = createPaperLifecycleValidationService();
   const configuredIndexer = options.indexer ?? {};
   const onBucketUpdated = configuredIndexer.timeseries?.onBucketUpdated;
   const indexerAdapter = createIndexerAdapter({
@@ -2509,6 +2577,113 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           `attachment; filename="${safeFileSegment(params.evaluationId)}.json"`
         )
         .send(JSON.stringify(evaluation, null, 2));
+    }
+  );
+
+  app.get("/runtime/paper-lifecycle-validation", async () =>
+    paperLifecycleValidation.getStatus()
+  );
+
+  app.post(
+    "/runtime/paper-lifecycle-validation/evaluate",
+    async (request, reply) => {
+      const body = paperLifecycleValidationBodySchema.parse(request.body);
+
+      try {
+        return paperLifecycleValidation.evaluate({
+          paperStrategyEvaluationId: body.paperStrategyEvaluationId,
+          ...(body.config
+            ? {
+                config: body.config as NonNullable<
+                  PaperLifecycleValidationInput["config"]
+                >
+              }
+            : {}),
+          ...(body.exitPolicyConfig
+            ? {
+                exitPolicyConfig: body.exitPolicyConfig as NonNullable<
+                  PaperLifecycleValidationInput["exitPolicyConfig"]
+                >
+              }
+            : {})
+        });
+      } catch (error) {
+        return sendPaperLifecycleValidationError(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/runtime/paper-lifecycle-validation/validations",
+    async (request) => {
+      const query = limitQuerySchema.parse(request.query);
+
+      return {
+        validations: paperLifecycleValidation.getValidations(query.limit),
+        automaticThresholdActivation: false,
+        automaticPaperTradingActivation: false,
+        automaticLiveExecution: false,
+        paperOnly: true,
+        dataOnly: true,
+        tradingDisabled: true,
+        liveExecutionDisabled: true
+      };
+    }
+  );
+
+  app.get(
+    "/runtime/paper-lifecycle-validation/validations/:validationId",
+    async (request, reply) => {
+      const params = paperLifecycleValidationParamSchema.parse(request.params);
+      const validation = paperLifecycleValidation.getValidation(
+        params.validationId
+      );
+
+      if (!validation) {
+        return reply.code(404).send({
+          error: "PAPER_LIFECYCLE_VALIDATION_NOT_FOUND",
+          message: `Paper lifecycle validation ${params.validationId} was not found.`,
+          automaticPaperTradingActivation: false,
+          automaticLiveExecution: false,
+          paperOnly: true,
+          dataOnly: true,
+          tradingDisabled: true,
+          liveExecutionDisabled: true
+        });
+      }
+
+      return validation;
+    }
+  );
+
+  app.get(
+    "/runtime/paper-lifecycle-validation/validations/:validationId/export",
+    async (request, reply) => {
+      const params = paperLifecycleValidationParamSchema.parse(request.params);
+      const validation = paperLifecycleValidation.getValidation(
+        params.validationId
+      );
+
+      if (!validation) {
+        return reply.code(404).send({
+          error: "PAPER_LIFECYCLE_VALIDATION_NOT_FOUND",
+          message: `Paper lifecycle validation ${params.validationId} was not found.`,
+          automaticPaperTradingActivation: false,
+          automaticLiveExecution: false,
+          paperOnly: true,
+          dataOnly: true,
+          tradingDisabled: true,
+          liveExecutionDisabled: true
+        });
+      }
+
+      return reply
+        .type("application/json; charset=utf-8")
+        .header(
+          "content-disposition",
+          `attachment; filename="${safeFileSegment(params.validationId)}.json"`
+        )
+        .send(JSON.stringify(validation, null, 2));
     }
   );
 
@@ -6939,6 +7114,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     launchScanner,
     calibrationCapture,
     paperStrategyEvaluation,
+    paperLifecycleValidation,
     meteredLaunchData,
     metrics: metricsEngine,
     pumpPortalDataWallet,
@@ -7193,6 +7369,27 @@ function sendPaperStrategyEvaluationError(reply: FastifyReply, error: unknown) {
       message: error.message,
       automaticThresholdActivation: false,
       automaticPaperTradingActivation: false,
+      paperOnly: true,
+      dataOnly: true,
+      tradingDisabled: true,
+      liveExecutionDisabled: true
+    });
+  }
+
+  throw error;
+}
+
+function sendPaperLifecycleValidationError(
+  reply: FastifyReply,
+  error: unknown
+) {
+  if (error instanceof PaperLifecycleValidationServiceError) {
+    return reply.code(error.statusCode).send({
+      error: error.code,
+      message: error.message,
+      automaticThresholdActivation: false,
+      automaticPaperTradingActivation: false,
+      automaticLiveExecution: false,
       paperOnly: true,
       dataOnly: true,
       tradingDisabled: true,

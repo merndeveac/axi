@@ -119,6 +119,28 @@ hoc report:
 pnpm --filter @axi/api paper:strategy:evaluate -- --train-session <train-id> --validation-session <validation-id>
 ```
 
+An eligible strategy report can then be evaluated end to end by the versioned
+`@axi/paper-lifecycle-validation` package. It replays every finalized canonical
+one-second path in global event time, applies the upstream training-selected
+threshold once, and shares capital, daily spend, and open-position limits
+across overlapping signals. The simulation reuses the paper portfolio and
+paper exit-policy engines while modeling entry/exit latency, fees, base
+slippage, volume participation, market impact, and deterministic missed fills.
+It also compares the exit policy with a fixed-horizon close on the same filled
+entries.
+
+Lifecycle reports are immutable and fail closed on missing/synthetic paths,
+observation-count mismatches, temporal overlap, unresolved positions, weak
+holdout evidence, excessive drawdown/loss streaks, or poor fill quality. A
+`paper_automation_candidate` still only means every fixed promotion gate
+passed; it does not activate a threshold, create automatic paper orders, or
+enable live execution. The read-only CLI prints an ad hoc report without
+writing SQLite or starting feeds:
+
+```bash
+pnpm --filter @axi/api paper:lifecycle:validate -- --strategy-evaluation <evaluation-id> --from-db .data/axi.sqlite
+```
+
 Launch trade tracking uses PumpPortal `subscribeTokenTrade` only for selected
 mints, through the existing one-WebSocket PumpPortal provider and the metered
 actual-data gates. It never uses account-trade streams, trading APIs, wallet
@@ -751,6 +773,11 @@ Indexer endpoints:
 - `GET /runtime/paper-strategy-evaluation/evaluations`
 - `GET /runtime/paper-strategy-evaluation/evaluations/:evaluationId`
 - `GET /runtime/paper-strategy-evaluation/evaluations/:evaluationId/export`
+- `GET /runtime/paper-lifecycle-validation`
+- `POST /runtime/paper-lifecycle-validation/evaluate`
+- `GET /runtime/paper-lifecycle-validation/validations`
+- `GET /runtime/paper-lifecycle-validation/validations/:validationId`
+- `GET /runtime/paper-lifecycle-validation/validations/:validationId/export`
 - `GET /runtime/paper-exit-policy`
 - `GET /runtime/paper-exit-policy/evaluations`
 - `GET /runtime/paper-exit-policy/evaluations/:evaluationId`
@@ -2076,6 +2103,11 @@ Endpoints:
 - `GET /runtime/paper-strategy-evaluation/evaluations`
 - `GET /runtime/paper-strategy-evaluation/evaluations/:evaluationId`
 - `GET /runtime/paper-strategy-evaluation/evaluations/:evaluationId/export`
+- `GET /runtime/paper-lifecycle-validation`
+- `POST /runtime/paper-lifecycle-validation/evaluate`
+- `GET /runtime/paper-lifecycle-validation/validations`
+- `GET /runtime/paper-lifecycle-validation/validations/:validationId`
+- `GET /runtime/paper-lifecycle-validation/validations/:validationId/export`
 - `GET /exit/status`
 - `GET /exit/wallets`
 - `POST /exit/wallets`
@@ -2431,6 +2463,9 @@ docker compose --profile indexer up -d
   versioned multi-rule paper/replay exit policy and explicit precedence.
 - `@axi/paper-portfolio`: pure simulated portfolio/PnL engine with fee,
   slippage, position history, and paper-only order/fill models.
+- `@axi/paper-lifecycle-validation`: deterministic global-event-time lifecycle
+  replay with shared portfolio constraints, realistic execution assumptions,
+  immutable holdout reports, and fixed non-activating promotion gates.
 - `@axi/metrics`: local rolling-window metrics for paper-mode signal features.
 - `@axi/pumpportal-lightning`: pure PumpPortal Lightning request construction,
   safety validation, disabled execution client, and dry-run plan models.

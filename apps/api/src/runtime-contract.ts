@@ -3,6 +3,7 @@ import { getDerivativeStrengthRuntimeContract } from "@axi/derivative-strength";
 import { getSignalCalibrationRuntimeContract } from "@axi/signal-calibration";
 import { getSessionCaptureRuntimeContract } from "@axi/session-capture";
 import { getPaperStrategyEvaluationRuntimeContract } from "@axi/paper-strategy-evaluation";
+import { getPaperLifecycleValidationRuntimeContract } from "@axi/paper-lifecycle-validation";
 import { getPaperExitPolicyRuntimeContract } from "@axi/exit-strategy";
 import type { ActualDataService } from "./actual-data-service";
 import type { MeteredLaunchDataService } from "./metered-launch-data-service";
@@ -57,7 +58,7 @@ export function createRuntimeContract(input: {
   );
 
   return {
-    version: 9,
+    version: 10,
     runtimeSessionId: input.runtimeSessionId,
     safety: {
       paperOnly: true,
@@ -80,6 +81,7 @@ export function createRuntimeContract(input: {
       signalCalibration: "@axi/signal-calibration",
       calibrationSessionCapture: "@axi/session-capture",
       paperStrategyEvaluation: "@axi/paper-strategy-evaluation",
+      paperLifecycleValidation: "@axi/paper-lifecycle-validation",
       paperExitPolicy: "@axi/exit-strategy",
       capacityModel: "@axi/capacity-model",
       trackingScheduler: "@axi/tracking-scheduler",
@@ -126,6 +128,7 @@ export function createRuntimeContract(input: {
     signalCalibration: getSignalCalibrationRuntimeContract(),
     sessionCapture: getSessionCaptureRuntimeContract(),
     paperStrategyEvaluation: getPaperStrategyEvaluationRuntimeContract(),
+    paperLifecycleValidation: getPaperLifecycleValidationRuntimeContract(),
     paperExitPolicy: getPaperExitPolicyRuntimeContract(),
     roadmap: {
       coverageCapacityInstrumentation: "implemented",
@@ -136,6 +139,7 @@ export function createRuntimeContract(input: {
       signalCalibrationFramework: "implemented",
       calibrationSessionCapture: "implemented",
       paperStrategyEvaluation: "implemented",
+      paperLifecycleValidation: "implemented",
       paperExitPolicy: "implemented",
       schedulerMutationApplied:
         meteredStatus.scheduler.trackingMutationCount > 0

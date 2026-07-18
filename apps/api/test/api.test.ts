@@ -1560,6 +1560,7 @@ describe("@axi/api", () => {
         canonicalOneSecondTimeseries: string;
         calibrationSessionCapture: string;
         paperStrategyEvaluation: string;
+        paperLifecycleValidation: string;
         paperExitPolicy: string;
         derivativeCorrectness: string;
         derivativeStrengthNormalization: string;
@@ -1627,6 +1628,16 @@ describe("@axi/api", () => {
         automaticPaperTradingActivation: boolean;
         tradingDisabled: boolean;
       };
+      paperLifecycleValidation: {
+        implementationStatus: string;
+        activationMode: string;
+        sharedCapitalModeled: boolean;
+        missedFillsModeled: boolean;
+        benchmarkRequired: boolean;
+        automaticPaperTradingActivation: boolean;
+        automaticLiveExecution: boolean;
+        liveExecutionDisabled: boolean;
+      };
       paperExitPolicy: {
         implementationStatus: string;
         policyStatus: string;
@@ -1646,6 +1657,7 @@ describe("@axi/api", () => {
       signalCalibration: "@axi/signal-calibration",
       calibrationSessionCapture: "@axi/session-capture",
       paperStrategyEvaluation: "@axi/paper-strategy-evaluation",
+      paperLifecycleValidation: "@axi/paper-lifecycle-validation",
       paperExitPolicy: "@axi/exit-strategy",
       canonicalTimeseries: "@axi/timeseries",
       subscriptionTransport: "ActualDataService",
@@ -1671,6 +1683,7 @@ describe("@axi/api", () => {
     expect(body.roadmap.signalCalibrationFramework).toBe("implemented");
     expect(body.roadmap.calibrationSessionCapture).toBe("implemented");
     expect(body.roadmap.paperStrategyEvaluation).toBe("implemented");
+    expect(body.roadmap.paperLifecycleValidation).toBe("implemented");
     expect(body.roadmap.paperExitPolicy).toBe("implemented");
     expect(body.roadmap.rollingNewestTokenScheduler).toBe("implemented");
     expect(body.roadmap.schedulerMutationApplied).toBe(false);
@@ -1720,6 +1733,16 @@ describe("@axi/api", () => {
       automaticThresholdActivation: false,
       automaticPaperTradingActivation: false,
       tradingDisabled: true
+    });
+    expect(body.paperLifecycleValidation).toMatchObject({
+      implementationStatus: "implemented",
+      activationMode: "offline_local_only",
+      sharedCapitalModeled: true,
+      missedFillsModeled: true,
+      benchmarkRequired: true,
+      automaticPaperTradingActivation: false,
+      automaticLiveExecution: false,
+      liveExecutionDisabled: true
     });
     expect(body.paperExitPolicy).toMatchObject({
       implementationStatus: "implemented",
@@ -1978,6 +2001,36 @@ describe("@axi/api", () => {
       tradingDisabled: true
     });
 
+    const lifecycleResponse = await server.app.inject({
+      method: "POST",
+      url: "/runtime/paper-lifecycle-validation/evaluate",
+      payload: { paperStrategyEvaluationId: evaluation.evaluationId }
+    });
+    expect(lifecycleResponse.statusCode).toBe(409);
+    expect(lifecycleResponse.json()).toMatchObject({
+      error: "PAPER_LIFECYCLE_UPSTREAM_NOT_ELIGIBLE",
+      automaticPaperTradingActivation: false,
+      automaticLiveExecution: false,
+      liveExecutionDisabled: true
+    });
+
+    const lifecycleStatusResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/paper-lifecycle-validation"
+    });
+    expect(lifecycleStatusResponse.json()).toMatchObject({
+      validationCount: 0,
+      latestValidation: null,
+      contract: {
+        implementationStatus: "implemented",
+        sharedCapitalModeled: true,
+        benchmarkRequired: true
+      },
+      automaticPaperTradingActivation: false,
+      automaticLiveExecution: false,
+      liveExecutionDisabled: true
+    });
+
     const exportResponse = await server.app.inject({
       method: "GET",
       url: `/runtime/paper-strategy-evaluation/evaluations/${evaluation.evaluationId}/export`
@@ -1998,6 +2051,17 @@ describe("@axi/api", () => {
     expect(missingResponse.statusCode).toBe(404);
     expect(missingResponse.json()).toMatchObject({
       error: "PAPER_STRATEGY_EVALUATION_NOT_FOUND",
+      liveExecutionDisabled: true
+    });
+
+    const lifecycleMissingResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/paper-lifecycle-validation/validations/missing"
+    });
+    expect(lifecycleMissingResponse.statusCode).toBe(404);
+    expect(lifecycleMissingResponse.json()).toMatchObject({
+      error: "PAPER_LIFECYCLE_VALIDATION_NOT_FOUND",
+      automaticLiveExecution: false,
       liveExecutionDisabled: true
     });
   });
