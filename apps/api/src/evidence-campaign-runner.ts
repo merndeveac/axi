@@ -464,7 +464,11 @@ async function startFirstSubsession(
 
 async function rolloverSubsession(runtime: RuntimeStatus): Promise<void> {
   const current = requireState();
-  await requestJson("/runtime/metered-launch-data/stop", { method: "POST" });
+  const stopped = await requestJson<{ status: RuntimeStatus }>(
+    "/runtime/metered-launch-data/stop",
+    { method: "POST" }
+  );
+  reconcileCurrentSubsessionUsage(stopped.status);
   current.completedSubsessionCostSol = roundSol(
     current.completedSubsessionCostSol + current.currentSubsessionCostSol
   );
@@ -524,7 +528,11 @@ async function completeCampaign(reason: string): Promise<void> {
     return;
   }
 
-  await requestJson("/runtime/metered-launch-data/stop", { method: "POST" });
+  const stoppedMetered = await requestJson<{ status: RuntimeStatus }>(
+    "/runtime/metered-launch-data/stop",
+    { method: "POST" }
+  );
+  reconcileCurrentSubsessionUsage(stoppedMetered.status);
   current.completedSubsessionCostSol = roundSol(
     current.completedSubsessionCostSol + current.currentSubsessionCostSol
   );
@@ -656,7 +664,11 @@ async function safetyStop(
   stopping = true;
 
   try {
-    await requestJson("/runtime/metered-launch-data/stop", { method: "POST" });
+    const stopped = await requestJson<{ status: RuntimeStatus }>(
+      "/runtime/metered-launch-data/stop",
+      { method: "POST" }
+    );
+    reconcileCurrentSubsessionUsage(stopped.status);
   } catch {
     // The bounded server-side session remains the final fail-safe.
   }
@@ -860,6 +872,23 @@ function getTotalSpentSol(candidate: CampaignState): number {
   return roundSol(
     candidate.completedSubsessionCostSol + candidate.currentSubsessionCostSol
   );
+}
+
+function reconcileCurrentSubsessionUsage(runtime: RuntimeStatus): void {
+  if (!state) return;
+  state.currentSubsessionCostSol = roundSol(
+    Math.max(
+      state.currentSubsessionCostSol,
+      runtime.meteredPriceAction.estimatedCostSol
+    )
+  );
+  state.currentSubsessionEventCount = Math.max(
+    state.currentSubsessionEventCount,
+    runtime.meteredPriceAction.eventCount
+  );
+  state.lastWalletBalanceSol =
+    runtime.dataWallet.balanceSol ?? state.lastWalletBalanceSol;
+  state.updatedAt = new Date().toISOString();
 }
 
 function requireState(): CampaignState {
