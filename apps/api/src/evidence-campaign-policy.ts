@@ -1,3 +1,6 @@
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 export const evidenceCampaignMaximumBudgetSol = 0.25;
 export const evidenceCampaignMinimumWalletReserveSol = 0.02;
 export const evidenceCampaignMaximumSubsessionCostSol = 0.001;
@@ -166,6 +169,12 @@ export function createEvidenceCampaignRequestInit(
       ...(init.headers ?? {})
     }
   };
+}
+
+export function resolveEvidenceCampaignRepositoryRoot(
+  moduleUrl: string
+): string {
+  return resolve(dirname(fileURLToPath(moduleUrl)), "../../..");
 }
 
 function floorToIncrement(value: number, increment: number): number {

@@ -6,6 +6,7 @@ import {
   createEvidenceCampaignRequestInit,
   createEvidenceCampaignSubsessionPlan,
   evidenceCampaignMaximumBudgetSol,
+  resolveEvidenceCampaignRepositoryRoot,
   type EvidenceCampaignBudgetPlan
 } from "./evidence-campaign-policy";
 import { meteredSessionRolloverConfirmation } from "./metered-launch-data-service";
@@ -114,8 +115,10 @@ const args = parseArgs(process.argv.slice(2));
 const apiBaseUrl = args.apiBaseUrl ?? defaultApiBaseUrl;
 const requestedBudgetSol = args.budgetSol ?? evidenceCampaignMaximumBudgetSol;
 const operator = args.operator ?? "local-operator";
-const statePath = resolve(args.statePath ?? defaultStatePath);
+const repositoryRoot = resolveEvidenceCampaignRepositoryRoot(import.meta.url);
+const statePath = resolve(repositoryRoot, args.statePath ?? defaultStatePath);
 const outputDirectory = resolve(
+  repositoryRoot,
   args.outputDirectory ?? ".data/evidence-campaign"
 );
 let state: CampaignState | null = null;

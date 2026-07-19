@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   createEvidenceCampaignBudgetPlan,
   createEvidenceCampaignRequestInit,
-  createEvidenceCampaignSubsessionPlan
+  createEvidenceCampaignSubsessionPlan,
+  resolveEvidenceCampaignRepositoryRoot
 } from "../src/evidence-campaign-policy";
 
 describe("evidence campaign policy", () => {
@@ -60,5 +61,16 @@ describe("evidence campaign policy", () => {
     expect(
       createEvidenceCampaignRequestInit({ method: "POST", body: "{}" }).headers
     ).toEqual({ "content-type": "application/json" });
+  });
+
+  it("resolves campaign artifacts from the repository rather than package cwd", () => {
+    const runnerModuleUrl = new URL(
+      "../src/evidence-campaign-runner.ts",
+      import.meta.url
+    ).href;
+
+    expect(resolveEvidenceCampaignRepositoryRoot(runnerModuleUrl)).toMatch(
+      /\/axi$/
+    );
   });
 });
