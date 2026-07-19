@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
   createEvidenceCampaignBudgetPlan,
+  createEvidenceCampaignRequestInit,
   createEvidenceCampaignSubsessionPlan,
   evidenceCampaignMaximumBudgetSol,
   type EvidenceCampaignBudgetPlan
@@ -750,13 +751,10 @@ async function requestJson<T>(
   path: string,
   init: RequestInit = {}
 ): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    ...init,
-    headers: {
-      "content-type": "application/json",
-      ...(init.headers ?? {})
-    }
-  });
+  const response = await fetch(
+    `${apiBaseUrl}${path}`,
+    createEvidenceCampaignRequestInit(init)
+  );
   const text = await response.text();
   let body: unknown;
   try {

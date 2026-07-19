@@ -155,6 +155,19 @@ export function createEvidenceCampaignSubsessionPlan(input: {
   };
 }
 
+export function createEvidenceCampaignRequestInit(
+  init: RequestInit = {}
+): RequestInit {
+  const hasBody = init.body !== undefined && init.body !== null;
+  return {
+    ...init,
+    headers: {
+      ...(hasBody ? { "content-type": "application/json" } : {}),
+      ...(init.headers ?? {})
+    }
+  };
+}
+
 function floorToIncrement(value: number, increment: number): number {
   return roundSol(Math.floor((value + Number.EPSILON) / increment) * increment);
 }

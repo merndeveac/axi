@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createEvidenceCampaignBudgetPlan,
+  createEvidenceCampaignRequestInit,
   createEvidenceCampaignSubsessionPlan
 } from "../src/evidence-campaign-policy";
 
@@ -50,5 +51,14 @@ describe("evidence campaign policy", () => {
         eventCostSolPer10000: 0.01
       })
     ).toMatchObject({ costCapSol: 0.000123, eventCap: 123 });
+  });
+
+  it("does not label bodyless control requests as JSON", () => {
+    expect(
+      createEvidenceCampaignRequestInit({ method: "POST" }).headers
+    ).toEqual({});
+    expect(
+      createEvidenceCampaignRequestInit({ method: "POST", body: "{}" }).headers
+    ).toEqual({ "content-type": "application/json" });
   });
 });
