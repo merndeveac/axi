@@ -6,7 +6,15 @@ export const evidenceCampaignMinimumWalletReserveSol = 0.02;
 export const evidenceCampaignMaximumSubsessionCostSol = 0.001;
 export const evidenceCampaignTargetSubsessionCostSol = 0.0005;
 export const evidenceCampaignDefaultTrainRatio = 0.6;
-export const evidenceCampaignReadRetryDelaysMs = [250, 500, 1_000, 2_000];
+export const evidenceCampaignReadAttemptTimeoutMs = 5_000;
+export const evidenceCampaignReadRetryDelaysMs = [
+  250,
+  500,
+  1_000,
+  2_000,
+  4_000,
+  8_000
+];
 
 export type EvidenceCampaignBudgetPlan = {
   requestedBudgetSol: number;

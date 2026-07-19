@@ -6,6 +6,7 @@ import {
   createEvidenceCampaignRequestInit,
   createEvidenceCampaignSubsessionPlan,
   evidenceCampaignMaximumBudgetSol,
+  evidenceCampaignReadAttemptTimeoutMs,
   evidenceCampaignReadRetryDelaysMs,
   isEvidenceCampaignReadOnlyRequest,
   isEvidenceCampaignRetryableStatus,
@@ -109,7 +110,7 @@ type MaterializationSummary = {
   unavailableCount: number;
 };
 
-const defaultApiBaseUrl = "http://localhost:8787";
+const defaultApiBaseUrl = "http://127.0.0.1:8787";
 const defaultStatePath = ".data/evidence-campaign-v1.json";
 const pollIntervalMs = 5_000;
 const walletRefreshIntervalMs = 60_000;
@@ -695,6 +696,7 @@ async function safetyStop(
         : "EVIDENCE_CAMPAIGN_SAFETY_STOPPED"
     );
     persistState();
+    archiveTerminalState(`${phase}-campaign.json`);
     log("campaign_stopped", {
       campaignId: state.campaignId,
       phase,
@@ -817,7 +819,23 @@ async function fetchCampaignResponse(
 
   while (true) {
     try {
-      const response = await fetch(`${apiBaseUrl}${path}`, requestInit);
+      const timeoutSignal = readOnly
+        ? AbortSignal.timeout(evidenceCampaignReadAttemptTimeoutMs)
+        : null;
+      const response = await fetch(`${apiBaseUrl}${path}`, {
+        ...requestInit,
+        headers: {
+          connection: "close",
+          ...Object.fromEntries(new Headers(requestInit.headers).entries())
+        },
+        ...(timeoutSignal
+          ? {
+              signal: requestInit.signal
+                ? AbortSignal.any([requestInit.signal, timeoutSignal])
+                : timeoutSignal
+            }
+          : {})
+      });
       if (
         !readOnly ||
         !isEvidenceCampaignRetryableStatus(response.status) ||
@@ -840,7 +858,12 @@ async function fetchCampaignResponse(
         !readOnly ||
         retryIndex >= evidenceCampaignReadRetryDelaysMs.length
       ) {
-        throw error;
+        const attempts = retryIndex + 1;
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `${requestInit.method ?? "GET"} ${path} failed after ${attempts} attempts: ${message}`,
+          { cause: error }
+        );
       }
 
       const delayMs = evidenceCampaignReadRetryDelaysMs[retryIndex] ?? 0;
@@ -854,6 +877,17 @@ async function fetchCampaignResponse(
       await delay(delayMs);
     }
   }
+}
+
+function archiveTerminalState(fileName: string): void {
+  const current = requireState();
+  const campaignDirectory = resolve(outputDirectory, current.campaignId);
+  mkdirSync(campaignDirectory, { recursive: true });
+  writeFileSync(
+    resolve(campaignDirectory, fileName),
+    `${JSON.stringify(current, null, 2)}\n`,
+    { encoding: "utf8", mode: 0o600 }
+  );
 }
 
 function persistState(): void {

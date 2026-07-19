@@ -20,6 +20,9 @@ Local Transaction API, or Lightning execution.
   failure, or any live-execution capability fails closed and stops collection.
 - Progress is atomically checkpointed with owner-only permissions at
   `.data/evidence-campaign-v1.json`.
+- Read-only loopback requests use fresh connections, per-attempt timeouts, and
+  bounded retries. Mutating controls are never retried. Terminal failures are
+  archived under the campaign ID before another campaign can start.
 
 PumpPortal billing can lag the local event estimate. The runner therefore uses
 both bounded message counts and recurring public-balance checks. It reports

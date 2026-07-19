@@ -3,6 +3,8 @@ import {
   createEvidenceCampaignBudgetPlan,
   createEvidenceCampaignRequestInit,
   createEvidenceCampaignSubsessionPlan,
+  evidenceCampaignReadAttemptTimeoutMs,
+  evidenceCampaignReadRetryDelaysMs,
   isEvidenceCampaignReadOnlyRequest,
   isEvidenceCampaignRetryableStatus,
   resolveEvidenceCampaignRepositoryRoot
@@ -71,6 +73,15 @@ describe("evidence campaign policy", () => {
     expect(isEvidenceCampaignReadOnlyRequest({ method: "POST" })).toBe(false);
     expect(isEvidenceCampaignRetryableStatus(503)).toBe(true);
     expect(isEvidenceCampaignRetryableStatus(409)).toBe(false);
+    expect(evidenceCampaignReadAttemptTimeoutMs).toBe(5_000);
+    expect(evidenceCampaignReadRetryDelaysMs).toEqual([
+      250,
+      500,
+      1_000,
+      2_000,
+      4_000,
+      8_000
+    ]);
   });
 
   it("resolves campaign artifacts from the repository rather than package cwd", () => {
