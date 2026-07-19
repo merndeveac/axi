@@ -3,6 +3,8 @@ import {
   createEvidenceCampaignBudgetPlan,
   createEvidenceCampaignRequestInit,
   createEvidenceCampaignSubsessionPlan,
+  isEvidenceCampaignReadOnlyRequest,
+  isEvidenceCampaignRetryableStatus,
   resolveEvidenceCampaignRepositoryRoot
 } from "../src/evidence-campaign-policy";
 
@@ -61,6 +63,14 @@ describe("evidence campaign policy", () => {
     expect(
       createEvidenceCampaignRequestInit({ method: "POST", body: "{}" }).headers
     ).toEqual({ "content-type": "application/json" });
+  });
+
+  it("retries only safe read requests on transient failures", () => {
+    expect(isEvidenceCampaignReadOnlyRequest()).toBe(true);
+    expect(isEvidenceCampaignReadOnlyRequest({ method: "HEAD" })).toBe(true);
+    expect(isEvidenceCampaignReadOnlyRequest({ method: "POST" })).toBe(false);
+    expect(isEvidenceCampaignRetryableStatus(503)).toBe(true);
+    expect(isEvidenceCampaignRetryableStatus(409)).toBe(false);
   });
 
   it("resolves campaign artifacts from the repository rather than package cwd", () => {

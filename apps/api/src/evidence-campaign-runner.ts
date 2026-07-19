@@ -6,6 +6,9 @@ import {
   createEvidenceCampaignRequestInit,
   createEvidenceCampaignSubsessionPlan,
   evidenceCampaignMaximumBudgetSol,
+  evidenceCampaignReadRetryDelaysMs,
+  isEvidenceCampaignReadOnlyRequest,
+  isEvidenceCampaignRetryableStatus,
   resolveEvidenceCampaignRepositoryRoot,
   type EvidenceCampaignBudgetPlan
 } from "./evidence-campaign-policy";
@@ -754,10 +757,7 @@ async function requestJson<T>(
   path: string,
   init: RequestInit = {}
 ): Promise<T> {
-  const response = await fetch(
-    `${apiBaseUrl}${path}`,
-    createEvidenceCampaignRequestInit(init)
-  );
+  const response = await fetchCampaignResponse(path, init);
   const text = await response.text();
   let body: unknown;
   try {
@@ -776,11 +776,60 @@ async function requestJson<T>(
 }
 
 async function requestText(path: string): Promise<string> {
-  const response = await fetch(`${apiBaseUrl}${path}`);
+  const response = await fetchCampaignResponse(path);
   if (!response.ok) {
     throw new Error(`GET ${path} failed: ${response.status}`);
   }
   return response.text();
+}
+
+async function fetchCampaignResponse(
+  path: string,
+  init: RequestInit = {}
+): Promise<Response> {
+  const requestInit = createEvidenceCampaignRequestInit(init);
+  const readOnly = isEvidenceCampaignReadOnlyRequest(requestInit);
+  let retryIndex = 0;
+
+  while (true) {
+    try {
+      const response = await fetch(`${apiBaseUrl}${path}`, requestInit);
+      if (
+        !readOnly ||
+        !isEvidenceCampaignRetryableStatus(response.status) ||
+        retryIndex >= evidenceCampaignReadRetryDelaysMs.length
+      ) {
+        return response;
+      }
+
+      const delayMs = evidenceCampaignReadRetryDelaysMs[retryIndex] ?? 0;
+      log("read_only_request_retry", {
+        path,
+        attempt: retryIndex + 1,
+        delayMs,
+        status: response.status
+      });
+      retryIndex += 1;
+      await delay(delayMs);
+    } catch (error) {
+      if (
+        !readOnly ||
+        retryIndex >= evidenceCampaignReadRetryDelaysMs.length
+      ) {
+        throw error;
+      }
+
+      const delayMs = evidenceCampaignReadRetryDelaysMs[retryIndex] ?? 0;
+      log("read_only_request_retry", {
+        path,
+        attempt: retryIndex + 1,
+        delayMs,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      retryIndex += 1;
+      await delay(delayMs);
+    }
+  }
 }
 
 function persistState(): void {

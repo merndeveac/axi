@@ -5,6 +5,7 @@ export const evidenceCampaignMaximumBudgetSol = 0.25;
 export const evidenceCampaignMinimumWalletReserveSol = 0.02;
 export const evidenceCampaignMaximumSubsessionCostSol = 0.001;
 export const evidenceCampaignDefaultTrainRatio = 0.6;
+export const evidenceCampaignReadRetryDelaysMs = [250, 500, 1_000, 2_000];
 
 export type EvidenceCampaignBudgetPlan = {
   requestedBudgetSol: number;
@@ -169,6 +170,17 @@ export function createEvidenceCampaignRequestInit(
       ...(init.headers ?? {})
     }
   };
+}
+
+export function isEvidenceCampaignReadOnlyRequest(
+  init: RequestInit = {}
+): boolean {
+  const method = (init.method ?? "GET").toUpperCase();
+  return method === "GET" || method === "HEAD";
+}
+
+export function isEvidenceCampaignRetryableStatus(status: number): boolean {
+  return [408, 425, 429, 500, 502, 503, 504].includes(status);
 }
 
 export function resolveEvidenceCampaignRepositoryRoot(
