@@ -1063,7 +1063,7 @@ function maxIso(left: string | null, right: string): string {
 }
 
 function roundMetric(value: number): number {
-  return Number.isFinite(value) ? Number(value.toFixed(10)) : 0;
+  return Number.isFinite(value) ? Number(value.toPrecision(15)) : 0;
 }
 
 function unique(values: string[]): string[] {

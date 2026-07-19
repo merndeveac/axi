@@ -160,6 +160,33 @@ describe("@axi/timeseries", () => {
     expect(series.getRollingStats(mint).priceSource).toBe("USD");
   });
 
+  it("preserves tiny positive token prices when materializing buckets", () => {
+    const updatedBuckets: Array<{ closeSol: number | null }> = [];
+    const series = createTradeTimeseries({
+      onBucketUpdated: (bucket) => {
+        updatedBuckets.push({ closeSol: bucket.closeSol });
+      }
+    });
+
+    series.ingestTrade(
+      trade({
+        id: "tiny-price",
+        priceSol: 1e-12,
+        volumeSol: 0.001
+      })
+    );
+
+    const bucket = series.getBuckets(mint)[0];
+    expect(bucket).toMatchObject({
+      openSol: 1e-12,
+      highSol: 1e-12,
+      lowSol: 1e-12,
+      closeSol: 1e-12,
+      vwapSol: 1e-12
+    });
+    expect(updatedBuckets).toEqual([{ closeSol: 1e-12 }]);
+  });
+
   it("rejects events outside bounded retention and prunes old buckets", () => {
     const series = createTradeTimeseries();
 
