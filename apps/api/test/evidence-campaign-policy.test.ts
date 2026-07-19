@@ -16,7 +16,7 @@ describe("evidence campaign policy", () => {
       eventCostSolPer10000: 0.01
     });
 
-    expect(plan.effectiveBudgetSol).toBe(0.23);
+    expect(plan.effectiveBudgetSol).toBe(0.229001);
     expect(plan.limitedByWalletReserve).toBe(true);
     expect(plan.reasonCodes).toContain(
       "EVIDENCE_CAMPAIGN_BUDGET_LIMITED_BY_WALLET_RESERVE"
@@ -44,7 +44,7 @@ describe("evidence campaign policy", () => {
         configuredEventCap: 50_000,
         eventCostSolPer10000: 0.01
       })
-    ).toMatchObject({ costCapSol: 0.001, eventCap: 1000 });
+    ).toMatchObject({ costCapSol: 0.0005, eventCap: 500 });
 
     expect(
       createEvidenceCampaignSubsessionPlan({

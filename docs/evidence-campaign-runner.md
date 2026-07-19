@@ -9,9 +9,11 @@ Local Transaction API, or Lightning execution.
 - The absolute campaign request ceiling is `0.25 SOL`.
 - The configured data-wallet minimum reserve is always preserved. The effective
   budget is the smaller of the requested budget and the wallet balance above
-  that reserve, less one metered event of rounding protection.
+  that reserve, less a full `0.001 SOL` in-flight delivery guard.
 - Paid collection is divided into backend-enforced sub-sessions of no more than
-  `0.001 SOL`. A runner crash cannot automatically start the next sub-session.
+  `0.001 SOL`. The runner targets `0.0005 SOL` per sub-session so buffered
+  provider events have headroom below the hard backend boundary. A runner crash
+  cannot automatically start the next sub-session.
 - Every rollover requires the local-only API and the exact internal confirmation
   `ROLLOVER METERED DATA SESSION`.
 - Feed loss, an unavailable/low data-wallet balance, a paper-only contract

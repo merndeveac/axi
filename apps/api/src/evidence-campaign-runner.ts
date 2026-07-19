@@ -75,6 +75,7 @@ type RuntimeStatus = {
     publicKeyConfigured: boolean;
     balanceSol: number | null;
     balanceStatus: string;
+    lastBalanceCheckAt: string | null;
   };
   safety: {
     accountTradesEnabled: boolean;
@@ -113,6 +114,7 @@ const defaultStatePath = ".data/evidence-campaign-v1.json";
 const pollIntervalMs = 5_000;
 const walletRefreshIntervalMs = 60_000;
 const disconnectGraceMs = 30_000;
+const maximumWalletBalanceAgeMs = 5 * 60_000;
 
 const args = parseArgs(process.argv.slice(2));
 const apiBaseUrl = args.apiBaseUrl ?? defaultApiBaseUrl;
@@ -273,7 +275,8 @@ async function tick(): Promise<void> {
     runtime.meteredPriceAction.estimatedCostSol
   );
   current.currentSubsessionEventCount = runtime.meteredPriceAction.eventCount;
-  current.lastWalletBalanceSol = runtime.dataWallet.balanceSol;
+  current.lastWalletBalanceSol =
+    runtime.dataWallet.balanceSol ?? current.lastWalletBalanceSol;
   current.updatedAt = new Date().toISOString();
   enforceWalletReserve(runtime);
   persistState();
@@ -736,6 +739,15 @@ function enforceWalletReserve(runtime: RuntimeStatus): void {
   }
   if (balance <= current.plan.minimumWalletReserveSol) {
     throw new Error("Data-wallet minimum reserve reached.");
+  }
+  const lastBalanceCheckMs = Date.parse(
+    runtime.dataWallet.lastBalanceCheckAt ?? ""
+  );
+  if (
+    !Number.isFinite(lastBalanceCheckMs) ||
+    Date.now() - lastBalanceCheckMs > maximumWalletBalanceAgeMs
+  ) {
+    throw new Error("Data-wallet balance verification became stale.");
   }
 }
 

@@ -125,6 +125,7 @@ export class PumpPortalDataWalletService {
     lastBalanceCheckAt: null,
     lastError: null
   };
+  private lastBalanceAttemptAt: string | null = null;
 
   constructor(options: PumpPortalDataWalletServiceOptions) {
     this.config = options.config;
@@ -194,15 +195,29 @@ export class PumpPortalDataWalletService {
     }
 
     const result = await this.solanaClient.getSolBalance(publicKey);
+    this.lastBalanceAttemptAt = result.inspectedAt;
+    const lastError = result.error
+      ? `${result.error.code}: ${result.error.message}`
+      : null;
 
-    this.balanceState = {
-      balanceLamports: result.balanceLamports,
-      balanceSol: result.balanceSol,
-      lastBalanceCheckAt: result.inspectedAt,
-      lastError: result.error
-        ? `${result.error.code}: ${result.error.message}`
-        : null
-    };
+    if (
+      result.error ||
+      result.balanceLamports === null ||
+      result.balanceSol === null
+    ) {
+      this.balanceState = {
+        ...this.balanceState,
+        lastError:
+          lastError ?? "SOLANA_BALANCE_UNAVAILABLE: Balance was unavailable."
+      };
+    } else {
+      this.balanceState = {
+        balanceLamports: result.balanceLamports,
+        balanceSol: result.balanceSol,
+        lastBalanceCheckAt: result.inspectedAt,
+        lastError: null
+      };
+    }
 
     return this.getStatus();
   }
@@ -283,11 +298,13 @@ export class PumpPortalDataWalletService {
   }
 
   private isBalanceRefreshDue(): boolean {
-    if (!this.balanceState.lastBalanceCheckAt) {
+    const referenceAt =
+      this.lastBalanceAttemptAt ?? this.balanceState.lastBalanceCheckAt;
+    if (!referenceAt) {
       return true;
     }
 
-    const lastCheckMs = Date.parse(this.balanceState.lastBalanceCheckAt);
+    const lastCheckMs = Date.parse(referenceAt);
 
     if (!Number.isFinite(lastCheckMs)) {
       return true;
@@ -356,6 +373,12 @@ export class PumpPortalDataWalletService {
       ...(options.balanceStatus === "low" ? ["DATA_WALLET_BALANCE_LOW"] : []),
       ...(options.balanceStatus === "critical"
         ? ["DATA_WALLET_BALANCE_CRITICAL"]
+        : []),
+      ...(this.balanceState.lastError
+        ? ["DATA_WALLET_BALANCE_REFRESH_FAILED"]
+        : []),
+      ...(this.balanceState.lastError && balanceKnown
+        ? ["DATA_WALLET_BALANCE_LAST_KNOWN"]
         : []),
       ...(balanceBelowMinimum
         ? ["DATA_WALLET_FUNDS_REQUIRED_FOR_METERED_STREAM"]

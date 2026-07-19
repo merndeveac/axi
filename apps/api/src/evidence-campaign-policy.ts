@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 export const evidenceCampaignMaximumBudgetSol = 0.25;
 export const evidenceCampaignMinimumWalletReserveSol = 0.02;
 export const evidenceCampaignMaximumSubsessionCostSol = 0.001;
+export const evidenceCampaignTargetSubsessionCostSol = 0.0005;
 export const evidenceCampaignDefaultTrainRatio = 0.6;
 export const evidenceCampaignReadRetryDelaysMs = [250, 500, 1_000, 2_000];
 
@@ -62,7 +63,9 @@ export function createEvidenceCampaignBudgetPlan(input: {
   const estimatedCostPerEventSol = eventCostSolPer10000 / 10_000;
   const walletSpendableSol = Math.max(
     0,
-    initialBalanceSol - minimumWalletReserveSol - estimatedCostPerEventSol
+    initialBalanceSol -
+      minimumWalletReserveSol -
+      evidenceCampaignMaximumSubsessionCostSol
   );
   const effectiveBudgetSol = floorToIncrement(
     Math.min(requestedBudgetSol, walletSpendableSol),
@@ -141,7 +144,8 @@ export function createEvidenceCampaignSubsessionPlan(input: {
   const requestedCap = Math.min(
     remainingBudgetSol,
     configuredCostCapSol,
-    evidenceCampaignMaximumSubsessionCostSol
+    evidenceCampaignMaximumSubsessionCostSol,
+    evidenceCampaignTargetSubsessionCostSol
   );
   const eventCap = Math.min(
     configuredEventCap,
