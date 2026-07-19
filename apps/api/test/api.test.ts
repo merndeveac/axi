@@ -2651,6 +2651,74 @@ describe("@axi/api", () => {
     expect(body.status.meteredPriceAction.state).toBe("ARM_REQUIRED");
   });
 
+  it("rolls over a stopped metered session with fresh bounded counters", async () => {
+    server = createMeteredLaunchDataTestServer({
+      acknowledgedCost: false,
+      dataWalletBalanceSol: 0.05,
+      enabled: true,
+      liveDiscoveryConnected: true
+    });
+
+    await server.app.inject({
+      method: "POST",
+      url: "/runtime/metered-launch-data/ack-session",
+      payload: {
+        ackCost: true,
+        maxSessionCostSol: 0.001,
+        maxConcurrentMints: 2,
+        maxEventsPerSession: 100
+      }
+    });
+    await server.app.inject({
+      method: "POST",
+      url: "/runtime/metered-launch-data/start"
+    });
+    await server.app.inject({
+      method: "POST",
+      url: "/runtime/metered-launch-data/stop"
+    });
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/runtime/metered-launch-data/rollover",
+      payload: {
+        ackCost: true,
+        confirmation: "ROLLOVER METERED DATA SESSION",
+        maxSessionCostSol: 0.0005,
+        maxConcurrentMints: 2,
+        maxEventsPerSession: 100,
+        startAfterAck: true
+      }
+    });
+    const body = response.json() as {
+      action: string;
+      status: {
+        meteredPriceAction: {
+          active: boolean;
+          estimatedCostSol: number;
+          maxEventsPerSession: number;
+          sessionAck: boolean;
+          sessionCostCapSol: number;
+        };
+      };
+    };
+
+    expect(response.statusCode).toBe(200);
+    expect(body.action).toBe("rollover");
+    expect(body.status.meteredPriceAction).toMatchObject({
+      active: true,
+      estimatedCostSol: 0,
+      maxEventsPerSession: 100,
+      sessionAck: true,
+      sessionCostCapSol: 0.0005
+    });
+    expect(server.actualData.getStatus()).toMatchObject({
+      acknowledgedMetered: true,
+      budgetReached: false,
+      totalEventsThisSession: 0
+    });
+  });
+
   it("runtime stop unsubscribes metered launch-data subscriptions", async () => {
     server = createMeteredLaunchDataTestServer({
       acknowledgedCost: false,

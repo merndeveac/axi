@@ -224,6 +224,26 @@ export class ActualDataService {
     return this.getStatus();
   }
 
+  resetMeteredSession(): ActualDataStatus {
+    if (this.getSubscribedTokenCount() > 0) {
+      throw new ActualDataServiceError(
+        "ACTUAL_DATA_SESSION_RESET_ACTIVE",
+        "Stop every metered token subscription before resetting the data session."
+      );
+    }
+
+    this.stop();
+    this.budgetReached = false;
+    this.sessionAcknowledgedMetered = false;
+    this.totalEventsThisSession = 0;
+    this.perMintEventCounts.clear();
+    this.subscriptions.clear();
+    this.pumpPortalProvider?.resetTokenTradeSession();
+    this.start();
+
+    return this.getStatus();
+  }
+
   subscribeMint(mint: string, reason: string): ActualDataSubscriptionState {
     const normalizedMint = mint.trim();
 

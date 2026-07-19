@@ -761,8 +761,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       }
 
       if (
-        this.accountTradeSubscriptions.size >=
-        this.maxAccountTradeSubscriptions
+        this.accountTradeSubscriptions.size >= this.maxAccountTradeSubscriptions
       ) {
         result.rejected.push(wallet);
         result.reasonCodes.push("ACCOUNT_TRADE_MAX_WALLETS_REACHED");
@@ -789,7 +788,9 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     return result;
   }
 
-  unsubscribeAccountTrades(wallets: string[]): PumpPortalTradeSubscriptionResult {
+  unsubscribeAccountTrades(
+    wallets: string[]
+  ): PumpPortalTradeSubscriptionResult {
     const result = createEmptyTradeSubscriptionResult();
 
     for (const wallet of normalizeMintList(wallets)) {
@@ -826,6 +827,19 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
         this.tokenTradeEventCounts.values()
       ).reduce((total, count) => total + count, 0)
     };
+  }
+
+  resetTokenTradeSession(): PumpPortalTokenTradeStats {
+    if (this.tokenTradeSubscriptions.size > 0) {
+      throw new Error(
+        "Cannot reset the PumpPortal token-trade session while subscriptions are active."
+      );
+    }
+
+    this.tokenTradeEventCounts.clear();
+    this.tokenTradeBudgetReached = false;
+
+    return this.getPumpPortalTradeStats();
   }
 
   getPumpPortalAccountTradeStats(): PumpPortalAccountTradeStats {
@@ -974,16 +988,14 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       return;
     }
 
-    const accountTrade =
-      normalizePumpPortalAccountTradePayload(payload, {
-        now: this.now
-      });
+    const accountTrade = normalizePumpPortalAccountTradePayload(payload, {
+      now: this.now
+    });
     const tokenTrade = normalizePumpPortalTokenTradePayload(payload, {
       now: this.now
     });
     const event =
-      (accountTrade &&
-      this.accountTradeSubscriptions.has(accountTrade.wallet)
+      (accountTrade && this.accountTradeSubscriptions.has(accountTrade.wallet)
         ? accountTrade
         : null) ??
       tokenTrade ??
@@ -1184,7 +1196,10 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       "associatedBondingCurveKey",
       "associated_bonding_curve"
     ]);
-    const marketCapSol = readNumber(payload, ["marketCapSol", "market_cap_sol"]);
+    const marketCapSol = readNumber(payload, [
+      "marketCapSol",
+      "market_cap_sol"
+    ]);
     const vSolInBondingCurve = readNumber(payload, [
       "vSolInBondingCurve",
       "virtualSolReserves",
@@ -1701,7 +1716,12 @@ export function normalizePumpPortalAccountTradePayload(
     source: "pumpportal",
     dataSource: "pumpportal",
     dataSourceMode: "real",
-    confidence: usableForExitStrategy && signature ? "high" : usableForExitStrategy ? "medium" : "low",
+    confidence:
+      usableForExitStrategy && signature
+        ? "high"
+        : usableForExitStrategy
+          ? "medium"
+          : "low",
     usableForExitStrategy,
     raw: payload,
     rawSourceEventType: "account_trade",

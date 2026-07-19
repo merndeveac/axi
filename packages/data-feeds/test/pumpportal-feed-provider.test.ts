@@ -160,6 +160,42 @@ describe("PumpPortalFeedProvider", () => {
     provider.stop();
   });
 
+  it("resets a completed token-trade budget only after subscriptions stop", () => {
+    const events: FeedEvent[] = [];
+    const mint = "So11111111111111111111111111111111111111112";
+    const provider = createProvider({
+      maxTokenTradeEventsPerSession: 1,
+      subscribeMigration: false,
+      subscribeNewToken: false
+    });
+
+    provider.start((event) => events.push(event));
+    FakeWebSocket.instances[0]?.emit("open");
+    provider.subscribeTokenTrades([mint]);
+    FakeWebSocket.instances[0]?.emit(
+      "message",
+      JSON.stringify({
+        mint,
+        signature: "sig-budget",
+        solAmount: 1,
+        tokenAmount: 10,
+        txType: "buy"
+      })
+    );
+
+    expect(events).toHaveLength(1);
+    expect(provider.getPumpPortalTradeStats().budgetReached).toBe(true);
+    expect(provider.getPumpPortalTradeStats().totalEventsThisSession).toBe(1);
+
+    const reset = provider.resetTokenTradeSession();
+
+    expect(reset.budgetReached).toBe(false);
+    expect(reset.totalEventsThisSession).toBe(0);
+    expect(provider.subscribeTokenTrades([mint]).subscribed).toEqual([mint]);
+    provider.unsubscribeTokenTrades([mint]);
+    provider.stop();
+  });
+
   it("normalizes a token-creation payload", () => {
     const events: FeedEvent[] = [];
     const provider = createProvider();

@@ -38,6 +38,7 @@
     "paper:automation:status": "tsx --conditions=development src/paper-automation-status.ts",
     "paper:forward:export": "tsx --conditions=development src/paper-forward-export.ts",
     "paper:forward:evaluate": "tsx --conditions=development src/paper-forward-evaluate.ts",
+    "paper:evidence:campaign": "tsx --conditions=development src/evidence-campaign-runner.ts",
     "paper:strategy:evaluate": "tsx --conditions=development src/paper-strategy-evaluate.ts",
     "calibration:export": "tsx --conditions=development src/calibration-export.ts",
     "tokens:resolve": "tsx --conditions=development src/tokens-resolve.ts",

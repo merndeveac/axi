@@ -23,6 +23,9 @@ import type { LaunchCandidateView } from "./launch-scanner-service";
 export type MeteredLaunchDataMode =
   "manual" | "newest" | "hot_candidates" | "launch_score";
 
+export const meteredSessionRolloverConfirmation =
+  "ROLLOVER METERED DATA SESSION" as const;
+
 export type MeteredLaunchDataConfig = {
   enabled: boolean;
   controlsEnabled: boolean;
@@ -513,6 +516,26 @@ export class MeteredLaunchDataService {
         reconcileQueue: false
       });
     }
+
+    return this.getStatus();
+  }
+
+  resetSession(): MeteredLaunchDataStatus {
+    if (this.startedAt || this.getTrackedMints().length > 0) {
+      throw new MeteredLaunchDataServiceError(
+        "METERED_LAUNCH_DATA_SESSION_RESET_ACTIVE",
+        "Stop metered launch data before resetting its session."
+      );
+    }
+
+    this.budgetReached = false;
+    this.lastStopReason = "session_reset";
+    this.runtimeStopped = true;
+    this.sessionAck = null;
+    this.totalEventsThisSession = 0;
+    this.rateEventTimestamps.splice(0);
+    this.schedulerQueue.clear();
+    this.tracked.clear();
 
     return this.getStatus();
   }

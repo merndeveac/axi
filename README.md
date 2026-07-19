@@ -272,6 +272,26 @@ pnpm paper:forward:evaluate -- --deployment <deployment-id> --operator <identity
 The evaluation policy and evidence-campaign workflow are documented in
 [`docs/paper-forward-evaluation.md`](docs/paper-forward-evaluation.md).
 
+## Automated Paper Evidence Campaign
+
+`pnpm paper:evidence:campaign` runs a fail-closed, paper-only training and
+validation capture over paid PumpPortal token-trade data. It preserves the data
+wallet reserve, enforces a `0.25 SOL` absolute campaign ceiling, rolls through
+backend-bounded `0.001 SOL` sub-sessions, separates training outcomes from the
+later validation partition, checkpoints progress locally, and automatically
+attempts strategy/lifecycle evaluation when collection finishes. It never loads
+a private key, signs, trades, or calls an execution API.
+
+```bash
+pnpm paper:evidence:campaign -- --budget-sol 0.25 --operator <identity>
+pnpm paper:evidence:campaign -- --resume
+```
+
+The effective budget may be lower than requested when the wallet must retain
+the provider minimum balance. See
+[`docs/evidence-campaign-runner.md`](docs/evidence-campaign-runner.md) for the
+complete safety and evidence-boundary behavior.
+
 Launch trade tracking uses PumpPortal `subscribeTokenTrade` only for selected
 mints, through the existing one-WebSocket PumpPortal provider and the metered
 actual-data gates. It never uses account-trade streams, trading APIs, wallet

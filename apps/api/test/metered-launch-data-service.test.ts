@@ -543,6 +543,38 @@ describe("MeteredLaunchDataService", () => {
     expect(cost.estimatedCostSol).toBe(0.000001);
     expect(service.getRecentTradeEvents()).toHaveLength(1);
   });
+
+  it("resets a stopped metered session without weakening its configured caps", () => {
+    const service = createService({
+      acknowledgedCost: false,
+      apiKeyConfigured: true,
+      dataWalletPublicKeyConfigured: true,
+      enabled: true,
+      maxEventsPerSession: 1,
+      maxSessionCostSol: 0.001,
+      maxUiSessionCostSol: 0.001
+    });
+
+    service.acknowledgeSession({
+      ackCost: true,
+      maxConcurrentMints: 1,
+      maxEventsPerSession: 1,
+      maxSessionCostSol: 0.000001
+    });
+    service.start();
+    service.trackMint(mint, "reset_test");
+    service.handlePumpPortalTokenTrade(createTokenTradeEvent());
+    expect(service.getStatus().budgetReached).toBe(true);
+
+    service.stop();
+    const reset = service.resetSession();
+
+    expect(reset.budgetReached).toBe(false);
+    expect(reset.totalEventsThisSession).toBe(0);
+    expect(reset.ackSource).toBe("none");
+    expect(reset.maxSessionCostSol).toBe(0.001);
+    expect(reset.maxEventsPerSession).toBe(1);
+  });
 });
 
 function createService(

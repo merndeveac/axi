@@ -233,6 +233,7 @@ import {
 import {
   createMeteredLaunchDataConfig,
   createMeteredLaunchDataService,
+  meteredSessionRolloverConfirmation,
   MeteredLaunchDataServiceError,
   type MeteredLaunchDataConfig,
   type MeteredLaunchDataService
@@ -1509,6 +1510,10 @@ const runtimeMeteredLaunchDataAckBodySchema = z.object({
   maxEventsPerSession: z.coerce.number().int().positive(),
   startAfterAck: z.preprocess(parseBooleanEnv, z.boolean()).optional()
 });
+const runtimeMeteredLaunchDataRolloverBodySchema =
+  runtimeMeteredLaunchDataAckBodySchema.extend({
+    confirmation: z.literal(meteredSessionRolloverConfirmation)
+  });
 const launchCostQuerySchema = z.object({
   avgEventsPerToken: z.coerce.number().positive().default(20),
   tokensPerHour: z.coerce.number().positive().default(500)
@@ -3164,6 +3169,72 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   app.post("/runtime/metered-launch-data/clear-session-ack", async () => {
     return runtimeControl.clearMeteredLaunchDataSessionAck();
+  });
+
+  app.post("/runtime/metered-launch-data/rollover", async (request, reply) => {
+    const body = runtimeMeteredLaunchDataRolloverBodySchema.parse(request.body);
+
+    try {
+      meteredLaunchData.stop();
+      disarmPaidData("metered_session_rollover");
+      actualData.resetMeteredSession();
+      meteredLaunchData.resetSession();
+      const status = meteredLaunchData.acknowledgeSession({
+        ackCost: true,
+        maxSessionCostSol: body.maxSessionCostSol,
+        maxConcurrentMints: body.maxConcurrentMints,
+        maxEventsPerSession: body.maxEventsPerSession,
+        startAfterAck: false
+      });
+      actualData.acknowledgeMeteredSession();
+      paidDataArmed = status.sessionAcknowledgedCost;
+      persistRuntimeSession();
+
+      const started = body.startAfterAck
+        ? await runtimeControl.startMeteredLaunchData()
+        : null;
+
+      if (started && !started.ok) {
+        return reply.code(409).send({
+          ...started,
+          action: "rollover",
+          message:
+            "Metered counters were reset, but the next bounded session was blocked by runtime gates.",
+          liveExecutionDisabled: true
+        });
+      }
+
+      return {
+        ok: true,
+        action: "rollover",
+        message:
+          "Metered data session rolled over with fresh bounded counters.",
+        status: started?.status ?? (await runtimeControl.getStatus()),
+        decisions: started?.decisions ?? [],
+        paperOnly: true,
+        dataOnly: true,
+        tradingDisabled: true,
+        liveExecutionDisabled: true
+      };
+    } catch (error) {
+      if (
+        error instanceof MeteredLaunchDataServiceError ||
+        error instanceof ActualDataServiceError
+      ) {
+        return reply.code(error.statusCode).send({
+          ok: false,
+          error: error.code,
+          message: error.message,
+          status: await runtimeControl.getStatus(),
+          paperOnly: true,
+          dataOnly: true,
+          tradingDisabled: true,
+          liveExecutionDisabled: true
+        });
+      }
+
+      throw error;
+    }
   });
 
   app.post("/runtime/metered-launch-data/stop", async () => {

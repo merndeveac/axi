@@ -31,6 +31,7 @@
     "paper:automation:status": "pnpm --filter @axi/api paper:automation:status",
     "paper:forward:export": "pnpm --filter @axi/api paper:forward:export",
     "paper:forward:evaluate": "pnpm --filter @axi/api paper:forward:evaluate",
+    "paper:evidence:campaign": "pnpm --filter @axi/api paper:evidence:campaign",
     "local:stop": "pnpm axi:stop",
     "local:restart": "pnpm axi:restart",
     "local:logs": "pnpm axi:logs"
