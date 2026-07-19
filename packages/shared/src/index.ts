@@ -662,19 +662,10 @@ export type LiveTradeTrackingState =
   | "error";
 
 export type LiveLaunchTrackingState =
-  | "not_tracked"
-  | "tracking"
-  | "budget_reached"
-  | "unsubscribed"
-  | "blocked";
+  "not_tracked" | "tracking" | "budget_reached" | "unsubscribed" | "blocked";
 
 export type LiveCardLaunchWindowLabel =
-  | "5s"
-  | "10s"
-  | "30s"
-  | "60s"
-  | "2m"
-  | "5m";
+  "5s" | "10s" | "30s" | "60s" | "2m" | "5m";
 
 export type LiveCardLaunchWindowMetrics = {
   volumeSol: number;
@@ -754,18 +745,10 @@ export type LiveCardLaunchScoreComponents = {
 export type DerivativeDirection = "up" | "down" | "flat" | "unavailable";
 
 export type DerivativeStrengthLabel =
-  | "none"
-  | "weak"
-  | "moderate"
-  | "strong"
-  | "explosive";
+  "none" | "weak" | "moderate" | "strong" | "explosive";
 
 export type MomentumDerivativeSignalLabel =
-  | "none"
-  | "watch"
-  | "hot"
-  | "ripping"
-  | "reject";
+  "none" | "watch" | "hot" | "ripping" | "reject";
 
 export type MomentumDerivativeStrengthEntry = {
   schemaVersion: 1;
@@ -785,13 +768,7 @@ export type MomentumDerivativeStrengthEntry = {
   cohortMad: number | null;
   cohortSampleCount: number;
   cohortReady: boolean;
-  ageBucket:
-    | "0-10s"
-    | "10-30s"
-    | "30-60s"
-    | "60-120s"
-    | "120-300s"
-    | "300s+";
+  ageBucket: "0-10s" | "10-30s" | "30-60s" | "60-120s" | "120-300s" | "300s+";
   direction: DerivativeDirection;
   strength: DerivativeStrengthLabel;
   confidence: {
@@ -1316,6 +1293,76 @@ export type MomentumScannerRow = {
   positiveDrivers: string[];
   negativeDrivers: string[];
   blockers: string[];
+};
+
+export type MomentumFeedRow = Pick<
+  MomentumScannerRow,
+  | "ageSeconds"
+  | "buyCount10s"
+  | "buySellRatio"
+  | "curve"
+  | "dataQualityLabel"
+  | "derivatives"
+  | "displayName"
+  | "fdvUsd"
+  | "hardReject"
+  | "hasMetadata"
+  | "hasPaperPosition"
+  | "hasSocialLinks"
+  | "imageUri"
+  | "lastUpdatedAt"
+  | "latestEventAt"
+  | "launchPhase"
+  | "launchScore"
+  | "launchedAt"
+  | "liquidityUsd"
+  | "marketCapSol"
+  | "marketCapUsd"
+  | "migrationStatus"
+  | "mint"
+  | "missingCriticalFields"
+  | "name"
+  | "netBuyPressure"
+  | "paperPositionStatus"
+  | "poolAddress"
+  | "priceSol"
+  | "priceUsd"
+  | "priceVelocityPctPerSec"
+  | "raydiumPool"
+  | "realData"
+  | "realTradeEventCount"
+  | "riskLevel"
+  | "sellCount10s"
+  | "shortMint"
+  | "signalAction"
+  | "signalDisplay"
+  | "signalStrength"
+  | "source"
+  | "sparkline"
+  | "strategy"
+  | "symbol"
+  | "title"
+  | "trackingState"
+  | "tradeCount10s"
+  | "unavailableFields"
+  | "uniqueBuyers10s"
+  | "uniqueSellers10s"
+  | "unrealizedPnlPct"
+  | "unrealizedPnlSol"
+  | "volume10sSol"
+  | "volume10sUsd"
+  | "volume30sSol"
+  | "volume60sSol"
+  | "volumeVelocitySolPerSec"
+> & {
+  derivativeScore: number;
+};
+
+export type MomentumFeedResponse = {
+  schemaVersion: 1;
+  generatedAt: string;
+  rows: MomentumFeedRow[];
+  totalRows: number;
 };
 
 export type MomentumDiagnostics = {

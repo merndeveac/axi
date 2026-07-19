@@ -8,6 +8,53 @@ export type ScannerValueDisplay = {
   source: "dex" | "curve" | "pool" | "payload" | "unavailable";
 };
 
+export type FeedCoverageSummary = {
+  complete: boolean;
+  coveragePct: number;
+  foldedEventCount: number;
+  rawEventCount: number;
+  rowCount: number;
+  uniqueMintCount: number;
+};
+
+type MarketCapDisplayRow = Pick<
+  MomentumScannerRow,
+  "curve" | "fdvUsd" | "marketCapSol" | "marketCapUsd"
+>;
+
+type LiquidityDisplayRow = Pick<
+  MomentumScannerRow,
+  "curve" | "liquidityUsd" | "poolAddress" | "raydiumPool"
+>;
+
+export function getFeedCoverageSummary(input: {
+  liveTokenCount?: number | null;
+  newTokenEventCount?: number | null;
+  rowCount: number;
+}): FeedCoverageSummary {
+  const rowCount = Math.max(0, Math.trunc(input.rowCount));
+  const uniqueMintCount = Math.max(
+    rowCount,
+    Math.trunc(input.liveTokenCount ?? rowCount)
+  );
+  const rawEventCount = Math.max(
+    uniqueMintCount,
+    Math.trunc(input.newTokenEventCount ?? uniqueMintCount)
+  );
+
+  return {
+    complete: rowCount >= uniqueMintCount,
+    coveragePct:
+      uniqueMintCount === 0
+        ? 100
+        : Math.min(100, (rowCount / uniqueMintCount) * 100),
+    foldedEventCount: Math.max(0, rawEventCount - uniqueMintCount),
+    rawEventCount,
+    rowCount,
+    uniqueMintCount
+  };
+}
+
 export function sanitizeDashboardImageUri(
   value: string | null | undefined
 ): string | null {
@@ -37,7 +84,9 @@ export function getTokenInitials(
   return cleaned || "?";
 }
 
-export function getMarketCapDisplay(row: MomentumScannerRow): ScannerValueDisplay {
+export function getMarketCapDisplay(
+  row: MarketCapDisplayRow
+): ScannerValueDisplay {
   if (row.marketCapUsd !== null) {
     return {
       label: "market cap",
@@ -64,7 +113,9 @@ export function getMarketCapDisplay(row: MomentumScannerRow): ScannerValueDispla
   };
 }
 
-export function getLiquidityDisplay(row: MomentumScannerRow): ScannerValueDisplay {
+export function getLiquidityDisplay(
+  row: LiquidityDisplayRow
+): ScannerValueDisplay {
   if (row.liquidityUsd !== null) {
     return {
       label: row.poolAddress || row.raydiumPool ? "pool" : "dex",

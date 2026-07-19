@@ -1,11 +1,46 @@
 import type { MomentumScannerRow } from "@axi/shared";
 import { describe, expect, it } from "vitest";
 import {
+  getFeedCoverageSummary,
   getLiquidityDisplay,
   getMarketCapDisplay,
   getTokenInitials,
   sanitizeDashboardImageUri
 } from "./scanner-view";
+
+describe("getFeedCoverageSummary", () => {
+  it("distinguishes raw feed updates from unique launch rows", () => {
+    expect(
+      getFeedCoverageSummary({
+        liveTokenCount: 511,
+        newTokenEventCount: 531,
+        rowCount: 511
+      })
+    ).toEqual({
+      complete: true,
+      coveragePct: 100,
+      foldedEventCount: 20,
+      rawEventCount: 531,
+      rowCount: 511,
+      uniqueMintCount: 511
+    });
+  });
+
+  it("reports incomplete UI coverage without dividing by zero", () => {
+    expect(
+      getFeedCoverageSummary({
+        liveTokenCount: 4,
+        newTokenEventCount: 5,
+        rowCount: 3
+      })
+    ).toMatchObject({
+      complete: false,
+      coveragePct: 75,
+      foldedEventCount: 1
+    });
+    expect(getFeedCoverageSummary({ rowCount: 0 }).coveragePct).toBe(100);
+  });
+});
 
 describe("scanner view helpers", () => {
   it("sanitizes token image URIs", () => {

@@ -12,6 +12,7 @@ import type { NormalizedIndexerEvent } from "@axi/indexer-core";
 import type { SolanaChainClient } from "@axi/solana-chain";
 import type {
   LiveTokenCardViewModel,
+  MomentumFeedResponse,
   MomentumDiagnostics,
   MomentumScannerRow,
   StrategyStatus
@@ -3539,6 +3540,42 @@ describe("@axi/api", () => {
     expect(response.statusCode).toBe(200);
     expect(rows).toEqual([]);
   });
+
+  it("GET /ui/momentum-feed returns every unique launch beyond the event tape limit", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+    const launchCount = 275;
+
+    for (let index = 0; index < launchCount; index += 1) {
+      server.emitFeedEvent(
+        createPumpPortalEvent({
+          mint: `PumpPortalBulk${String(index).padStart(4, "0")}1111111111111111111111111`,
+          timestamp: new Date(
+            Date.parse("2026-01-01T00:00:00.000Z") + index * 1000
+          ).toISOString()
+        })
+      );
+    }
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/ui/momentum-feed"
+    });
+    const feed = response.json() as MomentumFeedResponse;
+    const rows = feed.rows;
+
+    expect(response.statusCode).toBe(200);
+    expect(feed.totalRows).toBe(launchCount);
+    expect(rows).toHaveLength(launchCount);
+    expect(new Set(rows.map((row) => row.mint)).size).toBe(launchCount);
+    expect(rows[0]?.mint).toContain("0274");
+    expect(rows.at(-1)?.mint).toContain("0000");
+    expect(rows[0]).not.toHaveProperty("reasonCodes");
+    expect(rows[0]?.derivativeScore).toEqual(expect.any(Number));
+  }, 15_000);
 
   it("GET /ui/momentum-rows returns a discovery-only scanner row", async () => {
     server = createApiServer({

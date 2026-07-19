@@ -1,6 +1,36 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  memo,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode
+} from "react";
+import clsx from "clsx";
+import {
+  Activity,
+  ArrowDownUp,
+  BarChart3,
+  Bug,
+  Database,
+  Gauge,
+  Layers3,
+  LogOut,
+  Radar,
+  RadioTower,
+  Search,
+  ShieldAlert,
+  ShieldCheck,
+  SlidersHorizontal,
+  WalletCards,
+  Zap,
+  type LucideIcon
+} from "lucide-react";
 import type {
   LiveTokenCardViewModel,
+  MomentumFeedResponse,
+  MomentumFeedRow,
   MomentumDiagnostics,
   MomentumScannerRow,
   OverlaySignal,
@@ -12,6 +42,7 @@ import type {
 import { DataPanel } from "./components/DataPanel";
 import { MetricValue } from "./components/MetricValue";
 import { ReasonCodes } from "./components/ReasonCodes";
+import { Tooltip, TooltipProvider } from "./components/Tooltip";
 import {
   formatAcceleration,
   formatAge,
@@ -26,6 +57,7 @@ import {
   formatVelocity
 } from "./formatters";
 import {
+  getFeedCoverageSummary,
   getLiquidityDisplay,
   getMarketCapDisplay,
   getTokenInitials,
@@ -1397,15 +1429,60 @@ type ServerMessage =
       signal: OverlaySignal;
     };
 
-const tabs: Array<{ id: TabId; label: string }> = [
-  { id: "scanner", label: "Scanner" },
-  { id: "signals", label: "Signals" },
-  { id: "portfolio", label: "Portfolio" },
-  { id: "metrics", label: "Metrics" },
-  { id: "risk", label: "Risk" },
-  { id: "exit", label: "Exit" },
-  { id: "data", label: "Data" },
-  { id: "debug", label: "Debug" }
+const tabs: Array<{
+  description: string;
+  icon: LucideIcon;
+  id: TabId;
+  label: string;
+}> = [
+  {
+    description: "Every unique launch and its live momentum state",
+    icon: Radar,
+    id: "scanner",
+    label: "Momentum"
+  },
+  {
+    description: "Strategy decisions and signal drivers",
+    icon: Zap,
+    id: "signals",
+    label: "Signals"
+  },
+  {
+    description: "Paper positions, orders, fills, and PnL",
+    icon: WalletCards,
+    id: "portfolio",
+    label: "Portfolio"
+  },
+  {
+    description: "Rolling market and strategy measurements",
+    icon: BarChart3,
+    id: "metrics",
+    label: "Metrics"
+  },
+  {
+    description: "Risk flags, rejections, and exposure",
+    icon: ShieldAlert,
+    id: "risk",
+    label: "Risk"
+  },
+  {
+    description: "Paper exit plans and watched wallets",
+    icon: LogOut,
+    id: "exit",
+    label: "Exit"
+  },
+  {
+    description: "Feed, wallet, metered-data, and provider health",
+    icon: Database,
+    id: "data",
+    label: "Data"
+  },
+  {
+    description: "Storage and low-level runtime evidence",
+    icon: Bug,
+    id: "debug",
+    label: "Debug"
+  }
 ];
 
 const wsUrl =
@@ -1417,7 +1494,7 @@ export function App() {
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("connecting");
-  const [momentumRows, setMomentumRows] = useState<MomentumScannerRow[]>([]);
+  const [momentumRows, setMomentumRows] = useState<MomentumFeedRow[]>([]);
   const [momentumDiagnostics, setMomentumDiagnostics] =
     useState<MomentumDiagnostics | null>(null);
   const [cards, setCards] = useState<LiveTokenCardViewModel[]>([]);
@@ -1504,7 +1581,7 @@ export function App() {
   const [chainVerifications, setChainVerifications] = useState<
     ChainVerificationRow[]
   >([]);
-  const [sortMode, setSortMode] = useState<SortMode>("launchScore");
+  const [sortMode, setSortMode] = useState<SortMode>("newest");
   const [actionFilter, setActionFilter] = useState<ActionFilter>("all");
   const [realOnly, setRealOnly] = useState(true);
   const [showUnavailable, setShowUnavailable] = useState(false);
@@ -1516,6 +1593,7 @@ export function App() {
   const [expandedMint, setExpandedMint] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>("never");
   const [controlPanelOpen, setControlPanelOpen] = useState(false);
+  const deferredSearch = useDeferredValue(search);
 
   useEffect(() => {
     const onHashChange = () => setActiveTab(getInitialTab());
@@ -1528,16 +1606,6 @@ export function App() {
     let socket: WebSocket | undefined;
     let retryTimer: number | undefined;
     let closedByReact = false;
-
-    const refreshScannerRows = async () => {
-      try {
-        const nextRows =
-          await fetchJson<MomentumScannerRow[]>("/ui/momentum-rows");
-        setMomentumRows(nextRows);
-      } catch {
-        // Polling remains the fallback path.
-      }
-    };
 
     const connect = () => {
       setConnectionStatus("connecting");
@@ -1553,7 +1621,6 @@ export function App() {
 
         if (message.type === "signal") {
           setSignals((current) => upsertSignal(current, message.signal));
-          void refreshScannerRows();
         }
 
         setLastUpdated(new Date().toLocaleTimeString());
@@ -1584,6 +1651,10 @@ export function App() {
     let cancelled = false;
 
     const loadDashboardData = async () => {
+      if (document.hidden) {
+        return;
+      }
+
       try {
         const [
           health,
@@ -1638,7 +1709,7 @@ export function App() {
           fetchJson<StorageStats>("/storage/stats"),
           fetchJson<FeedStatus>("/feed/status"),
           fetchJson<LiveStatus>("/live/status"),
-          fetchJson<MomentumScannerRow[]>("/ui/momentum-rows"),
+          fetchJson<MomentumFeedResponse>("/ui/momentum-feed"),
           fetchJson<MomentumDiagnostics>("/ui/momentum-diagnostics"),
           fetchJson<LiveTokenCardViewModel[]>("/ui/live-token-cards"),
           fetchJson<StrategyStatus>("/strategy/status"),
@@ -1707,7 +1778,7 @@ export function App() {
           setStorageStats(stats);
           setFeedStatus(nextFeedStatus);
           setLiveStatus(nextLiveStatus);
-          setMomentumRows(nextMomentumRows);
+          setMomentumRows(nextMomentumRows.rows);
           setMomentumDiagnostics(nextMomentumDiagnostics);
           setCards(nextCards);
           setStrategyStatus(nextStrategy);
@@ -1766,7 +1837,7 @@ export function App() {
     void loadDashboardData();
     const timer = window.setInterval(() => {
       void loadDashboardData();
-    }, 10000);
+    }, 30000);
 
     return () => {
       cancelled = true;
@@ -1778,6 +1849,10 @@ export function App() {
     let cancelled = false;
 
     const loadRuntimeControl = async () => {
+      if (document.hidden) {
+        return;
+      }
+
       try {
         const nextRuntimeControlStatus =
           await fetchJson<RuntimeControlStatus>("/runtime/status");
@@ -1798,7 +1873,7 @@ export function App() {
     void loadRuntimeControl();
     const timer = window.setInterval(() => {
       void loadRuntimeControl();
-    }, 2000);
+    }, 5000);
 
     return () => {
       cancelled = true;
@@ -1808,27 +1883,35 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
 
     const loadRows = async () => {
+      if (cancelled || inFlight || document.hidden) {
+        return;
+      }
+
+      inFlight = true;
+
       try {
-        const nextRows =
-          await fetchJson<MomentumScannerRow[]>("/ui/momentum-rows");
+        const nextFeed =
+          await fetchJson<MomentumFeedResponse>("/ui/momentum-feed");
 
         if (!cancelled) {
-          setMomentumRows(nextRows);
+          setMomentumRows(nextFeed.rows);
           setApiStatus("connected");
         }
       } catch {
-        if (!cancelled) {
-          setApiStatus("disconnected");
-        }
+        // The global health poll owns API-offline state to avoid UI flicker
+        // from a single high-frequency scanner request.
+      } finally {
+        inFlight = false;
       }
     };
 
     void loadRows();
     const timer = window.setInterval(() => {
       void loadRows();
-    }, 1000);
+    }, 1500);
 
     return () => {
       cancelled = true;
@@ -1838,8 +1921,15 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
 
     const loadDiagnostics = async () => {
+      if (cancelled || inFlight || document.hidden) {
+        return;
+      }
+
+      inFlight = true;
+
       try {
         const nextDiagnostics = await fetchJson<MomentumDiagnostics>(
           "/ui/momentum-diagnostics"
@@ -1850,16 +1940,16 @@ export function App() {
           setApiStatus("connected");
         }
       } catch {
-        if (!cancelled) {
-          setApiStatus("disconnected");
-        }
+        // Diagnostics are secondary to the global health check.
+      } finally {
+        inFlight = false;
       }
     };
 
     void loadDiagnostics();
     const timer = window.setInterval(() => {
       void loadDiagnostics();
-    }, 5000);
+    }, 10000);
 
     return () => {
       cancelled = true;
@@ -1874,7 +1964,7 @@ export function App() {
           actionFilter,
           hideUnavailableHeavy,
           realOnly,
-          search,
+          search: deferredSearch,
           showMigrated,
           trackedOnly
         }),
@@ -1885,7 +1975,7 @@ export function App() {
       hideUnavailableHeavy,
       momentumRows,
       realOnly,
-      search,
+      deferredSearch,
       showMigrated,
       sortMode,
       trackedOnly
@@ -1982,148 +2072,177 @@ export function App() {
   const liveTone = getLiveConnectionTone(feedStatus, healthStatus);
 
   return (
-    <main className="app-shell">
-      <HeaderControlCenter
-        apiLabel={apiLabel}
-        apiStatus={apiStatus}
-        connectionStatus={connectionStatus}
-        controlPanelOpen={controlPanelOpen}
-        dataWalletStatus={dataWalletStatus}
-        feedLabel={feedLabel}
-        feedModeLabel={feedModeLabel}
-        feedStatus={feedStatus}
-        healthStatus={healthStatus}
-        hotLaunchCount={hotLaunchCount}
-        lastUpdated={lastUpdated}
-        liveLabel={liveLabel}
-        liveTone={liveTone}
-        meteredLaunchDataStatus={meteredLaunchDataStatus}
-        modeLabel={modeLabel}
-        momentumDiagnostics={momentumDiagnostics}
-        momentumRowCount={momentumRows.length}
-        onToggleDiagnostics={() => setControlPanelOpen((open) => !open)}
-        rippingLaunchCount={rippingLaunchCount}
-        runtimeActionStatus={runtimeActionStatus}
-        runtimeCapacity={runtimeCapacity}
-        runtimeContract={runtimeContract}
-        paperLifecycleValidationStatus={paperLifecycleValidationStatus}
-        paperAutomationStatus={paperAutomationStatus}
-        paperOperationsStatus={paperOperationsStatus}
-        paperForwardEvaluationStatus={paperForwardEvaluationStatus}
-        runtimeControlStatus={runtimeControlStatus}
-        runRuntimeAction={runRuntimeAction}
-        trackedCardCount={trackedCardCount}
-        unavailableFieldCount={unavailableFieldCount}
-        websocketLabel={websocketLabel}
-      />
-
-      {apiStatus === "disconnected" ? <ApiOfflineNotice /> : null}
-
-      <nav className="tab-bar" role="tablist" aria-label="Dashboard tabs">
-        {tabs.map((tab) => (
-          <button
-            aria-selected={activeTab === tab.id}
-            className={
-              activeTab === tab.id ? "tab-button active" : "tab-button"
-            }
-            key={tab.id}
-            onClick={() => activateTab(tab.id, setActiveTab)}
-            role="tab"
-            type="button"
-          >
-            {tab.label}
-          </button>
-        ))}
-      </nav>
-
-      {activeTab === "scanner" ? (
-        <ScannerTab
-          actionFilter={actionFilter}
-          compactMode={compactMode}
-          diagnostics={momentumDiagnostics}
-          expandedMint={expandedMint}
+    <TooltipProvider delayDuration={300} skipDelayDuration={100}>
+      <main className="app-shell">
+        <HeaderControlCenter
+          apiLabel={apiLabel}
+          apiStatus={apiStatus}
+          connectionStatus={connectionStatus}
+          controlPanelOpen={controlPanelOpen}
+          dataWalletStatus={dataWalletStatus}
+          feedLabel={feedLabel}
+          feedModeLabel={feedModeLabel}
           feedStatus={feedStatus}
           healthStatus={healthStatus}
-          hideUnavailableHeavy={hideUnavailableHeavy}
-          liveStatus={liveStatus}
-          realOnly={realOnly}
-          rows={visibleRows}
-          search={search}
-          setActionFilter={setActionFilter}
-          setCompactMode={setCompactMode}
-          setExpandedMint={setExpandedMint}
-          setHideUnavailableHeavy={setHideUnavailableHeavy}
-          setRealOnly={setRealOnly}
-          setSearch={setSearch}
-          setShowMigrated={setShowMigrated}
-          setShowUnavailable={setShowUnavailable}
-          setSortMode={setSortMode}
-          setTrackedOnly={setTrackedOnly}
-          showMigrated={showMigrated}
-          showUnavailable={showUnavailable}
-          sortMode={sortMode}
-          totalRows={momentumRows.length}
-          trackedOnly={trackedOnly}
-        />
-      ) : null}
-      {activeTab === "signals" ? (
-        <SignalsTab cards={cards} signals={signals} strategy={strategyStatus} />
-      ) : null}
-      {activeTab === "portfolio" ? (
-        <PortfolioTab
-          fills={paperPortfolioFills}
-          orders={paperPortfolioOrders}
-          performance={paperPortfolioPerformance}
-          positions={paperPortfolioPositions}
-          snapshot={paperPortfolioSnapshot}
-          status={paperPortfolioStatus}
-        />
-      ) : null}
-      {activeTab === "metrics" ? <MetricsTab metrics={metrics} /> : null}
-      {activeTab === "risk" ? <RiskTab riskRows={riskRows} /> : null}
-      {activeTab === "exit" ? (
-        <ExitTab
-          events={exitEvents}
-          rules={exitRules}
-          signals={exitSignals}
-          status={exitStatus}
-          wallets={exitWallets}
-        />
-      ) : null}
-      {activeTab === "data" ? (
-        <DataTab
-          actualDataStatus={actualDataStatus}
-          actualTrades={actualTrades}
-          chainStatus={chainStatus}
-          dataWalletStatus={dataWalletStatus}
-          diagnostics={momentumDiagnostics}
-          lightningStatus={lightningStatus}
-          feedStatus={feedStatus}
-          liveCardEnrichmentStatus={liveCardEnrichmentStatus}
-          indexerStatus={indexerStatus}
-          launchScannerStatus={launchScannerStatus}
-          liveStatus={liveStatus}
-          liveTradeTrackingStatus={liveTradeTrackingStatus}
-          marketObservations={marketObservations}
-          marketStatus={marketStatus}
+          hotLaunchCount={hotLaunchCount}
+          lastUpdated={lastUpdated}
+          liveLabel={liveLabel}
+          liveTone={liveTone}
           meteredLaunchDataStatus={meteredLaunchDataStatus}
-          meteredLaunchDataTracked={meteredLaunchDataTracked}
-          pumpPortalWalletsStatus={pumpPortalWalletsStatus}
+          modeLabel={modeLabel}
+          momentumDiagnostics={momentumDiagnostics}
+          momentumRowCount={momentumRows.length}
+          onToggleDiagnostics={() => setControlPanelOpen((open) => !open)}
+          rippingLaunchCount={rippingLaunchCount}
           runtimeActionStatus={runtimeActionStatus}
+          runtimeCapacity={runtimeCapacity}
+          runtimeContract={runtimeContract}
+          paperLifecycleValidationStatus={paperLifecycleValidationStatus}
+          paperAutomationStatus={paperAutomationStatus}
+          paperOperationsStatus={paperOperationsStatus}
+          paperForwardEvaluationStatus={paperForwardEvaluationStatus}
           runtimeControlStatus={runtimeControlStatus}
           runRuntimeAction={runRuntimeAction}
-          tokenIdentities={tokenIdentities}
-          tokenIdentityStatus={tokenIdentityStatus}
+          trackedCardCount={trackedCardCount}
+          unavailableFieldCount={unavailableFieldCount}
+          websocketLabel={websocketLabel}
         />
-      ) : null}
-      {activeTab === "debug" ? (
-        <StorageTab
-          chainVerifications={chainVerifications}
-          liveEvents={liveEvents}
-          storageStats={storageStats}
-        />
-      ) : null}
-    </main>
+
+        {apiStatus === "disconnected" ? <ApiOfflineNotice /> : null}
+
+        <div className="workspace-shell">
+          <aside className="workspace-sidebar">
+            <div className="sidebar-heading">
+              <span>Workspace</span>
+              <small>paper terminal</small>
+            </div>
+            <nav className="tab-bar" role="tablist" aria-label="Dashboard tabs">
+              {tabs.map((tab) => {
+                const TabIcon = tab.icon;
+
+                return (
+                  <Tooltip content={tab.description} key={tab.id} side="right">
+                    <button
+                      aria-selected={activeTab === tab.id}
+                      className={clsx("tab-button", {
+                        active: activeTab === tab.id
+                      })}
+                      onClick={() => activateTab(tab.id, setActiveTab)}
+                      role="tab"
+                      type="button"
+                    >
+                      <TabIcon aria-hidden="true" size={17} strokeWidth={1.8} />
+                      <span>{tab.label}</span>
+                    </button>
+                  </Tooltip>
+                );
+              })}
+            </nav>
+            <div className="sidebar-safety">
+              <ShieldCheck aria-hidden="true" size={18} />
+              <span>
+                <strong>Paper only</strong>
+                <small>signing disabled</small>
+              </span>
+            </div>
+          </aside>
+
+          <section className="workspace-main" aria-live="polite">
+            {activeTab === "scanner" ? (
+              <ScannerTab
+                actionFilter={actionFilter}
+                compactMode={compactMode}
+                diagnostics={momentumDiagnostics}
+                expandedMint={expandedMint}
+                feedStatus={feedStatus}
+                healthStatus={healthStatus}
+                hideUnavailableHeavy={hideUnavailableHeavy}
+                liveStatus={liveStatus}
+                realOnly={realOnly}
+                rows={visibleRows}
+                search={search}
+                setActionFilter={setActionFilter}
+                setCompactMode={setCompactMode}
+                setExpandedMint={setExpandedMint}
+                setHideUnavailableHeavy={setHideUnavailableHeavy}
+                setRealOnly={setRealOnly}
+                setSearch={setSearch}
+                setShowMigrated={setShowMigrated}
+                setShowUnavailable={setShowUnavailable}
+                setSortMode={setSortMode}
+                setTrackedOnly={setTrackedOnly}
+                showMigrated={showMigrated}
+                showUnavailable={showUnavailable}
+                sortMode={sortMode}
+                totalRows={momentumRows.length}
+                trackedOnly={trackedOnly}
+              />
+            ) : null}
+            {activeTab === "signals" ? (
+              <SignalsTab
+                cards={cards}
+                signals={signals}
+                strategy={strategyStatus}
+              />
+            ) : null}
+            {activeTab === "portfolio" ? (
+              <PortfolioTab
+                fills={paperPortfolioFills}
+                orders={paperPortfolioOrders}
+                performance={paperPortfolioPerformance}
+                positions={paperPortfolioPositions}
+                snapshot={paperPortfolioSnapshot}
+                status={paperPortfolioStatus}
+              />
+            ) : null}
+            {activeTab === "metrics" ? <MetricsTab metrics={metrics} /> : null}
+            {activeTab === "risk" ? <RiskTab riskRows={riskRows} /> : null}
+            {activeTab === "exit" ? (
+              <ExitTab
+                events={exitEvents}
+                rules={exitRules}
+                signals={exitSignals}
+                status={exitStatus}
+                wallets={exitWallets}
+              />
+            ) : null}
+            {activeTab === "data" ? (
+              <DataTab
+                actualDataStatus={actualDataStatus}
+                actualTrades={actualTrades}
+                chainStatus={chainStatus}
+                dataWalletStatus={dataWalletStatus}
+                diagnostics={momentumDiagnostics}
+                lightningStatus={lightningStatus}
+                feedStatus={feedStatus}
+                liveCardEnrichmentStatus={liveCardEnrichmentStatus}
+                indexerStatus={indexerStatus}
+                launchScannerStatus={launchScannerStatus}
+                liveStatus={liveStatus}
+                liveTradeTrackingStatus={liveTradeTrackingStatus}
+                marketObservations={marketObservations}
+                marketStatus={marketStatus}
+                meteredLaunchDataStatus={meteredLaunchDataStatus}
+                meteredLaunchDataTracked={meteredLaunchDataTracked}
+                pumpPortalWalletsStatus={pumpPortalWalletsStatus}
+                runtimeActionStatus={runtimeActionStatus}
+                runtimeControlStatus={runtimeControlStatus}
+                runRuntimeAction={runRuntimeAction}
+                tokenIdentities={tokenIdentities}
+                tokenIdentityStatus={tokenIdentityStatus}
+              />
+            ) : null}
+            {activeTab === "debug" ? (
+              <StorageTab
+                chainVerifications={chainVerifications}
+                liveEvents={liveEvents}
+                storageStats={storageStats}
+              />
+            ) : null}
+          </section>
+        </div>
+      </main>
+    </TooltipProvider>
   );
 }
 
@@ -2367,17 +2486,21 @@ function HeaderControlCenter({
   };
 
   return (
-    <header className="control-header">
+    <header
+      className={clsx("control-header", {
+        "diagnostics-open": controlPanelOpen
+      })}
+    >
       <div className="control-header-main">
         <div className="brand-cluster">
-          <div className="brand-mark">AXI</div>
+          <div className="brand-mark" aria-hidden="true">
+            <Activity size={20} strokeWidth={2.2} />
+          </div>
           <div>
-            <p className="eyebrow">
-              live token intelligence / momentum scanner
-            </p>
-            <h1>AXI</h1>
+            <p className="eyebrow">AXI / MOMENTUM INTELLIGENCE</p>
+            <h1>Launch Terminal</h1>
             <span className="runtime-mode">
-              {feedModeLabel} · {modeLabel} · PumpPortal-first
+              {feedModeLabel} · {modeLabel} · {feedLabel} discovery
             </span>
           </div>
         </div>
@@ -3009,9 +3132,7 @@ function HeaderControlCenter({
                   <span>Operator identity</span>
                   <input
                     maxLength={120}
-                    onChange={(event) =>
-                      setForwardOperator(event.target.value)
-                    }
+                    onChange={(event) => setForwardOperator(event.target.value)}
                     placeholder="operator name"
                     type="text"
                     value={forwardOperator}
@@ -3031,8 +3152,8 @@ function HeaderControlCenter({
               </label>
               <p>
                 Type <code>{forwardExpectedConfirmation}</code>. Starting only
-                opens an evidence boundary; it does not start metered data,
-                arm paper automation, or enable live execution.
+                opens an evidence boundary; it does not start metered data, arm
+                paper automation, or enable live execution.
               </p>
             </div>
             <div className="modal-actions">
@@ -3149,7 +3270,8 @@ function HeaderControlCenter({
                 {formatCompactNumber(
                   paperOperationsStatus?.summary?.alertCount
                 )}{" "}
-                total · {formatCompactNumber(
+                total ·{" "}
+                {formatCompactNumber(
                   paperOperationsStatus?.summary?.criticalAlertCount
                 )}{" "}
                 critical
@@ -3160,8 +3282,7 @@ function HeaderControlCenter({
               </dd>
               <dt>max feed silence</dt>
               <dd>
-                {paperOperationsStatus?.summary?.maximumFeedSilenceMs ?? "—"}{" "}
-                ms
+                {paperOperationsStatus?.summary?.maximumFeedSilenceMs ?? "—"} ms
               </dd>
               <dt>max telemetry gap</dt>
               <dd>
@@ -3173,7 +3294,8 @@ function HeaderControlCenter({
                 {formatCompactNumber(
                   paperOperationsStatus?.summary?.dataGapCount
                 )}{" "}
-                gaps · {formatCompactNumber(
+                gaps ·{" "}
+                {formatCompactNumber(
                   paperOperationsStatus?.summary?.duplicateEventCount
                 )}{" "}
                 duplicates
@@ -3183,18 +3305,19 @@ function HeaderControlCenter({
                 {formatSol(
                   paperOperationsStatus?.summary?.finalEstimatedCostSol
                 )}{" "}
-                used · {formatSol(
-                  paperOperationsStatus?.summary?.budgetRemainingSol
-                )}{" "}
+                used ·{" "}
+                {formatSol(paperOperationsStatus?.summary?.budgetRemainingSol)}{" "}
                 remaining
               </dd>
               <dt>cost efficiency</dt>
               <dd>
                 {formatSol(paperOperationsStatus?.summary?.costPerSignalSol)} /
-                signal · {formatSol(
+                signal ·{" "}
+                {formatSol(
                   paperOperationsStatus?.summary?.costPerClosedTradeSol
                 )}{" "}
-                / closed trade · {formatSol(
+                / closed trade ·{" "}
+                {formatSol(
                   paperOperationsStatus?.summary?.costPerWinningTradeSol
                 )}{" "}
                 / winner
@@ -3579,7 +3702,7 @@ function ScannerTab({
   hideUnavailableHeavy: boolean;
   liveStatus: LiveStatus | null;
   realOnly: boolean;
-  rows: MomentumScannerRow[];
+  rows: MomentumFeedRow[];
   search: string;
   setActionFilter: (value: ActionFilter) => void;
   setCompactMode: (value: boolean) => void;
@@ -3597,14 +3720,85 @@ function ScannerTab({
   totalRows: number;
   trackedOnly: boolean;
 }) {
+  const pageSize = 100;
+  const [visibleLimit, setVisibleLimit] = useState(pageSize);
+  const [rowDetails, setRowDetails] = useState<
+    Record<string, MomentumScannerRow>
+  >({});
+  const [detailLoadingMint, setDetailLoadingMint] = useState<string | null>(
+    null
+  );
+  const [detailErrorMint, setDetailErrorMint] = useState<string | null>(null);
+  const coverage = getFeedCoverageSummary({
+    liveTokenCount: diagnostics?.liveTokenCount ?? null,
+    newTokenEventCount: feedStatus?.newTokenEventCount ?? null,
+    rowCount: totalRows
+  });
+  const renderedRows = rows.slice(0, visibleLimit);
+  const recentLaunchCount = rows.filter(
+    (row) => row.ageSeconds !== null && row.ageSeconds <= 60
+  ).length;
+  const momentumCount = rows.filter((row) =>
+    ["hot", "ripping"].includes(row.launchPhase)
+  ).length;
+  const tradeDataCount = rows.filter(
+    (row) => row.realTradeEventCount > 0
+  ).length;
+  const toggleRow = useCallback(
+    (mint: string) => {
+      if (expandedMint === mint) {
+        setExpandedMint(null);
+        return;
+      }
+
+      setExpandedMint(mint);
+
+      if (rowDetails[mint]) {
+        return;
+      }
+
+      setDetailLoadingMint(mint);
+      setDetailErrorMint(null);
+      void fetchJson<MomentumScannerRow>(
+        `/ui/momentum-rows/${encodeURIComponent(mint)}`
+      )
+        .then((detail) => {
+          setRowDetails((current) => ({ ...current, [mint]: detail }));
+        })
+        .catch(() => setDetailErrorMint(mint))
+        .finally(() => setDetailLoadingMint(null));
+    },
+    [expandedMint, rowDetails, setExpandedMint]
+  );
+
+  useEffect(() => {
+    setVisibleLimit(pageSize);
+  }, [
+    actionFilter,
+    hideUnavailableHeavy,
+    realOnly,
+    search,
+    showMigrated,
+    sortMode,
+    trackedOnly
+  ]);
+
   return (
     <section className="tab-panel scanner-panel" role="tabpanel">
       <div className="panel-heading scanner-heading">
         <div>
-          <h2>Momentum Scanner</h2>
+          <div className="scanner-title-line">
+            <span
+              aria-hidden="true"
+              className={clsx("live-pulse", {
+                online: feedStatus?.connected
+              })}
+            />
+            <h2>Live Momentum</h2>
+          </div>
           <p>
-            {totalRows} current-session rows / {rows.length} visible / blanks
-            are unavailable, not zero
+            Every unique launch in this runtime session, newest first. Repeat
+            feed and migration updates fold into the same mint.
           </p>
         </div>
         <span className="table-meta">
@@ -3612,12 +3806,86 @@ function ScannerTab({
         </span>
       </div>
 
+      <div className="scanner-kpi-grid" aria-label="Momentum overview">
+        <div className="scanner-kpi accent">
+          <span className="scanner-kpi-icon">
+            <RadioTower aria-hidden="true" size={16} />
+          </span>
+          <span>
+            <small>Unique launches</small>
+            <strong>{formatCompactNumber(coverage.uniqueMintCount)}</strong>
+          </span>
+          <em>{recentLaunchCount} in the last minute</em>
+        </div>
+        <div className="scanner-kpi hot">
+          <span className="scanner-kpi-icon">
+            <Zap aria-hidden="true" size={16} />
+          </span>
+          <span>
+            <small>Momentum</small>
+            <strong>{formatCompactNumber(momentumCount)}</strong>
+          </span>
+          <em>hot or ripping now</em>
+        </div>
+        <div className="scanner-kpi">
+          <span className="scanner-kpi-icon">
+            <Activity aria-hidden="true" size={16} />
+          </span>
+          <span>
+            <small>Trade coverage</small>
+            <strong>{formatCompactNumber(tradeDataCount)}</strong>
+          </span>
+          <em>
+            {formatCompactNumber(diagnostics?.tokensWithDerivatives)} derivative
+            ready
+          </em>
+        </div>
+        <div className={clsx("scanner-kpi", { good: coverage.complete })}>
+          <span className="scanner-kpi-icon">
+            <Layers3 aria-hidden="true" size={16} />
+          </span>
+          <span>
+            <small>Feed integrity</small>
+            <strong>{Math.round(coverage.coveragePct)}%</strong>
+          </span>
+          <em>
+            {formatCompactNumber(coverage.foldedEventCount)} folded updates
+          </em>
+        </div>
+      </div>
+
+      <div className="scanner-lanes" aria-label="Momentum lanes">
+        {(
+          [
+            ["all", "All launches", Radar],
+            ["hot", "Momentum", Activity],
+            ["ripping", "Ripping", Zap],
+            ["tradeTracked", "Trade data", Gauge],
+            ["migrated", "Migrated", Layers3]
+          ] as const
+        ).map(([value, label, Icon]) => (
+          <button
+            className={clsx("scanner-lane", {
+              active: actionFilter === value
+            })}
+            key={value}
+            onClick={() => setActionFilter(value)}
+            type="button"
+          >
+            <Icon aria-hidden="true" size={14} />
+            {label}
+          </button>
+        ))}
+      </div>
+
       <div
         className="live-controls scanner-controls"
         aria-label="Scanner controls"
       >
         <label>
-          <span>Search</span>
+          <span>
+            <Search aria-hidden="true" size={12} /> Search
+          </span>
           <input
             onChange={(event) => setSearch(event.target.value)}
             placeholder="symbol / name / mint"
@@ -3625,7 +3893,9 @@ function ScannerTab({
           />
         </label>
         <label>
-          <span>Sort</span>
+          <span>
+            <ArrowDownUp aria-hidden="true" size={12} /> Sort
+          </span>
           <select
             onChange={(event) => setSortMode(event.target.value as SortMode)}
             value={sortMode}
@@ -3648,7 +3918,9 @@ function ScannerTab({
           </select>
         </label>
         <label>
-          <span>Filter</span>
+          <span>
+            <SlidersHorizontal aria-hidden="true" size={12} /> Filter
+          </span>
           <select
             onChange={(event) =>
               setActionFilter(event.target.value as ActionFilter)
@@ -3760,6 +4032,9 @@ function ScannerTab({
         <span>
           holders {formatCompactNumber(diagnostics?.tokensWithHolderData)}
         </span>
+        <span className={coverage.complete ? "coverage-good" : "coverage-bad"}>
+          {coverage.complete ? "all unique mints visible" : "row coverage gap"}
+        </span>
       </div>
 
       {rows.length > 0 ? (
@@ -3774,17 +4049,32 @@ function ScannerTab({
             <span>Price / dP</span>
             <span>AXI Signal</span>
           </div>
-          {rows.map((row) => (
+          {renderedRows.map((row) => (
             <ScannerRow
               expanded={expandedMint === row.mint}
+              detailError={detailErrorMint === row.mint}
+              detailLoading={detailLoadingMint === row.mint}
+              detailRow={rowDetails[row.mint] ?? null}
               key={row.mint}
-              onToggle={() =>
-                setExpandedMint(expandedMint === row.mint ? null : row.mint)
-              }
+              onToggle={toggleRow}
               row={row}
               showUnavailable={showUnavailable}
             />
           ))}
+          {renderedRows.length < rows.length ? (
+            <div className="scanner-load-more">
+              <span>
+                Showing {renderedRows.length} of {rows.length} matching launches
+              </span>
+              <button
+                onClick={() => setVisibleLimit((current) => current + pageSize)}
+                type="button"
+              >
+                Load {Math.min(pageSize, rows.length - renderedRows.length)}{" "}
+                more
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : (
         <div className="empty-state live-empty">
@@ -3795,21 +4085,27 @@ function ScannerTab({
   );
 }
 
-function ScannerRow({
+const ScannerRow = memo(function ScannerRow({
+  detailError,
+  detailLoading,
+  detailRow,
   expanded,
   onToggle,
   row,
   showUnavailable
 }: {
+  detailError: boolean;
+  detailLoading: boolean;
+  detailRow: MomentumScannerRow | null;
   expanded: boolean;
-  onToggle: () => void;
-  row: MomentumScannerRow;
+  onToggle: (mint: string) => void;
+  row: MomentumFeedRow;
   showUnavailable: boolean;
 }) {
   const market = getMarketCapDisplay(row);
   const liquidity = getLiquidityDisplay(row);
   const signal = row.signalDisplay;
-  const derivativeScore = row.derivativeStrength.combinedDerivativeScore;
+  const derivativeScore = row.derivativeScore;
   const rowClass = [
     "scanner-card",
     expanded ? "expanded" : "",
@@ -3833,7 +4129,11 @@ function ScannerRow({
 
   return (
     <article className={rowClass}>
-      <button className="scanner-card-main" onClick={onToggle} type="button">
+      <button
+        className="scanner-card-main"
+        onClick={() => onToggle(row.mint)}
+        type="button"
+      >
         <div className="scanner-token-cell">
           <TokenThumbnail row={row} />
           <div className="scanner-token-copy">
@@ -3925,7 +4225,7 @@ function ScannerRow({
         </div>
         <div className="scanner-signal-cell">
           <div className="signal-score-line">
-            <strong>{derivativeScore.totalScore}</strong>
+            <strong>{derivativeScore}</strong>
             <span className={getScorePillClass(row)}>
               {row.strategy.signalLabel}
             </span>
@@ -3955,13 +4255,57 @@ function ScannerRow({
         </div>
       </button>
       {expanded ? (
-        <ScannerRowAudit row={row} showUnavailable={showUnavailable} />
+        detailRow ? (
+          <ScannerRowAudit row={detailRow} showUnavailable={showUnavailable} />
+        ) : (
+          <div className="scanner-row-loading" role="status">
+            {detailError
+              ? "Detail request failed. Close and reopen this row to retry."
+              : detailLoading
+                ? "Loading full launch audit…"
+                : "Preparing launch audit…"}
+          </div>
+        )
       ) : null}
     </article>
   );
+}, areScannerRowsEqual);
+
+function areScannerRowsEqual(
+  previous: {
+    detailError: boolean;
+    detailLoading: boolean;
+    detailRow: MomentumScannerRow | null;
+    expanded: boolean;
+    onToggle: (mint: string) => void;
+    row: MomentumFeedRow;
+    showUnavailable: boolean;
+  },
+  next: {
+    detailError: boolean;
+    detailLoading: boolean;
+    detailRow: MomentumScannerRow | null;
+    expanded: boolean;
+    onToggle: (mint: string) => void;
+    row: MomentumFeedRow;
+    showUnavailable: boolean;
+  }
+): boolean {
+  return (
+    previous.expanded === next.expanded &&
+    previous.detailError === next.detailError &&
+    previous.detailLoading === next.detailLoading &&
+    previous.detailRow === next.detailRow &&
+    previous.showUnavailable === next.showUnavailable &&
+    previous.row.mint === next.row.mint &&
+    previous.row.latestEventAt === next.row.latestEventAt &&
+    previous.row.lastUpdatedAt === next.row.lastUpdatedAt &&
+    Math.floor((previous.row.ageSeconds ?? 0) / 5) ===
+      Math.floor((next.row.ageSeconds ?? 0) / 5)
+  );
 }
 
-function TokenThumbnail({ row }: { row: MomentumScannerRow }) {
+function TokenThumbnail({ row }: { row: MomentumFeedRow }) {
   const [failed, setFailed] = useState(false);
   const imageUri = failed ? null : sanitizeDashboardImageUri(row.imageUri);
 
@@ -4031,7 +4375,7 @@ function Sparkline({
   );
 }
 
-function getScorePillClass(row: MomentumScannerRow): string {
+function getScorePillClass(row: MomentumFeedRow): string {
   if (row.signalDisplay.color === "danger") {
     return "score-pill danger";
   }
@@ -6289,7 +6633,7 @@ function ReasonBlock({
 }
 
 function filterRows(
-  rows: MomentumScannerRow[],
+  rows: MomentumFeedRow[],
   options: {
     actionFilter: ActionFilter;
     hideUnavailableHeavy: boolean;
@@ -6298,7 +6642,7 @@ function filterRows(
     showMigrated: boolean;
     trackedOnly: boolean;
   }
-): MomentumScannerRow[] {
+): MomentumFeedRow[] {
   const query = options.search.trim().toLowerCase();
 
   return rows.filter((row) => {
@@ -6391,8 +6735,7 @@ function filterRows(
 
     if (options.actionFilter === "missingData") {
       return (
-        row.unavailableFields.length > 0 ||
-        row.dataQuality.missingCriticalCount > 0
+        row.unavailableFields.length > 0 || row.missingCriticalFields.length > 0
       );
     }
 
@@ -6405,9 +6748,9 @@ function filterRows(
 }
 
 function sortRows(
-  rows: MomentumScannerRow[],
+  rows: MomentumFeedRow[],
   sortMode: SortMode
-): MomentumScannerRow[] {
+): MomentumFeedRow[] {
   const riskWeight: Record<string, number> = {
     critical: 5,
     high: 4,

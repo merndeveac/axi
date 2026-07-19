@@ -13,6 +13,9 @@
   },
   "dependencies": {
     "@axi/shared": "workspace:*",
+    "@radix-ui/react-tooltip": "^1.2.12",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.25.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   }

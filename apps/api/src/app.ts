@@ -59,6 +59,8 @@ import {
   type CandidateDecision,
   type LiveCardDataCompleteness,
   type LiveTokenCardViewModel,
+  type MomentumFeedResponse,
+  type MomentumFeedRow,
   type MomentumDiagnostics,
   type MomentumScannerRow,
   type LiveTradeTrackingState,
@@ -1072,11 +1074,7 @@ export const apiConfigSchema = z.object({
     .number()
     .nonnegative()
     .default(20),
-  PAPER_EXIT_MAX_HOLD_MS: z.coerce
-    .number()
-    .int()
-    .positive()
-    .default(300000),
+  PAPER_EXIT_MAX_HOLD_MS: z.coerce.number().int().positive().default(300000),
   PAPER_EXIT_ADVANCED_SIGNALS_ENABLED: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(true),
@@ -1673,20 +1671,10 @@ const calibrationCaptureStartBodySchema = z.object({
       horizonMs: z.number().int().min(1_000).max(300_000).optional(),
       targetReturnPct: z.number().min(0).max(1_000).optional(),
       estimatedCostPct: z.number().min(0).max(100).optional(),
-      samplingIntervalMs: z
-        .number()
-        .int()
-        .min(1_000)
-        .max(300_000)
-        .optional(),
+      samplingIntervalMs: z.number().int().min(1_000).max(300_000).optional(),
       maxOutcomeLagMs: z.number().int().min(0).max(10_000).optional(),
       minimumTradeSamples: z.number().int().min(3).max(10_000).optional(),
-      maxObservationsPerSession: z
-        .number()
-        .int()
-        .min(1)
-        .max(100_000)
-        .optional()
+      maxObservationsPerSession: z.number().int().min(1).max(100_000).optional()
     })
     .optional()
 });
@@ -2533,22 +2521,25 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     };
   });
 
-  app.get("/runtime/session-capture/sessions/:sessionId", async (request, reply) => {
-    const params = calibrationCaptureSessionParamSchema.parse(request.params);
-    const session = calibrationCapture.getSession(params.sessionId);
+  app.get(
+    "/runtime/session-capture/sessions/:sessionId",
+    async (request, reply) => {
+      const params = calibrationCaptureSessionParamSchema.parse(request.params);
+      const session = calibrationCapture.getSession(params.sessionId);
 
-    if (!session) {
-      return reply.code(404).send({
-        error: "CALIBRATION_CAPTURE_SESSION_NOT_FOUND",
-        message: `Calibration capture session ${params.sessionId} was not found.`,
-        paperOnly: true,
-        dataOnly: true,
-        tradingDisabled: true
-      });
+      if (!session) {
+        return reply.code(404).send({
+          error: "CALIBRATION_CAPTURE_SESSION_NOT_FOUND",
+          message: `Calibration capture session ${params.sessionId} was not found.`,
+          paperOnly: true,
+          dataOnly: true,
+          tradingDisabled: true
+        });
+      }
+
+      return session;
     }
-
-    return session;
-  });
+  );
 
   app.get(
     "/runtime/session-capture/sessions/:sessionId/observations",
@@ -3410,6 +3401,33 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   app.get("/ui/live-token-cards", async () => getLiveTokenCardsForUi());
 
   app.get("/ui/momentum-rows", async () => getMomentumScannerRows());
+
+  app.get("/ui/momentum-feed", async () => {
+    const rows = getMomentumScannerRows();
+
+    return {
+      schemaVersion: 1,
+      generatedAt: new Date().toISOString(),
+      rows: rows.map(toMomentumFeedRow),
+      totalRows: rows.length
+    } satisfies MomentumFeedResponse;
+  });
+
+  app.get("/ui/momentum-rows/:mint", async (request, reply) => {
+    const params = mintParamSchema.parse(request.params);
+    const row = getMomentumScannerRows().find(
+      (item) => item.mint === params.mint
+    );
+
+    if (!row) {
+      return reply.code(404).send({
+        error: "not_found",
+        message: `No current-session momentum row for mint ${params.mint}`
+      });
+    }
+
+    return row;
+  });
 
   app.get("/ui/momentum-diagnostics", async () =>
     buildMomentumDiagnostics(getMomentumScannerRows())
@@ -4778,9 +4796,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       card.launchTradeSampleCount > 0 ||
       card.realTradeEventCount > 0;
     const derivativeReasonCodes = [
-      ...(hasDerivativeSamples
-        ? []
-        : ["INSUFFICIENT_SAMPLES_FOR_DERIVATIVE"]),
+      ...(hasDerivativeSamples ? [] : ["INSUFFICIENT_SAMPLES_FOR_DERIVATIVE"]),
       ...(hasSecondDerivativeSamples
         ? []
         : ["INSUFFICIENT_SAMPLES_FOR_SECOND_DERIVATIVE"])
@@ -4985,9 +5001,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       reasonCodes: derivativeReasonSet
     };
     const eligibleLaunchDerivativeStrength =
-      card.launchTradeSampleCount >= 2
-        ? card.launchDerivativeStrength
-        : null;
+      card.launchTradeSampleCount >= 2 ? card.launchDerivativeStrength : null;
     const rowDerivativeStrength =
       eligibleLaunchDerivativeStrength ??
       createMomentumDerivativeStrengthFallback(rowDerivatives, {
@@ -6250,9 +6264,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             : null,
         priceAccelerationPctPerSec2:
           timeseries.rollingStats.priceSource === "USD"
-            ? numberOrNull(
-                timeseries.rollingStats.priceAccelerationPctPerSec2
-              )
+            ? numberOrNull(timeseries.rollingStats.priceAccelerationPctPerSec2)
             : null,
         priceSolVelocityPctPerSec: numberOrNull(
           timeseries.rollingStats.priceSource === "SOL"
@@ -8261,8 +8273,7 @@ function applyCanonicalDerivativesToRollingMetrics(
   return {
     ...metrics,
     volumeVelocityUsdPerSec:
-      values.volumeVelocityUsdPerSec.value ??
-      metrics.volumeVelocityUsdPerSec,
+      values.volumeVelocityUsdPerSec.value ?? metrics.volumeVelocityUsdPerSec,
     volumeAccelerationUsdPerSec2:
       values.volumeAccelerationUsdPerSec2.value ??
       metrics.volumeAccelerationUsdPerSec2,
@@ -8274,8 +8285,7 @@ function applyCanonicalDerivativesToRollingMetrics(
     buyerVelocityPerSec:
       values.buyerVelocityPerSec.value ?? metrics.buyerVelocityPerSec,
     buyerAccelerationPerSec2:
-      values.buyerAccelerationPerSec2.value ??
-      metrics.buyerAccelerationPerSec2,
+      values.buyerAccelerationPerSec2.value ?? metrics.buyerAccelerationPerSec2,
     tradesPerSecond:
       values.tradeVelocityPerSec.value ?? metrics.tradesPerSecond,
     priceVelocityPctPerSec:
@@ -8973,10 +8983,7 @@ function createMomentumDerivativeStrengthFallback(
       windowMs: 10_000,
       freshnessMs: options.freshnessMs
     });
-  const volume = normalize(
-    "volume_velocity_sol",
-    derivatives.dVol10sSolPerSec
-  );
+  const volume = normalize("volume_velocity_sol", derivatives.dVol10sSolPerSec);
   const volumeAcceleration = normalize(
     "volume_acceleration_sol",
     derivatives.d2VolSolPerSec2
@@ -8986,10 +8993,7 @@ function createMomentumDerivativeStrengthFallback(
     "price_acceleration_pct",
     derivatives.d2PricePctPerSec2
   );
-  const priceSol = normalize(
-    "price_velocity_sol",
-    derivatives.dPriceSolPerSec
-  );
+  const priceSol = normalize("price_velocity_sol", derivatives.dPriceSolPerSec);
   const buyers = normalize("buyer_velocity", derivatives.dBuyersPerSec);
   const buyerAcceleration = normalize(
     "buyer_acceleration",
@@ -9020,8 +9024,7 @@ function createMomentumDerivativeStrengthFallback(
       buyPressure: buyPressure.positiveScore
     },
     tradeSampleCount: options.sampleCount,
-    sellPressure:
-      (derivatives.dBuyPressurePerSec ?? 0) < 0 ? "mild" : "none",
+    sellPressure: (derivatives.dBuyPressurePerSec ?? 0) < 0 ? "mild" : "none",
     riskLevel: "unknown",
     hardReject: false
   });
@@ -9783,6 +9786,73 @@ function sanitizeMomentumRow(row: MomentumScannerRow): MomentumScannerRow {
       typeof value === "number" && !Number.isFinite(value) ? null : value
     )
   ) as MomentumScannerRow;
+}
+
+const momentumFeedRowKeys = [
+  "ageSeconds",
+  "buyCount10s",
+  "buySellRatio",
+  "curve",
+  "dataQualityLabel",
+  "derivatives",
+  "displayName",
+  "fdvUsd",
+  "hardReject",
+  "hasMetadata",
+  "hasPaperPosition",
+  "hasSocialLinks",
+  "imageUri",
+  "lastUpdatedAt",
+  "latestEventAt",
+  "launchPhase",
+  "launchScore",
+  "launchedAt",
+  "liquidityUsd",
+  "marketCapSol",
+  "marketCapUsd",
+  "migrationStatus",
+  "mint",
+  "missingCriticalFields",
+  "name",
+  "netBuyPressure",
+  "paperPositionStatus",
+  "poolAddress",
+  "priceSol",
+  "priceUsd",
+  "priceVelocityPctPerSec",
+  "raydiumPool",
+  "realData",
+  "realTradeEventCount",
+  "riskLevel",
+  "sellCount10s",
+  "shortMint",
+  "signalAction",
+  "signalDisplay",
+  "signalStrength",
+  "source",
+  "sparkline",
+  "strategy",
+  "symbol",
+  "title",
+  "trackingState",
+  "tradeCount10s",
+  "unavailableFields",
+  "uniqueBuyers10s",
+  "uniqueSellers10s",
+  "unrealizedPnlPct",
+  "unrealizedPnlSol",
+  "volume10sSol",
+  "volume10sUsd",
+  "volume30sSol",
+  "volume60sSol",
+  "volumeVelocitySolPerSec"
+] as const satisfies ReadonlyArray<keyof MomentumScannerRow>;
+
+function toMomentumFeedRow(row: MomentumScannerRow): MomentumFeedRow {
+  return {
+    ...Object.fromEntries(momentumFeedRowKeys.map((key) => [key, row[key]])),
+    derivativeScore: row.derivativeStrength.combinedDerivativeScore.totalScore
+  } as MomentumFeedRow;
 }
 
 function countRowFields(fields: string[]): Record<string, number> {
