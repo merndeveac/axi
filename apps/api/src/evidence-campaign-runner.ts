@@ -129,12 +129,14 @@ const outputDirectory = resolve(
 );
 let state: CampaignState | null = null;
 let stopping = false;
+let stopRequested = false;
+let activeTick: Promise<void> | null = null;
 let lastWalletRefreshAt = 0;
 let disconnectedSince: number | null = null;
 let lastProgressLogAt = 0;
 
-process.on("SIGINT", () => void safetyStop("operator_sigint"));
-process.on("SIGTERM", () => void safetyStop("operator_sigterm"));
+process.on("SIGINT", () => requestSafetyStop("operator_sigint"));
+process.on("SIGTERM", () => requestSafetyStop("operator_sigterm"));
 
 void main().catch(async (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
@@ -168,8 +170,14 @@ async function main(): Promise<void> {
     statePath
   });
 
-  while (!isTerminal(requireState().phase)) {
-    await tick();
+  while (!isTerminal(requireState().phase) && !stopRequested) {
+    activeTick = tick();
+    try {
+      await activeTick;
+    } finally {
+      activeTick = null;
+    }
+    if (stopRequested) break;
     await delay(pollIntervalMs);
   }
 }
@@ -262,7 +270,9 @@ async function startCampaign(): Promise<CampaignState> {
 }
 
 async function tick(): Promise<void> {
+  if (stopRequested) return;
   let runtime = await getRuntimeStatus();
+  if (stopRequested) return;
   assertPaperOnly(runtime);
   enforceFeedHealth(runtime);
 
@@ -270,6 +280,7 @@ async function tick(): Promise<void> {
     runtime = await refreshWallet();
     lastWalletRefreshAt = Date.now();
   }
+  if (stopRequested) return;
 
   const current = requireState();
   current.currentSubsessionCostSol = roundSol(
@@ -281,6 +292,7 @@ async function tick(): Promise<void> {
   current.updatedAt = new Date().toISOString();
   enforceWalletReserve(runtime);
   persistState();
+  if (stopRequested) return;
 
   const totalSpentSol = getTotalSpentSol(current);
   if (totalSpentSol >= current.plan.effectiveBudgetSol) {
@@ -289,6 +301,7 @@ async function tick(): Promise<void> {
   }
 
   await updateCapturePhase(totalSpentSol);
+  if (stopRequested) return;
 
   if (
     runtime.meteredPriceAction.budgetReached ||
@@ -478,6 +491,10 @@ async function rolloverSubsession(runtime: RuntimeStatus): Promise<void> {
   );
   current.currentSubsessionCostSol = 0;
   current.currentSubsessionEventCount = 0;
+  if (stopRequested) {
+    persistState();
+    return;
+  }
   const remainingBudgetSol = roundSol(
     current.plan.effectiveBudgetSol - current.completedSubsessionCostSol
   );
@@ -503,6 +520,10 @@ async function rolloverSubsession(runtime: RuntimeStatus): Promise<void> {
     configuredEventCap: metered.maxEventsPerSession,
     eventCostSolPer10000: metered.eventCostSolPer10000
   });
+  if (stopRequested) {
+    persistState();
+    return;
+  }
 
   await requestJson("/runtime/metered-launch-data/rollover", {
     method: "POST",
@@ -704,6 +725,30 @@ async function safetyStop(
       reason
     });
   }
+}
+
+function requestSafetyStop(reason: string): void {
+  if (
+    stopRequested ||
+    stopping ||
+    (state !== null && isTerminal(state.phase))
+  ) {
+    return;
+  }
+  stopRequested = true;
+  void finishRequestedSafetyStop(reason);
+}
+
+async function finishRequestedSafetyStop(reason: string): Promise<void> {
+  const tick = activeTick;
+  if (tick) {
+    try {
+      await tick;
+    } catch {
+      // Safety cleanup below preserves the original operator stop reason.
+    }
+  }
+  await safetyStop(reason);
 }
 
 function assertPaperOnly(runtime: RuntimeStatus): void {
