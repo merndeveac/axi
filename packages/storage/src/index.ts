@@ -3172,6 +3172,7 @@ export function initStorage(options: StorageOptions = {}): StorageHandle {
 
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA synchronous = NORMAL");
   runMigrations(db);
 
   return {
@@ -3214,6 +3215,25 @@ export function initStorageReadOnly(
 export function closeStorage(): void {
   activeStorage?.db.close();
   activeStorage = null;
+}
+
+export function runStorageTransaction<T>(operation: () => T): T {
+  const db = getDb();
+  if (db.isTransaction) {
+    return operation();
+  }
+
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = operation();
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    if (db.isTransaction) {
+      db.exec("ROLLBACK");
+    }
+    throw error;
+  }
 }
 
 export function saveFeedEvent(event: FeedEvent): StoredFeedEvent {

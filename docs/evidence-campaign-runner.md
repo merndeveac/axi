@@ -23,6 +23,9 @@ Local Transaction API, or Lightning execution.
 - Read-only loopback requests use fresh connections, per-attempt timeouts, and
   bounded retries. Mutating controls are never retried. Terminal failures are
   archived under the campaign ID before another campaign can start.
+- Live feed events are persisted in bounded transactional batches with an event
+  loop yield between batches. Metered rollover and capture-stop controls flush
+  the queue first, preserving evidence boundaries without starving local HTTP.
 
 PumpPortal billing can lag the local event estimate. The runner therefore uses
 both bounded message counts and recurring public-balance checks. It reports

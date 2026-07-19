@@ -101,6 +101,7 @@ import {
   savePumpPortalWalletStatusSnapshot,
   saveRiskSnapshot,
   saveSignal,
+  runStorageTransaction,
   listActualDataSubscriptions,
   listLaunchCandidates,
   listLaunchScoreSnapshots,
@@ -2511,6 +2512,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   app.post("/runtime/session-capture/stop", async (request) => {
     const body = calibrationCaptureStopBodySchema.parse(request.body ?? {});
+    flushFeedEventQueue();
     return calibrationCapture.stop(body.reason);
   });
 
@@ -3175,6 +3177,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const body = runtimeMeteredLaunchDataRolloverBodySchema.parse(request.body);
 
     try {
+      flushFeedEventQueue();
       meteredLaunchData.stop();
       disarmPaidData("metered_session_rollover");
       actualData.resetMeteredSession();
@@ -3238,6 +3241,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   });
 
   app.post("/runtime/metered-launch-data/stop", async () => {
+    flushFeedEventQueue();
     return runtimeControl.stopMeteredLaunchData();
   });
 
@@ -4633,7 +4637,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     paperAutomation.start();
     paperOperations.start();
     watchedWalletExit.start();
-    void feed.start(handleFeedEvent);
+    void feed.start(
+      feed instanceof PumpPortalFeedProvider
+        ? enqueueFeedEvent
+        : handleFeedEvent
+    );
     void chainEvents.start();
   }
 
@@ -4643,6 +4651,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     }
 
     feedStarted = false;
+    await feed.stop();
+    flushFeedEventQueue();
     paperOperations.stop("runtime feed stopped");
     meteredLaunchData.stop();
     disarmPaidData("feed_stop");
@@ -4651,7 +4661,6 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     paperAutomation.stop();
     paperPortfolio.stop();
     actualData.stop();
-    await feed.stop();
     await chainEvents.stop();
   }
 
@@ -6881,7 +6890,63 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     }
   }
 
+  const feedEventBatchSize = 10;
+  const pendingFeedEvents: FeedEvent[] = [];
+  let feedEventDrainScheduled = false;
+
+  function enqueueFeedEvent(event: FeedEvent): void {
+    pendingFeedEvents.push(event);
+    scheduleFeedEventDrain();
+  }
+
+  function scheduleFeedEventDrain(): void {
+    if (feedEventDrainScheduled || pendingFeedEvents.length === 0) {
+      return;
+    }
+
+    feedEventDrainScheduled = true;
+    setImmediate(() => {
+      feedEventDrainScheduled = false;
+      try {
+        drainFeedEventBatch();
+      } catch (error) {
+        pendingFeedEvents.length = 0;
+        meteredLaunchData.stop();
+        disarmPaidData("feed_event_processing_error");
+        app.log.error(
+          { error },
+          "Feed event batch failed; paid data stopped"
+        );
+        return;
+      }
+      scheduleFeedEventDrain();
+    });
+  }
+
+  function drainFeedEventBatch(): void {
+    const batch = pendingFeedEvents.splice(0, feedEventBatchSize);
+    if (batch.length === 0) {
+      return;
+    }
+
+    runStorageTransaction(() => {
+      for (const event of batch) {
+        processFeedEvent(event);
+      }
+    });
+  }
+
+  function flushFeedEventQueue(): void {
+    while (pendingFeedEvents.length > 0) {
+      drainFeedEventBatch();
+    }
+  }
+
   function handleFeedEvent(event: FeedEvent): void {
+    runStorageTransaction(() => processFeedEvent(event));
+  }
+
+  function processFeedEvent(event: FeedEvent): void {
     if (event.type === "account_trade") {
       saveFeedEvent(event);
       const exitEvaluation = watchedWalletExit.ingestFeedEvent(event);

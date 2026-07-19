@@ -206,6 +206,7 @@ import {
   savePumpPortalTokenTradeEvent,
   saveRiskSnapshot,
   saveSignal,
+  runStorageTransaction,
   saveWatchedWallet,
   saveWatchedWalletTradeEvent,
   saveTokenIdentity,
@@ -310,6 +311,23 @@ afterEach(() => {
 });
 
 describe("@axi/storage", () => {
+  it("commits and rolls back synchronous storage transactions", () => {
+    initStorage({ databasePath });
+    runStorageTransaction(() => {
+      saveFeedEvent(createFeedEvent("2026-01-01T00:00:01.000Z"));
+      saveFeedEvent(createFeedEvent("2026-01-01T00:00:02.000Z"));
+    });
+    expect(listFeedEvents(10)).toHaveLength(2);
+
+    expect(() =>
+      runStorageTransaction(() => {
+        saveFeedEvent(createFeedEvent("2026-01-01T00:00:03.000Z"));
+        throw new Error("rollback fixture");
+      })
+    ).toThrow("rollback fixture");
+    expect(listFeedEvents(10)).toHaveLength(2);
+  });
+
   it("database initializes", () => {
     const handle = initStorage({ databasePath });
     const stats = getStorageStats();
