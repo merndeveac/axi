@@ -384,9 +384,9 @@ export class MeteredLaunchDataService {
         : "disabled",
       mode: this.config.mode,
       trackedMintCount: this.getTrackedMints().length,
-      totalEvents: this.totalEventsThisSession,
+      totalEvents: this.getBillableEventCount(),
       estimatedCostSol: this.getEstimatedCostSol(),
-      budgetReached: this.budgetReached,
+      budgetReached: this.isSessionBudgetReached(),
       reasonCodes: this.getReasonCodes(),
       payload: this.getStatus(),
       startedAt: this.startedAt,
@@ -413,9 +413,9 @@ export class MeteredLaunchDataService {
       status: "stopped",
       mode: this.config.mode,
       trackedMintCount: this.getTrackedMints().length,
-      totalEvents: this.totalEventsThisSession,
+      totalEvents: this.getBillableEventCount(),
       estimatedCostSol: this.getEstimatedCostSol(),
-      budgetReached: this.budgetReached,
+      budgetReached: this.isSessionBudgetReached(),
       reasonCodes: this.getReasonCodes(),
       payload: this.getStatus(),
       startedAt: this.startedAt,
@@ -946,6 +946,7 @@ export class MeteredLaunchDataService {
     const tracked = this.tracked.get(event.mint);
 
     if (!tracked || tracked.status !== "tracking") {
+      this.enforceBillableSessionCaps();
       return undefined;
     }
 
@@ -993,15 +994,7 @@ export class MeteredLaunchDataService {
       });
     }
 
-    if (this.totalEventsThisSession >= this.getMaxEventsPerSession()) {
-      this.budgetReached = true;
-      this.untrackAll("max_events_per_session");
-    }
-
-    if (this.getEstimatedCostSol() >= this.getMaxSessionCostSol()) {
-      this.budgetReached = true;
-      this.untrackAll("max_session_cost");
-    }
+    this.enforceBillableSessionCaps();
 
     if (this.budgetReached) {
       this.schedulerQueue.clear();
@@ -1014,6 +1007,7 @@ export class MeteredLaunchDataService {
 
   getStatus(): MeteredLaunchDataStatus {
     const cost = this.getSessionCost();
+    const budgetReached = this.isSessionBudgetReached();
     const dataWallet = this.getDataWalletReadiness();
     const blockers = this.getStartBlockers();
     const reasonCodes = this.getReasonCodes();
@@ -1072,12 +1066,12 @@ export class MeteredLaunchDataService {
       maxEventsPerMint: this.config.maxEventsPerMint,
       maxEventsPerSession: this.getMaxEventsPerSession(),
       maxUiSessionCostSol: this.config.maxUiSessionCostSol,
-      totalEventsThisSession: this.totalEventsThisSession,
+      totalEventsThisSession: this.getBillableEventCount(),
       estimatedCostSol: cost.estimatedCostSol,
       maxSessionCostSol: this.getMaxSessionCostSol(),
       remainingBudgetSol: cost.remainingBudgetSol,
       projectedCostPerHourSol: cost.projectedCostPerHourSol,
-      budgetReached: this.budgetReached,
+      budgetReached,
       reasonCodes,
       blockers,
       warnings: this.getWarnings(),
@@ -1103,6 +1097,8 @@ export class MeteredLaunchDataService {
   }
 
   getSessionCost(): MeteredLaunchDataCost {
+    const totalEventsThisSession = this.getBillableEventCount();
+    const budgetReached = this.isSessionBudgetReached();
     const estimatedCostPerEventSol = this.getEstimatedCostPerEventSol();
     const estimatedCostSol = this.getEstimatedCostSol();
     const remainingBudgetSol = round(
@@ -1121,11 +1117,11 @@ export class MeteredLaunchDataService {
       remainingBudgetSol,
       remainingEventsByBudget,
       projectedCostPerHourSol: this.getProjectedCostPerHourSol(),
-      totalEventsThisSession: this.totalEventsThisSession,
+      totalEventsThisSession,
       maxEventsPerSession: this.getMaxEventsPerSession(),
-      budgetReached: this.budgetReached,
+      budgetReached,
       reasonCodes: unique([
-        ...(this.budgetReached ? ["METERED_LAUNCH_DATA_BUDGET_REACHED"] : []),
+        ...(budgetReached ? ["METERED_LAUNCH_DATA_BUDGET_REACHED"] : []),
         "PUMPPORTAL_TRADE_STREAM_METERED",
         "METERED_LAUNCH_DATA_ONLY_NO_TRADING",
         "LIGHTNING_EXECUTION_DISABLED"
@@ -1157,12 +1153,13 @@ export class MeteredLaunchDataService {
 
   getReasonCodes(): string[] {
     const blockers = this.getStartBlockers();
+    const budgetReached = this.isSessionBudgetReached();
     return unique([
       ...blockers,
       ...(this.runtimeStopped ? ["METERED_LAUNCH_DATA_STOPPED"] : []),
       ...this.getDataWalletReadiness().reasonCodes,
       ...(blockers.length === 0 ? ["METERED_LAUNCH_DATA_READY"] : []),
-      ...(this.budgetReached ? ["METERED_LAUNCH_DATA_BUDGET_REACHED"] : []),
+      ...(budgetReached ? ["METERED_LAUNCH_DATA_BUDGET_REACHED"] : []),
       ...(this.getEstimatedCostSol() >= this.getMaxSessionCostSol()
         ? ["METERED_LAUNCH_DATA_COST_CAP_REACHED"]
         : []),
@@ -1760,11 +1757,11 @@ export class MeteredLaunchDataService {
       reasonCodes.push("PUMPPORTAL_LIVE_DISCOVERY_OFFLINE");
     }
 
-    if (this.budgetReached) {
+    if (this.isSessionBudgetReached()) {
       reasonCodes.push("METERED_LAUNCH_DATA_BUDGET_REACHED");
     }
 
-    if (this.totalEventsThisSession >= this.getMaxEventsPerSession()) {
+    if (this.getBillableEventCount() >= this.getMaxEventsPerSession()) {
       reasonCodes.push("METERED_LAUNCH_DATA_EVENT_CAP_SESSION_REACHED");
     }
 
@@ -1856,6 +1853,37 @@ export class MeteredLaunchDataService {
     return this.sessionAck?.maxSessionCostSol ?? this.config.maxSessionCostSol;
   }
 
+  private getBillableEventCount(): number {
+    return Math.max(
+      this.totalEventsThisSession,
+      this.actualData.getEventCounters().totalEventsThisSession
+    );
+  }
+
+  private isSessionBudgetReached(): boolean {
+    return (
+      this.budgetReached ||
+      this.actualData.getStatus().budgetReached ||
+      this.getBillableEventCount() >= this.getMaxEventsPerSession() ||
+      this.getEstimatedCostSol() >= this.getMaxSessionCostSol()
+    );
+  }
+
+  private enforceBillableSessionCaps(): void {
+    if (this.getBillableEventCount() >= this.getMaxEventsPerSession()) {
+      this.budgetReached = true;
+      this.untrackAll("max_events_per_session");
+      this.schedulerQueue.clear();
+      return;
+    }
+
+    if (this.getEstimatedCostSol() >= this.getMaxSessionCostSol()) {
+      this.budgetReached = true;
+      this.untrackAll("max_session_cost");
+      this.schedulerQueue.clear();
+    }
+  }
+
   private findActualDataSubscription(
     mint: string
   ): ActualDataSubscriptionState | null {
@@ -1892,7 +1920,7 @@ export class MeteredLaunchDataService {
   }
 
   private getEstimatedCostSol(
-    eventCount = this.totalEventsThisSession
+    eventCount = this.getBillableEventCount()
   ): number {
     return round(eventCount * this.getEstimatedCostPerEventSol());
   }

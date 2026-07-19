@@ -544,6 +544,35 @@ describe("MeteredLaunchDataService", () => {
     expect(service.getRecentTradeEvents()).toHaveLength(1);
   });
 
+  it("uses the provider event counter when stale paid events outlive tracking", () => {
+    const { actualData, service } = createServiceHarness({
+      acknowledgedCost: true,
+      apiKeyConfigured: true,
+      dataWalletPublicKeyConfigured: true,
+      enabled: true,
+      maxEventsPerSession: 2,
+      maxSessionCostSol: 0.001
+    });
+    const staleEvent = createTokenTradeEvent(secondMint);
+
+    actualData.handlePumpPortalTradeEvent(staleEvent);
+    service.handlePumpPortalTokenTrade(staleEvent);
+    actualData.handlePumpPortalTradeEvent(staleEvent);
+    service.handlePumpPortalTokenTrade(staleEvent);
+
+    expect(service.getStatus()).toMatchObject({
+      budgetReached: true,
+      totalEventsThisSession: 2,
+      estimatedCostSol: 0.000002
+    });
+    expect(service.getSessionCost()).toMatchObject({
+      budgetReached: true,
+      totalEventsThisSession: 2,
+      estimatedCostSol: 0.000002
+    });
+    expect(service.getRecentTradeEvents()).toHaveLength(0);
+  });
+
   it("resets a stopped metered session without weakening its configured caps", () => {
     const service = createService({
       acknowledgedCost: false,
@@ -587,6 +616,25 @@ function createService(
     | null = null,
   hasOpenPaperPosition: (candidateMint: string) => boolean = () => false
 ) {
+  return createServiceHarness(
+    config,
+    readiness,
+    provider,
+    candidate,
+    hasOpenPaperPosition
+  ).service;
+}
+
+function createServiceHarness(
+  config: Parameters<typeof createMeteredLaunchDataService>[0]["config"] = {},
+  readiness: ActualDataDataWalletReadiness = readyWallet,
+  provider = new PumpPortalFeedProvider(),
+  candidate:
+    | LaunchCandidateView
+    | ((candidateMint: string) => LaunchCandidateView | null)
+    | null = null,
+  hasOpenPaperPosition: (candidateMint: string) => boolean = () => false
+) {
   const envAckEnabled = config?.acknowledgedCost === true;
   const actualData = createActualDataService({
     config: createActualDataConfig({
@@ -602,7 +650,7 @@ function createService(
     pumpPortalProvider: provider
   });
 
-  return createMeteredLaunchDataService({
+  const service = createMeteredLaunchDataService({
     actualData,
     config: {
       ...(envAckEnabled
@@ -619,6 +667,8 @@ function createService(
     hasOpenPaperPosition,
     providerName: "pumpportal"
   });
+
+  return { actualData, service };
 }
 
 const readyWallet: ActualDataDataWalletReadiness = {
