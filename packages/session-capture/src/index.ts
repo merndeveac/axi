@@ -13,7 +13,7 @@ export const defaultSessionCaptureConfig = {
   targetReturnPct: 20,
   estimatedCostPct: 8,
   samplingIntervalMs: 5_000,
-  maxOutcomeLagMs: 2_000,
+  maxOutcomeLagMs: 10_000,
   minimumTradeSamples: 3,
   maxObservationsPerSession: 10_000
 } as const;

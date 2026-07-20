@@ -216,6 +216,8 @@ export type MeteredLaunchDataServiceOptions = {
   getLaunchCandidate?: (mint: string) => LaunchCandidateView | null;
   getLaunchCandidates?: (limit?: number) => LaunchCandidateView[];
   getLiveDiscoveryActive?: () => boolean;
+  getCalibrationOutcomeProtectionUntil?:
+    ((mint: string) => string | null) | undefined;
   hasOpenPaperPosition?: (mint: string) => boolean;
   hasOpenLivePosition?: (mint: string) => boolean;
   providerName: string;
@@ -318,6 +320,8 @@ export class MeteredLaunchDataService {
   private readonly getLaunchCandidates:
     ((limit?: number) => LaunchCandidateView[]) | undefined;
   private readonly getLiveDiscoveryActive: (() => boolean) | undefined;
+  private readonly getCalibrationOutcomeProtectionUntil:
+    ((mint: string) => string | null) | undefined;
   private readonly hasOpenPaperPosition:
     ((mint: string) => boolean) | undefined;
   private readonly hasOpenLivePosition: ((mint: string) => boolean) | undefined;
@@ -353,6 +357,8 @@ export class MeteredLaunchDataService {
     this.getLaunchCandidate = options.getLaunchCandidate;
     this.getLaunchCandidates = options.getLaunchCandidates;
     this.getLiveDiscoveryActive = options.getLiveDiscoveryActive;
+    this.getCalibrationOutcomeProtectionUntil =
+      options.getCalibrationOutcomeProtectionUntil;
     this.hasOpenPaperPosition = options.hasOpenPaperPosition;
     this.hasOpenLivePosition = options.hasOpenLivePosition;
     this.providerName = options.providerName;
@@ -1430,7 +1436,11 @@ export class MeteredLaunchDataService {
 
       const reason = this.getTrackedMintProtectionReason(tracked, candidate);
 
-      if (reason === "paper_position" || reason === "live_position") {
+      if (
+        reason === "paper_position" ||
+        reason === "live_position" ||
+        reason === "calibration_outcome"
+      ) {
         absolute += 1;
       } else if (reason !== null) {
         soft += 1;
@@ -1452,6 +1462,8 @@ export class MeteredLaunchDataService {
   ): LaunchCandidateView[] {
     return [...(this.getLaunchCandidates?.(limit) ?? [])].sort(
       (left, right) =>
+        Number(this.hasCalibrationOutcomeProtection(right.mint)) -
+          Number(this.hasCalibrationOutcomeProtection(left.mint)) ||
         Date.parse(this.getSchedulerCandidateObservedAt(left)) -
           Date.parse(this.getSchedulerCandidateObservedAt(right)) ||
         left.mint.localeCompare(right.mint)
@@ -1476,6 +1488,10 @@ export class MeteredLaunchDataService {
 
     if (this.hasOpenPaperPosition?.(tracked.mint) === true) {
       return "paper_position";
+    }
+
+    if (this.hasCalibrationOutcomeProtection(tracked.mint)) {
+      return "calibration_outcome";
     }
 
     const subscribedAtMs = tracked.subscribedAt
@@ -1598,6 +1614,22 @@ export class MeteredLaunchDataService {
       return;
     }
 
+    const calibrationProtectionUntilMs =
+      this.getCalibrationOutcomeProtectionUntilMs(mint);
+
+    if (
+      calibrationProtectionUntilMs !== null &&
+      calibrationProtectionUntilMs > Date.now()
+    ) {
+      state.initialReviewTimer = setTimeout(
+        () => {
+          this.reviewInitialWindow(mint);
+        },
+        Math.max(1, calibrationProtectionUntilMs - Date.now())
+      );
+      return;
+    }
+
     const candidate = this.getLaunchCandidate?.(mint);
 
     if (!candidate) {
@@ -1696,6 +1728,24 @@ export class MeteredLaunchDataService {
 
   private getStartBlockers(): string[] {
     return this.getSubscriptionBlockers(undefined, { includeStopped: false });
+  }
+
+  private hasCalibrationOutcomeProtection(
+    mint: string,
+    nowMs = Date.now()
+  ): boolean {
+    const protectionUntilMs = this.getCalibrationOutcomeProtectionUntilMs(mint);
+    return protectionUntilMs !== null && protectionUntilMs > nowMs;
+  }
+
+  private getCalibrationOutcomeProtectionUntilMs(mint: string): number | null {
+    if (!this.getCalibrationOutcomeProtectionUntil) {
+      return null;
+    }
+
+    const protectionUntil = this.getCalibrationOutcomeProtectionUntil(mint);
+    const protectionUntilMs = Date.parse(protectionUntil ?? "");
+    return Number.isFinite(protectionUntilMs) ? protectionUntilMs : null;
   }
 
   private getWarnings(): string[] {

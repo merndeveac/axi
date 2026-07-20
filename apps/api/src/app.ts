@@ -1975,8 +1975,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   });
   const runtimeSessionId = randomUUID();
   const runtimeSessionStartedAt = new Date().toISOString();
+  let canCaptureCoveredMint: (mint: string) => boolean = () => false;
   const calibrationCapture = createCalibrationCaptureService({
-    runtimeSessionId
+    runtimeSessionId,
+    canCaptureMint: (mint) => canCaptureCoveredMint(mint)
   });
   const paperStrategyEvaluation = createPaperStrategyEvaluationService();
   const paperLifecycleValidation = createPaperLifecycleValidationService();
@@ -2023,9 +2025,13 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     getLiveDiscoveryActive: () =>
       getFeedStatus().realData &&
       getFeedStatus().subscriptions.includes("subscribeNewToken"),
+    getCalibrationOutcomeProtectionUntil: (mint) =>
+      calibrationCapture.getOutcomeProtectionUntil(mint),
     hasOpenPaperPosition: (mint) => hasOpenPaperPositionForMint(mint),
     providerName: feed.name
   });
+  canCaptureCoveredMint = (mint) =>
+    meteredLaunchData.getTrackedMint(mint)?.status === "tracking";
   const trackingCommands = createTrackingCommandRouter(meteredLaunchData);
   const runtimeConfigFingerprint = createHash("sha256")
     .update(
@@ -6913,10 +6919,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         pendingFeedEvents.length = 0;
         meteredLaunchData.stop();
         disarmPaidData("feed_event_processing_error");
-        app.log.error(
-          { error },
-          "Feed event batch failed; paid data stopped"
-        );
+        app.log.error({ error }, "Feed event batch failed; paid data stopped");
         return;
       }
       scheduleFeedEventDrain();

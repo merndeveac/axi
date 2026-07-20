@@ -23,6 +23,9 @@ Local Transaction API, or Lightning execution.
 - Read-only loopback requests use fresh connections, per-attempt timeouts, and
   bounded retries. Mutating controls are never retried. Terminal failures are
   archived under the campaign ID before another campaign can start.
+- Operator shutdown waits for an in-progress rollover and will not replay the
+  stopped provider counter after that sub-session has already been committed
+  to the campaign ledger.
 - Live feed events are persisted in bounded transactional batches with an event
   loop yield between batches. Metered rollover and capture-stop controls flush
   the queue first, preserving evidence boundaries without starving local HTTP.
@@ -36,9 +39,14 @@ exact decimal amount.
 
 The runner starts a real-session training capture, spends the configured
 training allocation, stops it, and keeps the metered stream open through the
-60-second outcome horizon. It materializes training outcomes before starting a
-strictly later validation capture. The last bounded sub-session is reserved for
-validation outcome materialization.
+60-second outcome horizon plus a bounded 10-second real-trade lag. Capture only
+admits mints that are currently covered by the paid token-trade stream. A
+pending outcome mint is protected from scheduler preemption only until its
+bounded deadline; new launches continue through the scheduler queue and free
+discovery feed. Outcome materialization reads the exact indexed
+signal-to-deadline bucket window rather than a latest-row limit. It materializes
+training outcomes before starting a strictly later validation capture. The last
+bounded sub-session is reserved for validation outcome materialization.
 
 At completion it stops and disarms metered data, materializes both partitions,
 exports their immutable JSON datasets, runs paper strategy evaluation, and—only

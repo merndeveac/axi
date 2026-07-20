@@ -130,6 +130,67 @@ describe("CalibrationCaptureService", () => {
     });
     expect(service.interrupt()).toBeNull();
   });
+
+  it("captures only mints whose forward outcome stream is covered", () => {
+    const service = createCalibrationCaptureService({
+      runtimeSessionId: "runtime-1",
+      canCaptureMint: () => false,
+      createId: () => "test-1",
+      now: () => now
+    });
+    service.start({ partition: "train" });
+
+    expect(
+      service.captureSnapshot(simulateLaunchMomentumFixture("strong-ripper"), 1)
+    ).toEqual({
+      captured: false,
+      reasonCodes: ["CALIBRATION_CAPTURE_OUTCOME_COVERAGE_UNAVAILABLE"]
+    });
+  });
+
+  it("protects pending outcome coverage through its bounded deadline", () => {
+    const service = createService();
+    const snapshot = simulateLaunchMomentumFixture("strong-ripper");
+    service.start({
+      partition: "train",
+      config: { horizonMs: 1_000, maxOutcomeLagMs: 1_000 }
+    });
+    service.captureSnapshot(snapshot, 1);
+
+    expect(service.getOutcomeProtectionUntil(snapshot.mint)).toBe(
+      "2026-01-01T00:00:27.000Z"
+    );
+    now = new Date("2026-01-01T00:00:27.000Z");
+    expect(service.getOutcomeProtectionUntil(snapshot.mint)).toBeNull();
+  });
+
+  it("materializes the bounded signal window even after more than 1,000 later buckets", () => {
+    const service = createService();
+    const started = service.start({
+      partition: "train",
+      config: {
+        horizonMs: 1_000,
+        maxOutcomeLagMs: 1_000,
+        samplingIntervalMs: 1_000
+      }
+    });
+    const snapshot = simulateLaunchMomentumFixture("strong-ripper");
+    const entryPriceSol = snapshot.priceSol ?? 1;
+    service.captureSnapshot(snapshot, 42);
+    upsertLaunchTimeseriesBucket(outcomeBucket(snapshot.mint, entryPriceSol));
+
+    for (let index = 0; index < 1_001; index += 1) {
+      upsertLaunchTimeseriesBucket(
+        laterBucket(snapshot.mint, entryPriceSol, index)
+      );
+    }
+
+    now = new Date("2026-01-01T01:00:00.000Z");
+    expect(service.materialize(started.session.sessionId)).toMatchObject({
+      completedCount: 1,
+      unavailableCount: 0
+    });
+  });
 });
 
 function createService() {
@@ -180,5 +241,18 @@ function outcomeBucket(mint: string, entryPriceSol: number) {
     paperOnly: true as const,
     dataOnly: true as const,
     tradingDisabled: true as const
+  };
+}
+
+function laterBucket(mint: string, entryPriceSol: number, index: number) {
+  const startMs = Date.parse("2026-01-01T00:00:27.000Z") + index * 1_000;
+  const endMs = startMs + 1_000;
+
+  return {
+    ...outcomeBucket(mint, entryPriceSol),
+    bucketStart: new Date(startMs).toISOString(),
+    bucketEnd: new Date(endMs).toISOString(),
+    firstTradeAt: new Date(startMs + 100).toISOString(),
+    lastTradeAt: new Date(startMs + 900).toISOString()
   };
 }

@@ -1,6 +1,7 @@
 export type TrackingProtectionReason =
   | "paper_position"
   | "live_position"
+  | "calibration_outcome"
   | "migration"
   | "ripping"
   | "hot"
@@ -269,7 +270,8 @@ function classifyTrackedMint(
     ...mint,
     absoluteProtection:
       mint.protectionReason === "paper_position" ||
-      mint.protectionReason === "live_position",
+      mint.protectionReason === "live_position" ||
+      mint.protectionReason === "calibration_outcome",
     ageMs,
     staleNoTrades:
       policy.staleNoTradesMs > 0 &&
@@ -381,14 +383,16 @@ function protectionRank(reason: TrackingProtectionReason | null): number {
     case "live_position":
     case "paper_position":
       return 6;
-    case "ripping":
+    case "calibration_outcome":
       return 5;
-    case "migration":
+    case "ripping":
       return 4;
-    case "hot":
+    case "migration":
       return 3;
-    case "protected_score":
+    case "hot":
       return 2;
+    case "protected_score":
+      return 1;
     default:
       return 0;
   }

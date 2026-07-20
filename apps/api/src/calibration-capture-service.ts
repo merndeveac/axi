@@ -20,7 +20,7 @@ import {
   getLatestCapturedSignalObservationByMint,
   listCalibrationCaptureSessions,
   listCapturedSignalObservationsBySession,
-  listLaunchTimeseriesBucketsByMint,
+  listLaunchTimeseriesBucketsByMintBetween,
   saveCalibrationCaptureSession,
   saveCapturedSignalObservation,
   type StoredCalibrationCaptureSession,
@@ -73,16 +73,20 @@ export class CalibrationCaptureServiceError extends Error {
 }
 
 export class CalibrationCaptureService {
+  private readonly canCaptureMint: ((mint: string) => boolean) | undefined;
   private readonly createId: () => string;
   private readonly now: () => Date;
+  private readonly outcomeProtectionUntilByMint = new Map<string, number>();
   private readonly runtimeSessionId: string;
 
   constructor(options: {
     runtimeSessionId: string;
+    canCaptureMint?: ((mint: string) => boolean) | undefined;
     createId?: (() => string) | undefined;
     now?: (() => Date) | undefined;
   }) {
     this.runtimeSessionId = options.runtimeSessionId;
+    this.canCaptureMint = options.canCaptureMint;
     this.createId = options.createId ?? randomUUID;
     this.now = options.now ?? (() => new Date());
   }
@@ -151,6 +155,13 @@ export class CalibrationCaptureService {
       };
     }
 
+    if (this.canCaptureMint && !this.canCaptureMint(snapshot.mint)) {
+      return {
+        captured: false,
+        reasonCodes: ["CALIBRATION_CAPTURE_OUTCOME_COVERAGE_UNAVAILABLE"]
+      };
+    }
+
     const counts = getCalibrationCaptureObservationCounts(session.sessionId);
 
     if (counts.observationCount >= session.config.maxObservationsPerSession) {
@@ -194,9 +205,22 @@ export class CalibrationCaptureService {
       return { captured: false, reasonCodes: result.reasonCodes };
     }
 
+    const observation = saveCapturedSignalObservation(result.observation);
+    const protectionUntilMs =
+      Date.parse(observation.signalAt) +
+      observation.horizonMs +
+      observation.maxOutcomeLagMs;
+    this.outcomeProtectionUntilByMint.set(
+      observation.mint,
+      Math.max(
+        this.outcomeProtectionUntilByMint.get(observation.mint) ?? 0,
+        protectionUntilMs
+      )
+    );
+
     return {
       captured: true,
-      observation: saveCapturedSignalObservation(result.observation)
+      observation
     };
   }
 
@@ -209,10 +233,6 @@ export class CalibrationCaptureService {
       session.sessionId,
       { limit: session.config.maxObservationsPerSession }
     );
-    const bucketCache = new Map<
-      string,
-      ReturnType<typeof listLaunchTimeseriesBucketsByMint>
-    >();
     let changedCount = 0;
 
     for (const observation of observations) {
@@ -220,12 +240,17 @@ export class CalibrationCaptureService {
         continue;
       }
 
-      let buckets = bucketCache.get(observation.mint);
-
-      if (!buckets) {
-        buckets = listLaunchTimeseriesBucketsByMint(observation.mint, 1_000);
-        bucketCache.set(observation.mint, buckets);
-      }
+      const outcomeDeadline = new Date(
+        Date.parse(observation.signalAt) +
+          observation.horizonMs +
+          observation.maxOutcomeLagMs
+      ).toISOString();
+      const buckets = listLaunchTimeseriesBucketsByMintBetween(
+        observation.mint,
+        observation.signalAt,
+        outcomeDeadline,
+        1_000
+      );
 
       const materialized = materializeCapturedSignalOutcome({
         observation,
@@ -337,6 +362,27 @@ export class CalibrationCaptureService {
     return listCapturedSignalObservationsBySession(sessionId, options);
   }
 
+  getOutcomeProtectionUntil(
+    mint: string,
+    asOf = this.now().toISOString()
+  ): string | null {
+    const asOfMs = Date.parse(asOf);
+
+    if (!Number.isFinite(asOfMs)) {
+      throw new RangeError("outcome protection timestamp must be valid");
+    }
+
+    const protectionUntilMs =
+      this.outcomeProtectionUntilByMint.get(mint) ?? 0;
+
+    if (!Number.isFinite(protectionUntilMs) || protectionUntilMs <= asOfMs) {
+      this.outcomeProtectionUntilByMint.delete(mint);
+      return null;
+    }
+
+    return new Date(protectionUntilMs).toISOString();
+  }
+
   getStatus(): CalibrationCaptureStatus {
     const activeSession = this.getActiveSession();
     const counts = activeSession
@@ -381,6 +427,7 @@ export class CalibrationCaptureService {
 
 export function createCalibrationCaptureService(options: {
   runtimeSessionId: string;
+  canCaptureMint?: ((mint: string) => boolean) | undefined;
   createId?: (() => string) | undefined;
   now?: (() => Date) | undefined;
 }): CalibrationCaptureService {

@@ -341,6 +341,43 @@ describe("MeteredLaunchDataService", () => {
     expect(service.getTrackedMints()).toEqual([secondMint]);
   });
 
+  it("protects pending calibration outcomes until their bounded deadline", () => {
+    const candidates = new Map([
+      [mint, createLaunchCandidate({ mint, score: 20 })],
+      [secondMint, createLaunchCandidate({ mint: secondMint, score: 90 })]
+    ]);
+    const service = createServiceHarness(
+      {
+        acknowledgedCost: true,
+        apiKeyConfigured: true,
+        autoUnsubscribeOnLowScore: false,
+        dataWalletPublicKeyConfigured: true,
+        enabled: true,
+        maxConcurrentMints: 1,
+        maxProtectedMints: 1,
+        reservedNewestSlots: 0,
+        schedulerQueueMaxAgeMs: 0,
+        staleNoTradesMs: 0
+      },
+      readyWallet,
+      new PumpPortalFeedProvider(),
+      (candidateMint) => candidates.get(candidateMint) ?? null,
+      () => false,
+      (candidateMint) =>
+        candidateMint === mint ? "2099-01-01T00:00:00.000Z" : null
+    ).service;
+
+    service.evaluateNewLaunchCandidate(candidates.get(mint)!);
+    const queued = service.evaluateNewLaunchCandidate(
+      candidates.get(secondMint)!
+    );
+
+    expect(queued.action).toBe("queue");
+    expect(queued.schedulerDecision?.protectedMints).toEqual([mint]);
+    expect(service.getSchedulerStatus().absoluteProtectedMintCount).toBe(1);
+    expect(service.getTrackedMints()).toEqual([mint]);
+  });
+
   it("keeps the same subscription across a migration event", () => {
     const provider = new PumpPortalFeedProvider();
     const candidates = new Map([
@@ -614,14 +651,18 @@ function createService(
     | LaunchCandidateView
     | ((candidateMint: string) => LaunchCandidateView | null)
     | null = null,
-  hasOpenPaperPosition: (candidateMint: string) => boolean = () => false
+  hasOpenPaperPosition: (candidateMint: string) => boolean = () => false,
+  getCalibrationOutcomeProtectionUntil: (
+    candidateMint: string
+  ) => string | null = () => null
 ) {
   return createServiceHarness(
     config,
     readiness,
     provider,
     candidate,
-    hasOpenPaperPosition
+    hasOpenPaperPosition,
+    getCalibrationOutcomeProtectionUntil
   ).service;
 }
 
@@ -633,7 +674,10 @@ function createServiceHarness(
     | LaunchCandidateView
     | ((candidateMint: string) => LaunchCandidateView | null)
     | null = null,
-  hasOpenPaperPosition: (candidateMint: string) => boolean = () => false
+  hasOpenPaperPosition: (candidateMint: string) => boolean = () => false,
+  getCalibrationOutcomeProtectionUntil: (
+    candidateMint: string
+  ) => string | null = () => null
 ) {
   const envAckEnabled = config?.acknowledgedCost === true;
   const actualData = createActualDataService({
@@ -664,6 +708,7 @@ function createServiceHarness(
     dataWalletReadiness: () => readiness,
     getLaunchCandidate: (candidateMint) =>
       typeof candidate === "function" ? candidate(candidateMint) : candidate,
+    getCalibrationOutcomeProtectionUntil,
     hasOpenPaperPosition,
     providerName: "pumpportal"
   });

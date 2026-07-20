@@ -105,6 +105,25 @@ describe("@axi/tracking-scheduler", () => {
     );
   });
 
+  it("keeps a pending calibration outcome bounded from scheduler preemption", () => {
+    const decision = scheduleNewestCandidate({
+      candidate,
+      tracked: [
+        trackedMint("capture", {
+          protectionReason: "calibration_outcome"
+        })
+      ],
+      policy: { ...policy, maxConcurrentMints: 1 },
+      now
+    });
+
+    expect(decision.action).toBe("queue");
+    expect(decision.protectedMints).toEqual(["capture"]);
+    expect(decision.reasonCodes).toContain(
+      "SCHEDULER_ALL_SLOTS_ABSOLUTELY_PROTECTED"
+    );
+  });
+
   it("does not let position protection override a hard reject", () => {
     const decision = scheduleNewestCandidate({
       candidate,
