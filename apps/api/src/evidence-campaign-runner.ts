@@ -10,6 +10,7 @@ import {
   evidenceCampaignReadRetryDelaysMs,
   isEvidenceCampaignReadOnlyRequest,
   isEvidenceCampaignRetryableStatus,
+  reconcileEvidenceCampaignSubsessionUsage,
   resolveEvidenceCampaignRepositoryRoot,
   type EvidenceCampaignBudgetPlan
 } from "./evidence-campaign-policy";
@@ -131,6 +132,7 @@ let state: CampaignState | null = null;
 let stopping = false;
 let stopRequested = false;
 let activeTick: Promise<void> | null = null;
+let currentSubsessionUsageCommitted = false;
 let lastWalletRefreshAt = 0;
 let disconnectedSince: number | null = null;
 let lastProgressLogAt = 0;
@@ -477,6 +479,7 @@ async function startFirstSubsession(
     })
   });
   await requestJson("/runtime/metered-launch-data/start", { method: "POST" });
+  currentSubsessionUsageCommitted = false;
 }
 
 async function rolloverSubsession(runtime: RuntimeStatus): Promise<void> {
@@ -491,6 +494,7 @@ async function rolloverSubsession(runtime: RuntimeStatus): Promise<void> {
   );
   current.currentSubsessionCostSol = 0;
   current.currentSubsessionEventCount = 0;
+  currentSubsessionUsageCommitted = true;
   if (stopRequested) {
     persistState();
     return;
@@ -536,6 +540,7 @@ async function rolloverSubsession(runtime: RuntimeStatus): Promise<void> {
       startAfterAck: true
     })
   });
+  currentSubsessionUsageCommitted = false;
   current.subsessionCount += 1;
   persistState();
   log("metered_subsession_rolled_over", {
@@ -563,6 +568,7 @@ async function completeCampaign(reason: string): Promise<void> {
   );
   current.currentSubsessionCostSol = 0;
   current.currentSubsessionEventCount = 0;
+  currentSubsessionUsageCommitted = true;
 
   const capture = await getCaptureStatus();
   if (capture.active) {
@@ -899,10 +905,7 @@ async function fetchCampaignResponse(
       retryIndex += 1;
       await delay(delayMs);
     } catch (error) {
-      if (
-        !readOnly ||
-        retryIndex >= evidenceCampaignReadRetryDelaysMs.length
-      ) {
+      if (!readOnly || retryIndex >= evidenceCampaignReadRetryDelaysMs.length) {
         const attempts = retryIndex + 1;
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(
@@ -967,16 +970,19 @@ function getTotalSpentSol(candidate: CampaignState): number {
 
 function reconcileCurrentSubsessionUsage(runtime: RuntimeStatus): void {
   if (!state) return;
-  state.currentSubsessionCostSol = roundSol(
-    Math.max(
-      state.currentSubsessionCostSol,
-      runtime.meteredPriceAction.estimatedCostSol
-    )
-  );
-  state.currentSubsessionEventCount = Math.max(
-    state.currentSubsessionEventCount,
-    runtime.meteredPriceAction.eventCount
-  );
+  const reconciled = reconcileEvidenceCampaignSubsessionUsage({
+    checkpoint: {
+      currentSubsessionCostSol: state.currentSubsessionCostSol,
+      currentSubsessionEventCount: state.currentSubsessionEventCount
+    },
+    runtime: {
+      currentSubsessionCostSol: runtime.meteredPriceAction.estimatedCostSol,
+      currentSubsessionEventCount: runtime.meteredPriceAction.eventCount
+    },
+    alreadyCommitted: currentSubsessionUsageCommitted
+  });
+  state.currentSubsessionCostSol = reconciled.currentSubsessionCostSol;
+  state.currentSubsessionEventCount = reconciled.currentSubsessionEventCount;
   state.lastWalletBalanceSol =
     runtime.dataWallet.balanceSol ?? state.lastWalletBalanceSol;
   state.updatedAt = new Date().toISOString();

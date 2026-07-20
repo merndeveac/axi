@@ -7,6 +7,7 @@ import {
   evidenceCampaignReadRetryDelaysMs,
   isEvidenceCampaignReadOnlyRequest,
   isEvidenceCampaignRetryableStatus,
+  reconcileEvidenceCampaignSubsessionUsage,
   resolveEvidenceCampaignRepositoryRoot
 } from "../src/evidence-campaign-policy";
 
@@ -67,6 +68,44 @@ describe("evidence campaign policy", () => {
     ).toEqual({ "content-type": "application/json" });
   });
 
+  it("does not replay a stopped provider counter after the final subsession was committed", () => {
+    expect(
+      reconcileEvidenceCampaignSubsessionUsage({
+        checkpoint: {
+          currentSubsessionCostSol: 0,
+          currentSubsessionEventCount: 0
+        },
+        runtime: {
+          currentSubsessionCostSol: 0.000705,
+          currentSubsessionEventCount: 705
+        },
+        alreadyCommitted: true
+      })
+    ).toEqual({
+      currentSubsessionCostSol: 0,
+      currentSubsessionEventCount: 0
+    });
+  });
+
+  it("reconciles in-flight provider usage when the current subsession is not committed", () => {
+    expect(
+      reconcileEvidenceCampaignSubsessionUsage({
+        checkpoint: {
+          currentSubsessionCostSol: 0.0004,
+          currentSubsessionEventCount: 400
+        },
+        runtime: {
+          currentSubsessionCostSol: 0.00047,
+          currentSubsessionEventCount: 470
+        },
+        alreadyCommitted: false
+      })
+    ).toEqual({
+      currentSubsessionCostSol: 0.00047,
+      currentSubsessionEventCount: 470
+    });
+  });
+
   it("retries only safe read requests on transient failures", () => {
     expect(isEvidenceCampaignReadOnlyRequest()).toBe(true);
     expect(isEvidenceCampaignReadOnlyRequest({ method: "HEAD" })).toBe(true);
@@ -75,12 +114,7 @@ describe("evidence campaign policy", () => {
     expect(isEvidenceCampaignRetryableStatus(409)).toBe(false);
     expect(evidenceCampaignReadAttemptTimeoutMs).toBe(5_000);
     expect(evidenceCampaignReadRetryDelaysMs).toEqual([
-      250,
-      500,
-      1_000,
-      2_000,
-      4_000,
-      8_000
+      250, 500, 1_000, 2_000, 4_000, 8_000
     ]);
   });
 

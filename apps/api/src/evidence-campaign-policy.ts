@@ -8,12 +8,7 @@ export const evidenceCampaignTargetSubsessionCostSol = 0.0005;
 export const evidenceCampaignDefaultTrainRatio = 0.6;
 export const evidenceCampaignReadAttemptTimeoutMs = 5_000;
 export const evidenceCampaignReadRetryDelaysMs = [
-  250,
-  500,
-  1_000,
-  2_000,
-  4_000,
-  8_000
+  250, 500, 1_000, 2_000, 4_000, 8_000
 ];
 
 export type EvidenceCampaignBudgetPlan = {
@@ -32,6 +27,11 @@ export type EvidenceCampaignSubsessionPlan = {
   costCapSol: number;
   eventCap: number;
   estimatedCostPerEventSol: number;
+};
+
+export type EvidenceCampaignSubsessionUsage = {
+  currentSubsessionCostSol: number;
+  currentSubsessionEventCount: number;
 };
 
 export function createEvidenceCampaignBudgetPlan(input: {
@@ -168,6 +168,42 @@ export function createEvidenceCampaignSubsessionPlan(input: {
     costCapSol: roundSol(eventCap * estimatedCostPerEventSol),
     eventCap,
     estimatedCostPerEventSol: roundSol(estimatedCostPerEventSol)
+  };
+}
+
+export function reconcileEvidenceCampaignSubsessionUsage(input: {
+  checkpoint: EvidenceCampaignSubsessionUsage;
+  runtime: EvidenceCampaignSubsessionUsage;
+  alreadyCommitted: boolean;
+}): EvidenceCampaignSubsessionUsage {
+  if (input.alreadyCommitted) {
+    return {
+      currentSubsessionCostSol: roundSol(
+        input.checkpoint.currentSubsessionCostSol
+      ),
+      currentSubsessionEventCount: Math.max(
+        0,
+        Math.floor(input.checkpoint.currentSubsessionEventCount)
+      )
+    };
+  }
+
+  return {
+    currentSubsessionCostSol: roundSol(
+      Math.max(
+        input.checkpoint.currentSubsessionCostSol,
+        input.runtime.currentSubsessionCostSol
+      )
+    ),
+    currentSubsessionEventCount: Math.max(
+      0,
+      Math.floor(
+        Math.max(
+          input.checkpoint.currentSubsessionEventCount,
+          input.runtime.currentSubsessionEventCount
+        )
+      )
+    )
   };
 }
 
