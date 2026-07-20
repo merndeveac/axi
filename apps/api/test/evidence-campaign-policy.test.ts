@@ -3,6 +3,7 @@ import {
   createEvidenceCampaignBudgetPlan,
   createEvidenceCampaignRequestInit,
   createEvidenceCampaignSubsessionPlan,
+  evidenceCampaignMaximumConcurrentMints,
   evidenceCampaignReadAttemptTimeoutMs,
   evidenceCampaignReadRetryDelaysMs,
   isEvidenceCampaignReadOnlyRequest,
@@ -27,6 +28,32 @@ describe("evidence campaign policy", () => {
     expect(
       plan.initialBalanceSol - plan.effectiveBudgetSol
     ).toBeGreaterThanOrEqual(plan.minimumWalletReserveSol);
+    expect(plan.collectionBudgetSol).toBeLessThan(plan.effectiveBudgetSol);
+    expect(plan.providerInFlightReserveSol).toBe(0.0005);
+  });
+
+  it("reserves both outcome tails and provider in-flight delivery below the hard ceiling", () => {
+    const plan = createEvidenceCampaignBudgetPlan({
+      requestedBudgetSol: 0.005,
+      initialBalanceSol: 0.250001,
+      eventCostSolPer10000: 0.01
+    });
+
+    expect(plan).toMatchObject({
+      effectiveBudgetSol: 0.005,
+      collectionBudgetSol: 0.0045,
+      providerInFlightReserveSol: 0.0005,
+      outcomeTailReserveSol: 0.0009,
+      trainSpendTargetSol: 0.00162,
+      validationSpendTargetSol: 0.00108
+    });
+    expect(
+      plan.trainSpendTargetSol +
+        plan.validationSpendTargetSol +
+        plan.outcomeTailReserveSol * 2 +
+        plan.providerInFlightReserveSol
+    ).toBeCloseTo(plan.effectiveBudgetSol, 12);
+    expect(evidenceCampaignMaximumConcurrentMints).toBe(3);
   });
 
   it("rejects campaigns above the absolute quarter-SOL ceiling", () => {

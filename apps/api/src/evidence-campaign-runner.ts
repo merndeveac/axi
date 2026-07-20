@@ -5,6 +5,7 @@ import {
   createEvidenceCampaignBudgetPlan,
   createEvidenceCampaignRequestInit,
   createEvidenceCampaignSubsessionPlan,
+  evidenceCampaignMaximumConcurrentMints,
   evidenceCampaignMaximumBudgetSol,
   evidenceCampaignReadAttemptTimeoutMs,
   evidenceCampaignReadRetryDelaysMs,
@@ -26,7 +27,7 @@ type CampaignPhase =
   | "failed";
 
 type CampaignState = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   campaignId: string;
   phase: CampaignPhase;
   plan: EvidenceCampaignBudgetPlan;
@@ -38,10 +39,12 @@ type CampaignState = {
   completedSubsessionCostSol: number;
   currentSubsessionCostSol: number;
   currentSubsessionEventCount: number;
+  currentSubsessionUsageCommitted: boolean;
   subsessionCount: number;
   trainingSessionId: string | null;
   validationSessionId: string | null;
   outcomeTailUntil: string | null;
+  meteredCollectionStoppedAt: string | null;
   lastWalletBalanceSol: number | null;
   strategyEvaluationId: string | null;
   strategyEvaluationStatus: string | null;
@@ -132,7 +135,6 @@ let state: CampaignState | null = null;
 let stopping = false;
 let stopRequested = false;
 let activeTick: Promise<void> | null = null;
-let currentSubsessionUsageCommitted = false;
 let lastWalletRefreshAt = 0;
 let disconnectedSince: number | null = null;
 let lastProgressLogAt = 0;
@@ -241,7 +243,7 @@ async function startCampaign(): Promise<CampaignState> {
     })
   });
   const initial: CampaignState = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     campaignId: `evidence-${randomUUID()}`,
     phase: "training",
     plan,
@@ -253,10 +255,12 @@ async function startCampaign(): Promise<CampaignState> {
     completedSubsessionCostSol: 0,
     currentSubsessionCostSol: 0,
     currentSubsessionEventCount: 0,
+    currentSubsessionUsageCommitted: false,
     subsessionCount: 1,
     trainingSessionId: started.session.sessionId,
     validationSessionId: null,
     outcomeTailUntil: null,
+    meteredCollectionStoppedAt: null,
     lastWalletBalanceSol: balanceSol,
     strategyEvaluationId: null,
     strategyEvaluationStatus: null,
@@ -285,10 +289,12 @@ async function tick(): Promise<void> {
   if (stopRequested) return;
 
   const current = requireState();
-  current.currentSubsessionCostSol = roundSol(
-    runtime.meteredPriceAction.estimatedCostSol
-  );
-  current.currentSubsessionEventCount = runtime.meteredPriceAction.eventCount;
+  if (!current.currentSubsessionUsageCommitted) {
+    current.currentSubsessionCostSol = roundSol(
+      runtime.meteredPriceAction.estimatedCostSol
+    );
+    current.currentSubsessionEventCount = runtime.meteredPriceAction.eventCount;
+  }
   current.lastWalletBalanceSol =
     runtime.dataWallet.balanceSol ?? current.lastWalletBalanceSol;
   current.updatedAt = new Date().toISOString();
@@ -297,13 +303,26 @@ async function tick(): Promise<void> {
   if (stopRequested) return;
 
   const totalSpentSol = getTotalSpentSol(current);
-  if (totalSpentSol >= current.plan.effectiveBudgetSol) {
-    await completeCampaign("effective_budget_reached");
+  await updateCapturePhase(totalSpentSol);
+  if (stopRequested || isTerminal(current.phase)) return;
+
+  if (totalSpentSol >= current.plan.collectionBudgetSol) {
+    if (current.phase === "validation_outcome_tail") {
+      await stopMeteredCollection("collection_budget_reached");
+      return;
+    }
+
+    await safetyStop(
+      "collection_budget_reached_before_validation_outcome_tail",
+      "failed"
+    );
     return;
   }
 
-  await updateCapturePhase(totalSpentSol);
-  if (stopRequested) return;
+  if (current.meteredCollectionStoppedAt) {
+    await logProgress(current);
+    return;
+  }
 
   if (
     runtime.meteredPriceAction.budgetReached ||
@@ -323,20 +342,7 @@ async function tick(): Promise<void> {
   }
 
   if (Date.now() - lastProgressLogAt >= 30_000) {
-    const capture = await getCaptureStatus();
-    lastProgressLogAt = Date.now();
-    log("campaign_progress", {
-      campaignId: current.campaignId,
-      phase: current.phase,
-      spentSol: getTotalSpentSol(current),
-      effectiveBudgetSol: current.plan.effectiveBudgetSol,
-      subsessionCount: current.subsessionCount,
-      eventCount: current.currentSubsessionEventCount,
-      observations: capture.observationCount,
-      completedOutcomes: capture.completedCount,
-      pendingOutcomes: capture.pendingCount,
-      walletBalanceSol: current.lastWalletBalanceSol
-    });
+    await logProgress(current);
   }
 }
 
@@ -403,7 +409,7 @@ async function updateCapturePhase(totalSpentSol: number): Promise<void> {
   }
 
   const validationCaptureStopAt = roundSol(
-    current.plan.effectiveBudgetSol - current.plan.outcomeTailReserveSol
+    current.plan.collectionBudgetSol - current.plan.outcomeTailReserveSol
   );
   if (
     current.phase === "validation" &&
@@ -446,6 +452,7 @@ async function updateCapturePhase(totalSpentSol: number): Promise<void> {
     await materialize(current.validationSessionId);
     current.outcomeTailUntil = null;
     persistState();
+    await completeCampaign("validation_outcome_tail_complete");
   }
 }
 
@@ -460,7 +467,7 @@ async function startFirstSubsession(
 ): Promise<void> {
   const current = requireState();
   const sub = createEvidenceCampaignSubsessionPlan({
-    remainingBudgetSol: current.plan.effectiveBudgetSol,
+    remainingBudgetSol: current.plan.collectionBudgetSol,
     configuredCostCapSol: Math.min(
       metered.maxSessionCostSol,
       metered.maxUiSessionCostSol
@@ -474,12 +481,72 @@ async function startFirstSubsession(
     body: JSON.stringify({
       ackCost: true,
       maxSessionCostSol: sub.costCapSol,
-      maxConcurrentMints: runtime.meteredPriceAction.maxConcurrentMints,
+      maxConcurrentMints: Math.min(
+        runtime.meteredPriceAction.maxConcurrentMints,
+        evidenceCampaignMaximumConcurrentMints
+      ),
       maxEventsPerSession: sub.eventCap
     })
   });
   await requestJson("/runtime/metered-launch-data/start", { method: "POST" });
-  currentSubsessionUsageCommitted = false;
+  current.currentSubsessionUsageCommitted = false;
+}
+
+async function stopMeteredCollection(reason: string): Promise<void> {
+  const current = requireState();
+  if (current.meteredCollectionStoppedAt) {
+    return;
+  }
+
+  const stopped = await requestJson<{ status: RuntimeStatus }>(
+    "/runtime/metered-launch-data/stop",
+    { method: "POST" }
+  );
+  reconcileCurrentSubsessionUsage(stopped.status);
+  commitCurrentSubsessionUsage(current);
+  current.meteredCollectionStoppedAt = new Date().toISOString();
+  current.updatedAt = current.meteredCollectionStoppedAt;
+  persistState();
+  log("metered_collection_stopped", {
+    reason,
+    estimatedSpendSol: current.completedSubsessionCostSol,
+    effectiveBudgetSol: current.plan.effectiveBudgetSol,
+    collectionBudgetSol: current.plan.collectionBudgetSol
+  });
+}
+
+function commitCurrentSubsessionUsage(current: CampaignState): void {
+  if (current.currentSubsessionUsageCommitted) {
+    return;
+  }
+  current.completedSubsessionCostSol = roundSol(
+    current.completedSubsessionCostSol + current.currentSubsessionCostSol
+  );
+  current.currentSubsessionCostSol = 0;
+  current.currentSubsessionEventCount = 0;
+  current.currentSubsessionUsageCommitted = true;
+}
+
+async function logProgress(current: CampaignState): Promise<void> {
+  if (Date.now() - lastProgressLogAt < 30_000) {
+    return;
+  }
+  const capture = await getCaptureStatus();
+  lastProgressLogAt = Date.now();
+  log("campaign_progress", {
+    campaignId: current.campaignId,
+    phase: current.phase,
+    spentSol: getTotalSpentSol(current),
+    effectiveBudgetSol: current.plan.effectiveBudgetSol,
+    collectionBudgetSol: current.plan.collectionBudgetSol,
+    meteredCollectionStoppedAt: current.meteredCollectionStoppedAt,
+    subsessionCount: current.subsessionCount,
+    eventCount: current.currentSubsessionEventCount,
+    observations: capture.observationCount,
+    completedOutcomes: capture.completedCount,
+    pendingOutcomes: capture.pendingCount,
+    walletBalanceSol: current.lastWalletBalanceSol
+  });
 }
 
 async function rolloverSubsession(runtime: RuntimeStatus): Promise<void> {
@@ -489,23 +556,26 @@ async function rolloverSubsession(runtime: RuntimeStatus): Promise<void> {
     { method: "POST" }
   );
   reconcileCurrentSubsessionUsage(stopped.status);
-  current.completedSubsessionCostSol = roundSol(
-    current.completedSubsessionCostSol + current.currentSubsessionCostSol
-  );
-  current.currentSubsessionCostSol = 0;
-  current.currentSubsessionEventCount = 0;
-  currentSubsessionUsageCommitted = true;
+  commitCurrentSubsessionUsage(current);
   if (stopRequested) {
     persistState();
     return;
   }
   const remainingBudgetSol = roundSol(
-    current.plan.effectiveBudgetSol - current.completedSubsessionCostSol
+    current.plan.collectionBudgetSol - current.completedSubsessionCostSol
   );
 
   if (remainingBudgetSol <= 0) {
     persistState();
-    await completeCampaign("effective_budget_reached");
+    if (current.phase !== "validation_outcome_tail") {
+      await safetyStop(
+        "collection_budget_reached_before_validation_outcome_tail",
+        "failed"
+      );
+    } else {
+      current.meteredCollectionStoppedAt = new Date().toISOString();
+      persistState();
+    }
     return;
   }
 
@@ -535,12 +605,15 @@ async function rolloverSubsession(runtime: RuntimeStatus): Promise<void> {
       ackCost: true,
       confirmation: meteredSessionRolloverConfirmation,
       maxSessionCostSol: sub.costCapSol,
-      maxConcurrentMints: runtime.meteredPriceAction.maxConcurrentMints,
+      maxConcurrentMints: Math.min(
+        runtime.meteredPriceAction.maxConcurrentMints,
+        evidenceCampaignMaximumConcurrentMints
+      ),
       maxEventsPerSession: sub.eventCap,
       startAfterAck: true
     })
   });
-  currentSubsessionUsageCommitted = false;
+  current.currentSubsessionUsageCommitted = false;
   current.subsessionCount += 1;
   persistState();
   log("metered_subsession_rolled_over", {
@@ -558,17 +631,9 @@ async function completeCampaign(reason: string): Promise<void> {
     return;
   }
 
-  const stoppedMetered = await requestJson<{ status: RuntimeStatus }>(
-    "/runtime/metered-launch-data/stop",
-    { method: "POST" }
-  );
-  reconcileCurrentSubsessionUsage(stoppedMetered.status);
-  current.completedSubsessionCostSol = roundSol(
-    current.completedSubsessionCostSol + current.currentSubsessionCostSol
-  );
-  current.currentSubsessionCostSol = 0;
-  current.currentSubsessionEventCount = 0;
-  currentSubsessionUsageCommitted = true;
+  if (!current.currentSubsessionUsageCommitted) {
+    await stopMeteredCollection(reason);
+  }
 
   const capture = await getCaptureStatus();
   if (capture.active) {
@@ -588,6 +653,10 @@ async function completeCampaign(reason: string): Promise<void> {
   await materialize(current.trainingSessionId);
   await materialize(current.validationSessionId);
   await evaluateEvidence();
+  current.outcomeTailUntil = null;
+  if (current.completedSubsessionCostSol > current.plan.effectiveBudgetSol) {
+    current.reasonCodes.push("EVIDENCE_CAMPAIGN_HARD_BUDGET_EXCEEDED");
+  }
   current.phase = "completed";
   current.completedAt = new Date().toISOString();
   current.stopReason = reason;
@@ -617,7 +686,7 @@ async function evaluateEvidence(): Promise<void> {
   try {
     const strategy = await requestJson<{
       evaluationId: string;
-      status: string;
+      evaluationStatus: string;
     }>("/runtime/paper-strategy-evaluation/evaluate", {
       method: "POST",
       body: JSON.stringify({
@@ -628,12 +697,12 @@ async function evaluateEvidence(): Promise<void> {
       })
     });
     current.strategyEvaluationId = strategy.evaluationId;
-    current.strategyEvaluationStatus = strategy.status;
+    current.strategyEvaluationStatus = strategy.evaluationStatus;
 
-    if (strategy.status === "paper_observation_candidate") {
+    if (strategy.evaluationStatus === "paper_observation_candidate") {
       const lifecycle = await requestJson<{
         validationId: string;
-        status: string;
+        validationStatus: string;
       }>("/runtime/paper-lifecycle-validation/evaluate", {
         method: "POST",
         body: JSON.stringify({
@@ -641,7 +710,7 @@ async function evaluateEvidence(): Promise<void> {
         })
       });
       current.lifecycleValidationId = lifecycle.validationId;
-      current.lifecycleValidationStatus = lifecycle.status;
+      current.lifecycleValidationStatus = lifecycle.validationStatus;
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -700,6 +769,9 @@ async function safetyStop(
       { method: "POST" }
     );
     reconcileCurrentSubsessionUsage(stopped.status);
+    if (state && !state.currentSubsessionUsageCommitted) {
+      commitCurrentSubsessionUsage(state);
+    }
   } catch {
     // The bounded server-side session remains the final fail-safe.
   }
@@ -950,11 +1022,20 @@ function persistState(): void {
 }
 
 function loadState(path: string): CampaignState {
-  return JSON.parse(readFileSync(path, "utf8")) as CampaignState;
+  const candidate = JSON.parse(readFileSync(path, "utf8")) as CampaignState;
+  const legacyPlan = candidate.plan as EvidenceCampaignBudgetPlan & {
+    collectionBudgetSol?: number;
+    providerInFlightReserveSol?: number;
+  };
+  legacyPlan.providerInFlightReserveSol ??= 0;
+  legacyPlan.collectionBudgetSol ??= legacyPlan.effectiveBudgetSol;
+  candidate.currentSubsessionUsageCommitted ??= false;
+  candidate.meteredCollectionStoppedAt ??= null;
+  return candidate;
 }
 
 function assertResumable(candidate: CampaignState): void {
-  if (candidate.schemaVersion !== 1 || isTerminal(candidate.phase)) {
+  if (candidate.schemaVersion !== 2 || isTerminal(candidate.phase)) {
     throw new Error("Campaign state is not resumable.");
   }
   if (candidate.apiBaseUrl !== apiBaseUrl) {
@@ -979,7 +1060,7 @@ function reconcileCurrentSubsessionUsage(runtime: RuntimeStatus): void {
       currentSubsessionCostSol: runtime.meteredPriceAction.estimatedCostSol,
       currentSubsessionEventCount: runtime.meteredPriceAction.eventCount
     },
-    alreadyCommitted: currentSubsessionUsageCommitted
+    alreadyCommitted: state.currentSubsessionUsageCommitted
   });
   state.currentSubsessionCostSol = reconciled.currentSubsessionCostSol;
   state.currentSubsessionEventCount = reconciled.currentSubsessionEventCount;

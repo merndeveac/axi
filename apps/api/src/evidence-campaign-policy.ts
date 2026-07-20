@@ -5,6 +5,7 @@ export const evidenceCampaignMaximumBudgetSol = 0.25;
 export const evidenceCampaignMinimumWalletReserveSol = 0.02;
 export const evidenceCampaignMaximumSubsessionCostSol = 0.001;
 export const evidenceCampaignTargetSubsessionCostSol = 0.0005;
+export const evidenceCampaignMaximumConcurrentMints = 3;
 export const evidenceCampaignDefaultTrainRatio = 0.6;
 export const evidenceCampaignReadAttemptTimeoutMs = 5_000;
 export const evidenceCampaignReadRetryDelaysMs = [
@@ -16,6 +17,8 @@ export type EvidenceCampaignBudgetPlan = {
   effectiveBudgetSol: number;
   initialBalanceSol: number;
   minimumWalletReserveSol: number;
+  collectionBudgetSol: number;
+  providerInFlightReserveSol: number;
   trainSpendTargetSol: number;
   validationSpendTargetSol: number;
   outcomeTailReserveSol: number;
@@ -86,16 +89,26 @@ export function createEvidenceCampaignBudgetPlan(input: {
     );
   }
 
+  const providerInFlightReserveSol = floorToIncrement(
+    Math.min(
+      evidenceCampaignTargetSubsessionCostSol,
+      effectiveBudgetSol * 0.1
+    ),
+    estimatedCostPerEventSol
+  );
+  const collectionBudgetSol = roundSol(
+    effectiveBudgetSol - providerInFlightReserveSol
+  );
   const outcomeTailReserveSol = floorToIncrement(
     Math.min(
       evidenceCampaignMaximumSubsessionCostSol,
-      effectiveBudgetSol * 0.05
+      collectionBudgetSol * 0.2
     ),
     estimatedCostPerEventSol
   );
   const evidenceSpendSol = Math.max(
     estimatedCostPerEventSol,
-    effectiveBudgetSol - outcomeTailReserveSol
+    collectionBudgetSol - outcomeTailReserveSol * 2
   );
   const trainSpendTargetSol = floorToIncrement(
     evidenceSpendSol * trainRatio,
@@ -112,6 +125,8 @@ export function createEvidenceCampaignBudgetPlan(input: {
     effectiveBudgetSol,
     initialBalanceSol: roundSol(initialBalanceSol),
     minimumWalletReserveSol: roundSol(minimumWalletReserveSol),
+    collectionBudgetSol,
+    providerInFlightReserveSol,
     trainSpendTargetSol,
     validationSpendTargetSol,
     outcomeTailReserveSol,
@@ -121,6 +136,8 @@ export function createEvidenceCampaignBudgetPlan(input: {
       "EVIDENCE_CAMPAIGN_LIVE_EXECUTION_DISABLED",
       "EVIDENCE_CAMPAIGN_WALLET_RESERVE_ENFORCED",
       "EVIDENCE_CAMPAIGN_BOUNDED_SUBSESSIONS",
+      "EVIDENCE_CAMPAIGN_PROVIDER_IN_FLIGHT_RESERVE",
+      "EVIDENCE_CAMPAIGN_OUTCOME_TAILS_RESERVED",
       ...(limitedByWalletReserve
         ? ["EVIDENCE_CAMPAIGN_BUDGET_LIMITED_BY_WALLET_RESERVE"]
         : [])
