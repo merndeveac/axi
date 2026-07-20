@@ -604,6 +604,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
   private accountTradeBudgetReached = false;
   private socketOpen = false;
   private tokenTradeBudgetReached = false;
+  private tokenTradeSessionEventLimit: number;
   private connecting = false;
   private lastCloseAt: string | null = null;
   private lastError: string | null = null;
@@ -635,6 +636,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       options.maxTokenTradeEventsPerMint ?? Number.POSITIVE_INFINITY;
     this.maxTokenTradeEventsPerSession =
       options.maxTokenTradeEventsPerSession ?? Number.POSITIVE_INFINITY;
+    this.tokenTradeSessionEventLimit = this.maxTokenTradeEventsPerSession;
     this.maxTokenTradeSubscriptions = options.maxTokenTradeSubscriptions ?? 10;
     this.webSocketConstructor =
       options.webSocketConstructor ??
@@ -819,7 +821,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     return {
       budgetReached: this.tokenTradeBudgetReached,
       maxEventsPerMint: finiteOrZero(this.maxTokenTradeEventsPerMint),
-      maxEventsPerSession: finiteOrZero(this.maxTokenTradeEventsPerSession),
+      maxEventsPerSession: finiteOrZero(this.tokenTradeSessionEventLimit),
       maxSubscribedTokens: this.maxTokenTradeSubscriptions,
       perMintEventCounts: Object.fromEntries(this.tokenTradeEventCounts),
       subscribedTokenCount: this.tokenTradeSubscriptions.size,
@@ -838,7 +840,33 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
 
     this.tokenTradeEventCounts.clear();
     this.tokenTradeBudgetReached = false;
+    this.tokenTradeSessionEventLimit = this.maxTokenTradeEventsPerSession;
 
+    return this.getPumpPortalTradeStats();
+  }
+
+  setTokenTradeSessionEventLimit(maxEvents: number): PumpPortalTokenTradeStats {
+    if (this.tokenTradeSubscriptions.size > 0) {
+      throw new Error(
+        "Cannot change the PumpPortal token-trade event limit while subscriptions are active."
+      );
+    }
+    if (this.tokenTradeEventCounts.size > 0) {
+      throw new Error(
+        "Reset the PumpPortal token-trade session before changing its event limit."
+      );
+    }
+    if (
+      !Number.isInteger(maxEvents) ||
+      maxEvents < 1 ||
+      maxEvents > this.maxTokenTradeEventsPerSession
+    ) {
+      throw new Error(
+        "PumpPortal token-trade event limit must be a positive integer within the configured ceiling."
+      );
+    }
+
+    this.tokenTradeSessionEventLimit = maxEvents;
     return this.getPumpPortalTradeStats();
   }
 
@@ -1091,7 +1119,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     );
     const reachedMintBudget = nextCount >= this.maxTokenTradeEventsPerMint;
     const reachedSessionBudget =
-      totalEvents >= this.maxTokenTradeEventsPerSession;
+      totalEvents >= this.tokenTradeSessionEventLimit;
 
     if (reachedMintBudget) {
       this.unsubscribeTokenTrades([event.mint]);

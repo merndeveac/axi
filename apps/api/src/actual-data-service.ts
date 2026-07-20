@@ -214,7 +214,12 @@ export class ActualDataService {
     this.startedAt = null;
   }
 
-  acknowledgeMeteredSession(): ActualDataStatus {
+  acknowledgeMeteredSession(maxEventsPerSession?: number): ActualDataStatus {
+    if (maxEventsPerSession !== undefined) {
+      this.pumpPortalProvider?.setTokenTradeSessionEventLimit(
+        maxEventsPerSession
+      );
+    }
     this.sessionAcknowledgedMetered = true;
     return this.getStatus();
   }
@@ -387,7 +392,10 @@ export class ActualDataService {
       provider: this.providerName,
       reasonCodes,
       subscribedTokenCount: this.getSubscribedTokenCount(),
-      totalEventsThisSession: this.totalEventsThisSession
+      totalEventsThisSession: Math.max(
+        this.totalEventsThisSession,
+        providerStats?.totalEventsThisSession ?? 0
+      )
     };
   }
 
@@ -402,9 +410,28 @@ export class ActualDataService {
   }
 
   getEventCounters(): ActualDataEventCounters {
+    const providerStats = this.pumpPortalProvider?.getPumpPortalTradeStats();
+    const providerPerMint = providerStats?.perMintEventCounts ?? {};
+    const perMint = Object.fromEntries(
+      Array.from(
+        new Set([
+          ...this.perMintEventCounts.keys(),
+          ...Object.keys(providerPerMint)
+        ])
+      ).map((mint) => [
+        mint,
+        Math.max(
+          this.perMintEventCounts.get(mint) ?? 0,
+          providerPerMint[mint] ?? 0
+        )
+      ])
+    );
     return {
-      perMint: Object.fromEntries(this.perMintEventCounts),
-      totalEventsThisSession: this.totalEventsThisSession
+      perMint,
+      totalEventsThisSession: Math.max(
+        this.totalEventsThisSession,
+        providerStats?.totalEventsThisSession ?? 0
+      )
     };
   }
 

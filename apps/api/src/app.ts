@@ -2156,7 +2156,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     getTradingWalletsStatus: () => pumpPortalWallets.getStatus(),
     ackMeteredLaunchDataSession: (input) => {
       const status = meteredLaunchData.acknowledgeSession(input);
-      actualData.acknowledgeMeteredSession();
+      actualData.acknowledgeMeteredSession(input.maxEventsPerSession);
       paidDataArmed = status.sessionAcknowledgedCost;
       persistRuntimeSession();
       return status;
@@ -2518,7 +2518,6 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   app.post("/runtime/session-capture/stop", async (request) => {
     const body = calibrationCaptureStopBodySchema.parse(request.body ?? {});
-    flushFeedEventQueue();
     return calibrationCapture.stop(body.reason);
   });
 
@@ -3183,9 +3182,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const body = runtimeMeteredLaunchDataRolloverBodySchema.parse(request.body);
 
     try {
-      flushFeedEventQueue();
       meteredLaunchData.stop();
       disarmPaidData("metered_session_rollover");
+      flushFeedEventQueue();
       actualData.resetMeteredSession();
       meteredLaunchData.resetSession();
       const status = meteredLaunchData.acknowledgeSession({
@@ -3195,7 +3194,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         maxEventsPerSession: body.maxEventsPerSession,
         startAfterAck: false
       });
-      actualData.acknowledgeMeteredSession();
+      actualData.acknowledgeMeteredSession(body.maxEventsPerSession);
       paidDataArmed = status.sessionAcknowledgedCost;
       persistRuntimeSession();
 
@@ -3247,8 +3246,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   });
 
   app.post("/runtime/metered-launch-data/stop", async () => {
+    const result = await runtimeControl.stopMeteredLaunchData();
     flushFeedEventQueue();
-    return runtimeControl.stopMeteredLaunchData();
+    return {
+      ...result,
+      status: await runtimeControl.getStatus()
+    };
   });
 
   app.post("/runtime/metered-launch-data/restart", async (_request, reply) => {

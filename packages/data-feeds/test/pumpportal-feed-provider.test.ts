@@ -196,6 +196,43 @@ describe("PumpPortalFeedProvider", () => {
     provider.stop();
   });
 
+  it("enforces a smaller acknowledged token-trade session limit at ingress", () => {
+    const mint = "So11111111111111111111111111111111111111112";
+    const provider = createProvider({
+      maxTokenTradeEventsPerSession: 10,
+      subscribeMigration: false,
+      subscribeNewToken: false
+    });
+
+    provider.start(() => undefined);
+    FakeWebSocket.instances[0]?.emit("open");
+    expect(provider.setTokenTradeSessionEventLimit(2).maxEventsPerSession).toBe(
+      2
+    );
+    provider.subscribeTokenTrades([mint]);
+
+    for (const signature of ["sig-1", "sig-2"]) {
+      FakeWebSocket.instances[0]?.emit(
+        "message",
+        JSON.stringify({
+          mint,
+          signature,
+          solAmount: 1,
+          tokenAmount: 10,
+          txType: "buy"
+        })
+      );
+    }
+
+    expect(provider.getPumpPortalTradeStats()).toMatchObject({
+      budgetReached: true,
+      maxEventsPerSession: 2,
+      subscribedTokenCount: 0,
+      totalEventsThisSession: 2
+    });
+    provider.stop();
+  });
+
   it("normalizes a token-creation payload", () => {
     const events: FeedEvent[] = [];
     const provider = createProvider();
