@@ -133,6 +133,7 @@ import {
   getLaunchCandidate,
   initStorage,
   initStorageReadOnly,
+  isTradeDataCoverageStorageReady,
   listCandidateDecisionsForReplay,
   listCapacitySnapshots,
   listChainVerifications,
@@ -397,6 +398,7 @@ describe("@axi/storage", () => {
 
   it("persists restart-safe trade coverage evidence with filters and immutable finalization", () => {
     initStorage({ databasePath });
+    expect(isTradeDataCoverageStorageReady()).toBe(true);
     const active = createTradeCoverageSession();
     const coverageEvent = createTradeCoverageEvent();
     const subscriptionEvent = createTradeSubscriptionEvent();

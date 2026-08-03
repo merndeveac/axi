@@ -3238,6 +3238,28 @@ export function closeStorage(): void {
   activeStorage = null;
 }
 
+export function isTradeDataCoverageStorageReady(): boolean {
+  const db = getDb();
+  if (!hasMigration(db, 26)) {
+    return false;
+  }
+
+  const requiredTables = [
+    "trade_data_coverage_sessions",
+    "trade_data_coverage_events",
+    "trade_data_coverage_subscription_events"
+  ];
+
+  return requiredTables.every((tableName) => {
+    const row = db
+      .prepare(
+        `select name from sqlite_master where type = 'table' and name = ?`
+      )
+      .get(tableName) as { name: string } | undefined;
+    return row?.name === tableName;
+  });
+}
+
 export function runStorageTransaction<T>(operation: () => T): T {
   const db = getDb();
   if (db.isTransaction) {

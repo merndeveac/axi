@@ -1,15 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { PumpPortalFeedProvider } from "@axi/data-feeds";
+import { isValidSolanaMint, PumpPortalFeedProvider } from "@axi/data-feeds";
+import {
+  closeStorage,
+  initStorage,
+  isTradeDataCoverageStorageReady
+} from "@axi/storage";
 import { createActualDataConfig } from "./actual-data-service";
 import { createApiServer, loadApiConfig } from "./app";
 import { createMeteredLaunchDataConfig } from "./metered-launch-data-service";
+import { parseTradeDataCoverageArgs } from "./trade-data-coverage-cli";
+import { loadTradeDataCoverageEnvironment } from "./trade-data-coverage-env";
 import {
-  evaluateTradeDataCoveragePreflight,
-  parseTradeDataCoverageArgs
-} from "./trade-data-coverage-cli";
+  createTradeDataCoverageLiveReadiness,
+  disabledTradeDataCoverageForbiddenPaths
+} from "./trade-data-coverage-readiness";
 
-const config = loadApiConfig();
+const config = loadApiConfig(loadTradeDataCoverageEnvironment());
 const args = parseTradeDataCoverageArgs(process.argv.slice(2), {
   maxEvents: config.TRADE_DATA_COVERAGE_MAX_EVENTS,
   maxRuntimeMs: config.TRADE_DATA_COVERAGE_MAX_RUNTIME_MS,
@@ -17,21 +24,45 @@ const args = parseTradeDataCoverageArgs(process.argv.slice(2), {
   postStopGraceMs: config.TRADE_DATA_COVERAGE_POST_STOP_GRACE_MS,
   chainVerify: config.TRADE_DATA_COVERAGE_CHAIN_VERIFY
 });
-const apiKey = config.PUMPPORTAL_DATA_API_KEY ?? config.PUMPPORTAL_API_KEY;
+const apiKey = config.PUMPPORTAL_DATA_API_KEY;
+const publicKey = config.PUMPPORTAL_DATA_WALLET_PUBLIC_KEY;
+let storageReady = false;
+try {
+  initStorage({
+    ...(config.STORAGE_DATABASE_PATH
+      ? { databasePath: config.STORAGE_DATABASE_PATH }
+      : {})
+  });
+  storageReady = isTradeDataCoverageStorageReady();
+} catch {
+  storageReady = false;
+}
 
-const initialPreflight = evaluateTradeDataCoveragePreflight({
-  args,
-  liveAck: config.TRADE_DATA_COVERAGE_LIVE_ACK,
-  apiKeyConfigured: apiKey !== undefined,
-  dataWalletPublicKey: config.PUMPPORTAL_DATA_WALLET_PUBLIC_KEY,
-  balanceSol: null,
+const initialPreflight = createTradeDataCoverageLiveReadiness({
+  liveAuthorizationPresent: config.TRADE_DATA_COVERAGE_LIVE_ACK,
+  cliAckPresent: args.ackMetered,
+  dataApiKeyConfigured: apiKey !== undefined,
+  dataWalletPublicKeyConfigured: publicKey !== undefined,
+  dataWalletPublicKeyValid: publicKey ? isValidSolanaMint(publicKey) : false,
+  dataWalletBalanceStatus: publicKey ? "unknown" : "missing_config",
+  dataWalletBalanceSol: null,
   minimumBalanceSol: config.PUMPPORTAL_DATA_WALLET_MIN_BALANCE_SOL,
+  storageReady,
+  caps: {
+    maxMints: 1,
+    maxEvents: args.maxEvents,
+    maxRuntimeMs: args.maxRuntimeMs,
+    maxCostSol: args.maxCostSol,
+    postStopGraceMs: args.postStopGraceMs
+  },
+  forbiddenPaths: disabledTradeDataCoverageForbiddenPaths,
   solanaRpcConfigured: config.SOLANA_RPC_HTTP !== undefined,
+  chainVerify: args.chainVerify,
   estimatedCostPerEventSol:
     config.PUMPPORTAL_DATA_EVENT_COST_SOL_PER_10000 / 10_000
 });
 
-if (!initialPreflight.readyForLiveSession) {
+if (!initialPreflight.canRun) {
   printResult(
     {
       status: "PREFLIGHT_ONLY",
@@ -41,6 +72,7 @@ if (!initialPreflight.readyForLiveSession) {
     },
     args.json
   );
+  closeStorage();
   process.exitCode = 2;
 } else {
   const hardEventCap = initialPreflight.caps.maxEvents;
@@ -127,18 +159,30 @@ if (!initialPreflight.readyForLiveSession) {
     const walletStatus = await server.pumpPortalDataWallet.refreshBalance({
       force: true
     });
-    const finalPreflight = evaluateTradeDataCoveragePreflight({
-      args,
-      liveAck: true,
-      apiKeyConfigured: walletStatus.apiKeyConfigured,
-      dataWalletPublicKey: walletStatus.publicKey ?? undefined,
-      balanceSol: walletStatus.balanceSol,
+    const finalPreflight = createTradeDataCoverageLiveReadiness({
+      liveAuthorizationPresent: config.TRADE_DATA_COVERAGE_LIVE_ACK,
+      cliAckPresent: args.ackMetered,
+      dataApiKeyConfigured: walletStatus.apiKeyConfigured,
+      dataWalletPublicKeyConfigured: walletStatus.publicKeyConfigured,
+      dataWalletPublicKeyValid: walletStatus.publicKeyValid,
+      dataWalletBalanceStatus: walletStatus.balanceStatus,
+      dataWalletBalanceSol: walletStatus.balanceSol,
       minimumBalanceSol: walletStatus.minBalanceSol,
+      storageReady,
+      caps: {
+        maxMints: 1,
+        maxEvents: args.maxEvents,
+        maxRuntimeMs: args.maxRuntimeMs,
+        maxCostSol: args.maxCostSol,
+        postStopGraceMs: args.postStopGraceMs
+      },
+      forbiddenPaths: disabledTradeDataCoverageForbiddenPaths,
       solanaRpcConfigured: walletStatus.solanaRpcConfigured,
+      chainVerify: args.chainVerify,
       estimatedCostPerEventSol:
         config.PUMPPORTAL_DATA_EVENT_COST_SOL_PER_10000 / 10_000
     });
-    if (!finalPreflight.readyForLiveSession) {
+    if (!finalPreflight.canRun) {
       printResult(
         {
           status: "PREFLIGHT_BLOCKED",

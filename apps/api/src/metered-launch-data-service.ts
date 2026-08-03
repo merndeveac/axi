@@ -150,6 +150,7 @@ export type MeteredLaunchDataSessionAckInput = {
 };
 
 export type MeteredLaunchDataStatus = {
+  readinessSchemaVersion: "pumpportal-runtime-metered-readiness-v1";
   enabled: boolean;
   controlsEnabled: boolean;
   capabilityConfigured: boolean;
@@ -202,6 +203,8 @@ export type MeteredLaunchDataStatus = {
   dataOnly: true;
   tradingDisabled: true;
 };
+
+export type PumpPortalRuntimeMeteredReadiness = MeteredLaunchDataStatus;
 
 export type MeteredLaunchDataRateObservation = {
   eventCount: number;
@@ -1026,6 +1029,7 @@ export class MeteredLaunchDataService {
       scheduler.absoluteProtectedMintCount + scheduler.softProtectedMintCount;
 
     return {
+      readinessSchemaVersion: "pumpportal-runtime-metered-readiness-v1",
       enabled: this.config.enabled,
       controlsEnabled: this.config.controlsEnabled,
       capabilityConfigured,

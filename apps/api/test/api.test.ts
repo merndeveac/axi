@@ -184,6 +184,16 @@ describe("@axi/api", () => {
         apiKeyConfigured: true,
         publicKey: "11111111111111111111111111111111"
       },
+      tradeDataCoverageReadiness: {
+        liveAuthorizationPresent: false,
+        dataApiKeyConfigured: true,
+        caps: {
+          maxEvents: 50,
+          maxRuntimeMs: 90_000,
+          maxCostSol: 0.0001,
+          postStopGraceMs: 5_000
+        }
+      },
       startFeed: true,
       storageDatabasePath: databasePath
     });
@@ -219,6 +229,34 @@ describe("@axi/api", () => {
       })
     );
     await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const readinessResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/trade-data-coverage/readiness?ackMetered=true&liveAck=true"
+    });
+    expect(readinessResponse.statusCode).toBe(200);
+    expect(readinessResponse.json()).toMatchObject({
+      schemaVersion: "trade-data-coverage-readiness-v1",
+      canRun: false,
+      preflightOnly: true,
+      liveAuthorizationPresent: false,
+      cliAckRequired: true,
+      dataApiKeyConfigured: true,
+      dataWalletPublicKeyConfigured: true,
+      storageReady: true,
+      forbiddenPaths: {
+        accountTradesDisabled: true,
+        paperAutomationDisabled: true,
+        lightningDisabled: true,
+        localTransactionApiDisabled: true,
+        liveTradingDisabled: true
+      },
+      secretsExposed: false,
+      paperOnly: true,
+      liveTradingEnabled: false
+    });
+    expect(readinessResponse.body).not.toContain("test-only-key");
+    expect(readinessResponse.body).not.toContain("example.test");
 
     const activeResponse = await server.app.inject({
       method: "GET",
@@ -308,6 +346,22 @@ describe("@axi/api", () => {
     expect(config.METERED_LAUNCH_DATA_MAX_UI_SESSION_COST_SOL).toBe(0.001);
     expect(config.PUMPPORTAL_LIGHTNING_ALLOW_LIVE_TRADING).toBe(false);
     expect(config.PUMPPORTAL_LIGHTNING_MANUAL_ARMED).toBe(false);
+  });
+
+  it("validates normal runtime scheduler and cap relationships", () => {
+    expect(() =>
+      loadApiConfig({
+        METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS: "2",
+        ROLLING_TRACKER_RESERVED_NEWEST_SLOTS: "1",
+        ROLLING_TRACKER_MAX_PROTECTED_MINTS: "2"
+      })
+    ).toThrow("protected mints must fit");
+    expect(() =>
+      loadApiConfig({
+        METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT: "1001",
+        METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION: "1000"
+      })
+    ).toThrow("per-mint event cap");
   });
 
   it("GET /health returns paper-mode status", async () => {

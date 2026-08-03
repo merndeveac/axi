@@ -92,6 +92,7 @@ import {
   getLatestChainVerification,
   getStorageStats,
   initStorage,
+  isTradeDataCoverageStorageReady,
   listChainVerifications,
   listCapacitySnapshots,
   listDiscoveryCoverageEvents,
@@ -154,6 +155,11 @@ import {
   createTradeDataCoverageService,
   type TradeDataCoverageService
 } from "./trade-data-coverage-service";
+import {
+  createTradeDataCoverageLiveReadiness,
+  disabledTradeDataCoverageForbiddenPaths,
+  tradeDataCoverageLimits
+} from "./trade-data-coverage-readiness";
 import {
   ChainVerifierUnavailableError,
   createChainVerifierService,
@@ -873,6 +879,7 @@ export const apiConfigSchema = z.object({
     .number()
     .int()
     .nonnegative()
+    .max(10_000)
     .default(5_000),
   TRADE_DATA_COVERAGE_CHAIN_VERIFY: z
     .preprocess(parseBooleanEnv, z.boolean())
@@ -1436,6 +1443,16 @@ export type ApiServerOptions = {
   startFeed?: boolean;
   storageDatabasePath?: string;
   tokenIdentity?: TokenIdentityServiceConfig;
+  tradeDataCoverageReadiness?: {
+    liveAuthorizationPresent: boolean;
+    dataApiKeyConfigured: boolean;
+    caps: {
+      maxEvents: number;
+      maxRuntimeMs: number;
+      maxCostSol: number;
+      postStopGraceMs: number;
+    };
+  };
   watchOrchestrator?: WatchOrchestratorOptions;
 };
 
@@ -1924,7 +1941,41 @@ const paperExitPolicyEvaluationParamSchema = z.object({
 });
 
 export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
-  return apiConfigSchema.parse(env);
+  const config = apiConfigSchema.parse(env);
+  assertApiConfigRelationships(config);
+  return config;
+}
+
+function assertApiConfigRelationships(config: ApiConfig): void {
+  if (
+    config.ROLLING_TRACKER_RESERVED_NEWEST_SLOTS >
+    config.METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS
+  ) {
+    throw new Error(
+      "reserved newest slots cannot exceed concurrent mint slots"
+    );
+  }
+  if (
+    config.ROLLING_TRACKER_MAX_PROTECTED_MINTS >
+    config.METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS -
+      config.ROLLING_TRACKER_RESERVED_NEWEST_SLOTS
+  ) {
+    throw new Error("protected mints must fit outside reserved newest slots");
+  }
+  if (
+    config.METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT >
+    config.METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION
+  ) {
+    throw new Error("per-mint event cap cannot exceed the session event cap");
+  }
+  if (
+    config.METERED_LAUNCH_DATA_MAX_UI_SESSION_COST_SOL >
+    config.METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL
+  ) {
+    throw new Error(
+      "UI session cost cap cannot exceed the runtime session cap"
+    );
+  }
 }
 
 export function createApiServer(options: ApiServerOptions = {}): ApiServer {
@@ -3282,6 +3333,42 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   app.get("/runtime/trade-data-coverage", async () =>
     tradeDataCoverage.getSummary()
   );
+
+  app.get("/runtime/trade-data-coverage/readiness", async () => {
+    const wallet = pumpPortalDataWallet.getStatus();
+    const readinessConfig = options.tradeDataCoverageReadiness;
+    return createTradeDataCoverageLiveReadiness({
+      liveAuthorizationPresent:
+        readinessConfig?.liveAuthorizationPresent ?? false,
+      cliAckPresent: false,
+      dataApiKeyConfigured:
+        readinessConfig?.dataApiKeyConfigured ?? wallet.apiKeyConfigured,
+      dataWalletPublicKeyConfigured: wallet.publicKeyConfigured,
+      dataWalletPublicKeyValid: wallet.publicKeyValid,
+      dataWalletBalanceStatus: wallet.balanceStatus,
+      dataWalletBalanceSol: wallet.balanceSol,
+      minimumBalanceSol: wallet.minBalanceSol,
+      storageReady: isTradeDataCoverageStorageReady(),
+      caps: {
+        maxMints: tradeDataCoverageLimits.maxMints,
+        maxEvents:
+          readinessConfig?.caps.maxEvents ??
+          tradeDataCoverageLimits.defaultMaxEvents,
+        maxRuntimeMs:
+          readinessConfig?.caps.maxRuntimeMs ??
+          tradeDataCoverageLimits.defaultMaxRuntimeMs,
+        maxCostSol:
+          readinessConfig?.caps.maxCostSol ??
+          tradeDataCoverageLimits.defaultMaxCostSol,
+        postStopGraceMs:
+          readinessConfig?.caps.postStopGraceMs ??
+          tradeDataCoverageLimits.defaultPostStopGraceMs
+      },
+      forbiddenPaths: disabledTradeDataCoverageForbiddenPaths,
+      estimatedCostPerEventSol:
+        (options.meteredLaunchData?.eventCostSolPer10000 ?? 0.01) / 10_000
+    });
+  });
 
   app.get("/runtime/trade-data-coverage/events", async (request) => {
     const query = TradeDataCoverageEventQuerySchema.parse(request.query);

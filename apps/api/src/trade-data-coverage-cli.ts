@@ -1,4 +1,5 @@
 import { isValidSolanaMint } from "@axi/data-feeds";
+import { tradeDataCoverageLimits } from "./trade-data-coverage-readiness";
 
 export type TradeDataCoverageCliArgs = {
   mint: string | null;
@@ -10,41 +11,6 @@ export type TradeDataCoverageCliArgs = {
   ackMetered: boolean;
   chainVerify: boolean;
   json: boolean;
-};
-
-export type TradeDataCoveragePreflightInput = {
-  args: TradeDataCoverageCliArgs;
-  liveAck: boolean;
-  apiKeyConfigured: boolean;
-  dataWalletPublicKey: string | undefined;
-  balanceSol: number | null;
-  minimumBalanceSol: number;
-  solanaRpcConfigured: boolean;
-  estimatedCostPerEventSol?: number;
-};
-
-export type TradeDataCoveragePreflight = {
-  readyForLiveSession: boolean;
-  missingRequirements: string[];
-  selectedMintMode: "explicit" | "newest_free_discovery";
-  balancePolicy: "known_acceptable" | "known_insufficient" | "unknown_allowed";
-  caps: {
-    maxMints: 1;
-    maxEvents: number;
-    maxRuntimeMs: number;
-    maxCostSol: number;
-    postStopGraceMs: number;
-  };
-  safety: {
-    subscribeTokenTradeOnly: true;
-    accountTradesActive: false;
-    paperAutomationActive: false;
-    lightningActive: false;
-    signingActive: false;
-    transactionSendingActive: false;
-    liveTradingEnabled: false;
-  };
-  reasonCodes: string[];
 };
 
 export function parseTradeDataCoverageArgs(
@@ -63,10 +29,14 @@ export function parseTradeDataCoverageArgs(
   const parsed: TradeDataCoverageCliArgs = {
     mint: null,
     select: "newest",
-    maxEvents: defaults.maxEvents ?? 50,
-    maxRuntimeMs: defaults.maxRuntimeMs ?? 90_000,
-    maxCostSol: defaults.maxCostSol ?? 0.0001,
-    postStopGraceMs: defaults.postStopGraceMs ?? 5_000,
+    maxEvents: defaults.maxEvents ?? tradeDataCoverageLimits.defaultMaxEvents,
+    maxRuntimeMs:
+      defaults.maxRuntimeMs ?? tradeDataCoverageLimits.defaultMaxRuntimeMs,
+    maxCostSol:
+      defaults.maxCostSol ?? tradeDataCoverageLimits.defaultMaxCostSol,
+    postStopGraceMs:
+      defaults.postStopGraceMs ??
+      tradeDataCoverageLimits.defaultPostStopGraceMs,
     ackMetered: false,
     chainVerify: defaults.chainVerify ?? false,
     json: true
@@ -131,103 +101,19 @@ export function parseTradeDataCoverageArgs(
   if (parsed.mint !== null && !isValidSolanaMint(parsed.mint)) {
     throw new Error(`Invalid Solana mint: ${parsed.mint}`);
   }
-  if (
-    !Number.isInteger(parsed.maxEvents) ||
-    parsed.maxEvents < 1 ||
-    parsed.maxEvents > 50
-  ) {
-    throw new Error("--max-events must be an integer from 1 through 50");
+  if (!Number.isInteger(parsed.maxEvents)) {
+    throw new Error("--max-events must be an integer");
   }
-  if (
-    !Number.isInteger(parsed.maxRuntimeMs) ||
-    parsed.maxRuntimeMs < 1 ||
-    parsed.maxRuntimeMs > 90_000
-  ) {
-    throw new Error("--max-runtime-ms must be an integer from 1 through 90000");
+  if (!Number.isInteger(parsed.maxRuntimeMs)) {
+    throw new Error("--max-runtime-ms must be an integer");
   }
-  if (
-    !Number.isFinite(parsed.maxCostSol) ||
-    parsed.maxCostSol <= 0 ||
-    parsed.maxCostSol > 0.0001
-  ) {
-    throw new Error("--max-cost-sol must be greater than 0 and at most 0.0001");
+  if (!Number.isFinite(parsed.maxCostSol)) {
+    throw new Error("--max-cost-sol must be finite");
   }
-  if (!Number.isInteger(parsed.postStopGraceMs) || parsed.postStopGraceMs < 0) {
-    throw new Error("--post-stop-grace-ms must be a nonnegative integer");
+  if (!Number.isInteger(parsed.postStopGraceMs)) {
+    throw new Error("--post-stop-grace-ms must be an integer");
   }
   return parsed;
-}
-
-export function evaluateTradeDataCoveragePreflight(
-  input: TradeDataCoveragePreflightInput
-): TradeDataCoveragePreflight {
-  const publicKey = input.dataWalletPublicKey?.trim();
-  const publicKeyValid = publicKey ? isValidSolanaMint(publicKey) : false;
-  const balancePolicy =
-    input.balanceSol === null
-      ? "unknown_allowed"
-      : input.balanceSol >= input.minimumBalanceSol
-        ? "known_acceptable"
-        : "known_insufficient";
-  const estimatedCostPerEventSol = input.estimatedCostPerEventSol ?? 0;
-  const costEventLimit =
-    estimatedCostPerEventSol > 0
-      ? Math.floor(input.args.maxCostSol / estimatedCostPerEventSol)
-      : input.args.maxEvents;
-  const effectiveMaxEvents = Math.min(input.args.maxEvents, costEventLimit);
-  const missingRequirements = unique([
-    ...(input.args.ackMetered ? [] : ["--ack-metered"]),
-    ...(input.liveAck ? [] : ["TRADE_DATA_COVERAGE_LIVE_ACK=true"]),
-    ...(input.apiKeyConfigured ? [] : ["PUMPPORTAL_DATA_API_KEY"]),
-    ...(publicKey ? [] : ["PUMPPORTAL_DATA_WALLET_PUBLIC_KEY"]),
-    ...(publicKey && !publicKeyValid
-      ? ["PUMPPORTAL_DATA_WALLET_PUBLIC_KEY_VALID"]
-      : []),
-    ...(balancePolicy === "known_insufficient"
-      ? ["DATA_WALLET_BALANCE_AT_OR_ABOVE_MINIMUM"]
-      : []),
-    ...(input.args.chainVerify && !input.solanaRpcConfigured
-      ? ["SOLANA_RPC_HTTP_FOR_CHAIN_VERIFY"]
-      : []),
-    ...(effectiveMaxEvents < 1 ? ["MAX_COST_COVERS_AT_LEAST_ONE_EVENT"] : [])
-  ]);
-
-  return {
-    readyForLiveSession: missingRequirements.length === 0,
-    missingRequirements,
-    selectedMintMode: input.args.mint ? "explicit" : "newest_free_discovery",
-    balancePolicy,
-    caps: {
-      maxMints: 1,
-      maxEvents: effectiveMaxEvents,
-      maxRuntimeMs: input.args.maxRuntimeMs,
-      maxCostSol: input.args.maxCostSol,
-      postStopGraceMs: input.args.postStopGraceMs
-    },
-    safety: {
-      subscribeTokenTradeOnly: true,
-      accountTradesActive: false,
-      paperAutomationActive: false,
-      lightningActive: false,
-      signingActive: false,
-      transactionSendingActive: false,
-      liveTradingEnabled: false
-    },
-    reasonCodes: unique([
-      "TRADE_DATA_COVERAGE_PREFLIGHT",
-      balancePolicy === "unknown_allowed"
-        ? "BALANCE_UNKNOWN_ALLOWED_BY_REPOSITORY_POLICY"
-        : balancePolicy === "known_acceptable"
-          ? "DATA_WALLET_BALANCE_ACCEPTABLE"
-          : "DATA_WALLET_BALANCE_INSUFFICIENT",
-      ...(input.args.ackMetered
-        ? ["METERED_COST_ACKNOWLEDGED"]
-        : ["PREFLIGHT_ONLY"]),
-      "PAPER_ONLY",
-      "ACCOUNT_TRADES_DISABLED",
-      "LIVE_TRADING_DISABLED"
-    ])
-  };
 }
 
 function readValue(
@@ -271,8 +157,4 @@ function readBoolean(
     return false;
   }
   throw new Error(`${arg} must be true or false`);
-}
-
-function unique(values: string[]): string[] {
-  return Array.from(new Set(values));
 }

@@ -57,6 +57,7 @@ describe("runtime capacity report", () => {
 });
 
 const meteredStatus: MeteredLaunchDataStatus = {
+  readinessSchemaVersion: "pumpportal-runtime-metered-readiness-v1",
   enabled: true,
   controlsEnabled: true,
   capabilityConfigured: true,

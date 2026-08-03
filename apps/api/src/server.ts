@@ -410,6 +410,17 @@ options.tokenIdentity = createTokenIdentityConfig({
   maxMetadataBytes: config.TOKEN_IDENTITY_MAX_METADATA_BYTES
 });
 
+options.tradeDataCoverageReadiness = {
+  liveAuthorizationPresent: config.TRADE_DATA_COVERAGE_LIVE_ACK,
+  dataApiKeyConfigured: config.PUMPPORTAL_DATA_API_KEY !== undefined,
+  caps: {
+    maxEvents: config.TRADE_DATA_COVERAGE_MAX_EVENTS,
+    maxRuntimeMs: config.TRADE_DATA_COVERAGE_MAX_RUNTIME_MS,
+    maxCostSol: config.TRADE_DATA_COVERAGE_MAX_COST_SOL,
+    postStopGraceMs: config.TRADE_DATA_COVERAGE_POST_STOP_GRACE_MS
+  }
+};
+
 options.watchOrchestrator = {
   enabled: config.WATCH_ORCHESTRATOR_ENABLED,
   verifyOnNewToken: config.WATCH_ORCHESTRATOR_VERIFY_ON_NEW_TOKEN,

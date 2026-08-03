@@ -2714,6 +2714,7 @@ per-event model.
 Read-only endpoints:
 
 - `GET /runtime/trade-data-coverage`
+- `GET /runtime/trade-data-coverage/readiness`
 - `GET /runtime/trade-data-coverage/events`
 - `GET /runtime/trade-data-coverage/sessions`
 - `GET /runtime/trade-data-coverage/sessions/:sessionId`
@@ -2725,8 +2726,55 @@ offline. SQLite migration 26 adds audit-only session, event, and subscription
 tables; the existing PumpPortal token-trade table remains the canonical
 strategy-data store.
 
-The validation command is preflight-only unless both the CLI acknowledgement
-and the user-owned environment gate are present:
+### Phase 4 Trade-Data Coverage Readiness
+
+PumpPortal has two deliberately separate readiness profiles. The full
+application/runtime profile is checked by `pnpm verify:pumpportal-data-env` and
+keeps dashboard controls, UI session acknowledgement, rolling-scheduler
+settings, and app-wide metered limits. Its safe defaults do not need to be
+duplicated in `.env.local`, but explicit unsafe overrides still fail the normal
+runtime verifier.
+
+The one-mint `trade-data-coverage-readiness-v1` profile is used only by the
+Phase 4 CLI. It requires the data API key, public data-wallet identity, the
+documented wallet-balance policy, migration 26, safe command caps, disabled
+account/paper/Lightning/Local Transaction/signing/trading paths, and two
+explicit acknowledgements: `TRADE_DATA_COVERAGE_LIVE_ACK=true` plus
+`--ack-metered`. It does not require `API_HOST`, dashboard Arm Metered state,
+UI ACK, rolling-scheduler configuration, or normal multi-mint session limits.
+Those normal runtime gates remain unchanged.
+
+`GET /runtime/trade-data-coverage/readiness` is informational and read-only.
+Query parameters cannot supply either acknowledgement, and the endpoint never
+starts a connection.
+
+The dedicated preflight initializes storage and reports sanitized readiness;
+it never creates a PumpPortal provider, starts discovery, subscribes, or spends
+SOL:
+
+```bash
+pnpm --filter @axi/api trade-data:coverage:preflight
+
+TRADE_DATA_COVERAGE_LIVE_ACK=true \
+pnpm --filter @axi/api trade-data:coverage:preflight -- \
+  --max-events 50 \
+  --max-runtime-ms 90000 \
+  --max-cost-sol 0.0001 \
+  --post-stop-grace-ms 5000 \
+  --ack-metered \
+  --json true
+```
+
+Without the environment ACK, preflight reports
+`TRADE_COVERAGE_LIVE_ACK_MISSING` and `preflightOnly: true` while continuing to
+show every other readiness result. An unknown balance follows the repository's
+explicit `unknown_allowed` policy and is reported as a warning. The status
+command applies migration 26 before querying; a migrated database with no
+evidence reports `NO_TRADE_DATA_COVERAGE_SESSION`, while a genuinely absent
+migration/table reports `TRADE_DATA_COVERAGE_STORAGE_NOT_READY`.
+
+The validation command remains preflight-only unless both the CLI
+acknowledgement and the user-owned environment gate are present:
 
 ```bash
 pnpm --filter @axi/api trade-data:coverage:validate -- --select newest --json true

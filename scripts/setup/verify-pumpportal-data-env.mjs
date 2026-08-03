@@ -19,7 +19,9 @@ if (!existsSync(path)) {
   process.exit(1);
 }
 
-const gitignored = isGitRepository(root) ? isGitIgnored(".env.local", root) : null;
+const gitignored = isGitRepository(root)
+  ? isGitIgnored(".env.local", root)
+  : null;
 const env = loadEnvLocal(root);
 const validation = validatePumpPortalDataEnv(env, { gitignored });
 const privateKeyPresent = findForbiddenEnvKeys(env).length > 0;
@@ -50,15 +52,36 @@ console.log(
 console.log(
   `- UI session ACK required: ${formatYesNo((env.METERED_LAUNCH_DATA_REQUIRE_UI_ACK ?? "") === "true")}`
 );
-console.log(
-  `- account trades disabled: ${formatYesNo(accountTradesDisabled)}`
-);
+console.log(`- account trades disabled: ${formatYesNo(accountTradesDisabled)}`);
 console.log(
   `- Lightning live trading disabled: ${formatYesNo(lightningLiveTradingDisabled)}`
 );
+console.log("");
+console.log("Normal app/runtime readiness profile:");
+console.log("- dashboard UI/session ACK remains required: yes");
+console.log("- safe code defaults applied where overrides are absent: yes");
+console.log(
+  `- defaulted optional setting count: ${validation.defaultedKeys.length}`
+);
+console.log(
+  "- rolling scheduler settings belong to the normal runtime profile: yes"
+);
+console.log("");
+console.log("Trade-data coverage CLI profile:");
+console.log("- uses a separate bounded readiness contract: yes");
+console.log("- requires dashboard UI ACK: no");
+console.log("- use: pnpm --filter @axi/api trade-data:coverage:preflight");
+console.log(
+  "For the one-mint Phase 4 coverage run, use trade-data:coverage:preflight; the normal runtime verifier validates the full dashboard/runtime profile."
+);
 
-if (!isFilled(env.PUMPPORTAL_API_KEY) && isFilled(env.PUMPPORTAL_DATA_API_KEY)) {
-  console.log("- PUMPPORTAL_API_KEY fallback: inferred from PUMPPORTAL_DATA_API_KEY");
+if (
+  !isFilled(env.PUMPPORTAL_API_KEY) &&
+  isFilled(env.PUMPPORTAL_DATA_API_KEY)
+) {
+  console.log(
+    "- PUMPPORTAL_API_KEY fallback: inferred from PUMPPORTAL_DATA_API_KEY"
+  );
 }
 
 for (const warning of validation.warnings) {

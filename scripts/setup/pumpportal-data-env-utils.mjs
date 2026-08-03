@@ -13,14 +13,12 @@ export const forbiddenEnvKeyPatterns = [
 
 export const forbiddenExactEnvKeys = ["SEED"];
 
-export const requiredMeteredEnv = {
+export const defaultedNormalRuntimeEnv = {
   API_HOST: "127.0.0.1",
   METERED_LAUNCH_DATA_CONTROLS_ENABLED: "true",
-  METERED_LAUNCH_DATA_ENABLED: "true",
   METERED_LAUNCH_DATA_START_ACTIVE: "false",
   METERED_LAUNCH_DATA_REQUIRE_UI_ACK: "true",
   METERED_LAUNCH_DATA_ACK_COST: "false",
-  ROLLING_TRACKER_ENABLED: "true",
   ROLLING_TRACKER_RESERVED_NEWEST_SLOTS: "1",
   ROLLING_TRACKER_MAX_PROTECTED_MINTS: "2",
   ROLLING_TRACKER_QUEUE_LIMIT: "50",
@@ -30,12 +28,18 @@ export const requiredMeteredEnv = {
   METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION: "1000",
   METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL: "0.001",
   METERED_LAUNCH_DATA_MAX_UI_SESSION_COST_SOL: "0.001",
-  PUMPPORTAL_TOKEN_TRADES_ENABLED: "true",
+  ROLLING_TRACKER_ENABLED: "true",
+  PUMPPORTAL_TOKEN_TRADES_ACK_METERED: "false",
   PAPER_AUTO_ORDER: "false",
   PUMPPORTAL_LIGHTNING_ALLOW_LIVE_TRADING: "false",
   PUMPPORTAL_LIGHTNING_MANUAL_ARMED: "false",
   EXIT_STRATEGY_ACCOUNT_TRADES_ENABLED: "false",
   EXIT_STRATEGY_ACCOUNT_TRADES_ACK_METERED: "false"
+};
+
+export const requiredMeteredEnv = {
+  METERED_LAUNCH_DATA_ENABLED: "true",
+  PUMPPORTAL_TOKEN_TRADES_ENABLED: "true"
 };
 
 export function readDotEnvFile(path) {
@@ -189,6 +193,13 @@ export function validatePumpPortalDataEnv(env, options = {}) {
     );
   }
 
+  for (const [key, expected] of Object.entries(defaultedNormalRuntimeEnv)) {
+    const resolved = (env[key] ?? expected).trim();
+    if (resolved !== expected) {
+      errors.push(`${key} must resolve to ${expected}.`);
+    }
+  }
+
   for (const [key, expected] of Object.entries(requiredMeteredEnv)) {
     if ((env[key] ?? "").trim() !== expected) {
       errors.push(`${key} must be ${expected}.`);
@@ -199,7 +210,34 @@ export function validatePumpPortalDataEnv(env, options = {}) {
     errors.push("PUMPPORTAL_LIGHTNING_MANUAL_ARMED must be false.");
   }
 
+  const resolved = {
+    ...defaultedNormalRuntimeEnv,
+    ...env
+  };
+  const maxConcurrentMints = Number(
+    resolved.METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS
+  );
+  const reservedNewestSlots = Number(
+    resolved.ROLLING_TRACKER_RESERVED_NEWEST_SLOTS
+  );
+  const maxProtectedMints = Number(
+    resolved.ROLLING_TRACKER_MAX_PROTECTED_MINTS
+  );
+  if (reservedNewestSlots > maxConcurrentMints) {
+    errors.push(
+      "ROLLING_TRACKER_RESERVED_NEWEST_SLOTS must not exceed METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS."
+    );
+  }
+  if (maxProtectedMints > maxConcurrentMints - reservedNewestSlots) {
+    errors.push(
+      "ROLLING_TRACKER_MAX_PROTECTED_MINTS must fit outside the reserved newest slots."
+    );
+  }
+
   return {
+    defaultedKeys: Object.keys(defaultedNormalRuntimeEnv).filter(
+      (key) => !isFilled(env[key])
+    ),
     errors,
     fallbackApiKeyConfigured,
     forbiddenKeys,

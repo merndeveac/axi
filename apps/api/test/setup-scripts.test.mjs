@@ -168,6 +168,45 @@ describe("PumpPortal data env setup helpers", () => {
     expect(JSON.stringify(validation)).not.toContain(secretValue);
   });
 
+  it("resolves safe normal-runtime defaults without requiring duplicate overrides", () => {
+    const env = validEnv();
+    for (const key of [
+      "API_HOST",
+      "METERED_LAUNCH_DATA_CONTROLS_ENABLED",
+      "METERED_LAUNCH_DATA_START_ACTIVE",
+      "METERED_LAUNCH_DATA_REQUIRE_UI_ACK",
+      "METERED_LAUNCH_DATA_ACK_COST",
+      "ROLLING_TRACKER_RESERVED_NEWEST_SLOTS",
+      "ROLLING_TRACKER_MAX_PROTECTED_MINTS",
+      "ROLLING_TRACKER_QUEUE_LIMIT",
+      "ROLLING_TRACKER_QUEUE_MAX_AGE_MS",
+      "METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS",
+      "METERED_LAUNCH_DATA_MAX_EVENTS_PER_MINT",
+      "METERED_LAUNCH_DATA_MAX_EVENTS_PER_SESSION",
+      "METERED_LAUNCH_DATA_MAX_SESSION_COST_SOL",
+      "METERED_LAUNCH_DATA_MAX_UI_SESSION_COST_SOL"
+    ]) {
+      delete env[key];
+    }
+
+    const validation = validatePumpPortalDataEnv(env);
+    expect(validation.errors).toEqual([]);
+    expect(validation.defaultedKeys).toContain("API_HOST");
+    expect(validation.defaultedKeys).toContain(
+      "METERED_LAUNCH_DATA_REQUIRE_UI_ACK"
+    );
+  });
+
+  it("still rejects an explicit override that weakens normal UI ACK", () => {
+    const validation = validatePumpPortalDataEnv({
+      ...validEnv(),
+      METERED_LAUNCH_DATA_REQUIRE_UI_ACK: "false"
+    });
+    expect(validation.errors).toContain(
+      "METERED_LAUNCH_DATA_REQUIRE_UI_ACK must resolve to true."
+    );
+  });
+
   it("validates Solana public key shape conservatively", () => {
     expect(
       validateSolanaPublicKeyShape("11111111111111111111111111111111")
