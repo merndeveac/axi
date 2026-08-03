@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export * from "./ui-v2.js";
+
 export * from "./discovery-coverage";
 export * from "./trade-data-coverage";
 

@@ -1,3 +1,4 @@
+/* Isolated legacy dashboard theme. Do not import from the V2 tree. */
 :root {
   --bg: #080a0d;
   --panel: #101214;
