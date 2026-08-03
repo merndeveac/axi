@@ -15,6 +15,7 @@ import type {
   MomentumFeedResponse,
   MomentumDiagnostics,
   MomentumScannerRow,
+  ScannerSnapshotV2,
   StrategyStatus
 } from "@axi/shared";
 import type { ApiServer } from "../src/app";
@@ -3910,6 +3911,101 @@ describe("@axi/api", () => {
     expect(rows[0]).not.toHaveProperty("reasonCodes");
     expect(rows[0]?.derivativeScore).toEqual(expect.any(Number));
   }, 15_000);
+
+  it("GET /ui/v2/scanner returns a bounded, paginated summary without projecting every rich row", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+    const launchCount = 125;
+    const start = Date.now() - launchCount * 100;
+    for (let index = 0; index < launchCount; index += 1) {
+      server.emitFeedEvent(
+        createPumpPortalEvent({
+          mint: `V2ScannerBulk${String(index).padStart(4, "0")}111111111111111111111111111`,
+          timestamp: new Date(start + index * 100).toISOString()
+        })
+      );
+    }
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/ui/v2/scanner?limit=100&sort=newest&activeOnly=true"
+    });
+    const snapshot = response.json() as ScannerSnapshotV2;
+
+    expect(response.statusCode).toBe(200);
+    expect(snapshot.schemaVersion).toBe("scanner-snapshot-v2");
+    expect(snapshot.totalActive).toBe(launchCount);
+    expect(snapshot.rows).toHaveLength(100);
+    expect(snapshot.nextCursor).toEqual(expect.any(String));
+    expect(Number(response.headers["x-axi-v2-projection-count"])).toBe(100);
+    expect(response.rawPayload.byteLength).toBeLessThanOrEqual(500_000);
+    expect(response.body).not.toContain("reasonCodes");
+    expect(snapshot.rows[0]).not.toHaveProperty("derivatives");
+    expect(snapshot.rows[0]).not.toHaveProperty("curve");
+
+    const next = await server.app.inject({
+      method: "GET",
+      url: `/ui/v2/scanner?limit=100&cursor=${encodeURIComponent(snapshot.nextCursor ?? "")}`
+    });
+    const nextSnapshot = next.json() as ScannerSnapshotV2;
+    expect(nextSnapshot.rows).toHaveLength(25);
+    expect(nextSnapshot.nextCursor).toBeNull();
+    expect(Number(next.headers["x-axi-v2-projection-count"])).toBe(25);
+  }, 20_000);
+
+  it("GET /ui/v2/scanner/:mint preserves the rich detail contract", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+    const event = createPumpPortalEvent({ timestamp: new Date().toISOString() });
+    server.emitFeedEvent(event);
+
+    const detail = await server.app.inject({
+      method: "GET",
+      url: `/ui/v2/scanner/${event.candidate.mint}`
+    });
+    const row = detail.json() as MomentumScannerRow;
+    expect(detail.statusCode).toBe(200);
+    expect(row.mint).toBe(event.candidate.mint);
+    expect(row.derivatives).toBeTruthy();
+    expect(row.curve).toBeTruthy();
+  });
+
+  it("the V2 scanner channel projection produces an ordered snapshot and bounded upsert", async () => {
+    server = createApiServer({
+      logLevel: false,
+      startFeed: false,
+      storageDatabasePath: databasePath
+    });
+    const snapshot = server.scannerProjectionV2.snapshotMessage([]);
+    expect(snapshot).toMatchObject({
+      schemaVersion: "scanner-stream-v2",
+      type: "scanner.snapshot",
+      sequence: 1
+    });
+
+    const event = createPumpPortalEvent({ timestamp: new Date().toISOString() });
+    server.emitFeedEvent(event);
+    const detail = await server.app.inject({
+      method: "GET",
+      url: `/ui/v2/scanner/${event.candidate.mint}`
+    });
+    const upsert = server.scannerProjectionV2.upsert(
+      detail.json() as MomentumScannerRow
+    );
+    expect(upsert).toMatchObject({
+      schemaVersion: "scanner-stream-v2",
+      type: "scanner.upsert",
+      sequence: 2,
+      row: { mint: event.candidate.mint }
+    });
+    expect(Buffer.byteLength(JSON.stringify(upsert))).toBeLessThan(50_000);
+  });
 
   it("GET /ui/momentum-rows returns a discovery-only scanner row", async () => {
     server = createApiServer({

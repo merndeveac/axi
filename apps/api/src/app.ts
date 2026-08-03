@@ -85,6 +85,13 @@ import {
   type TokenCandidate
 } from "@axi/shared";
 import {
+  ScannerProjectionV2,
+  selectScannerCardsV2,
+  type ScannerFilterV2,
+  type ScannerQueryV2,
+  type ScannerSortV2
+} from "./ui-v2-scanner";
+import {
   closeStorage,
   findDiscoveryCoverageEventBySourceKey,
   getDiscoveryCoverageSession,
@@ -1488,6 +1495,7 @@ export type ApiServer = {
   paperAutomation: PaperAutomationService;
   paperOperations: PaperOperationsService;
   paperForwardEvaluation: PaperForwardEvaluationService;
+  scannerProjectionV2: ScannerProjectionV2;
   indexerAdapter: IndexerAdapter;
   liveTokens: LiveTokenService;
   tokenIdentity: TokenIdentityService;
@@ -1502,6 +1510,46 @@ const timeseriesQuerySchema = z.object({
 });
 const mintParamSchema = z.object({
   mint: z.string().min(32)
+});
+const scannerV2QuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(100).default(100),
+  cursor: z.string().max(200).optional(),
+  sort: z
+    .enum([
+      "newest",
+      "score",
+      "strength",
+      "volume",
+      "buyers",
+      "priceChange",
+      "risk",
+      "pnl"
+    ])
+    .default("newest"),
+  filters: z
+    .preprocess(
+      (value) =>
+        typeof value === "string" && value.length > 0
+          ? value.split(",").filter(Boolean)
+          : [],
+      z.array(
+        z.enum([
+          "discovery",
+          "tracking",
+          "d1_ready",
+          "d2_ready",
+          "hot",
+          "ripping",
+          "positions",
+          "rejected",
+          "stale"
+        ])
+      )
+    )
+    .default([]),
+  activeOnly: z.preprocess(parseBooleanEnv, z.boolean()).default(true),
+  includeProtected: z.preprocess(parseBooleanEnv, z.boolean()).default(true),
+  query: z.string().trim().max(120).default("")
 });
 const pumpfunDecodeBodySchema = z.object({
   transaction: z.unknown()
@@ -2093,6 +2141,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     provider: feed.name
   });
   const runtimeSessionId = randomUUID();
+  const scannerProjectionV2 = new ScannerProjectionV2(runtimeSessionId);
   const runtimeSessionStartedAt = new Date().toISOString();
   const discoveryCoverage = createDiscoveryCoverageService({
     sessionId: runtimeSessionId,
@@ -2300,6 +2349,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       : {})
   });
   const clients = new Set<WebSocket>();
+  const scannerClientsV2 = new Set<WebSocket>();
+  const scannerSignalsV2 = new Map<
+    string,
+    MomentumScannerRow["signalDisplay"]["label"]
+  >();
   const wss = new WebSocketServer({ noServer: true });
   const maxSignalCacheSize = 100;
   let feedStarted = false;
@@ -3796,6 +3850,60 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     } satisfies MomentumFeedResponse;
   });
 
+  app.get("/ui/v2/scanner", async (request, reply) => {
+    const parsed = scannerV2QuerySchema.parse(request.query);
+    const query: ScannerQueryV2 = {
+      limit: parsed.limit,
+      cursor: parsed.cursor ?? null,
+      sort: parsed.sort as ScannerSortV2,
+      filters: parsed.filters as ScannerFilterV2[],
+      activeOnly: parsed.activeOnly,
+      includeProtected: parsed.includeProtected,
+      query: parsed.query
+    };
+    const now = new Date();
+    const selected = selectScannerCardsV2(getLiveTokenCardsForUi(), query, now);
+    const richPage = selected.page.map((card) =>
+      liveCardToMomentumScannerRow(card)
+    );
+    const beforeProjectionCount = scannerProjectionV2.metrics.projectionCount;
+    const snapshot = scannerProjectionV2.snapshotPage(
+      richPage,
+      {
+        totalActive: selected.totalActive,
+        totalHistory: selected.totalHistory,
+        nextCursor: selected.nextCursor,
+        offset: selected.offset
+      },
+      now
+    );
+    return reply
+      .header("cache-control", "no-store")
+      .header(
+        "x-axi-v2-projection-count",
+        String(scannerProjectionV2.metrics.projectionCount - beforeProjectionCount)
+      )
+      .header(
+        "x-axi-v2-projection-ms",
+        scannerProjectionV2.metrics.lastProjectionMs.toFixed(3)
+      )
+      .send(snapshot);
+  });
+
+  app.get("/ui/v2/scanner/:mint", async (request, reply) => {
+    const params = mintParamSchema.parse(request.params);
+    const card = getLiveTokenCardsForUi().find(
+      (candidate) => candidate.mint === params.mint
+    );
+    if (!card) {
+      return reply.code(404).send({
+        error: "not_found",
+        message: `No current-session momentum row for mint ${params.mint}`
+      });
+    }
+    return liveCardToMomentumScannerRow(card);
+  });
+
   app.get("/ui/momentum-rows/:mint", async (request, reply) => {
     const params = mintParamSchema.parse(request.params);
     const row = getMomentumScannerRows().find(
@@ -4887,7 +4995,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const host = request.headers.host ?? "localhost";
     const url = new URL(request.url ?? "/", `http://${host}`);
 
-    if (url.pathname !== "/ws/signals") {
+    if (url.pathname !== "/ws/signals" && url.pathname !== "/ws/v2/scanner") {
       socket.destroy();
       return;
     }
@@ -4897,7 +5005,16 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     });
   });
 
-  wss.on("connection", (socket) => {
+  wss.on("connection", (socket, request) => {
+    const host = request.headers.host ?? "localhost";
+    const url = new URL(request.url ?? "/", `http://${host}`);
+    if (url.pathname === "/ws/v2/scanner") {
+      scannerClientsV2.add(socket);
+      sendJson(socket, getScannerSnapshotMessageV2());
+      socket.on("close", () => scannerClientsV2.delete(socket));
+      return;
+    }
+
     clients.add(socket);
     sendJson(socket, {
       type: "snapshot",
@@ -5093,6 +5210,59 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     return getLiveTokenCardsForUi().map((card) =>
       liveCardToMomentumScannerRow(card)
     );
+  }
+
+  function getScannerSnapshotMessageV2() {
+    const now = new Date();
+    const selected = selectScannerCardsV2(
+      getLiveTokenCardsForUi(),
+      {
+        limit: 100,
+        cursor: null,
+        sort: "newest",
+        filters: [],
+        activeOnly: true,
+        includeProtected: true,
+        query: ""
+      },
+      now
+    );
+    const snapshot = scannerProjectionV2.snapshotPage(
+      selected.page.map((card) => liveCardToMomentumScannerRow(card)),
+      {
+        totalActive: selected.totalActive,
+        totalHistory: selected.totalHistory,
+        nextCursor: selected.nextCursor,
+        offset: selected.offset
+      },
+      now
+    );
+    return scannerProjectionV2.snapshotEnvelope(snapshot);
+  }
+
+  function broadcastScannerUpsertV2(mint: string): void {
+    if (scannerClientsV2.size === 0) return;
+    const card = getLiveTokenCardsForUi().find((item) => item.mint === mint);
+    if (!card) return;
+    const message = scannerProjectionV2.upsert(
+      liveCardToMomentumScannerRow(card)
+    );
+    if (!message || message.type !== "scanner.upsert") return;
+    broadcastV2(message);
+    const previousSignal = scannerSignalsV2.get(mint);
+    const nextSignal = message.row.decision.signal;
+    if (previousSignal && previousSignal !== nextSignal) {
+      broadcastV2(
+        scannerProjectionV2.signalTransition({
+          mint,
+          rowVersion: message.row.rowVersion,
+          from: previousSignal,
+          to: nextSignal,
+          generatedAt: message.generatedAt
+        })
+      );
+    }
+    scannerSignalsV2.set(mint, nextSignal);
   }
 
   function buildMomentumSparkline(
@@ -7548,6 +7718,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       tradeDataCoverage.markScannerProjected(event);
     }
 
+    broadcastScannerUpsertV2(candidate.mint);
+
     if (!decision) {
       app.log.trace({ mint: candidate.mint }, "Candidate decision unavailable");
       return;
@@ -7575,6 +7747,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     paperAutomation.observeSignal(signal);
     paperPortfolio.evaluateEntrySignal(signal);
     paperPortfolio.evaluateExits();
+    broadcastScannerUpsertV2(candidate.mint);
     discoveryCoverage.markPersistenceCompleted(event);
 
     if (
@@ -7990,6 +8163,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     }
   }
 
+  function broadcastV2(payload: unknown): void {
+    for (const client of scannerClientsV2) {
+      sendJson(client, payload);
+    }
+  }
+
   function cacheSignal(signal: OverlaySignal): void {
     signals.delete(signal.mint);
     signals.set(signal.mint, signal);
@@ -8105,6 +8284,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     paperAutomation,
     paperOperations,
     paperForwardEvaluation,
+    scannerProjectionV2,
     meteredLaunchData,
     metrics: metricsEngine,
     pumpPortalDataWallet,

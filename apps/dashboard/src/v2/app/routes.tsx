@@ -2,7 +2,7 @@ import type { AppRoute } from "./navigation";
 import { routeLabels } from "./navigation";
 import type { MomentumScannerSummaryV2 } from "@axi/shared";
 import { goldenScannerRows } from "../fixtures/golden-path";
-import { useScannerSnapshot } from "../data/hooks/useScannerSnapshot";
+import { useRealtimeScanner } from "../data/hooks/useRealtimeScanner";
 import { formatSolV2 } from "../lib/formatters";
 import { Badge } from "../components/primitives/Badge";
 
@@ -49,6 +49,6 @@ export function ScannerShellPreview({
 }
 
 export function ScannerRoute() {
-  const scanner = useScannerSnapshot({ limit: 100 });
-  return <ScannerShellPreview rows={scanner.data?.rows ?? [...goldenScannerRows]} />;
+  const scanner = useRealtimeScanner({ limit: 100 });
+  return <ScannerShellPreview rows={scanner.rows.length > 0 ? scanner.rows : [...goldenScannerRows]} />;
 }

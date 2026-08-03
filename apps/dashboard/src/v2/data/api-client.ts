@@ -18,7 +18,7 @@ export type ApiClient = {
   post<T>(path: string, body?: unknown, options?: ApiRequestOptions): Promise<T>;
 };
 
-const configuredBaseUrl =
+export const configuredApiBaseUrl =
   import.meta.env.VITE_AXI_API_URL ?? "http://localhost:8787";
 
 function abortPromise(signal: AbortSignal, path: string): Promise<never> {
@@ -36,7 +36,7 @@ function abortPromise(signal: AbortSignal, path: string): Promise<never> {
 }
 
 export function createApiClient(options: ApiClientOptions = {}): ApiClient {
-  const baseUrl = options.baseUrl ?? configuredBaseUrl;
+  const baseUrl = options.baseUrl ?? configuredApiBaseUrl;
   const fetchImpl = options.fetchImpl ?? fetch;
   const defaultTimeoutMs = options.defaultTimeoutMs ?? 8_000;
   const inflight = new Map<string, Promise<unknown>>();
