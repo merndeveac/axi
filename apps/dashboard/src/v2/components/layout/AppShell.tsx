@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import type { AppRoute, PrimaryRoute, SecondaryRoute } from "../../app/navigation";
-import { Drawer } from "../primitives/Drawer";
+import { DiagnosticsDrawer } from "../../features/diagnostics/DiagnosticsDrawer";
 import { GlobalHeader } from "./GlobalHeader";
 
 export function AppShell({
@@ -22,11 +22,7 @@ export function AppShell({
         onOpenDiagnostics={() => setDiagnosticsOpen(true)}
       />
       <main className="axi-v2-main" id="main-content">{children}</main>
-      <Drawer open={diagnosticsOpen} onOpenChange={setDiagnosticsOpen} title="Developer diagnostics">
-        <p className="axi-v2-drawer__copy">
-          Engineering coverage, stream, storage, and verification panels remain isolated from the operator shell.
-        </p>
-      </Drawer>
+      <DiagnosticsDrawer open={diagnosticsOpen} onOpenChange={setDiagnosticsOpen} />
     </div>
   );
 }

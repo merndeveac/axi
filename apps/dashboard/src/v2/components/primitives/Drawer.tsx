@@ -7,11 +7,13 @@ export function Drawer({
   open,
   onOpenChange,
   title,
+  description,
   children
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
+  description?: string;
   children: ReactNode;
 }) {
   return (
@@ -29,6 +31,9 @@ export function Drawer({
               </IconButton>
             </DialogPrimitive.Close>
           </div>
+          <DialogPrimitive.Description className="axi-v2-visually-hidden">
+            {description ?? `${title} drawer`}
+          </DialogPrimitive.Description>
           {children}
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>

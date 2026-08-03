@@ -55,4 +55,18 @@ describe("GoldenPathApp shell", () => {
     });
     expect(results.violations).toEqual([]);
   });
+
+  it("keeps diagnostics behind the secondary menu and out of primary workflows", async () => {
+    const user = userEvent.setup();
+    render(<GoldenPathApp />);
+    expect(screen.queryByText("Storage counts")).toBeNull();
+    await user.click(screen.getByRole("tab", { name: "Positions" }));
+    expect(screen.queryByText("Storage counts")).toBeNull();
+    await user.click(screen.getByRole("tab", { name: "Research" }));
+    expect(screen.queryByText("Storage counts")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Open secondary navigation" }));
+    await user.click(screen.getByRole("menuitem", { name: "Developer diagnostics" }));
+    expect(screen.getByRole("dialog", { name: "Developer diagnostics" })).toBeInTheDocument();
+    expect(screen.getByText("Storage counts")).toBeInTheDocument();
+  });
 });
