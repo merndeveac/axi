@@ -3,16 +3,14 @@ import { PrimaryNavigation } from "./PrimaryNavigation";
 import { RuntimeControlBar } from "./RuntimeControlBar";
 import { SecondaryNavigation } from "./SecondaryNavigation";
 import type { AppRoute, PrimaryRoute, SecondaryRoute } from "../../app/navigation";
-import { useHealth } from "../../data/hooks/useHealth";
 import { useRuntimeStatus } from "../../data/hooks/useRuntimeStatus";
 import { apiOfflineRuntime } from "../../fixtures/golden-path";
 import { adaptRuntimeStatusV2 } from "../../data/runtime-adapter";
 import { useRuntimeMutations } from "../../features/runtime/RuntimeMutations";
 
 function ConnectionHealth() {
-  const health = useHealth();
   const runtime = useRuntimeStatus();
-  const apiOnline = health.isSuccess;
+  const apiOnline = runtime.isSuccess;
   const wsOnline = runtime.data?.websocketOnline ?? false;
   return (
     <div className="axi-v2-global-header__health" aria-label="Connection health">

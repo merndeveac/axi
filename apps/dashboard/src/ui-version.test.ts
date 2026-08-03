@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { resolveUiVersion } from "./ui-version";
 
 describe("resolveUiVersion", () => {
-  it("keeps legacy as the migration default", () => {
-    expect(resolveUiVersion("", undefined)).toBe("legacy");
+  it("uses V2 as the launch default", () => {
+    expect(resolveUiVersion("", undefined)).toBe("v2");
   });
 
   it("honors a supported build-time version", () => {
@@ -16,6 +16,6 @@ describe("resolveUiVersion", () => {
   });
 
   it("ignores unsupported values", () => {
-    expect(resolveUiVersion("?ui=other", "other")).toBe("legacy");
+    expect(resolveUiVersion("?ui=other", "other")).toBe("v2");
   });
 });

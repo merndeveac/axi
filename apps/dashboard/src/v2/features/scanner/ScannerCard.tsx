@@ -17,6 +17,13 @@ function fieldNumber(field: UiField<number>, suffix = "") {
   return formatUiFieldV2(field, (value) => `${formatNumberV2(value)}${suffix}`);
 }
 
+function operatorEvidenceLabel(value: string | null, fallback: string) {
+  if (!value) return fallback;
+  if (!/^[A-Z0-9_]+$/u.test(value)) return value;
+  const words = value.toLowerCase().replaceAll("_", " ");
+  return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
+}
+
 export function ScannerCard({
   row,
   selected,
@@ -32,6 +39,8 @@ export function ScannerCard({
   const stale =
     row.readiness.freshnessMs.availability === "stale" ||
     row.market.priceSol.availability === "stale";
+  const topDriver = operatorEvidenceLabel(row.decision.topDriver, "No proven driver");
+  const topBlocker = operatorEvidenceLabel(row.decision.topBlocker, "No blocker");
   return (
     <button
       type="button"
@@ -77,8 +86,8 @@ export function ScannerCard({
       </span>
       <span className="axi-v2-scanner-card__decision">
         <span className="axi-v2-scanner-card__decision-top"><SignalBadge signal={row.decision.signal} /><strong className="axi-v2-numeric">{row.decision.score}</strong>{stale ? <Badge tone="warning">Stale</Badge> : null}</span>
-        <span title={row.decision.topDriver ?? undefined}>↑ {row.decision.topDriver ?? "No proven driver"}</span>
-        <small title={row.decision.topBlocker ?? undefined}>↓ {row.decision.topBlocker ?? "No blocker"} · Risk {row.decision.riskLevel}{row.position.status ? ` · PnL ${formatUiFieldV2(row.position.unrealizedPnlPct, formatPercentV2)}` : ""}</small>
+        <span title={topDriver}>↑ {topDriver}</span>
+        <small title={topBlocker}>↓ {topBlocker} · Risk {row.decision.riskLevel}{row.position.status ? ` · PnL ${formatUiFieldV2(row.position.unrealizedPnlPct, formatPercentV2)}` : ""}</small>
       </span>
     </button>
   );

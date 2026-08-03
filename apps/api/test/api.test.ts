@@ -3941,6 +3941,7 @@ describe("@axi/api", () => {
     expect(snapshot.rows).toHaveLength(100);
     expect(snapshot.nextCursor).toEqual(expect.any(String));
     expect(Number(response.headers["x-axi-v2-projection-count"])).toBe(100);
+    expect(Number(response.headers["x-axi-v2-rich-card-count"])).toBe(100);
     expect(response.rawPayload.byteLength).toBeLessThanOrEqual(500_000);
     expect(response.body).not.toContain("reasonCodes");
     expect(snapshot.rows[0]).not.toHaveProperty("derivatives");
@@ -3954,6 +3955,7 @@ describe("@axi/api", () => {
     expect(nextSnapshot.rows).toHaveLength(25);
     expect(nextSnapshot.nextCursor).toBeNull();
     expect(Number(next.headers["x-axi-v2-projection-count"])).toBe(25);
+    expect(Number(next.headers["x-axi-v2-rich-card-count"])).toBe(25);
   }, 20_000);
 
   it("GET /ui/v2/scanner/:mint preserves the rich detail contract", async () => {

@@ -68,6 +68,28 @@ describe("versioned scanner state", () => {
     });
     expect(removed.rows.has(target.mint)).toBe(false);
   });
+
+  it("bounds WebSocket insertions to the 100-row active page", () => {
+    let state = emptyVersionedScannerState();
+    for (let index = 0; index < 105; index += 1) {
+      state = applyScannerMessage(
+        state,
+        upsert(index + 1, {
+          ...hotToken,
+          mint: `Bounded${String(index).padStart(3, "0")}1111111111111111111111111111111`,
+          order: 0,
+          rowVersion: 1
+        })
+      );
+    }
+    expect(state.rows.size).toBe(100);
+    expect(state.rows.has("Bounded1041111111111111111111111111111111")).toBe(
+      true
+    );
+    expect(state.rows.has("Bounded0001111111111111111111111111111111")).toBe(
+      false
+    );
+  });
 });
 
 describe("scanner WebSocket guards", () => {

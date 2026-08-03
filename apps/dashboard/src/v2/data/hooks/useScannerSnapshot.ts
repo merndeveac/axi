@@ -2,6 +2,7 @@ import type { ScannerSnapshotV2 } from "@axi/shared";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "../api-client";
 import { queryKeys } from "../query-keys";
+import { visibleRefetchInterval } from "../query-client";
 
 export type ScannerSnapshotParams = {
   limit?: number;
@@ -39,6 +40,7 @@ export function useScannerSnapshot(
       }),
     enabled,
     staleTime: 1_000,
+    refetchInterval: () => visibleRefetchInterval(30_000),
     placeholderData: (previous) => previous
   });
 }

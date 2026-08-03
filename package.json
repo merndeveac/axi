@@ -28,6 +28,7 @@
     "axi:restart:metered": "node scripts/dev/axi-restart-clean.mjs --metered",
     "axi:stop": "node scripts/dev/axi-stop.mjs",
     "axi:logs": "node scripts/dev/axi-logs.mjs",
+    "ui:v2:measure": "pnpm --filter @axi/dashboard exec vitest run src/v2/performance.test.tsx --reporter=verbose",
     "paper:automation:status": "pnpm --filter @axi/api paper:automation:status",
     "paper:forward:export": "pnpm --filter @axi/api paper:forward:export",
     "paper:forward:evaluate": "pnpm --filter @axi/api paper:forward:evaluate",

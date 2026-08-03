@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import type {
-  LiveTokenCardViewModel,
   MomentumScannerRow,
   MomentumScannerSummaryV2,
   ScannerSnapshotV2,
@@ -39,6 +38,33 @@ export type ScannerQueryV2 = {
   activeOnly: boolean;
   includeProtected: boolean;
   query: string;
+};
+
+/**
+ * The deliberately small record used to select a scanner page. Rich card
+ * projection happens only after this record has been filtered, sorted, and
+ * paginated.
+ */
+export type ScannerCandidateV2 = {
+  mint: string;
+  name: string | null;
+  symbol: string | null;
+  displayName: string;
+  firstSeenAt: string;
+  latestEventAt: string;
+  trackingState: string;
+  tradeSampleCount: number;
+  strengthLabel: string | null;
+  score: number;
+  strengthScore: number | null;
+  volume10sSol: number | null;
+  uniqueBuyers10s: number | null;
+  priceChange10sPct: number | null;
+  riskLevel: string;
+  unrealizedPnlPct: number | null;
+  hasPosition: boolean;
+  hardReject: boolean;
+  stale: boolean;
 };
 
 type VersionEntry = { fingerprint: string; rowVersion: number };
@@ -100,6 +126,12 @@ function safeImageUri(uri: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+function operatorEvidenceLabel(value: string | null): string | null {
+  if (!value || !/^[A-Z0-9_]+$/u.test(value)) return value;
+  const words = value.toLowerCase().replaceAll("_", " ");
+  return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
 }
 
 function averageConfidence(row: MomentumScannerRow): number | null {
@@ -185,11 +217,7 @@ export function projectMomentumScannerSummaryV2(
       priceUsd: typed(row.priceUsd, "priceUsd", "enrichment"),
       marketCapSol: typed(row.marketCapSol, "marketCapSol", source),
       marketCapUsd: typed(row.marketCapUsd, "marketCapUsd", "enrichment"),
-      liquiditySol: typed(
-        row.curve.curveLiquiditySol,
-        "liquiditySol",
-        "curve"
-      ),
+      liquiditySol: typed(row.curve.curveLiquiditySol, "liquiditySol", "curve"),
       liquidityUsd: typed(row.liquidityUsd, "liquidityUsd", "enrichment"),
       liquidityKind:
         row.curve.curveLiquiditySol !== null
@@ -210,11 +238,7 @@ export function projectMomentumScannerSummaryV2(
         "uniqueBuyers10s",
         "token_trade"
       ),
-      buyPressure: typed(
-        row.netBuyPressure,
-        "netBuyPressure",
-        "token_trade"
-      )
+      buyPressure: typed(row.netBuyPressure, "netBuyPressure", "token_trade")
     },
     momentum: {
       priceD1: typed(
@@ -256,8 +280,8 @@ export function projectMomentumScannerSummaryV2(
     decision: {
       signal: row.signalDisplay.label,
       score: row.signalDisplay.score,
-      topDriver: row.signalDisplay.topDriver,
-      topBlocker: row.signalDisplay.topBlocker,
+      topDriver: operatorEvidenceLabel(row.signalDisplay.topDriver),
+      topBlocker: operatorEvidenceLabel(row.signalDisplay.topBlocker),
       riskLevel: row.riskLevel,
       hardReject: row.hardReject,
       referencePolicy: true
@@ -347,6 +371,9 @@ function riskOrder(row: MomentumScannerRow): number {
 
 function sortRows(rows: MomentumScannerRow[], sort: ScannerSortV2) {
   return rows.sort((left, right) => {
+    const protectedOrder =
+      Number(right.data.isProtected) - Number(left.data.isProtected);
+    if (protectedOrder !== 0) return protectedOrder;
     switch (sort) {
       case "score":
         return right.signalDisplay.score - left.signalDisplay.score;
@@ -360,13 +387,17 @@ function sortRows(rows: MomentumScannerRow[], sort: ScannerSortV2) {
       case "buyers":
         return (right.uniqueBuyers10s ?? -1) - (left.uniqueBuyers10s ?? -1);
       case "priceChange":
-        return (right.sparkline.priceChangePct ?? -Infinity) -
-          (left.sparkline.priceChangePct ?? -Infinity);
+        return (
+          (right.sparkline.priceChangePct ?? -Infinity) -
+          (left.sparkline.priceChangePct ?? -Infinity)
+        );
       case "risk":
         return riskOrder(left) - riskOrder(right);
       case "pnl":
-        return (right.unrealizedPnlPct ?? -Infinity) -
-          (left.unrealizedPnlPct ?? -Infinity);
+        return (
+          (right.unrealizedPnlPct ?? -Infinity) -
+          (left.unrealizedPnlPct ?? -Infinity)
+        );
       case "newest":
         return rowTimestamp(right) - rowTimestamp(left);
     }
@@ -388,99 +419,97 @@ function decodeCursor(cursor: string | null): number {
   }
 }
 
-export function selectScannerCardsV2(
-  cards: LiveTokenCardViewModel[],
+export function selectScannerCandidatesV2<T extends ScannerCandidateV2>(
+  candidates: T[],
   query: ScannerQueryV2,
   now = new Date()
 ): {
-  page: LiveTokenCardViewModel[];
+  page: T[];
   totalActive: number;
   totalHistory: number;
   nextCursor: string | null;
   offset: number;
 } {
   const nowMs = now.getTime();
-  const isActive = (card: LiveTokenCardViewModel) => {
-    const timestamp = Date.parse(card.latestEventAt ?? card.firstSeenAt);
-    const signal = card.launchDerivativeScore?.strengthLabel;
+  const isProtected = (candidate: ScannerCandidateV2) =>
+    candidate.trackingState === "tracking" ||
+    candidate.hasPosition ||
+    candidate.strengthLabel === "hot" ||
+    candidate.strengthLabel === "ripping";
+  const isActive = (candidate: ScannerCandidateV2) => {
+    const timestamp = Date.parse(
+      candidate.latestEventAt ?? candidate.firstSeenAt
+    );
     return (
-      nowMs - (Number.isFinite(timestamp) ? timestamp : 0) <= ACTIVE_WINDOW_MS ||
-      signal === "hot" ||
-      signal === "ripping" ||
-      card.paperPositionSummary.hasPosition
+      nowMs - (Number.isFinite(timestamp) ? timestamp : 0) <=
+        ACTIVE_WINDOW_MS || isProtected(candidate)
     );
   };
-  const active = cards.filter(isActive);
-  const source = query.activeOnly ? active : cards;
+  const active = candidates.filter(isActive);
+  const source = query.activeOnly ? active : candidates;
   const lowered = query.query.trim().toLowerCase();
-  const eligible = source.filter((card) => {
-    const signal = card.launchDerivativeScore?.strengthLabel;
-    const protectedRow =
-      card.launchTrackingState === "tracking" ||
-      card.paperPositionSummary.hasPosition ||
-      signal === "hot" ||
-      signal === "ripping";
-    if (!query.includeProtected && protectedRow) return false;
+  const eligible = source.filter((candidate) => {
+    if (!query.includeProtected && isProtected(candidate)) return false;
     if (
       lowered &&
-      ![card.name, card.symbol, card.displayName, card.mint].some((value) =>
-        value?.toLowerCase().includes(lowered)
-      )
+      ![
+        candidate.name,
+        candidate.symbol,
+        candidate.displayName,
+        candidate.mint
+      ].some((value) => value?.toLowerCase().includes(lowered))
     ) {
       return false;
     }
     if (query.filters.length === 0) return true;
-    const samples = card.launchTradeSampleCount;
+    const samples = candidate.tradeSampleCount;
     return query.filters.some((filterName) => {
       switch (filterName) {
         case "discovery":
           return samples === 0;
         case "tracking":
-          return card.launchTrackingState.includes("track");
+          return candidate.trackingState.includes("track");
         case "d1_ready":
           return samples >= 2;
         case "d2_ready":
           return samples >= 3;
         case "hot":
-          return signal === "hot";
+          return candidate.strengthLabel === "hot";
         case "ripping":
-          return signal === "ripping";
+          return candidate.strengthLabel === "ripping";
         case "positions":
-          return card.paperPositionSummary.hasPosition;
+          return candidate.hasPosition;
         case "rejected":
-          return card.hardReject;
+          return candidate.hardReject;
         case "stale":
-          return card.stale;
+          return candidate.stale;
       }
     });
   });
   eligible.sort((left, right) => {
+    const protectedOrder =
+      Number(isProtected(right)) - Number(isProtected(left));
+    if (protectedOrder !== 0) return protectedOrder;
     switch (query.sort) {
       case "score":
-        return right.launchScore - left.launchScore;
+        return right.score - left.score;
       case "strength":
-        return (
-          (right.launchDerivativeScore?.totalScore ?? -1) -
-          (left.launchDerivativeScore?.totalScore ?? -1)
-        );
+        return (right.strengthScore ?? -1) - (left.strengthScore ?? -1);
       case "volume":
-        return (right.launchVolume10sSol ?? -1) - (left.launchVolume10sSol ?? -1);
+        return (right.volume10sSol ?? -1) - (left.volume10sSol ?? -1);
       case "buyers":
-        return (
-          (right.launchUniqueBuyers10s ?? -1) -
-          (left.launchUniqueBuyers10s ?? -1)
-        );
+        return (right.uniqueBuyers10s ?? -1) - (left.uniqueBuyers10s ?? -1);
       case "priceChange":
         return (
-          (right.launchPriceChange10sPct ?? -Infinity) -
-          (left.launchPriceChange10sPct ?? -Infinity)
+          (right.priceChange10sPct ?? -Infinity) -
+          (left.priceChange10sPct ?? -Infinity)
         );
       case "risk":
-        return riskCardOrder(left) - riskCardOrder(right);
+        return riskCandidateOrder(left) - riskCandidateOrder(right);
       case "pnl":
         return (
-          (right.paperPositionSummary.unrealizedPnlPct ?? -Infinity) -
-          (left.paperPositionSummary.unrealizedPnlPct ?? -Infinity)
+          (right.unrealizedPnlPct ?? -Infinity) -
+          (left.unrealizedPnlPct ?? -Infinity)
         );
       case "newest":
         return Date.parse(right.latestEventAt) - Date.parse(left.latestEventAt);
@@ -492,14 +521,14 @@ export function selectScannerCardsV2(
   return {
     page,
     totalActive: active.length,
-    totalHistory: cards.length - active.length,
+    totalHistory: candidates.length - active.length,
     nextCursor: nextOffset < eligible.length ? encodeCursor(nextOffset) : null,
     offset
   };
 }
 
-function riskCardOrder(card: LiveTokenCardViewModel): number {
-  const normalized = card.riskLevel.toLowerCase();
+function riskCandidateOrder(candidate: ScannerCandidateV2): number {
+  const normalized = candidate.riskLevel.toLowerCase();
   return normalized === "critical"
     ? 4
     : normalized === "high"
@@ -532,7 +561,9 @@ export class ScannerProjectionV2 {
   ): ScannerSnapshotV2 {
     const started = performance.now();
     const nowMs = now.getTime();
-    const activeRows = richRows.filter((row) => isActiveScannerRowV2(row, nowMs));
+    const activeRows = richRows.filter((row) =>
+      isActiveScannerRowV2(row, nowMs)
+    );
     const totalHistory = richRows.length - activeRows.length;
     const sourceRows = query.activeOnly ? activeRows : richRows;
     const lowered = query.query.trim().toLowerCase();
@@ -558,7 +589,8 @@ export class ScannerProjectionV2 {
       sessionId: this.sessionId,
       totalActive: activeRows.length,
       totalHistory,
-      nextCursor: nextOffset < eligible.length ? encodeCursor(nextOffset) : null,
+      nextCursor:
+        nextOffset < eligible.length ? encodeCursor(nextOffset) : null,
       rows
     };
   }
@@ -574,7 +606,9 @@ export class ScannerProjectionV2 {
     now = new Date()
   ): ScannerSnapshotV2 {
     const started = performance.now();
-    const rows = richRows.map((row, index) => this.project(row, page.offset + index));
+    const rows = richRows.map((row, index) =>
+      this.project(row, page.offset + index)
+    );
     this.metrics.lastProjectionMs = performance.now() - started;
     return {
       schemaVersion: "scanner-snapshot-v2",

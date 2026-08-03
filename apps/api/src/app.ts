@@ -86,7 +86,8 @@ import {
 } from "@axi/shared";
 import {
   ScannerProjectionV2,
-  selectScannerCardsV2,
+  selectScannerCandidatesV2,
+  type ScannerCandidateV2,
   type ScannerFilterV2,
   type ScannerQueryV2,
   type ScannerSortV2
@@ -3862,8 +3863,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       query: parsed.query
     };
     const now = new Date();
-    const selected = selectScannerCardsV2(getLiveTokenCardsForUi(), query, now);
-    const richPage = selected.page.map((card) =>
+    const selected = selectScannerCandidatesV2(
+      getScannerCandidatesV2(),
+      query,
+      now
+    );
+    const richCards = getLiveTokenCardsForUi(
+      selected.page.map((candidate) => candidate.mint)
+    );
+    const richPage = richCards.map((card) =>
       liveCardToMomentumScannerRow(card)
     );
     const beforeProjectionCount = scannerProjectionV2.metrics.projectionCount;
@@ -3887,14 +3895,13 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         "x-axi-v2-projection-ms",
         scannerProjectionV2.metrics.lastProjectionMs.toFixed(3)
       )
+      .header("x-axi-v2-rich-card-count", String(richCards.length))
       .send(snapshot);
   });
 
   app.get("/ui/v2/scanner/:mint", async (request, reply) => {
     const params = mintParamSchema.parse(request.params);
-    const card = getLiveTokenCardsForUi().find(
-      (candidate) => candidate.mint === params.mint
-    );
+    const card = getLiveTokenCardsForUi([params.mint])[0];
     if (!card) {
       return reply.code(404).send({
         error: "not_found",
@@ -5200,10 +5207,85 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     };
   }
 
-  function getLiveTokenCardsForUi(): LiveTokenCardViewModel[] {
-    return indexerAdapter.getStatus().preferLiveStateCards
-      ? buildIndexerBackedLiveTokenCards()
-      : buildLiveTokenCards();
+  function getLiveTokenCardsForUi(
+    selectedMints?: readonly string[]
+  ): LiveTokenCardViewModel[] {
+    const mintFilter = selectedMints ? new Set(selectedMints) : undefined;
+    const cards = indexerAdapter.getStatus().preferLiveStateCards
+      ? buildIndexerBackedLiveTokenCards(mintFilter)
+      : buildLiveTokenCards(mintFilter);
+    if (!selectedMints) return cards;
+
+    const cardsByMint = new Map(cards.map((card) => [card.mint, card]));
+    return selectedMints.flatMap((mint) => {
+      const card = cardsByMint.get(mint);
+      return card ? [card] : [];
+    });
+  }
+
+  function getScannerCandidatesV2(): ScannerCandidateV2[] {
+    const nowMs = Date.now();
+    if (indexerAdapter.getStatus().preferLiveStateCards) {
+      return indexerAdapter.getLiveCards().map((token) => {
+        const position = paperPortfolio.getPositionSummaryForMint(token.mint);
+        const latestEventMs = Date.parse(token.lastSeenAt);
+        return {
+          mint: token.mint,
+          name: token.name,
+          symbol: token.symbol,
+          displayName: token.displayName,
+          firstSeenAt: token.firstSeenAt,
+          latestEventAt: token.lastSeenAt,
+          trackingState: token.latestTrade ? "tracking" : "not_tracked",
+          tradeSampleCount: 0,
+          strengthLabel: null,
+          score: 0,
+          strengthScore: null,
+          volume10sSol: numberOrNull(token.market.volumeSol10s),
+          uniqueBuyers10s: numberOrNull(token.flow.uniqueBuyers10s),
+          priceChange10sPct: null,
+          riskLevel: "unknown",
+          unrealizedPnlPct: position.unrealizedPnlPct,
+          hasPosition: position.hasPosition,
+          hardReject: false,
+          stale:
+            Number.isFinite(latestEventMs) && nowMs - latestEventMs > 30_000
+        };
+      });
+    }
+
+    return liveTokens.getLiveTokens().map((token) => {
+      const candidate = candidateEngine.getCandidate(token.mint);
+      const launchCandidate = launchScanner.getCandidate(token.mint);
+      const snapshot = launchCandidate?.snapshot;
+      const position = paperPortfolio.getPositionSummaryForMint(token.mint);
+      const riskSnapshot =
+        riskSnapshots.get(token.mint) ?? candidate?.latestRisk;
+      const latestEventMs = Date.parse(token.latestEventAt);
+      return {
+        mint: token.mint,
+        name: token.name ?? null,
+        symbol: token.symbol ?? null,
+        displayName: token.displayName,
+        firstSeenAt: token.firstSeenAt,
+        latestEventAt: token.latestEventAt,
+        trackingState: launchCandidate?.tracking.state ?? "not_tracked",
+        tradeSampleCount: snapshot?.tradeSampleCount ?? 0,
+        strengthLabel: snapshot?.derivativeScore.strengthLabel ?? null,
+        score: snapshot?.score ?? 0,
+        strengthScore: snapshot?.derivativeScore.totalScore ?? null,
+        volume10sSol: numberOrNull(snapshot?.windows["10s"].volumeSol),
+        uniqueBuyers10s: numberOrNull(snapshot?.windows["10s"].uniqueBuyers),
+        priceChange10sPct: numberOrNull(
+          snapshot?.windows["10s"].priceChangePct
+        ),
+        riskLevel: riskSnapshot?.riskLevel ?? token.riskLevel ?? "unknown",
+        unrealizedPnlPct: position.unrealizedPnlPct,
+        hasPosition: position.hasPosition,
+        hardReject: riskSnapshot?.hardReject ?? false,
+        stale: Number.isFinite(latestEventMs) && nowMs - latestEventMs > 30_000
+      };
+    });
   }
 
   function getMomentumScannerRows(): MomentumScannerRow[] {
@@ -5214,8 +5296,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   function getScannerSnapshotMessageV2() {
     const now = new Date();
-    const selected = selectScannerCardsV2(
-      getLiveTokenCardsForUi(),
+    const selected = selectScannerCandidatesV2(
+      getScannerCandidatesV2(),
       {
         limit: 100,
         cursor: null,
@@ -5227,8 +5309,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       },
       now
     );
+    const richCards = getLiveTokenCardsForUi(
+      selected.page.map((candidate) => candidate.mint)
+    );
     const snapshot = scannerProjectionV2.snapshotPage(
-      selected.page.map((card) => liveCardToMomentumScannerRow(card)),
+      richCards.map((card) => liveCardToMomentumScannerRow(card)),
       {
         totalActive: selected.totalActive,
         totalHistory: selected.totalHistory,
@@ -5242,7 +5327,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   function broadcastScannerUpsertV2(mint: string): void {
     if (scannerClientsV2.size === 0) return;
-    const card = getLiveTokenCardsForUi().find((item) => item.mint === mint);
+    const card = getLiveTokenCardsForUi([mint])[0];
     if (!card) return;
     const message = scannerProjectionV2.upsert(
       liveCardToMomentumScannerRow(card)
@@ -6065,7 +6150,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     };
   }
 
-  function buildLiveTokenCards(): LiveTokenCardViewModel[] {
+  function buildLiveTokenCards(
+    mintFilter?: ReadonlySet<string>
+  ): LiveTokenCardViewModel[] {
     const nowMs = Date.now();
     const feedStatus = getFeedStatus();
     const liveEvents = liveTokens.getLiveFeedEvents(1000);
@@ -6073,7 +6160,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const launchStatus = launchScanner.getStatus();
     const meteredLaunchDataStatus = meteredLaunchData.getStatus();
 
-    return liveTokens.getLiveTokens().map((token) => {
+    return liveTokens
+      .getLiveTokens()
+      .filter((token) => !mintFilter || mintFilter.has(token.mint))
+      .map((token) => {
       const candidate = candidateEngine.getCandidate(token.mint);
       const identity =
         candidate?.identity ?? getTokenIdentitySummary(token.mint);
@@ -6722,10 +6812,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     });
   }
 
-  function buildIndexerBackedLiveTokenCards(): LiveTokenCardViewModel[] {
+  function buildIndexerBackedLiveTokenCards(
+    mintFilter?: ReadonlySet<string>
+  ): LiveTokenCardViewModel[] {
     const nowMs = Date.now();
 
-    return indexerAdapter.getLiveCards().map((token) => {
+    return indexerAdapter
+      .getLiveCards()
+      .filter((token) => !mintFilter || mintFilter.has(token.mint))
+      .map((token) => {
       const timeseries = indexerAdapter.getTimeseries(token.mint);
       const window1s = timeseries.windows["1s"];
       const window5s = timeseries.windows["5s"];

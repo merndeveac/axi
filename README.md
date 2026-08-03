@@ -2533,27 +2533,29 @@ usage. Do not put real API keys in source files, tests, commits, or
 pnpm --filter @axi/dashboard dev
 ```
 
-The dashboard connects to `ws://localhost:8787/ws/signals`.
+The Golden-Path V2 dashboard is the default. Its primary routes are Scanner,
+Positions, and Research; Strategy & Evidence, Runtime, Settings, and read-only
+Developer Diagnostics are in the secondary menu. Scanner uses the bounded
+`/ui/v2/scanner` snapshot and `/ws/v2/scanner` delta protocol. Rich token detail
+is requested only after selection.
 
-The dashboard uses a modern dark scanner UI with PAPER mode kept visible in the
-top control header. It is organized into Scanner, Signals, Portfolio, Metrics,
-Risk, Exit, Data, and Debug tabs. The header can locally start/stop/restart
-PumpPortal live discovery, request gated metered price action only when backend
-gates pass, stop metered tracking, refresh the data-wallet balance, and open a
-diagnostics drawer. It shows only public wallet/address data and configured
-booleans; API keys are never rendered.
+V2 keeps paper-only state and metered-data cost controls visible in a fixed
+108 px header. Arm/Start/Stop consume only the canonical backend
+`canArm`/`canStart`/`canStop` capabilities. The cost ACK belongs to the running
+API process and is never saved in browser storage. The dashboard never renders
+API keys, private keys, signing, transaction, swap, or live-trading controls.
 
-The Scanner tab is the default and renders one compact Axiom-style row per live
-token backed by `/ui/momentum-rows`: thumbnail, pair metadata, sparkline, market
-cap, curve/pool liquidity, volume, transactions/flow, token risk, launch score,
-AXI signal/action, and paper position/PnL. Rows expand into a compact details
-shelf with strategy components, derivatives, metric windows, risk and holder
-data, data audit, and paper position / exit-signal details.
-Unknown/unavailable values render as `—` with reason-code audit visibility from
-`/ui/momentum-diagnostics`. The Data tab still includes deeper scanner
-diagnostics and PumpPortal data-wallet panels. The dashboard has no wallet
-signing controls, buy/sell buttons, withdrawal/import actions, or live-trading
-controls.
+Rollback remains available without rebuilding:
+
+```text
+http://localhost:5173/?ui=legacy
+```
+
+Use `?ui=v2` to force V2, or set `VITE_AXI_UI_VERSION=legacy|v2` at build/dev
+startup. A valid query override wins over the environment setting. Both apps
+are lazy-loaded, so the legacy bundle and CSS are not eagerly loaded by V2.
+See [docs/ui-v2.md](docs/ui-v2.md) for routes, contracts, architecture,
+performance budgets, acceptance criteria, and rollback details.
 
 ## Chrome Extension Skeleton
 
@@ -2875,6 +2877,10 @@ docker compose --profile indexer up -d
 - `@axi/extension`: Chrome MV3 overlay skeleton.
 
 ## Branch Workflow
+
+- `dev/ui-golden-path-controlled-rewrite` contains the isolated Golden-Path V2
+  dashboard, bounded scanner transport, canonical runtime controls, workflow
+  routes, read-only diagnostics migration, and lazy legacy rollback.
 
 - `dev/trade-data-coverage-validation` adds bounded one-mint token-trade
   reconciliation, time-series/derivative propagation proof, restart-safe audit

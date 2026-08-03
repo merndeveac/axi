@@ -161,4 +161,17 @@ describe("scanner selection behavior", () => {
     expect((await screen.findAllByText(/stale/i)).length).toBeGreaterThan(0);
     expect(screen.queryByText("INSUFFICIENT_PRICE_SAMPLES")).toBeNull();
   });
+
+  it("never renders an uppercase reason code as the collapsed top blocker", async () => {
+    const coded = {
+      ...hotToken,
+      decision: {
+        ...hotToken.decision,
+        topBlocker: "INSUFFICIENT_TRADE_METRICS"
+      }
+    };
+    render(<ScannerPageView rows={[coded]} />);
+    expect(await screen.findByText(/Insufficient trade metrics/i)).toBeInTheDocument();
+    expect(screen.queryByText("INSUFFICIENT_TRADE_METRICS")).toBeNull();
+  });
 });

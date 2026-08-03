@@ -3,7 +3,7 @@ export type AxiUiVersion = "legacy" | "v2";
 export function resolveUiVersion(
   search: string,
   configuredVersion: string | undefined,
-  fallback: AxiUiVersion = "legacy"
+  fallback: AxiUiVersion = "v2"
 ): AxiUiVersion {
   const queryVersion = new URLSearchParams(search).get("ui");
 
