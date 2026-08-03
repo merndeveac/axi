@@ -1,5 +1,11 @@
 import WebSocket from "ws";
+import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import type {
+  DiscoveryCoverageConnectionEventType,
+  DiscoveryCoverageEventType,
+  DiscoveryCoverageGapStatus,
+  DiscoveryCoverageParserOutcome,
   MarketObservationSummary,
   ObservationConfidence,
   QuoteAsset,
@@ -9,6 +15,15 @@ import type {
   TokenId
 } from "@axi/shared";
 
+export type DiscoveryCoverageFeedMetadata = {
+  schemaVersion: "discovery-coverage-v1";
+  sessionId: string;
+  correlationId: string;
+  sourceEventKey: string;
+  receivedAtMonotonicMs: number;
+  normalizedAtMonotonicMs: number;
+};
+
 export type FeedSource = "mock" | "pumpportal" | (string & {});
 
 export type NormalizedFeedMetadata = {
@@ -16,6 +31,7 @@ export type NormalizedFeedMetadata = {
   creator?: string | undefined;
   dataSource?: FeedSource | undefined;
   dataSourceMode?: "mock" | "real" | "replay" | "unknown" | undefined;
+  discoveryCoverage?: DiscoveryCoverageFeedMetadata | undefined;
   metricsComplete?: boolean;
   raw?: unknown;
   rawSourceEventType?: string | undefined;
@@ -131,9 +147,86 @@ export type PumpPortalFeedProviderOptions = {
   subscribedTokenTradeMints?: string[];
   subscribeMigration?: boolean;
   subscribeNewToken?: boolean;
+  discoveryInstrumentation?: PumpPortalDiscoveryInstrumentation;
   webSocketConstructor?: WebSocketConstructor;
   wsUrl?: string | undefined;
 };
+
+export type PumpPortalDiscoveryFrameObservation = {
+  correlationId: string;
+  receivedAt: string;
+  receivedAtMonotonicMs: number;
+};
+
+export type PumpPortalDiscoveryParserObservation =
+  PumpPortalDiscoveryFrameObservation & {
+    eventType: DiscoveryCoverageEventType;
+    parserOutcome: Exclude<DiscoveryCoverageParserOutcome, "pending">;
+    providerTimestamp: string | null;
+    safePayloadHash: string | null;
+    topLevelKeys: string[];
+    rejectionReason: string | null;
+  };
+
+export type PumpPortalDiscoveryNormalizationObservation =
+  PumpPortalDiscoveryParserObservation & {
+    event: TokenCreatedEvent | null;
+    normalizedAt: string;
+    normalizedAtMonotonicMs: number;
+  };
+
+export type PumpPortalDiscoveryNormalizationResult = {
+  duplicate: boolean;
+  duplicateKey: string | null;
+  duplicateReason: string | null;
+  metadata: DiscoveryCoverageFeedMetadata;
+};
+
+export type PumpPortalDiscoveryConnectionObservation = {
+  eventType: DiscoveryCoverageConnectionEventType;
+  connectionId: string;
+  observedAt: string;
+  reconnectAttempt: number;
+  replayAttempted: boolean;
+  replayResult: string | null;
+  gapStatus: DiscoveryCoverageGapStatus;
+  safeReason: string | null;
+  adjacentCorrelationId?: string | null;
+};
+
+export type PumpPortalDiscoveryInstrumentation = {
+  onRawFrame: (observation: PumpPortalDiscoveryFrameObservation) => void;
+  onParserOutcome: (
+    observation: PumpPortalDiscoveryParserObservation
+  ) => void;
+  onNormalizationOutcome: (
+    observation: PumpPortalDiscoveryNormalizationObservation
+  ) => PumpPortalDiscoveryNormalizationResult | null;
+  onConnectionEvent: (
+    observation: PumpPortalDiscoveryConnectionObservation
+  ) => void;
+  onInstrumentationFailure?: (input: {
+    stage: string;
+    safeReason: string;
+  }) => void;
+};
+
+type PumpPortalParsedPayload =
+  | {
+      parsed: true;
+      payload: Record<string, unknown>;
+      rejectionReason: null;
+    }
+  | {
+      parsed: true;
+      payload: null;
+      rejectionReason: "NON_OBJECT_JSON";
+    }
+  | {
+      parsed: false;
+      payload: null;
+      rejectionReason: "MALFORMED_JSON";
+    };
 
 export type PumpPortalTokenTradeStats = {
   budgetReached: boolean;
@@ -581,6 +674,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
   private stopped = true;
   private emitted = 0;
   private handler: FeedEventHandler | undefined;
+  private discoveryInstrumentation: PumpPortalDiscoveryInstrumentation | undefined;
 
   private readonly apiKey: string | undefined;
   private readonly logger: PumpPortalLogger;
@@ -617,6 +711,12 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
   private accountTradeEventCount = 0;
   private reconnectAttempts = 0;
   private tokenTradeEventCount = 0;
+  private rawFrameSequence = 0;
+  private connectionSequence = 0;
+  private currentConnectionId = "pumpportal-connection-0";
+  private openedConnectionCount = 0;
+  private lastFrameCorrelationId: string | null = null;
+  private awaitingFirstFrameAfterReconnect = false;
 
   constructor(options: PumpPortalFeedProviderOptions = {}) {
     this.apiKey = options.apiKey;
@@ -628,6 +728,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     this.reconnectDelayMs = this.reconnectInitialDelayMs;
     this.subscribeMigration = options.subscribeMigration ?? true;
     this.subscribeNewToken = options.subscribeNewToken ?? true;
+    this.discoveryInstrumentation = options.discoveryInstrumentation;
     this.maxAccountTradeEventsPerSession =
       options.maxAccountTradeEventsPerSession ?? Number.POSITIVE_INFINITY;
     this.maxAccountTradeSubscriptions =
@@ -657,6 +758,12 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
         this.accountTradeSubscriptions.add(wallet);
       }
     }
+  }
+
+  setDiscoveryInstrumentation(
+    instrumentation: PumpPortalDiscoveryInstrumentation | undefined
+  ): void {
+    this.discoveryInstrumentation = instrumentation;
   }
 
   start(handler: FeedEventHandler): void {
@@ -931,6 +1038,21 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       return;
     }
 
+    this.connectionSequence += 1;
+    this.currentConnectionId = `pumpportal-connection-${this.connectionSequence}`;
+    const connectionId = this.currentConnectionId;
+    const connectionAttemptAt = this.now().toISOString();
+    this.instrumentConnection({
+      eventType: "connection_attempt",
+      connectionId,
+      observedAt: connectionAttemptAt,
+      reconnectAttempt: this.reconnectAttempts,
+      replayAttempted: false,
+      replayResult: null,
+      gapStatus:
+        this.connectionSequence > 1 ? "unproven" : "not_applicable",
+      safeReason: null
+    });
     const socket = new this.webSocketConstructor(this.wsUrl);
     this.socket = socket;
     this.connecting = true;
@@ -944,7 +1066,54 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       this.lastOpenAt = this.now().toISOString();
       this.lastError = null;
       this.reconnectDelayMs = this.reconnectInitialDelayMs;
+      const reconnect = this.openedConnectionCount > 0;
+      this.openedConnectionCount += 1;
+      this.awaitingFirstFrameAfterReconnect = reconnect;
+      this.instrumentConnection({
+        eventType: "connection_opened",
+        connectionId,
+        observedAt: this.lastOpenAt,
+        reconnectAttempt: this.reconnectAttempts,
+        replayAttempted: reconnect,
+        replayResult: null,
+        gapStatus: reconnect ? "unproven" : "not_applicable",
+        safeReason: reconnect ? "UPSTREAM_SEQUENCE_UNAVAILABLE" : null
+      });
+      if (reconnect) {
+        this.instrumentConnection({
+          eventType: "reconnect_success",
+          connectionId,
+          observedAt: this.lastOpenAt,
+          reconnectAttempt: this.reconnectAttempts,
+          replayAttempted: true,
+          replayResult: "subscriptions_replayed",
+          gapStatus: "unproven",
+          safeReason: "UPSTREAM_SEQUENCE_UNAVAILABLE"
+        });
+        this.instrumentConnection({
+          eventType: "subscription_replay_attempted",
+          connectionId,
+          observedAt: this.lastOpenAt,
+          reconnectAttempt: this.reconnectAttempts,
+          replayAttempted: true,
+          replayResult: null,
+          gapStatus: "unproven",
+          safeReason: "UPSTREAM_SEQUENCE_UNAVAILABLE"
+        });
+      }
       this.sendSubscriptions(socket);
+      if (reconnect) {
+        this.instrumentConnection({
+          eventType: "subscription_replay_completed",
+          connectionId,
+          observedAt: this.now().toISOString(),
+          reconnectAttempt: this.reconnectAttempts,
+          replayAttempted: true,
+          replayResult: "subscription_messages_sent",
+          gapStatus: "unproven",
+          safeReason: "PROVIDER_ACKNOWLEDGEMENT_UNAVAILABLE"
+        });
+      }
     });
 
     socket.on("message", (data) => {
@@ -952,18 +1121,52 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     });
 
     socket.on("error", (error) => {
-      this.lastError = error instanceof Error ? error.message : String(error);
+      this.lastError = `WEBSOCKET_ERROR:${safeErrorClass(error)}`;
       this.logger.warn?.("PumpPortal websocket error", {
         error: this.lastError
+      });
+      this.instrumentConnection({
+        eventType: "connection_error",
+        connectionId,
+        observedAt: this.now().toISOString(),
+        reconnectAttempt: this.reconnectAttempts,
+        replayAttempted: false,
+        replayResult: null,
+        gapStatus: "unproven",
+        safeReason: safeErrorClass(error)
       });
       this.scheduleReconnect();
     });
 
-    socket.on("close", () => {
+    socket.on("close", (...closeArgs) => {
       this.socketOpen = false;
       this.connecting = false;
       this.lastCloseAt = this.now().toISOString();
       this.logger.debug?.("PumpPortal websocket closed");
+      if (this.lastFrameCorrelationId) {
+        this.instrumentConnection({
+          eventType: "event_before_disconnect",
+          connectionId,
+          observedAt: this.lastCloseAt,
+          reconnectAttempt: this.reconnectAttempts,
+          replayAttempted: false,
+          replayResult: null,
+          gapStatus: "unproven",
+          safeReason: "UPSTREAM_SEQUENCE_UNAVAILABLE",
+          adjacentCorrelationId: this.lastFrameCorrelationId
+        });
+      }
+      this.instrumentConnection({
+        eventType: "disconnected",
+        connectionId,
+        observedAt: this.lastCloseAt,
+        reconnectAttempt: this.reconnectAttempts,
+        replayAttempted: false,
+        replayResult: null,
+        gapStatus: "unproven",
+        safeReason: safeCloseReason(closeArgs),
+        adjacentCorrelationId: this.lastFrameCorrelationId
+      });
       this.scheduleReconnect();
     });
   }
@@ -975,6 +1178,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
           method: "subscribeNewToken"
         })
       );
+      this.recordSubscriptionSent("subscribeNewToken");
     }
 
     if (this.subscribeMigration) {
@@ -983,6 +1187,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
           method: "subscribeMigration"
         })
       );
+      this.recordSubscriptionSent("subscribeMigration");
     }
 
     const tokenTradeMints = this.getTokenTradeSubscriptions();
@@ -994,6 +1199,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
           method: "subscribeTokenTrade"
         })
       );
+      this.recordSubscriptionSent("subscribeTokenTrade");
     }
 
     const accountTradeWallets = this.getAccountTradeSubscriptions();
@@ -1005,36 +1211,198 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
           method: "subscribeAccountTrade"
         })
       );
+      this.recordSubscriptionSent("subscribeAccountTrade");
     }
   }
 
   private handleMessage(data: unknown): void {
-    this.lastMessageAt = this.now().toISOString();
-    const payload = this.parsePayload(data);
+    if (this.stopped) {
+      return;
+    }
+    const receivedAt = this.now().toISOString();
+    const receivedAtMonotonicMs = performance.now();
+    const correlationId = `${this.currentConnectionId}:frame-${++this.rawFrameSequence}`;
+    const frame: PumpPortalDiscoveryFrameObservation = {
+      correlationId,
+      receivedAt,
+      receivedAtMonotonicMs
+    };
+    this.lastMessageAt = receivedAt;
+    this.instrument("raw_received", () =>
+      this.discoveryInstrumentation?.onRawFrame(frame)
+    );
+    if (this.awaitingFirstFrameAfterReconnect) {
+      this.awaitingFirstFrameAfterReconnect = false;
+      this.instrumentConnection({
+        eventType: "event_after_reconnect",
+        connectionId: this.currentConnectionId,
+        observedAt: receivedAt,
+        reconnectAttempt: this.reconnectAttempts,
+        replayAttempted: true,
+        replayResult: "first_local_frame_observed",
+        gapStatus: "unproven",
+        safeReason: "UPSTREAM_SEQUENCE_UNAVAILABLE",
+        adjacentCorrelationId: correlationId
+      });
+    }
+    this.lastFrameCorrelationId = correlationId;
 
-    if (!payload) {
+    const parsed = this.parsePayload(data);
+    if (!parsed.parsed) {
+      this.instrumentParser({
+        ...frame,
+        eventType: "parse_failure",
+        parserOutcome: "parse_failure",
+        providerTimestamp: null,
+        safePayloadHash: null,
+        topLevelKeys: [],
+        rejectionReason: parsed.rejectionReason
+      });
       return;
     }
 
+    if (!parsed.payload) {
+      this.instrumentParser({
+        ...frame,
+        eventType: "unknown",
+        parserOutcome: "unknown_payload",
+        providerTimestamp: null,
+        safePayloadHash: null,
+        topLevelKeys: [],
+        rejectionReason: parsed.rejectionReason
+      });
+      return;
+    }
+
+    const payload = parsed.payload;
+    if (isSubscriptionAcknowledgementPayload(payload)) {
+      this.instrumentConnection({
+        eventType: "subscription_acknowledged",
+        connectionId: this.currentConnectionId,
+        observedAt: receivedAt,
+        reconnectAttempt: this.reconnectAttempts,
+        replayAttempted: this.openedConnectionCount > 1,
+        replayResult: "provider_acknowledgement_observed",
+        gapStatus:
+          this.openedConnectionCount > 1 ? "unproven" : "not_applicable",
+        safeReason: null,
+        adjacentCorrelationId: correlationId
+      });
+    }
+    const providerTimestamp = readTimestamp(payload) ?? null;
+    const safePayloadHash = createSafePayloadShapeHash(payload);
+    const topLevelKeys = Object.keys(payload).sort().slice(0, 100);
     const accountTrade = normalizePumpPortalAccountTradePayload(payload, {
       now: this.now
     });
     const tokenTrade = normalizePumpPortalTokenTradePayload(payload, {
       now: this.now
     });
-    const event =
+    const nonDiscoveryEvent =
       (accountTrade && this.accountTradeSubscriptions.has(accountTrade.wallet)
         ? accountTrade
         : null) ??
       tokenTrade ??
-      accountTrade ??
-      this.normalizePayload(payload);
+      accountTrade;
+
+    if (nonDiscoveryEvent) {
+      this.instrumentParser({
+        ...frame,
+        eventType: "non_discovery",
+        parserOutcome: "recognized_non_discovery",
+        providerTimestamp,
+        safePayloadHash,
+        topLevelKeys,
+        rejectionReason: null
+      });
+      this.emitEvent(nonDiscoveryEvent);
+      return;
+    }
+
+    const rawSourceEventType = inferPumpPortalEventType(payload);
+    const discoveryHint = getDiscoveryPayloadHint(payload, rawSourceEventType);
+    const event = this.normalizePayload(payload, receivedAt);
 
     if (!event) {
+      if (discoveryHint) {
+        const eventType =
+          discoveryHint === "migration" ? "migration" : "create";
+        const parserOutcome =
+          discoveryHint === "migration"
+            ? "recognized_migration"
+            : "recognized_create";
+        const parserObservation: PumpPortalDiscoveryParserObservation = {
+          ...frame,
+          eventType,
+          parserOutcome,
+          providerTimestamp,
+          safePayloadHash,
+          topLevelKeys,
+          rejectionReason: "DISCOVERY_MINT_MISSING"
+        };
+        this.instrumentParser(parserObservation);
+        this.instrumentNormalization({
+          ...parserObservation,
+          event: null,
+          normalizedAt: this.now().toISOString(),
+          normalizedAtMonotonicMs: performance.now()
+        });
+      } else {
+        const recognizedNonDiscovery =
+          isRecognizedProviderControlPayload(payload);
+        this.instrumentParser({
+          ...frame,
+          eventType: recognizedNonDiscovery ? "non_discovery" : "unknown",
+          parserOutcome: recognizedNonDiscovery
+            ? "recognized_non_discovery"
+            : "unknown_payload",
+          providerTimestamp,
+          safePayloadHash,
+          topLevelKeys,
+          rejectionReason: recognizedNonDiscovery
+            ? null
+            : "UNSUPPORTED_PAYLOAD_SHAPE"
+        });
+      }
       this.logger.debug?.("Skipping unknown PumpPortal payload");
       return;
     }
 
+    const eventType =
+      event.rawSourceEventType === "migration" ? "migration" : "create";
+    const parserOutcome =
+      eventType === "migration"
+        ? "recognized_migration"
+        : "recognized_create";
+    const parserObservation: PumpPortalDiscoveryParserObservation = {
+      ...frame,
+      eventType,
+      parserOutcome,
+      providerTimestamp,
+      safePayloadHash,
+      topLevelKeys,
+      rejectionReason: null
+    };
+    this.instrumentParser(parserObservation);
+    const instrumentationResult = this.instrumentNormalization({
+      ...parserObservation,
+      event,
+      normalizedAt: this.now().toISOString(),
+      normalizedAtMonotonicMs: performance.now()
+    });
+
+    if (instrumentationResult?.duplicate) {
+      return;
+    }
+
+    this.emitEvent(
+      instrumentationResult
+        ? { ...event, discoveryCoverage: instrumentationResult.metadata }
+        : event
+    );
+  }
+
+  private emitEvent(event: FeedEvent): void {
     this.emitted += 1;
     this.lastEventAt = event.timestamp;
 
@@ -1148,7 +1516,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     }
   }
 
-  private parsePayload(data: unknown): Record<string, unknown> | null {
+  private parsePayload(data: unknown): PumpPortalParsedPayload {
     try {
       const text =
         typeof data === "string" || data instanceof Buffer
@@ -1157,23 +1525,36 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       const parsed = JSON.parse(text) as unknown;
 
       if (isRecord(parsed)) {
-        return parsed;
+        return {
+          parsed: true,
+          payload: parsed,
+          rejectionReason: null
+        };
       }
 
       this.logger.debug?.("Skipping non-object PumpPortal payload");
-      return null;
+      return {
+        parsed: true,
+        payload: null,
+        rejectionReason: "NON_OBJECT_JSON"
+      };
     } catch (error) {
       this.parseErrorCount += 1;
-      this.lastError = error instanceof Error ? error.message : String(error);
+      this.lastError = `MALFORMED_JSON:${safeErrorClass(error)}`;
       this.logger.warn?.("Failed to parse PumpPortal payload", {
         error: this.lastError
       });
-      return null;
+      return {
+        parsed: false,
+        payload: null,
+        rejectionReason: "MALFORMED_JSON"
+      };
     }
   }
 
   private normalizePayload(
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    receivedAtOverride?: string
   ): TokenCreatedEvent | null {
     const mint = readString(payload, [
       "mint",
@@ -1187,7 +1568,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       return null;
     }
 
-    const receivedAt = this.now().toISOString();
+    const receivedAt = receivedAtOverride ?? this.now().toISOString();
     const rawSourceEventType = inferPumpPortalEventType(payload);
     const symbol = readString(payload, ["symbol", "ticker"]) ?? "UNKNOWN";
     const name = readString(payload, ["name", "tokenName"]) ?? symbol;
@@ -1320,6 +1701,78 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     };
   }
 
+  private instrumentParser(
+    observation: PumpPortalDiscoveryParserObservation
+  ): void {
+    this.instrument("parser_outcome", () =>
+      this.discoveryInstrumentation?.onParserOutcome(observation)
+    );
+  }
+
+  private instrumentNormalization(
+    observation: PumpPortalDiscoveryNormalizationObservation
+  ): PumpPortalDiscoveryNormalizationResult | null {
+    return (
+      this.instrument("normalization_outcome", () =>
+        this.discoveryInstrumentation?.onNormalizationOutcome(observation)
+      ) ?? null
+    );
+  }
+
+  private instrumentConnection(
+    observation: PumpPortalDiscoveryConnectionObservation
+  ): void {
+    this.instrument("connection_event", () =>
+      this.discoveryInstrumentation?.onConnectionEvent(observation)
+    );
+  }
+
+  private recordSubscriptionSent(method: string): void {
+    const observedAt = this.now().toISOString();
+    this.instrumentConnection({
+      eventType: "subscription_sent",
+      connectionId: this.currentConnectionId,
+      observedAt,
+      reconnectAttempt: this.reconnectAttempts,
+      replayAttempted: this.openedConnectionCount > 1,
+      replayResult: method,
+      gapStatus:
+        this.openedConnectionCount > 1 ? "unproven" : "not_applicable",
+      safeReason: null
+    });
+    this.instrumentConnection({
+      eventType: "subscription_acknowledgement_unavailable",
+      connectionId: this.currentConnectionId,
+      observedAt,
+      reconnectAttempt: this.reconnectAttempts,
+      replayAttempted: this.openedConnectionCount > 1,
+      replayResult: method,
+      gapStatus:
+        this.openedConnectionCount > 1 ? "unproven" : "not_applicable",
+      safeReason: "PROVIDER_ACKNOWLEDGEMENT_UNAVAILABLE"
+    });
+  }
+
+  private instrument<T>(stage: string, operation: () => T): T | undefined {
+    try {
+      return operation();
+    } catch (error) {
+      try {
+        this.discoveryInstrumentation?.onInstrumentationFailure?.({
+          stage,
+          safeReason: safeErrorClass(error)
+        });
+      } catch {
+        // Coverage telemetry must never crash discovery processing.
+      }
+      this.logger.warn?.("Discovery coverage instrumentation failed", {
+        stage,
+        error: safeErrorClass(error)
+      });
+      return undefined;
+    }
+  }
+
   private scheduleReconnect(): void {
     if (this.stopped || this.reconnectTimer) {
       return;
@@ -1327,6 +1780,16 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
 
     const delayMs = this.reconnectDelayMs;
     this.reconnectAttempts += 1;
+    this.instrumentConnection({
+      eventType: "reconnect_attempt",
+      connectionId: this.currentConnectionId,
+      observedAt: this.now().toISOString(),
+      reconnectAttempt: this.reconnectAttempts,
+      replayAttempted: false,
+      replayResult: null,
+      gapStatus: "unproven",
+      safeReason: "UPSTREAM_SEQUENCE_UNAVAILABLE"
+    });
     this.reconnectDelayMs = Math.min(
       this.reconnectDelayMs * 2,
       this.reconnectMaxDelayMs
@@ -1384,6 +1847,110 @@ export function maskPumpPortalUrl(url: string): string {
   }
 
   return parsed.toString();
+}
+
+function createSafePayloadShapeHash(
+  payload: Record<string, unknown>
+): string {
+  const shape = Object.keys(payload)
+    .sort()
+    .map((key) => [key, safeValueKind(payload[key])]);
+  return createHash("sha256").update(JSON.stringify(shape)).digest("hex");
+}
+
+function safeValueKind(value: unknown): string {
+  if (value === null) {
+    return "null";
+  }
+  if (Array.isArray(value)) {
+    return "array";
+  }
+  return typeof value;
+}
+
+function getDiscoveryPayloadHint(
+  payload: Record<string, unknown>,
+  inferredType: string
+): "create" | "migration" | null {
+  if (isRecognizedProviderControlPayload(payload)) {
+    return null;
+  }
+
+  const explicit = readString(payload, ["event", "type", "txType"])
+    ?.trim()
+    .toLowerCase();
+  if (explicit?.includes("migr")) {
+    return "migration";
+  }
+  if (
+    explicit?.includes("create") ||
+    explicit?.includes("new_token") ||
+    explicit?.includes("newtoken")
+  ) {
+    return "create";
+  }
+
+  const hasMint = Boolean(
+    readString(payload, [
+      "mint",
+      "tokenMint",
+      "ca",
+      "address",
+      "contractAddress"
+    ])
+  );
+  const hasMigrationFields = Boolean(
+    readString(payload, ["pool", "newPool", "bondingCurve"])
+  );
+
+  if (hasMigrationFields || (hasMint && inferredType === "migration")) {
+    return "migration";
+  }
+  return hasMint ? "create" : null;
+}
+
+function isRecognizedProviderControlPayload(
+  payload: Record<string, unknown>
+): boolean {
+  const method = readString(payload, ["method"]);
+  return Boolean(
+    method?.startsWith("subscribe") ||
+      method?.startsWith("unsubscribe") ||
+      "message" in payload ||
+      "status" in payload ||
+      "result" in payload ||
+      "errors" in payload
+  );
+}
+
+function isSubscriptionAcknowledgementPayload(
+  payload: Record<string, unknown>
+): boolean {
+  const message = readString(payload, ["message", "status", "result"])
+    ?.trim()
+    .toLowerCase();
+  return Boolean(
+    message &&
+      (message.includes("subscribed") ||
+        (message.includes("subscribe") && message.includes("success")))
+  );
+}
+
+function safeErrorClass(error: unknown): string {
+  if (error instanceof Error && error.name.trim().length > 0) {
+    return error.name.toUpperCase();
+  }
+  return "UNKNOWN_ERROR";
+}
+
+function safeCloseReason(args: unknown[]): string | null {
+  const code = args.find(
+    (value): value is number => typeof value === "number" && Number.isFinite(value)
+  );
+  if (code !== undefined) {
+    return `CLOSE_CODE_${code}`;
+  }
+  return args.length > 0 ? "PROVIDER_CLOSE_REASON_PRESENT" : null;
 }
 
 function createIncompleteMetrics(): RollingMetrics {

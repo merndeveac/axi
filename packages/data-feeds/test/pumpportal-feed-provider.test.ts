@@ -6,6 +6,7 @@ import {
   normalizePumpPortalTokenTradePayload,
   PumpPortalFeedProvider,
   type FeedEvent,
+  type PumpPortalDiscoveryInstrumentation,
   type PumpPortalFeedProviderOptions,
   type WebSocketLike
 } from "../src/index";
@@ -51,6 +52,82 @@ afterEach(() => {
 });
 
 describe("PumpPortalFeedProvider", () => {
+  it("accounts every raw frame in exactly one sanitized parser outcome", () => {
+    const parserOutcomes: string[] = [];
+    const normalizationOutcomes: string[] = [];
+    const rawFrames: string[] = [];
+    const instrumentation: PumpPortalDiscoveryInstrumentation = {
+      onRawFrame: (frame) => rawFrames.push(frame.correlationId),
+      onParserOutcome: (outcome) => parserOutcomes.push(outcome.parserOutcome),
+      onNormalizationOutcome: (outcome) => {
+        normalizationOutcomes.push(outcome.event ? "succeeded" : "rejected");
+        return outcome.event
+          ? {
+              duplicate: false,
+              duplicateKey: null,
+              duplicateReason: null,
+              metadata: {
+                schemaVersion: "discovery-coverage-v1",
+                sessionId: "test-session",
+                correlationId: outcome.correlationId,
+                sourceEventKey: `key:${outcome.correlationId}`,
+                receivedAtMonotonicMs: outcome.receivedAtMonotonicMs,
+                normalizedAtMonotonicMs: outcome.normalizedAtMonotonicMs
+              }
+            }
+          : null;
+      },
+      onConnectionEvent: () => undefined
+    };
+    const emitted: FeedEvent[] = [];
+    const provider = createProvider({ discoveryInstrumentation: instrumentation });
+
+    provider.start((event) => emitted.push(event));
+    const socket = FakeWebSocket.instances[0];
+    socket?.emit("message", '{"secret":"not-closed"');
+    socket?.emit("message", JSON.stringify(["not", "an", "object"]));
+    socket?.emit("message", JSON.stringify({ status: "ok" }));
+    socket?.emit("message", JSON.stringify({ unsupported: true }));
+    socket?.emit("message", JSON.stringify({ txType: "create" }));
+    socket?.emit("message", JSON.stringify({
+      mint: "CreateMint11111111111111111111111111111111",
+      signature: "create-signature",
+      txType: "create"
+    }));
+    socket?.emit("message", JSON.stringify({
+      mint: "MigrationMint11111111111111111111111111111",
+      signature: "migration-signature",
+      txType: "migrate"
+    }));
+    socket?.emit("message", JSON.stringify({
+      mint: "So11111111111111111111111111111111111111112",
+      signature: "trade-signature",
+      solAmount: 1,
+      tokenAmount: 10,
+      txType: "buy"
+    }));
+
+    expect(rawFrames).toHaveLength(8);
+    expect(parserOutcomes).toEqual([
+      "parse_failure",
+      "unknown_payload",
+      "recognized_non_discovery",
+      "unknown_payload",
+      "recognized_create",
+      "recognized_create",
+      "recognized_migration",
+      "recognized_non_discovery"
+    ]);
+    expect(normalizationOutcomes).toEqual([
+      "rejected",
+      "succeeded",
+      "succeeded"
+    ]);
+    expect(emitted.filter((event) => event.type === "token_created")).toHaveLength(2);
+    expect(provider.getStatus().lastError).not.toContain("not-closed");
+    provider.stop();
+  });
+
   it("builds WebSocket URL and masks API keys", () => {
     const url = buildPumpPortalWsUrl({
       apiKey: "super-secret-key"
@@ -60,6 +137,50 @@ describe("PumpPortalFeedProvider", () => {
     expect(maskPumpPortalUrl(url)).not.toContain("super-secret-key");
     expect(maskPumpPortalUrl(url)).toContain("api-key=***");
     expect(buildPumpPortalWsUrl()).not.toContain("api-key=");
+  });
+
+  it("records reconnect and subscription replay while leaving gaps unproven", async () => {
+    vi.useFakeTimers();
+    const connectionEvents: Array<{ eventType: string; gapStatus: string }> = [];
+    const provider = createProvider({
+      discoveryInstrumentation: {
+        onRawFrame: () => undefined,
+        onParserOutcome: () => undefined,
+        onNormalizationOutcome: () => null,
+        onConnectionEvent: (event) => connectionEvents.push(event)
+      },
+      reconnectInitialDelayMs: 1,
+      reconnectMaxDelayMs: 1,
+      subscribeMigration: true,
+      subscribeNewToken: true
+    });
+
+    provider.start(() => undefined);
+    FakeWebSocket.instances[0]?.emit("open");
+    FakeWebSocket.instances[0]?.emit("message", JSON.stringify({ status: "ok" }));
+    FakeWebSocket.instances[0]?.emit("close", 1006, "private provider text");
+    await vi.advanceTimersByTimeAsync(1);
+    FakeWebSocket.instances[1]?.emit("open");
+    FakeWebSocket.instances[1]?.emit("message", JSON.stringify({ status: "ok" }));
+
+    expect(connectionEvents.map((event) => event.eventType)).toEqual(
+      expect.arrayContaining([
+        "disconnected",
+        "reconnect_attempt",
+        "connection_opened",
+        "reconnect_success",
+        "subscription_replay_attempted",
+        "subscription_replay_completed",
+        "event_before_disconnect",
+        "event_after_reconnect"
+      ])
+    );
+    expect(
+      connectionEvents
+        .filter((event) => event.eventType.includes("reconnect"))
+        .every((event) => event.gapStatus === "unproven")
+    ).toBe(true);
+    provider.stop();
   });
 
   it("sends subscribeNewToken on open when enabled", () => {
@@ -99,6 +220,28 @@ describe("PumpPortalFeedProvider", () => {
 
     expect(sentMethods()).toEqual([]);
     provider.stop();
+  });
+
+  it("does not account or emit frames delivered after provider stop", async () => {
+    const rawFrames: string[] = [];
+    const events: FeedEvent[] = [];
+    const provider = createProvider({
+      discoveryInstrumentation: {
+        onRawFrame: (frame) => rawFrames.push(frame.correlationId),
+        onParserOutcome: () => undefined,
+        onNormalizationOutcome: () => null,
+        onConnectionEvent: () => undefined
+      }
+    });
+    await provider.start((event) => events.push(event));
+    const socket = FakeWebSocket.instances[0];
+    await provider.stop();
+    socket?.emit(
+      "message",
+      JSON.stringify({ mint: "LateMint111111111111111111111111111111111", txType: "create" })
+    );
+    expect(rawFrames).toEqual([]);
+    expect(events).toEqual([]);
   });
 
   it("subscribes and unsubscribes token trades on the existing websocket", () => {

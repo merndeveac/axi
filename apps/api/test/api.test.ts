@@ -72,6 +72,89 @@ afterEach(async () => {
 });
 
 describe("@axi/api", () => {
+  it("exposes sanitized discovery coverage summaries, filters, and finalization", async () => {
+    server = createApiServer({
+      dataFeed: "pumpportal",
+      dataFeedMode: "live",
+      logLevel: false,
+      paperAutoOrder: false,
+      pumpPortal: {
+        subscribeMigration: true,
+        subscribeNewToken: true,
+        webSocketConstructor: FakeWebSocket,
+        wsUrl: "wss://example.test/pumpportal"
+      },
+      startFeed: true,
+      storageDatabasePath: databasePath
+    });
+    FakeWebSocket.instances[0]?.emit("open");
+    FakeWebSocket.instances[0]?.emit(
+      "message",
+      JSON.stringify({
+        mint: "CoverageMint1111111111111111111111111111111",
+        name: "Coverage Token",
+        signature: "coverage-signature",
+        symbol: "COVER",
+        txType: "create"
+      })
+    );
+    FakeWebSocket.instances[0]?.emit(
+      "message",
+      JSON.stringify({ unsupported: "safe-shape-only" })
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const summaryResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/discovery-coverage"
+    });
+    const summary = summaryResponse.json() as {
+      sessionId: string;
+      rawFrameCount: number;
+      recognizedCreateCount: number;
+      candidateCreatedCount: number;
+      unknownPayloadCount: number;
+      pipelineCompletedCount: number;
+      reconciliation: { maximumAbsoluteResidual: number };
+      localReconciliationStatus: string;
+      upstreamCoverageStatus: string;
+    };
+    expect(summaryResponse.statusCode).toBe(200);
+    expect(summary).toMatchObject({
+      rawFrameCount: 2,
+      recognizedCreateCount: 1,
+      candidateCreatedCount: 1,
+      unknownPayloadCount: 1,
+      pipelineCompletedCount: 1,
+      localReconciliationStatus: "LOCALLY_RECONCILED",
+      upstreamCoverageStatus: "UNPROVEN"
+    });
+    expect(summary.reconciliation.maximumAbsoluteResidual).toBe(0);
+
+    const eventsResponse = await server.app.inject({
+      method: "GET",
+      url: `/runtime/discovery-coverage/events?sessionId=${summary.sessionId}&eventType=create&limit=1&offset=0`
+    });
+    const eventsBody = eventsResponse.json() as { events: unknown[] };
+    expect(eventsResponse.statusCode).toBe(200);
+    expect(eventsBody.events).toHaveLength(1);
+    expect(JSON.stringify(eventsBody)).not.toContain("safe-shape-only");
+
+    const stopResponse = await server.app.inject({
+      method: "POST",
+      url: "/runtime/live-discovery/stop"
+    });
+    expect(stopResponse.statusCode).toBe(200);
+    const sessionResponse = await server.app.inject({
+      method: "GET",
+      url: `/runtime/discovery-coverage/sessions/${summary.sessionId}`
+    });
+    expect(sessionResponse.json()).toMatchObject({
+      stopReason: "bounded_run_complete",
+      upstreamCoverageStatus: "UNPROVEN"
+    });
+  });
+
   it("uses one conservative local runtime configuration by default", () => {
     const config = loadApiConfig({});
 

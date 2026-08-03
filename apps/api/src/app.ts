@@ -54,6 +54,7 @@ import { scoreCandidate } from "@axi/scoring";
 import type { LightningTradePlan } from "@axi/pumpportal-lightning";
 import {
   BotModeSchema,
+  DiscoveryCoverageEventQuerySchema,
   type BotMode,
   type ChainVerificationSummary,
   type CandidateDecision,
@@ -83,11 +84,15 @@ import {
 } from "@axi/shared";
 import {
   closeStorage,
+  findDiscoveryCoverageEventBySourceKey,
+  getDiscoveryCoverageSession,
   getLatestChainVerification,
   getStorageStats,
   initStorage,
   listChainVerifications,
   listCapacitySnapshots,
+  listDiscoveryCoverageEvents,
+  listDiscoveryCoverageSessions,
   saveLiveFeedEvent,
   saveLightningTradePlan,
   listPaperOrders,
@@ -97,6 +102,9 @@ import {
   saveCapacitySnapshot,
   saveChainVerification,
   saveFeedEvent,
+  saveDiscoveryCoverageConnectionEvent,
+  saveDiscoveryCoverageEvent,
+  saveDiscoveryCoverageSession,
   savePaperOrder,
   savePumpPortalWalletStatusSnapshot,
   saveRiskSnapshot,
@@ -128,6 +136,10 @@ import {
   upsertPaperPosition
 } from "@axi/storage";
 import type { WatchOrchestratorOptions } from "@axi/watch-orchestrator";
+import {
+  createDiscoveryCoverageService,
+  type DiscoveryCoverageService
+} from "./discovery-coverage-service";
 import {
   ChainVerifierUnavailableError,
   createChainVerifierService,
@@ -1389,6 +1401,7 @@ export type ApiServer = {
   chainVerifier: ChainVerifierService;
   watchOrchestration: WatchOrchestrationService;
   actualData: ActualDataService;
+  discoveryCoverage: DiscoveryCoverageService;
   launchScanner: LaunchScannerService;
   meteredLaunchData: MeteredLaunchDataService;
   runtimeControl: RuntimeControlService;
@@ -1975,6 +1988,26 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   });
   const runtimeSessionId = randomUUID();
   const runtimeSessionStartedAt = new Date().toISOString();
+  const discoveryCoverage = createDiscoveryCoverageService({
+    sessionId: runtimeSessionId,
+    provider: feed.name,
+    sourceMode: dataFeedMode,
+    startedAt: runtimeSessionStartedAt,
+    persistence: {
+      saveSession: saveDiscoveryCoverageSession,
+      saveEvent: saveDiscoveryCoverageEvent,
+      saveConnectionEvent: saveDiscoveryCoverageConnectionEvent,
+      findEventBySourceKey: findDiscoveryCoverageEventBySourceKey,
+      getSession: getDiscoveryCoverageSession,
+      listSessions: listDiscoveryCoverageSessions,
+      listEvents: listDiscoveryCoverageEvents
+    }
+  });
+  if (feed instanceof PumpPortalFeedProvider) {
+    feed.setDiscoveryInstrumentation(
+      discoveryCoverage.createFeedInstrumentation()
+    );
+  }
   let canCaptureCoveredMint: (mint: string) => boolean = () => false;
   const calibrationCapture = createCalibrationCaptureService({
     runtimeSessionId,
@@ -2170,7 +2203,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     refreshTradingWallet: () =>
       pumpPortalWallets.refreshBalances({ force: true }),
     restartLiveDiscovery: async () => {
-      await stopFeed();
+      await stopFeed(null);
       startFeed();
     },
     runtimeMode: dataFeedMode,
@@ -3126,6 +3159,53 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       tradingDisabled: true
     };
   });
+
+  app.get("/runtime/discovery-coverage", async () =>
+    discoveryCoverage.getSummary()
+  );
+
+  app.get("/runtime/discovery-coverage/events", async (request) => {
+    const query = DiscoveryCoverageEventQuerySchema.parse(request.query);
+    return {
+      schemaVersion: "discovery-coverage-v1",
+      events: discoveryCoverage.listEvents(query),
+      limit: query.limit,
+      offset: query.offset,
+      paperOnly: true,
+      paidStreamsActive: false,
+      liveTradingEnabled: false
+    };
+  });
+
+  app.get("/runtime/discovery-coverage/sessions", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return {
+      schemaVersion: "discovery-coverage-v1",
+      sessions: discoveryCoverage.listSessions(query.limit),
+      paperOnly: true,
+      paidStreamsActive: false,
+      liveTradingEnabled: false
+    };
+  });
+
+  app.get(
+    "/runtime/discovery-coverage/sessions/:sessionId",
+    async (request, reply) => {
+      const params = z
+        .object({ sessionId: z.string().min(1) })
+        .parse(request.params);
+      const session = discoveryCoverage.getSession(params.sessionId);
+      if (!session) {
+        return reply.code(404).send({
+          error: "DISCOVERY_COVERAGE_SESSION_NOT_FOUND",
+          paperOnly: true,
+          paidStreamsActive: false,
+          liveTradingEnabled: false
+        });
+      }
+      return session;
+    }
+  );
 
   app.get("/runtime/diagnostics", async () => runtimeControl.getDiagnostics());
 
@@ -4611,8 +4691,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   });
 
   app.addHook("onClose", async () => {
-    await chainEvents.stop();
-    await stopFeed();
+    try {
+      await chainEvents.stop();
+      await stopFeed(null);
+    } finally {
+      discoveryCoverage.finalize("server_shutdown");
+    }
     paperOperations.stop("server shutdown");
     calibrationCapture.interrupt("runtime_closed");
     paperAutomation.stop();
@@ -4654,14 +4738,24 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     void chainEvents.start();
   }
 
-  async function stopFeed(): Promise<void> {
+  async function stopFeed(
+    coverageStopReason: string | null = "bounded_run_complete"
+  ): Promise<void> {
     if (!feedStarted) {
+      if (coverageStopReason) {
+        discoveryCoverage.finalize(coverageStopReason);
+      }
       return;
     }
 
     feedStarted = false;
-    await feed.stop();
-    flushFeedEventQueue();
+    let feedStopError: unknown = null;
+    try {
+      await feed.stop();
+      flushFeedEventQueue();
+    } catch (error) {
+      feedStopError = error;
+    }
     paperOperations.stop("runtime feed stopped");
     meteredLaunchData.stop();
     disarmPaidData("feed_stop");
@@ -4671,6 +4765,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     paperPortfolio.stop();
     actualData.stop();
     await chainEvents.stop();
+    if (coverageStopReason) {
+      discoveryCoverage.finalize(coverageStopReason);
+    }
+    if (feedStopError) {
+      throw feedStopError;
+    }
   }
 
   function getFeedStatus() {
@@ -6904,6 +7004,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   let feedEventDrainScheduled = false;
 
   function enqueueFeedEvent(event: FeedEvent): void {
+    discoveryCoverage.markQueueAccepted(event);
     pendingFeedEvents.push(event);
     scheduleFeedEventDrain();
   }
@@ -6919,7 +7020,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       try {
         drainFeedEventBatch();
       } catch (error) {
-        pendingFeedEvents.length = 0;
+        const dropped = pendingFeedEvents.splice(0);
+        discoveryCoverage.markQueueFailedOrDropped(
+          dropped,
+          "pending_queue_cleared",
+          safeDiscoveryErrorClass(error)
+        );
         meteredLaunchData.stop();
         disarmPaidData("feed_event_processing_error");
         app.log.error({ error }, "Feed event batch failed; paid data stopped");
@@ -6935,16 +7041,41 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       return;
     }
 
-    runStorageTransaction(() => {
-      for (const event of batch) {
-        processFeedEvent(event);
-      }
-    });
+    for (const event of batch) {
+      discoveryCoverage.markQueueTransactionStarted(event);
+    }
+
+    try {
+      runStorageTransaction(() => {
+        for (const event of batch) {
+          processFeedEvent(event);
+        }
+      });
+    } catch (error) {
+      discoveryCoverage.markQueueFailedOrDropped(
+        batch,
+        "queue_transaction_failed",
+        safeDiscoveryErrorClass(error)
+      );
+      throw error;
+    }
+
+    discoveryCoverage.markQueueCommittedAndPipelineCompleted(batch);
   }
 
   function flushFeedEventQueue(): void {
-    while (pendingFeedEvents.length > 0) {
-      drainFeedEventBatch();
+    try {
+      while (pendingFeedEvents.length > 0) {
+        drainFeedEventBatch();
+      }
+    } catch (error) {
+      const dropped = pendingFeedEvents.splice(0);
+      discoveryCoverage.markQueueFailedOrDropped(
+        dropped,
+        "pending_queue_cleared_during_flush",
+        safeDiscoveryErrorClass(error)
+      );
+      throw error;
     }
   }
 
@@ -6960,6 +7091,20 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       return;
     }
 
+    const discoveryMint =
+      event.discoveryCoverage && event.type === "token_created"
+        ? event.candidate.mint
+        : null;
+    const identityExisted = discoveryMint
+      ? tokenIdentity.getIdentity(discoveryMint) !== undefined
+      : false;
+    const liveTokenExisted = discoveryMint
+      ? liveTokens.getLiveToken(discoveryMint) !== undefined
+      : false;
+    const launchCandidateExisted = discoveryMint
+      ? launchScanner.getCandidate(discoveryMint) !== null
+      : false;
+
     const actualDataSummary =
       event.type === "trade" && event.source === "pumpportal"
         ? actualData.handlePumpPortalTradeEvent(event)
@@ -6967,6 +7112,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     indexerAdapter.ingestFeedEvent(event);
     const identity = tokenIdentity.ingestFeedEvent(event);
     const identitySummary = toTokenIdentitySummary(identity);
+    discoveryCoverage.markIdentityCompleted(event, !identityExisted);
 
     saveFeedEvent(event);
     const rollingMetrics = metricsEngine.ingestFeedEvent(event);
@@ -7039,6 +7185,13 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     saveRiskSnapshot(riskSnapshot);
     candidateEngine.updateRisk(candidate.mint, riskSnapshot);
     const launchCandidateView = launchScanner.ingestFeedEvent(event);
+    if (launchCandidateView) {
+      discoveryCoverage.markCandidateCompleted(
+        event,
+        !launchCandidateExisted
+      );
+      discoveryCoverage.markScoreCompleted(event);
+    }
 
     if (event.type === "trade" && event.source === "pumpportal") {
       meteredLaunchData.handlePumpPortalTokenTrade(event);
@@ -7098,6 +7251,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         payload: event,
         createdAt: event.timestamp
       });
+      discoveryCoverage.markLiveTokenCompleted(event, !liveTokenExisted);
 
       if (liveCardEnrichment.enabled && liveCardEnrichment.onNewToken) {
         void enrichLiveCardToken(liveToken.mint, "on_new_token").catch(
@@ -7140,6 +7294,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     paperAutomation.observeSignal(signal);
     paperPortfolio.evaluateEntrySignal(signal);
     paperPortfolio.evaluateExits();
+    discoveryCoverage.markPersistenceCompleted(event);
+
+    if (
+      discoveryMint &&
+      getMomentumScannerRows().some((row) => row.mint === discoveryMint)
+    ) {
+      discoveryCoverage.markScannerProjected(event);
+    }
 
     if (
       paperAutoOrder &&
@@ -7167,10 +7329,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       );
     }
 
+    discoveryCoverage.markBroadcastAttempted(event);
     broadcast({
       type: "signal",
       signal
     });
+    discoveryCoverage.markBroadcastCompleted(event, clients.size);
 
     if (shouldVerifyOnChain) {
       void verifyAndApplyChainResult({
@@ -7646,6 +7810,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     candidates: candidateEngine,
     chainEvents,
     close: () => app.close(),
+    discoveryCoverage,
     emitFeedEvent: handleFeedEvent,
     feed,
     getSignals: () => Array.from(signals.values()),
@@ -7689,6 +7854,12 @@ function sendDeprecatedTrackingRoute(
     dataOnly: true,
     tradingDisabled: true
   });
+}
+
+function safeDiscoveryErrorClass(error: unknown): string {
+  return error instanceof Error && error.name
+    ? error.name.toUpperCase()
+    : "UNKNOWN_ERROR";
 }
 
 function toLiveCardCompleteness(

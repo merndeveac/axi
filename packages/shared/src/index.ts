@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export * from "./discovery-coverage";
+
 export const BotModeSchema = z.enum(["paper", "manual", "live"]);
 export type BotMode = z.infer<typeof BotModeSchema>;
 

@@ -2570,6 +2570,83 @@ The extension currently connects to the local backend, stores signals by mint,
 and exposes lightweight debug state. It does not assume Axiom DOM selectors and
 does not attach to token cards yet.
 
+## Discovery Coverage Instrumentation
+
+The PumpPortal discovery path records sanitized, versioned
+`discovery-coverage-v1` evidence from the first locally received WebSocket
+frame through parser classification, normalization, deduplication, the API
+queue, durable processing, token identity, live-token state, launch candidate
+and score persistence, scanner projection, and local WebSocket broadcast. Raw
+payload bodies, provider URLs, headers, credentials, and private configuration
+are not stored in the coverage tables or returned by the coverage endpoints.
+
+Local ingress reconciles these identities:
+
+```text
+raw_received = parse_failed + recognized_create + recognized_migration
+             + recognized_non_discovery + unknown_payload
+raw_received = parse_succeeded + parse_failed
+parse_succeeded = recognized_create + recognized_migration
+                + recognized_non_discovery + unknown_payload
+recognized_discovery = normalization_succeeded + normalization_rejected
+normalization_succeeded = pipeline_completed + duplicate + rejected
+                        + failed_or_dropped
+queue_accepted = queue_committed + queue_failed
+```
+
+`pipeline_completed` requires identity, live token, launch candidate, launch
+score, persistence, and scanner projection stages. A duplicate never enters the
+API queue. A transaction failure gives every event in the failed batch, plus
+every event cleared from the pending queue, an explicit durable
+`failed_or_dropped` outcome. Create and migration keys include their distinct
+event type, so one mint can retain one identity while producing separate create
+and migration discovery events.
+
+Latency evidence uses monotonic time for in-process durations and wall time for
+persisted/provider comparisons. Summaries include available and unavailable
+counts plus min/p50/p95/p99/max. Provider-to-receive remains unavailable when
+the payload has no provider timestamp. The existing pipeline performs
+downstream work inside its SQLite transaction, before the durable commit is
+observable; therefore commit-to-downstream samples are reported as unavailable
+rather than fabricated, while the corresponding transaction-start-to-stage
+and receive-to-stage measurements remain available.
+
+Reconnect evidence records attempts, disconnect duration, subscription replay,
+and sanitized close classifications. PumpPortal exposes no launch sequence or
+replay cursor in this integration, so a reconnect gap remains `UNPROVEN` even
+when subscriptions were replayed. `LOCALLY_RECONCILED` only means AXI accounted
+for every frame this process received. It does not prove PumpPortal delivered
+every launch; upstream coverage remains `UNPROVEN` without an independent
+comparator or provider sequence.
+
+Read-only endpoints:
+
+- `GET /runtime/discovery-coverage`
+- `GET /runtime/discovery-coverage/events`
+- `GET /runtime/discovery-coverage/sessions`
+- `GET /runtime/discovery-coverage/sessions/:sessionId`
+
+The Data tab shows the same counters, latency percentiles, residuals, and the
+separate local/upstream verdicts. A panel-specific endpoint failure does not
+mark the rest of the dashboard offline.
+
+For a bounded free-discovery verification, first ensure AXI ports are free and
+the normal preflight passes, then launch with every paid, account-trade, paper
+entry/exit, and live-execution path explicitly off:
+
+```bash
+METERED_LAUNCH_DATA_ENABLED=false PUMPPORTAL_TOKEN_TRADES_ENABLED=false PUMPPORTAL_TOKEN_TRADES_ACK_METERED=false METERED_LAUNCH_DATA_ACK_COST=false EXIT_STRATEGY_ACCOUNT_TRADES_ENABLED=false EXIT_STRATEGY_ACCOUNT_TRADES_ACK_METERED=false PUMPPORTAL_LIGHTNING_ALLOW_LIVE_TRADING=false PUMPPORTAL_LIGHTNING_MANUAL_ARMED=false PAPER_ENTRY_ENABLED=false PAPER_EXIT_ENABLED=false pnpm axi:launch
+sleep 90
+curl -sS -X POST http://127.0.0.1:8787/runtime/live-discovery/stop
+curl -sS http://127.0.0.1:8787/runtime/discovery-coverage
+pnpm axi:stop
+```
+
+Only free `subscribeNewToken` and migration discovery subscriptions are allowed
+in that run. The instrumentation does not activate token trades, account
+trades, paid managed streams, paper automation, signing, SOL spending, or live
+execution.
+
 ## Optional Infrastructure
 
 `docker-compose.yml` includes optional Postgres and Redis services for later
@@ -2639,6 +2716,10 @@ docker compose --profile indexer up -d
 - `@axi/extension`: Chrome MV3 overlay skeleton.
 
 ## Branch Workflow
+
+- `dev/discovery-coverage-instrumentation` adds local PumpPortal frame and
+  pipeline reconciliation, latency/reconnect evidence, restart-safe SQLite
+  sessions, read-only diagnostics endpoints, and the Data-tab coverage panel.
 
 - `dev/scaffold-paper-mode` contains the initial scaffold and paper-mode SQLite
   persistence work.

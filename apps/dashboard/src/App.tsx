@@ -28,6 +28,7 @@ import {
   type LucideIcon
 } from "lucide-react";
 import type {
+  DiscoveryCoverageSession,
   LiveTokenCardViewModel,
   MomentumFeedResponse,
   MomentumFeedRow,
@@ -40,6 +41,11 @@ import type {
   TokenIdentitySummary
 } from "@axi/shared";
 import { DataPanel } from "./components/DataPanel";
+import {
+  DiscoveryCoveragePanel,
+  loadDiscoveryCoverage,
+  type DiscoveryCoveragePanelState
+} from "./components/DiscoveryCoveragePanel";
 import { MetricValue } from "./components/MetricValue";
 import { ReasonCodes } from "./components/ReasonCodes";
 import { Tooltip, TooltipProvider } from "./components/Tooltip";
@@ -1558,6 +1564,12 @@ export function App() {
     useState<PaperForwardEvaluationStatus | null>(null);
   const [runtimeCapacity, setRuntimeCapacity] =
     useState<RuntimeCapacityReport | null>(null);
+  const [discoveryCoverageState, setDiscoveryCoverageState] =
+    useState<DiscoveryCoveragePanelState>({
+      status: "loading",
+      session: null,
+      error: null
+    });
   const [runtimeActionStatus, setRuntimeActionStatus] =
     useState<string>("ready");
   const [liveCardEnrichmentStatus, setLiveCardEnrichmentStatus] =
@@ -1838,6 +1850,29 @@ export function App() {
     const timer = window.setInterval(() => {
       void loadDashboardData();
     }, 30000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadCoverage = async () => {
+      const nextState = await loadDiscoveryCoverage(() =>
+        fetchJson<DiscoveryCoverageSession>("/runtime/discovery-coverage")
+      );
+      if (!cancelled) {
+        setDiscoveryCoverageState(nextState);
+      }
+    };
+
+    void loadCoverage();
+    const timer = window.setInterval(() => {
+      void loadCoverage();
+    }, 10_000);
 
     return () => {
       cancelled = true;
@@ -2213,6 +2248,7 @@ export function App() {
                 chainStatus={chainStatus}
                 dataWalletStatus={dataWalletStatus}
                 diagnostics={momentumDiagnostics}
+                discoveryCoverageState={discoveryCoverageState}
                 lightningStatus={lightningStatus}
                 feedStatus={feedStatus}
                 liveCardEnrichmentStatus={liveCardEnrichmentStatus}
@@ -5294,6 +5330,7 @@ function DataTab({
   chainStatus,
   dataWalletStatus,
   diagnostics,
+  discoveryCoverageState,
   lightningStatus,
   feedStatus,
   indexerStatus,
@@ -5317,6 +5354,7 @@ function DataTab({
   chainStatus: ChainStatus | null;
   dataWalletStatus: PumpPortalDataWalletStatus | null;
   diagnostics: MomentumDiagnostics | null;
+  discoveryCoverageState: DiscoveryCoveragePanelState;
   lightningStatus: LightningStatus | null;
   feedStatus: FeedStatus | null;
   indexerStatus: IndexerStatus | null;
@@ -5356,6 +5394,7 @@ function DataTab({
           </p>
         </div>
       </div>
+      <DiscoveryCoveragePanel state={discoveryCoverageState} />
       <DataPanel
         ariaLabel="Momentum scanner diagnostics"
         meta={<span>FIELD AVAILABILITY</span>}

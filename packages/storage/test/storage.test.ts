@@ -10,9 +10,12 @@ import type {
 import type { MarketObservation } from "@axi/market-data";
 import type {
   CandidateDecision,
+  DiscoveryCoverageEvent,
+  DiscoveryCoverageSession,
   OverlaySignal,
   RiskSnapshot
 } from "@axi/shared";
+import { discoveryCoverageLatencyKeys } from "@axi/shared";
 import type { CalibrationDataset } from "@axi/session-capture";
 import {
   createCalibrationCaptureSession,
@@ -56,6 +59,7 @@ import {
   getChainTradeEvent,
   getChainTransactionEvent,
   getLatestChainVerification,
+  getDiscoveryCoverageSession,
   getActiveCalibrationCaptureSessionForRuntime,
   getCalibrationCaptureSession,
   getCalibrationCaptureObservationCounts,
@@ -79,6 +83,8 @@ import {
   getLatestWatchPlan,
   getLightningTradePlan,
   listLiveFeedEvents,
+  listDiscoveryCoverageEvents,
+  listDiscoveryCoverageSessions,
   listLiveFeedEventsByMint,
   listLiveFeedEventsBySession,
   listLightningTradePlans,
@@ -180,6 +186,9 @@ import {
   saveChainTradeEvent,
   saveChainTransactionEvent,
   saveFeedEvent,
+  saveDiscoveryCoverageConnectionEvent,
+  saveDiscoveryCoverageEvent,
+  saveDiscoveryCoverageSession,
   saveLiveFeedEvent,
   saveLightningTradePlan,
   saveExitRule,
@@ -311,6 +320,88 @@ afterEach(() => {
 });
 
 describe("@axi/storage", () => {
+  it("persists restart-safe discovery coverage evidence and finalizes once", () => {
+    initStorage({ databasePath });
+    const active = createDiscoveryCoverageSession();
+    saveDiscoveryCoverageSession(active);
+    saveDiscoveryCoverageEvent(createDiscoveryCoverageEvent());
+    saveDiscoveryCoverageConnectionEvent({
+      schemaVersion: "discovery-coverage-v1",
+      connectionEventId: "coverage-session:connection-1",
+      sessionId: active.sessionId,
+      eventType: "connection_opened",
+      connectionId: "connection-1",
+      attemptedAt: null,
+      connectedAt: "2026-08-02T00:00:00.000Z",
+      disconnectedAt: null,
+      disconnectedDurationMs: null,
+      reconnectAttempt: 0,
+      replayAttempted: false,
+      replayResult: null,
+      gapStatus: "not_applicable",
+      safeReason: null,
+      adjacentCorrelationId: null,
+      createdAt: "2026-08-02T00:00:00.000Z"
+    });
+    const finalized = {
+      ...active,
+      stoppedAt: "2026-08-02T00:01:00.000Z",
+      stopReason: "bounded_run_complete",
+      updatedAt: "2026-08-02T00:01:00.000Z"
+    };
+    saveDiscoveryCoverageSession(finalized);
+    saveDiscoveryCoverageSession(finalized);
+
+    expect(listDiscoveryCoverageSessions(10)).toHaveLength(1);
+    expect(
+      listDiscoveryCoverageEvents({
+        sessionId: active.sessionId,
+        eventType: "create",
+        limit: 10,
+        offset: 0
+      })
+    ).toHaveLength(1);
+    expect(() =>
+      saveDiscoveryCoverageSession({
+        ...finalized,
+        stoppedAt: "2026-08-02T00:02:00.000Z"
+      })
+    ).toThrow("cannot be changed");
+
+    closeStorage();
+    initStorage({ databasePath });
+    expect(getDiscoveryCoverageSession(active.sessionId)).toMatchObject({
+      stoppedAt: "2026-08-02T00:01:00.000Z",
+      stopReason: "bounded_run_complete",
+      upstreamCoverageStatus: "UNPROVEN"
+    });
+    expect(getStorageStats()).toMatchObject({
+      discoveryCoverageSessionCount: 1,
+      discoveryCoverageEventCount: 1,
+      discoveryCoverageConnectionEventCount: 1
+    });
+  });
+
+  it("preserves create and migration feed event types", () => {
+    initStorage({ databasePath });
+    const event = createFeedEvent();
+    saveFeedEvent({
+      ...event,
+      source: "pumpportal",
+      rawSourceEventType: "new_token"
+    });
+    saveFeedEvent({
+      ...event,
+      source: "pumpportal",
+      rawSourceEventType: "migration"
+    });
+    expect(
+      listFeedEvents(10)
+        .map((stored) => stored.eventType)
+        .sort()
+    ).toEqual(["create", "migration"]);
+  });
+
   it("commits and rolls back synchronous storage transactions", () => {
     initStorage({ databasePath });
     runStorageTransaction(() => {
@@ -2317,6 +2408,119 @@ describe("@axi/storage", () => {
     expect(watchActionReplayItems[0]?.source).toBe("watch_actions");
   });
 });
+
+function createDiscoveryCoverageSession(): DiscoveryCoverageSession {
+  const latencyDistributions = Object.fromEntries(
+    discoveryCoverageLatencyKeys.map((key) => [
+      key,
+      {
+        availableCount: 0,
+        unavailableCount: 0,
+        min: null,
+        p50: null,
+        p95: null,
+        p99: null,
+        max: null
+      }
+    ])
+  ) as DiscoveryCoverageSession["latencyDistributions"];
+  return {
+    schemaVersion: "discovery-coverage-v1",
+    sessionId: "coverage-session",
+    provider: "pumpportal",
+    sourceMode: "live",
+    startedAt: "2026-08-02T00:00:00.000Z",
+    stoppedAt: null,
+    stopReason: null,
+    observationDurationMs: 0,
+    connectionCount: 1,
+    reconnectAttemptCount: 0,
+    reconnectSuccessCount: 0,
+    disconnectedDurationMs: 0,
+    rawFrameCount: 1,
+    parsedFrameCount: 1,
+    parseFailureCount: 0,
+    recognizedCreateCount: 1,
+    recognizedMigrationCount: 0,
+    recognizedNonDiscoveryCount: 0,
+    unknownPayloadCount: 0,
+    normalizationSuccessCount: 1,
+    normalizationRejectCount: 0,
+    duplicateCount: 0,
+    rejectedCount: 0,
+    queueAcceptedCount: 1,
+    queueCommittedCount: 1,
+    queueFailureCount: 0,
+    pipelineCompletedCount: 1,
+    pipelineFailedOrDroppedCount: 0,
+    identityCreatedCount: 1,
+    identityUpdatedCount: 0,
+    liveTokenCreatedCount: 1,
+    liveTokenUpdatedCount: 0,
+    candidateCreatedCount: 1,
+    candidateUpdatedCount: 0,
+    scoreProducedCount: 1,
+    persistenceCompletedCount: 1,
+    scannerProjectedCount: 1,
+    broadcastAttemptedCount: 1,
+    broadcastCompletedCount: 1,
+    telemetryFailureCount: 0,
+    latencyDistributions,
+    reconciliation: {
+      maximumAbsoluteResidual: 0,
+      equations: [
+        {
+          name: "raw_parser_terminal",
+          left: 1,
+          right: 1,
+          residual: 0,
+          holds: true,
+          expression: "raw = terminal parser outcomes"
+        }
+      ]
+    },
+    localReconciliationStatus: "LOCALLY_RECONCILED",
+    upstreamCoverageStatus: "UNPROVEN",
+    reasonCodes: ["UPSTREAM_PROVIDER_COMPLETENESS_UNPROVEN"],
+    updatedAt: "2026-08-02T00:00:00.000Z",
+    paperOnly: true,
+    paidStreamsActive: false,
+    liveTradingEnabled: false
+  };
+}
+
+function createDiscoveryCoverageEvent(): DiscoveryCoverageEvent {
+  return {
+    schemaVersion: "discovery-coverage-v1",
+    sessionId: "coverage-session",
+    correlationId: "coverage-correlation-1",
+    sourceEventKey: "pumpportal:create:signature:one:index:0",
+    provider: "pumpportal",
+    receivedAt: "2026-08-02T00:00:00.000Z",
+    providerTimestamp: null,
+    eventType: "create",
+    mint,
+    signature: "one",
+    parserOutcome: "recognized_create",
+    normalizationOutcome: "succeeded",
+    pipelineOutcome: "completed",
+    duplicateKey: null,
+    duplicateReason: null,
+    rejectionReason: null,
+    failureStage: null,
+    failureReason: null,
+    safePayloadHash: "safe-shape-hash",
+    topLevelKeys: ["mint", "signature", "txType"],
+    stageTimestamps: {
+      raw_received: "2026-08-02T00:00:00.000Z",
+      pipeline_completed: "2026-08-02T00:00:01.000Z"
+    },
+    stageLatenciesMs: { receive_to_pipeline_complete: 1_000 },
+    reasonCodes: ["DISCOVERY_PIPELINE_COMPLETED"],
+    completedAt: "2026-08-02T00:00:01.000Z",
+    createdAt: "2026-08-02T00:00:00.000Z"
+  };
+}
 
 function createFeedEvent(timestamp = "2026-01-01T00:00:00.000Z"): FeedEvent {
   return {

@@ -67,7 +67,14 @@ import type {
 import {
   CandidateDecisionSchema,
   ChainVerificationStatusSchema,
+  DiscoveryCoverageConnectionEventSchema,
+  DiscoveryCoverageEventSchema,
+  DiscoveryCoverageSessionSchema,
   type ChainVerificationStatus,
+  type DiscoveryCoverageConnectionEvent,
+  type DiscoveryCoverageEvent,
+  type DiscoveryCoverageEventQuery,
+  type DiscoveryCoverageSession,
   OverlaySignalSchema,
   RiskSnapshotSchema,
   type CandidateDecision,
@@ -353,6 +360,9 @@ export type StorageStats = {
   watchedWalletTradeEventCount: number;
   exitRuleCount: number;
   exitSignalCount: number;
+  discoveryCoverageSessionCount: number;
+  discoveryCoverageEventCount: number;
+  discoveryCoverageConnectionEventCount: number;
   lastSignalAt: string | null;
 };
 
@@ -3240,6 +3250,12 @@ export function saveFeedEvent(event: FeedEvent): StoredFeedEvent {
   const parsed = feedEventSchema.parse(event) as FeedEvent;
   const mint = getFeedEventMint(parsed);
   const createdAt = getFeedEventTimestamp(parsed);
+  const eventType =
+    parsed.type === "token_created"
+      ? parsed.rawSourceEventType === "migration"
+        ? "migration"
+        : "create"
+      : parsed.type;
   const db = getDb();
 
   const result = db
@@ -3247,15 +3263,226 @@ export function saveFeedEvent(event: FeedEvent): StoredFeedEvent {
       `insert into feed_events (event_type, mint, payload_json, created_at)
        values (?, ?, ?, ?)`
     )
-    .run(parsed.type, mint, stringifyJson(parsed), createdAt);
+    .run(eventType, mint, stringifyJson(parsed), createdAt);
 
   return {
     id: toRowId(result.lastInsertRowid),
-    eventType: parsed.type,
+    eventType,
     mint,
     payload: parsed,
     createdAt
   };
+}
+
+export function saveDiscoveryCoverageSession(
+  input: DiscoveryCoverageSession
+): DiscoveryCoverageSession {
+  const session = DiscoveryCoverageSessionSchema.parse(input);
+  const db = getDb();
+  const existing = getDiscoveryCoverageSession(session.sessionId);
+
+  if (existing?.stoppedAt) {
+    if (
+      session.stoppedAt !== existing.stoppedAt ||
+      session.stopReason !== existing.stopReason
+    ) {
+      throw new Error(
+        "A finalized discovery coverage session cannot be changed."
+      );
+    }
+    return existing;
+  }
+
+  db.prepare(
+    `insert into discovery_coverage_sessions (
+      session_id,
+      provider,
+      source_mode,
+      local_reconciliation_status,
+      upstream_coverage_status,
+      raw_frame_count,
+      pipeline_completed_count,
+      payload_json,
+      started_at,
+      stopped_at,
+      updated_at
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    on conflict(session_id) do update set
+      provider = excluded.provider,
+      source_mode = excluded.source_mode,
+      local_reconciliation_status = excluded.local_reconciliation_status,
+      upstream_coverage_status = excluded.upstream_coverage_status,
+      raw_frame_count = excluded.raw_frame_count,
+      pipeline_completed_count = excluded.pipeline_completed_count,
+      payload_json = excluded.payload_json,
+      stopped_at = excluded.stopped_at,
+      updated_at = excluded.updated_at`
+  ).run(
+    session.sessionId,
+    session.provider,
+    session.sourceMode,
+    session.localReconciliationStatus,
+    session.upstreamCoverageStatus,
+    session.rawFrameCount,
+    session.pipelineCompletedCount,
+    stringifyJson(session),
+    session.startedAt,
+    session.stoppedAt,
+    session.updatedAt
+  );
+
+  return session;
+}
+
+export function getDiscoveryCoverageSession(
+  sessionId: string
+): DiscoveryCoverageSession | null {
+  const row = getDb()
+    .prepare(
+      `select payload_json
+       from discovery_coverage_sessions
+       where session_id = ?`
+    )
+    .get(sessionId) as { payload_json: string } | undefined;
+  return row ? mapDiscoveryCoverageSession(row.payload_json) : null;
+}
+
+export function listDiscoveryCoverageSessions(
+  limit = 25
+): DiscoveryCoverageSession[] {
+  const safeLimit = z.number().int().positive().max(1000).parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select payload_json
+       from discovery_coverage_sessions
+       order by started_at desc, id desc
+       limit ?`
+    )
+    .all(safeLimit) as { payload_json: string }[];
+  return rows.map((row) => mapDiscoveryCoverageSession(row.payload_json));
+}
+
+export function saveDiscoveryCoverageEvent(
+  input: DiscoveryCoverageEvent
+): DiscoveryCoverageEvent {
+  const event = DiscoveryCoverageEventSchema.parse(input);
+  getDb()
+    .prepare(
+      `insert into discovery_coverage_events (
+        session_id,
+        correlation_id,
+        source_event_key,
+        event_type,
+        mint,
+        parser_outcome,
+        normalization_outcome,
+        pipeline_outcome,
+        payload_json,
+        received_at,
+        completed_at,
+        created_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(session_id, correlation_id) do update set
+        source_event_key = excluded.source_event_key,
+        event_type = excluded.event_type,
+        mint = excluded.mint,
+        parser_outcome = excluded.parser_outcome,
+        normalization_outcome = excluded.normalization_outcome,
+        pipeline_outcome = excluded.pipeline_outcome,
+        payload_json = excluded.payload_json,
+        completed_at = excluded.completed_at`
+    )
+    .run(
+      event.sessionId,
+      event.correlationId,
+      event.sourceEventKey,
+      event.eventType,
+      event.mint,
+      event.parserOutcome,
+      event.normalizationOutcome,
+      event.pipelineOutcome,
+      stringifyJson(event),
+      event.receivedAt,
+      event.completedAt,
+      event.createdAt
+    );
+  return event;
+}
+
+export function findDiscoveryCoverageEventBySourceKey(
+  sourceEventKey: string,
+  eventType: "create" | "migration"
+): DiscoveryCoverageEvent | null {
+  const row = getDb()
+    .prepare(
+      `select payload_json
+       from discovery_coverage_events
+       where source_event_key = ? and event_type = ?
+       order by id desc
+       limit 1`
+    )
+    .get(sourceEventKey, eventType) as { payload_json: string } | undefined;
+  return row ? mapDiscoveryCoverageEvent(row.payload_json) : null;
+}
+
+export function listDiscoveryCoverageEvents(
+  input: DiscoveryCoverageEventQuery
+): DiscoveryCoverageEvent[] {
+  const query = input;
+  const clauses: string[] = [];
+  const parameters: Array<string | number> = [];
+  const addFilter = (column: string, value: string | undefined) => {
+    if (value !== undefined) {
+      clauses.push(`${column} = ?`);
+      parameters.push(value);
+    }
+  };
+
+  addFilter("session_id", query.sessionId);
+  addFilter("event_type", query.eventType);
+  addFilter("parser_outcome", query.parserOutcome);
+  addFilter("pipeline_outcome", query.pipelineOutcome);
+  addFilter("mint", query.mint);
+  const where = clauses.length > 0 ? `where ${clauses.join(" and ")}` : "";
+  const rows = getDb()
+    .prepare(
+      `select payload_json
+       from discovery_coverage_events
+       ${where}
+       order by received_at desc, id desc
+       limit ? offset ?`
+    )
+    .all(...parameters, query.limit, query.offset) as { payload_json: string }[];
+  return rows.map((row) => mapDiscoveryCoverageEvent(row.payload_json));
+}
+
+export function saveDiscoveryCoverageConnectionEvent(
+  input: DiscoveryCoverageConnectionEvent
+): DiscoveryCoverageConnectionEvent {
+  const event = DiscoveryCoverageConnectionEventSchema.parse(input);
+  getDb()
+    .prepare(
+      `insert into discovery_coverage_connection_events (
+        connection_event_id,
+        session_id,
+        event_type,
+        connection_id,
+        gap_status,
+        payload_json,
+        created_at
+      ) values (?, ?, ?, ?, ?, ?, ?)
+      on conflict(connection_event_id) do nothing`
+    )
+    .run(
+      event.connectionEventId,
+      event.sessionId,
+      event.eventType,
+      event.connectionId,
+      event.gapStatus,
+      stringifyJson(event),
+      event.createdAt
+    );
+  return event;
 }
 
 export function saveSignal(signal: OverlaySignal): StoredSignal {
@@ -8308,6 +8535,15 @@ export function getStorageStats(): StorageStats {
     watchedWalletTradeEventCount: countRows(db, "watched_wallet_trade_events"),
     exitRuleCount: countRows(db, "exit_rules"),
     exitSignalCount: countRows(db, "exit_signals"),
+    discoveryCoverageSessionCount: countRows(
+      db,
+      "discovery_coverage_sessions"
+    ),
+    discoveryCoverageEventCount: countRows(db, "discovery_coverage_events"),
+    discoveryCoverageConnectionEventCount: countRows(
+      db,
+      "discovery_coverage_connection_events"
+    ),
     lastSignalAt: lastSignal.last_signal_at
   };
 }
@@ -9630,6 +9866,79 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(24, "paper_forward_evidence_evaluation", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 25)) {
+    db.exec(`
+      create table if not exists discovery_coverage_sessions (
+        id integer primary key autoincrement,
+        session_id text not null unique,
+        provider text not null,
+        source_mode text not null,
+        local_reconciliation_status text not null,
+        upstream_coverage_status text not null,
+        raw_frame_count integer not null,
+        pipeline_completed_count integer not null,
+        payload_json text not null,
+        started_at text not null,
+        stopped_at text,
+        updated_at text not null
+      );
+
+      create index if not exists idx_discovery_coverage_sessions_started
+        on discovery_coverage_sessions(started_at);
+
+      create table if not exists discovery_coverage_events (
+        id integer primary key autoincrement,
+        session_id text not null,
+        correlation_id text not null,
+        source_event_key text,
+        event_type text not null,
+        mint text,
+        parser_outcome text not null,
+        normalization_outcome text not null,
+        pipeline_outcome text not null,
+        payload_json text not null,
+        received_at text not null,
+        completed_at text,
+        created_at text not null,
+        unique(session_id, correlation_id),
+        foreign key(session_id) references discovery_coverage_sessions(session_id)
+      );
+
+      create index if not exists idx_discovery_coverage_events_session
+        on discovery_coverage_events(session_id, received_at);
+      create index if not exists idx_discovery_coverage_events_source_key
+        on discovery_coverage_events(source_event_key, event_type);
+      create index if not exists idx_discovery_coverage_events_type_created
+        on discovery_coverage_events(event_type, created_at);
+      create index if not exists idx_discovery_coverage_events_mint
+        on discovery_coverage_events(mint, received_at);
+      create index if not exists idx_discovery_coverage_events_outcomes
+        on discovery_coverage_events(session_id, parser_outcome, pipeline_outcome);
+
+      create table if not exists discovery_coverage_connection_events (
+        id integer primary key autoincrement,
+        connection_event_id text not null unique,
+        session_id text not null,
+        event_type text not null,
+        connection_id text not null,
+        gap_status text not null,
+        payload_json text not null,
+        created_at text not null,
+        foreign key(session_id) references discovery_coverage_sessions(session_id)
+      );
+
+      create index if not exists idx_discovery_coverage_connection_session
+        on discovery_coverage_connection_events(session_id, created_at);
+      create index if not exists idx_discovery_coverage_connection_type
+        on discovery_coverage_connection_events(session_id, event_type, created_at);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(25, "discovery_coverage_instrumentation", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -10945,6 +11254,18 @@ function mapCandidateDecisionRow(
     payload: CandidateDecisionSchema.parse(JSON.parse(row.payload_json)),
     createdAt: row.created_at
   };
+}
+
+function mapDiscoveryCoverageSession(
+  payloadJson: string
+): DiscoveryCoverageSession {
+  return DiscoveryCoverageSessionSchema.parse(JSON.parse(payloadJson));
+}
+
+function mapDiscoveryCoverageEvent(
+  payloadJson: string
+): DiscoveryCoverageEvent {
+  return DiscoveryCoverageEventSchema.parse(JSON.parse(payloadJson));
 }
 
 function toRowId(rowId: number | bigint): number {
