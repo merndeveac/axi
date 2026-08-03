@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { AppRoute } from "./app/navigation";
-import { RoutePlaceholder, ScannerRoute } from "./app/routes";
+import { ScannerRoute, WorkflowRoute } from "./app/routes";
 import { AppShell } from "./components/layout/AppShell";
 import { TooltipProvider } from "./components/primitives/Tooltip";
 import { dashboardQueryClient } from "./data/query-client";
@@ -24,7 +24,7 @@ function GoldenPathRouter() {
   return (
     <TooltipProvider delayDuration={250}>
       <AppShell route={route} onNavigate={setRoute}>
-        {route === "scanner" ? <ScannerRoute /> : <RoutePlaceholder route={route} />}
+        {route === "scanner" ? <ScannerRoute /> : <WorkflowRoute route={route} />}
       </AppShell>
     </TooltipProvider>
   );

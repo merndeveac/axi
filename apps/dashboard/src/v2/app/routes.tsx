@@ -1,6 +1,8 @@
 import type { AppRoute } from "./navigation";
 import { routeLabels } from "./navigation";
 import { ScannerPage } from "../features/scanner/ScannerPage";
+import { PositionsPage } from "../features/positions/PositionsPage";
+import { ResearchPage } from "../features/research/ResearchPage";
 
 export function RoutePlaceholder({ route }: { route: Exclude<AppRoute, "scanner"> }) {
   return (
@@ -18,4 +20,10 @@ export function RoutePlaceholder({ route }: { route: Exclude<AppRoute, "scanner"
 
 export function ScannerRoute() {
   return <ScannerPage />;
+}
+
+export function WorkflowRoute({ route }: { route: Exclude<AppRoute, "scanner"> }) {
+  if (route === "positions") return <PositionsPage />;
+  if (route === "research") return <ResearchPage />;
+  return <RoutePlaceholder route={route} />;
 }

@@ -9,21 +9,27 @@ import { ScannerToolbar, type ScannerDensity } from "./ScannerToolbar";
 import { ScannerVirtualList } from "./ScannerVirtualList";
 import { SelectedTokenPreview } from "./SelectedTokenPreview";
 import { sortScannerRows, type ScannerSort } from "./sorting";
+import { TokenResearchSurface } from "../research/TokenResearchSurface";
 import "./scanner.css";
 
 export function ScannerPage() {
   const [activeOnly, setActiveOnly] = useState(true);
+  const [researchSelection, setResearchSelection] = useState<MomentumScannerSummaryV2 | null>(null);
   const scanner = useRealtimeScanner({ limit: 100, activeOnly });
   const rows = scanner.rows.length > 0 ? scanner.rows : [...goldenScannerRows];
   return (
-    <ScannerPageView
-      rows={rows}
-      totalActive={scanner.data?.totalActive ?? rows.length}
-      streamState={scanner.isSuccess ? (scanner.streamState.needsReconciliation ? "reconciling" : "live") : scanner.isError ? "offline" : "reconciling"}
-      stale={scanner.isError && rows.length > 0}
-      activeOnly={activeOnly}
-      onActiveOnly={setActiveOnly}
-    />
+    <>
+      <ScannerPageView
+        rows={rows}
+        totalActive={scanner.data?.totalActive ?? rows.length}
+        streamState={scanner.isSuccess ? (scanner.streamState.needsReconciliation ? "reconciling" : "live") : scanner.isError ? "offline" : "reconciling"}
+        stale={scanner.isError && rows.length > 0}
+        activeOnly={activeOnly}
+        onActiveOnly={setActiveOnly}
+        onSelectionChange={setResearchSelection}
+      />
+      <TokenResearchSurface summary={researchSelection} onClose={() => setResearchSelection(null)} />
+    </>
   );
 }
 
@@ -33,7 +39,8 @@ export function ScannerPageView({
   streamState = "live",
   stale = false,
   activeOnly = true,
-  onActiveOnly = () => undefined
+  onActiveOnly = () => undefined,
+  onSelectionChange = () => undefined
 }: {
   rows: MomentumScannerSummaryV2[];
   totalActive?: number;
@@ -41,6 +48,7 @@ export function ScannerPageView({
   stale?: boolean;
   activeOnly?: boolean;
   onActiveOnly?: (active: boolean) => void;
+  onSelectionChange?: (row: MomentumScannerSummaryV2 | null) => void;
 }) {
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
@@ -67,7 +75,14 @@ export function ScannerPageView({
 
   function selectMint(mint: string) {
     setSelectedMint(mint);
-    setPinnedSelection(rows.find((row) => row.mint === mint) ?? null);
+    const row = rows.find((candidate) => candidate.mint === mint) ?? null;
+    setPinnedSelection(row);
+    onSelectionChange(row);
+  }
+
+  function closeSelection() {
+    setSelectedMint(null);
+    onSelectionChange(null);
   }
 
   return (
@@ -93,7 +108,7 @@ export function ScannerPageView({
       />
       <ScannerSummary visible={visibleRows.length} total={totalActive} streamState={streamState} stale={stale} />
       <div className="axi-v2-selected-slot">
-        {selected ? <SelectedTokenPreview row={selected} onClose={() => setSelectedMint(null)} /> : null}
+        {selected ? <SelectedTokenPreview row={selected} onClose={closeSelection} /> : null}
       </div>
       <ScannerVirtualList rows={visibleRows} selectedMint={selectedMint} onSelect={selectMint} density={density} />
     </section>
