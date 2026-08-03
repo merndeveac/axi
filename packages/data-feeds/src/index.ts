@@ -11,6 +11,9 @@ import type {
   QuoteAsset,
   RiskFlags,
   RollingMetrics,
+  TradeAmountNormalizationMode,
+  TradeDataParserOutcome,
+  TradeDataSubscriptionEventType,
   TokenCandidate,
   TokenId
 } from "@axi/shared";
@@ -40,6 +43,16 @@ export type NormalizedFeedMetadata = {
   reasonCodes?: string[] | undefined;
   signature?: string | undefined;
   source: FeedSource;
+  tradeCoverage?: TradeDataCoverageFeedMetadata | undefined;
+};
+
+export type TradeDataCoverageFeedMetadata = {
+  schemaVersion: "trade-data-coverage-v1";
+  sessionId: string;
+  correlationId: string;
+  sourceEventKey: string;
+  receivedAtMonotonicMs: number;
+  normalizedAtMonotonicMs: number;
 };
 
 export type TokenTradeEvent = NormalizedFeedMetadata & {
@@ -67,6 +80,14 @@ export type TokenTradeEvent = NormalizedFeedMetadata & {
   usableForMetrics?: boolean;
   confidence?: ObservationConfidence;
   tokenAmount?: number;
+  rawSolAmount?: number | null;
+  rawTokenAmount?: number | null;
+  amountNormalizationMode?: TradeAmountNormalizationMode;
+  eventIndex?: string | null;
+  providerTimestamp?: string | null;
+  marketCapSol?: number | null;
+  virtualTokenReserves?: number | null;
+  virtualSolReserves?: number | null;
   trader?: string;
   metrics: RollingMetrics;
   marketObservation?: MarketObservationSummary;
@@ -148,6 +169,7 @@ export type PumpPortalFeedProviderOptions = {
   subscribeMigration?: boolean;
   subscribeNewToken?: boolean;
   discoveryInstrumentation?: PumpPortalDiscoveryInstrumentation;
+  tradeInstrumentation?: PumpPortalTradeInstrumentation;
   webSocketConstructor?: WebSocketConstructor;
   wsUrl?: string | undefined;
 };
@@ -196,14 +218,63 @@ export type PumpPortalDiscoveryConnectionObservation = {
 
 export type PumpPortalDiscoveryInstrumentation = {
   onRawFrame: (observation: PumpPortalDiscoveryFrameObservation) => void;
-  onParserOutcome: (
-    observation: PumpPortalDiscoveryParserObservation
-  ) => void;
+  onParserOutcome: (observation: PumpPortalDiscoveryParserObservation) => void;
   onNormalizationOutcome: (
     observation: PumpPortalDiscoveryNormalizationObservation
   ) => PumpPortalDiscoveryNormalizationResult | null;
   onConnectionEvent: (
     observation: PumpPortalDiscoveryConnectionObservation
+  ) => void;
+  onInstrumentationFailure?: (input: {
+    stage: string;
+    safeReason: string;
+  }) => void;
+};
+
+export type PumpPortalTradeFrameObservation =
+  PumpPortalDiscoveryFrameObservation;
+
+export type PumpPortalTradeParserObservation =
+  PumpPortalTradeFrameObservation & {
+    parserOutcome: Exclude<TradeDataParserOutcome, "pending">;
+    providerTimestamp: string | null;
+    safePayloadHash: string | null;
+    topLevelKeys: string[];
+    rejectionReason: string | null;
+  };
+
+export type PumpPortalTradeNormalizationObservation =
+  PumpPortalTradeParserObservation & {
+    event: TokenTradeEvent | null;
+    normalizedAt: string;
+    normalizedAtMonotonicMs: number;
+  };
+
+export type PumpPortalTradeNormalizationResult = {
+  acceptedForPipeline: boolean;
+  duplicate: boolean;
+  duplicateKey: string | null;
+  duplicateReason: string | null;
+  rejectionReason: string | null;
+  metadata: TradeDataCoverageFeedMetadata | null;
+};
+
+export type PumpPortalTradeSubscriptionObservation = {
+  eventType: TradeDataSubscriptionEventType;
+  mint: string | null;
+  timestamp: string;
+  safeReason: string | null;
+  reasonCodes: string[];
+};
+
+export type PumpPortalTradeInstrumentation = {
+  onRawFrame: (observation: PumpPortalTradeFrameObservation) => void;
+  onParserOutcome: (observation: PumpPortalTradeParserObservation) => void;
+  onNormalizationOutcome: (
+    observation: PumpPortalTradeNormalizationObservation
+  ) => PumpPortalTradeNormalizationResult | null;
+  onSubscriptionEvent: (
+    observation: PumpPortalTradeSubscriptionObservation
   ) => void;
   onInstrumentationFailure?: (input: {
     stage: string;
@@ -674,7 +745,9 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
   private stopped = true;
   private emitted = 0;
   private handler: FeedEventHandler | undefined;
-  private discoveryInstrumentation: PumpPortalDiscoveryInstrumentation | undefined;
+  private discoveryInstrumentation:
+    PumpPortalDiscoveryInstrumentation | undefined;
+  private tradeInstrumentation: PumpPortalTradeInstrumentation | undefined;
 
   private readonly apiKey: string | undefined;
   private readonly logger: PumpPortalLogger;
@@ -729,6 +802,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     this.subscribeMigration = options.subscribeMigration ?? true;
     this.subscribeNewToken = options.subscribeNewToken ?? true;
     this.discoveryInstrumentation = options.discoveryInstrumentation;
+    this.tradeInstrumentation = options.tradeInstrumentation;
     this.maxAccountTradeEventsPerSession =
       options.maxAccountTradeEventsPerSession ?? Number.POSITIVE_INFINITY;
     this.maxAccountTradeSubscriptions =
@@ -764,6 +838,12 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     instrumentation: PumpPortalDiscoveryInstrumentation | undefined
   ): void {
     this.discoveryInstrumentation = instrumentation;
+  }
+
+  setTradeInstrumentation(
+    instrumentation: PumpPortalTradeInstrumentation | undefined
+  ): void {
+    this.tradeInstrumentation = instrumentation;
   }
 
   start(handler: FeedEventHandler): void {
@@ -1049,8 +1129,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       reconnectAttempt: this.reconnectAttempts,
       replayAttempted: false,
       replayResult: null,
-      gapStatus:
-        this.connectionSequence > 1 ? "unproven" : "not_applicable",
+      gapStatus: this.connectionSequence > 1 ? "unproven" : "not_applicable",
       safeReason: null
     });
     const socket = new this.webSocketConstructor(this.wsUrl);
@@ -1200,6 +1279,22 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
         })
       );
       this.recordSubscriptionSent("subscribeTokenTrade");
+      for (const mint of tokenTradeMints) {
+        this.instrumentTradeSubscription({
+          eventType: "subscribe_sent",
+          mint,
+          timestamp: this.now().toISOString(),
+          safeReason: null,
+          reasonCodes: ["PUMPPORTAL_TOKEN_TRADE_SUBSCRIBE_SENT"]
+        });
+        this.instrumentTradeSubscription({
+          eventType: "active",
+          mint,
+          timestamp: this.now().toISOString(),
+          safeReason: "PROVIDER_ACKNOWLEDGEMENT_OPTIONAL",
+          reasonCodes: ["PUMPPORTAL_TOKEN_TRADE_SUBSCRIPTION_ACTIVE"]
+        });
+      }
     }
 
     const accountTradeWallets = this.getAccountTradeSubscriptions();
@@ -1231,6 +1326,9 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     this.instrument("raw_received", () =>
       this.discoveryInstrumentation?.onRawFrame(frame)
     );
+    this.instrumentTrade("raw_received", () =>
+      this.tradeInstrumentation?.onRawFrame(frame)
+    );
     if (this.awaitingFirstFrameAfterReconnect) {
       this.awaitingFirstFrameAfterReconnect = false;
       this.instrumentConnection({
@@ -1258,6 +1356,14 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
         topLevelKeys: [],
         rejectionReason: parsed.rejectionReason
       });
+      this.instrumentTradeParser({
+        ...frame,
+        parserOutcome: "parse_failed",
+        providerTimestamp: null,
+        safePayloadHash: null,
+        topLevelKeys: [],
+        rejectionReason: parsed.rejectionReason
+      });
       return;
     }
 
@@ -1271,11 +1377,21 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
         topLevelKeys: [],
         rejectionReason: parsed.rejectionReason
       });
+      this.instrumentTradeParser({
+        ...frame,
+        parserOutcome: "unknown_payload",
+        providerTimestamp: null,
+        safePayloadHash: null,
+        topLevelKeys: [],
+        rejectionReason: parsed.rejectionReason
+      });
       return;
     }
 
     const payload = parsed.payload;
-    if (isSubscriptionAcknowledgementPayload(payload)) {
+    const tradeSubscriptionAcknowledgement =
+      getTradeSubscriptionAcknowledgement(payload);
+    if (tradeSubscriptionAcknowledgement) {
       this.instrumentConnection({
         eventType: "subscription_acknowledged",
         connectionId: this.currentConnectionId,
@@ -1288,6 +1404,13 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
         safeReason: null,
         adjacentCorrelationId: correlationId
       });
+      this.instrumentTradeSubscription({
+        eventType: tradeSubscriptionAcknowledgement,
+        mint: null,
+        timestamp: receivedAt,
+        safeReason: null,
+        reasonCodes: ["PUMPPORTAL_SUBSCRIPTION_ACKNOWLEDGED"]
+      });
     }
     const providerTimestamp = readTimestamp(payload) ?? null;
     const safePayloadHash = createSafePayloadShapeHash(payload);
@@ -1298,14 +1421,11 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     const tokenTrade = normalizePumpPortalTokenTradePayload(payload, {
       now: this.now
     });
-    const nonDiscoveryEvent =
-      (accountTrade && this.accountTradeSubscriptions.has(accountTrade.wallet)
-        ? accountTrade
-        : null) ??
-      tokenTrade ??
-      accountTrade;
 
-    if (nonDiscoveryEvent) {
+    if (
+      accountTrade &&
+      this.accountTradeSubscriptions.has(accountTrade.wallet)
+    ) {
       this.instrumentParser({
         ...frame,
         eventType: "non_discovery",
@@ -1315,7 +1435,79 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
         topLevelKeys,
         rejectionReason: null
       });
-      this.emitEvent(nonDiscoveryEvent);
+      this.instrumentTradeParser({
+        ...frame,
+        parserOutcome: "recognized_non_trade",
+        providerTimestamp,
+        safePayloadHash,
+        topLevelKeys,
+        rejectionReason: null
+      });
+      this.emitEvent(accountTrade);
+      return;
+    }
+
+    if (tokenTrade) {
+      this.instrumentParser({
+        ...frame,
+        eventType: "non_discovery",
+        parserOutcome: "recognized_non_discovery",
+        providerTimestamp,
+        safePayloadHash,
+        topLevelKeys,
+        rejectionReason: null
+      });
+      const tradeParserObservation: PumpPortalTradeParserObservation = {
+        ...frame,
+        parserOutcome: "recognized_trade",
+        providerTimestamp,
+        safePayloadHash,
+        topLevelKeys,
+        rejectionReason: null
+      };
+      this.instrumentTradeParser(tradeParserObservation);
+      const tradeInstrumentationResult = this.instrumentTradeNormalization({
+        ...tradeParserObservation,
+        event: tokenTrade,
+        normalizedAt: this.now().toISOString(),
+        normalizedAtMonotonicMs: performance.now()
+      });
+      if (
+        tradeInstrumentationResult?.duplicate ||
+        tradeInstrumentationResult?.acceptedForPipeline === false
+      ) {
+        return;
+      }
+      this.emitEvent(
+        tradeInstrumentationResult?.metadata
+          ? {
+              ...tokenTrade,
+              tradeCoverage: tradeInstrumentationResult.metadata
+            }
+          : tokenTrade
+      );
+      return;
+    }
+
+    if (accountTrade) {
+      this.instrumentParser({
+        ...frame,
+        eventType: "non_discovery",
+        parserOutcome: "recognized_non_discovery",
+        providerTimestamp,
+        safePayloadHash,
+        topLevelKeys,
+        rejectionReason: null
+      });
+      this.instrumentTradeParser({
+        ...frame,
+        parserOutcome: "recognized_non_trade",
+        providerTimestamp,
+        safePayloadHash,
+        topLevelKeys,
+        rejectionReason: null
+      });
+      this.emitEvent(accountTrade);
       return;
     }
 
@@ -1347,6 +1539,14 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
           normalizedAt: this.now().toISOString(),
           normalizedAtMonotonicMs: performance.now()
         });
+        this.instrumentTradeParser({
+          ...frame,
+          parserOutcome: "recognized_non_trade",
+          providerTimestamp,
+          safePayloadHash,
+          topLevelKeys,
+          rejectionReason: "DISCOVERY_MINT_MISSING"
+        });
       } else {
         const recognizedNonDiscovery =
           isRecognizedProviderControlPayload(payload);
@@ -1363,6 +1563,18 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
             ? null
             : "UNSUPPORTED_PAYLOAD_SHAPE"
         });
+        this.instrumentTradeParser({
+          ...frame,
+          parserOutcome: recognizedNonDiscovery
+            ? "recognized_non_trade"
+            : "unknown_payload",
+          providerTimestamp,
+          safePayloadHash,
+          topLevelKeys,
+          rejectionReason: recognizedNonDiscovery
+            ? null
+            : "UNSUPPORTED_PAYLOAD_SHAPE"
+        });
       }
       this.logger.debug?.("Skipping unknown PumpPortal payload");
       return;
@@ -1371,9 +1583,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     const eventType =
       event.rawSourceEventType === "migration" ? "migration" : "create";
     const parserOutcome =
-      eventType === "migration"
-        ? "recognized_migration"
-        : "recognized_create";
+      eventType === "migration" ? "recognized_migration" : "recognized_create";
     const parserObservation: PumpPortalDiscoveryParserObservation = {
       ...frame,
       eventType,
@@ -1384,6 +1594,14 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       rejectionReason: null
     };
     this.instrumentParser(parserObservation);
+    this.instrumentTradeParser({
+      ...frame,
+      parserOutcome: "recognized_non_trade",
+      providerTimestamp,
+      safePayloadHash,
+      topLevelKeys,
+      rejectionReason: null
+    });
     const instrumentationResult = this.instrumentNormalization({
       ...parserObservation,
       event,
@@ -1434,6 +1652,22 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
         method: "subscribeTokenTrade"
       })
     );
+    for (const mint of mints) {
+      this.instrumentTradeSubscription({
+        eventType: "subscribe_sent",
+        mint,
+        timestamp: this.now().toISOString(),
+        safeReason: null,
+        reasonCodes: ["PUMPPORTAL_TOKEN_TRADE_SUBSCRIBE_SENT"]
+      });
+      this.instrumentTradeSubscription({
+        eventType: "active",
+        mint,
+        timestamp: this.now().toISOString(),
+        safeReason: "PROVIDER_ACKNOWLEDGEMENT_OPTIONAL",
+        reasonCodes: ["PUMPPORTAL_TOKEN_TRADE_SUBSCRIPTION_ACTIVE"]
+      });
+    }
   }
 
   private sendTokenTradeUnsubscription(mints: string[]): void {
@@ -1447,6 +1681,15 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
         method: "unsubscribeTokenTrade"
       })
     );
+    for (const mint of mints) {
+      this.instrumentTradeSubscription({
+        eventType: "unsubscribe_sent",
+        mint,
+        timestamp: this.now().toISOString(),
+        safeReason: null,
+        reasonCodes: ["PUMPPORTAL_TOKEN_TRADE_UNSUBSCRIBE_SENT"]
+      });
+    }
   }
 
   private sendAccountTradeSubscription(wallets: string[]): void {
@@ -1480,6 +1723,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     const nextCount = previousCount + 1;
 
     this.tokenTradeEventCounts.set(event.mint, nextCount);
+    this.tokenTradeEventCount += 1;
 
     const totalEvents = Array.from(this.tokenTradeEventCounts.values()).reduce(
       (total, count) => total + count,
@@ -1709,6 +1953,32 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
     );
   }
 
+  private instrumentTradeParser(
+    observation: PumpPortalTradeParserObservation
+  ): void {
+    this.instrumentTrade("parser_outcome", () =>
+      this.tradeInstrumentation?.onParserOutcome(observation)
+    );
+  }
+
+  private instrumentTradeNormalization(
+    observation: PumpPortalTradeNormalizationObservation
+  ): PumpPortalTradeNormalizationResult | null {
+    return (
+      this.instrumentTrade("normalization_outcome", () =>
+        this.tradeInstrumentation?.onNormalizationOutcome(observation)
+      ) ?? null
+    );
+  }
+
+  private instrumentTradeSubscription(
+    observation: PumpPortalTradeSubscriptionObservation
+  ): void {
+    this.instrumentTrade("subscription_event", () =>
+      this.tradeInstrumentation?.onSubscriptionEvent(observation)
+    );
+  }
+
   private instrumentNormalization(
     observation: PumpPortalDiscoveryNormalizationObservation
   ): PumpPortalDiscoveryNormalizationResult | null {
@@ -1736,8 +2006,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       reconnectAttempt: this.reconnectAttempts,
       replayAttempted: this.openedConnectionCount > 1,
       replayResult: method,
-      gapStatus:
-        this.openedConnectionCount > 1 ? "unproven" : "not_applicable",
+      gapStatus: this.openedConnectionCount > 1 ? "unproven" : "not_applicable",
       safeReason: null
     });
     this.instrumentConnection({
@@ -1747,8 +2016,7 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
       reconnectAttempt: this.reconnectAttempts,
       replayAttempted: this.openedConnectionCount > 1,
       replayResult: method,
-      gapStatus:
-        this.openedConnectionCount > 1 ? "unproven" : "not_applicable",
+      gapStatus: this.openedConnectionCount > 1 ? "unproven" : "not_applicable",
       safeReason: "PROVIDER_ACKNOWLEDGEMENT_UNAVAILABLE"
     });
   }
@@ -1766,6 +2034,26 @@ export class PumpPortalFeedProvider implements TokenFeedProvider {
         // Coverage telemetry must never crash discovery processing.
       }
       this.logger.warn?.("Discovery coverage instrumentation failed", {
+        stage,
+        error: safeErrorClass(error)
+      });
+      return undefined;
+    }
+  }
+
+  private instrumentTrade<T>(stage: string, operation: () => T): T | undefined {
+    try {
+      return operation();
+    } catch (error) {
+      try {
+        this.tradeInstrumentation?.onInstrumentationFailure?.({
+          stage,
+          safeReason: safeErrorClass(error)
+        });
+      } catch {
+        // Trade coverage telemetry must never crash feed processing.
+      }
+      this.logger.warn?.("Trade data coverage instrumentation failed", {
         stage,
         error: safeErrorClass(error)
       });
@@ -1849,9 +2137,7 @@ export function maskPumpPortalUrl(url: string): string {
   return parsed.toString();
 }
 
-function createSafePayloadShapeHash(
-  payload: Record<string, unknown>
-): string {
+function createSafePayloadShapeHash(payload: Record<string, unknown>): string {
   const shape = Object.keys(payload)
     .sort()
     .map((key) => [key, safeValueKind(payload[key])]);
@@ -1915,25 +2201,30 @@ function isRecognizedProviderControlPayload(
   const method = readString(payload, ["method"]);
   return Boolean(
     method?.startsWith("subscribe") ||
-      method?.startsWith("unsubscribe") ||
-      "message" in payload ||
-      "status" in payload ||
-      "result" in payload ||
-      "errors" in payload
+    method?.startsWith("unsubscribe") ||
+    "message" in payload ||
+    "status" in payload ||
+    "result" in payload ||
+    "errors" in payload
   );
 }
 
-function isSubscriptionAcknowledgementPayload(
+function getTradeSubscriptionAcknowledgement(
   payload: Record<string, unknown>
-): boolean {
+): "subscribe_acknowledged" | "unsubscribe_acknowledged" | null {
   const message = readString(payload, ["message", "status", "result"])
     ?.trim()
     .toLowerCase();
-  return Boolean(
-    message &&
-      (message.includes("subscribed") ||
-        (message.includes("subscribe") && message.includes("success")))
-  );
+  if (!message) {
+    return null;
+  }
+  if (message.includes("unsubscrib")) {
+    return "unsubscribe_acknowledged";
+  }
+  return message.includes("subscribed") ||
+    (message.includes("subscribe") && message.includes("success"))
+    ? "subscribe_acknowledged"
+    : null;
 }
 
 function safeErrorClass(error: unknown): string {
@@ -1945,7 +2236,8 @@ function safeErrorClass(error: unknown): string {
 
 function safeCloseReason(args: unknown[]): string | null {
   const code = args.find(
-    (value): value is number => typeof value === "number" && Number.isFinite(value)
+    (value): value is number =>
+      typeof value === "number" && Number.isFinite(value)
   );
   if (code !== undefined) {
     return `CLOSE_CODE_${code}`;
@@ -2033,12 +2325,10 @@ export function normalizePumpPortalTokenTradePayload(
     readString(payload, ["txType", "type", "side"])
   );
   const solAmount = readNumber(payload, ["solAmount", "sol_amount", "sol"]);
-  const tokenAmount = readNumber(payload, [
-    "tokenAmount",
-    "tokensAmount",
-    "token_amount",
-    "amount"
-  ]);
+  const tokenAmountObservation = readPumpPortalTokenAmount(payload);
+  const rawTokenAmount = tokenAmountObservation.rawAmount;
+  const tokenAmount = tokenAmountObservation.normalizedAmount;
+  const amountNormalizationMode = tokenAmountObservation.mode;
   const priceSol =
     solAmount !== null &&
     tokenAmount !== null &&
@@ -2067,12 +2357,12 @@ export function normalizePumpPortalTokenTradePayload(
     tokenAmount,
     usableForMetrics,
     validMint,
-    volumeSol
+    volumeSol,
+    amountNormalizationMode
   });
+  const providerTimestamp = readTimestamp(payload) ?? null;
   const timestamp =
-    readTimestamp(payload) ??
-    readTimestampFromReceivedAt(payload) ??
-    receivedAt;
+    providerTimestamp ?? readTimestampFromReceivedAt(payload) ?? receivedAt;
   const signature = readString(payload, [
     "signature",
     "txSignature",
@@ -2098,6 +2388,18 @@ export function normalizePumpPortalTokenTradePayload(
   const twitter = readString(payload, ["twitter", "x"]);
   const telegram = readString(payload, ["telegram"]);
   const discord = readString(payload, ["discord"]);
+  const eventIndex = readEventIndex(payload);
+  const marketCapSol = readNumber(payload, ["marketCapSol", "market_cap_sol"]);
+  const virtualTokenReserves = readNumber(payload, [
+    "vTokensInBondingCurve",
+    "virtualTokenReserves",
+    "virtual_token_reserves"
+  ]);
+  const virtualSolReserves = readNumber(payload, [
+    "vSolInBondingCurve",
+    "virtualSolReserves",
+    "virtual_sol_reserves"
+  ]);
   const metrics = createPumpPortalTradeMetrics({
     priceSol,
     reasonCodes,
@@ -2126,6 +2428,14 @@ export function normalizePumpPortalTokenTradePayload(
     volumeQuote: volumeSol,
     quoteAsset: "SOL",
     quoteMint: null,
+    rawSolAmount: solAmount,
+    rawTokenAmount,
+    amountNormalizationMode,
+    eventIndex,
+    providerTimestamp,
+    marketCapSol,
+    virtualTokenReserves,
+    virtualSolReserves,
     usableForMetrics,
     confidence: createPumpPortalTradeConfidence({
       signature,
@@ -2143,7 +2453,7 @@ export function normalizePumpPortalTokenTradePayload(
     timestamp
   };
 
-  if (tokenAmount !== null) {
+  if (tokenAmount !== null && Number.isFinite(tokenAmount)) {
     event.tokenAmount = tokenAmount;
   }
 
@@ -2219,6 +2529,50 @@ export function normalizePumpPortalTokenTradePayload(
   }
 
   return event;
+}
+
+export function createStableTokenTradeEventKey(event: TokenTradeEvent): string {
+  const signature = event.signature?.trim() || null;
+  const eventIndex = event.eventIndex?.trim() || null;
+  if (signature && eventIndex) {
+    return `trade:signature:${signature}:index:${eventIndex}`;
+  }
+
+  const canonicalAmounts = [
+    canonicalTradeNumber(event.rawSolAmount ?? event.volumeSol ?? null),
+    canonicalTradeNumber(event.rawTokenAmount ?? event.tokenAmount ?? null),
+    canonicalTradeNumber(event.tokenAmount ?? null)
+  ].join(":");
+  if (signature) {
+    return `trade:signature:${signature}:mint:${event.mint}:side:${event.side}:amounts:${canonicalAmounts}`;
+  }
+
+  const immutable = {
+    mint: event.mint,
+    side: event.side,
+    trader: event.trader ?? null,
+    rawSolAmount: canonicalTradeNumber(
+      event.rawSolAmount ?? event.volumeSol ?? null
+    ),
+    rawTokenAmount: canonicalTradeNumber(
+      event.rawTokenAmount ?? event.tokenAmount ?? null
+    ),
+    normalizedTokenAmount: canonicalTradeNumber(event.tokenAmount ?? null),
+    priceSol: canonicalTradeNumber(event.priceSol ?? null),
+    providerTimestamp: event.providerTimestamp ?? null,
+    bondingCurve: event.bondingCurve ?? null,
+    pool: isRecord(event.raw) ? (readString(event.raw, ["pool"]) ?? null) : null
+  };
+  return `trade:canonical:${createHash("sha256")
+    .update(JSON.stringify(immutable))
+    .digest("hex")}`;
+}
+
+function canonicalTradeNumber(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) {
+    return "null";
+  }
+  return Number(value.toPrecision(15)).toString();
 }
 
 export function normalizePumpPortalAccountTradePayload(
@@ -2388,6 +2742,74 @@ function readNumber(
   return null;
 }
 
+function readPumpPortalTokenAmount(payload: Record<string, unknown>): {
+  rawAmount: number | null;
+  normalizedAmount: number | null;
+  mode: TradeAmountNormalizationMode;
+} {
+  const ui = readNumber(payload, [
+    "tokenAmount",
+    "tokensAmount",
+    "tokenAmountUi"
+  ]);
+  if (ui !== null) {
+    return { rawAmount: ui, normalizedAmount: ui, mode: "ui" };
+  }
+
+  const raw = readNumber(payload, [
+    "rawTokenAmount",
+    "tokenAmountRaw",
+    "token_amount_raw",
+    "token_amount"
+  ]);
+  if (raw !== null) {
+    const decimals = readNumber(payload, ["tokenDecimals", "decimals"]);
+    if (
+      decimals !== null &&
+      Number.isInteger(decimals) &&
+      decimals >= 0 &&
+      decimals <= 18
+    ) {
+      return {
+        rawAmount: raw,
+        normalizedAmount: raw / 10 ** decimals,
+        mode: "decimals_normalized"
+      };
+    }
+    return { rawAmount: raw, normalizedAmount: null, mode: "raw" };
+  }
+
+  const ambiguous = readNumber(payload, ["amount"]);
+  if (ambiguous !== null) {
+    return {
+      rawAmount: ambiguous,
+      normalizedAmount: null,
+      mode: "unknown"
+    };
+  }
+
+  return { rawAmount: null, normalizedAmount: null, mode: "unknown" };
+}
+
+function readEventIndex(payload: Record<string, unknown>): string | null {
+  for (const key of [
+    "eventIndex",
+    "event_index",
+    "instructionIndex",
+    "instruction_index",
+    "index"
+  ]) {
+    const value = payload[key];
+    if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
+      return String(value);
+    }
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
 function looksLikePumpPortalTokenTradePayload(
   payload: Record<string, unknown>
 ): boolean {
@@ -2449,6 +2871,7 @@ function createPumpPortalTradeReasonCodes(input: {
   usableForMetrics: boolean;
   validMint: boolean;
   volumeSol: number | null;
+  amountNormalizationMode: TradeAmountNormalizationMode;
 }): string[] {
   const reasonCodes = [
     "PUMPPORTAL_TOKEN_TRADE",
@@ -2471,6 +2894,14 @@ function createPumpPortalTradeReasonCodes(input: {
     input.tokenAmount <= 0
   ) {
     reasonCodes.push("PUMPPORTAL_TRADE_MISSING_AMOUNT");
+  }
+
+  reasonCodes.push(
+    `PUMPPORTAL_TRADE_TOKEN_AMOUNT_${input.amountNormalizationMode.toUpperCase()}`
+  );
+
+  if (input.amountNormalizationMode === "unknown") {
+    reasonCodes.push("PUMPPORTAL_TRADE_TOKEN_AMOUNT_UNITS_UNKNOWN");
   }
 
   if (input.priceSol !== null) {

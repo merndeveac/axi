@@ -1,4 +1,9 @@
-import type { FeedEvent, TokenCreatedEvent, TokenTradeEvent } from "@axi/data-feeds";
+import {
+  createStableTokenTradeEventKey,
+  type FeedEvent,
+  type TokenCreatedEvent,
+  type TokenTradeEvent
+} from "@axi/data-feeds";
 import { createInMemoryEventBus, type EventBus } from "@axi/event-bus";
 import {
   createIndexerEventId,
@@ -45,6 +50,7 @@ import {
 import {
   createTradeTimeseries,
   type TradeBucketQuery,
+  type TradeIngestResult,
   type TradeTimeseries,
   type TradeTimeseriesOptions,
   type TradeTimeseriesStatus
@@ -102,7 +108,8 @@ export type ManagedStreamAdapterConfig = {
   pumpswapProgramId?: string | undefined;
 };
 
-export type ManagedStreamPreviewProvider = "yellowstone" | "laserstream" | "mock";
+export type ManagedStreamPreviewProvider =
+  "yellowstone" | "laserstream" | "mock";
 
 export type ManagedStreamProviderStatusPreview = {
   provider: ManagedStreamProviderKind;
@@ -243,14 +250,16 @@ export type ManagedStreamBuildSubscriptionRequest = {
   commitment?: ManagedStreamCommitment | undefined;
   includeProgram?: string[] | undefined;
   requiredAccount?: string[] | undefined;
-  config?: {
-    transactionAccountInclude?: string[] | undefined;
-    transactionAccountRequired?: string[] | undefined;
-    transactionAccountExclude?: string[] | undefined;
-    includeVotes?: boolean | undefined;
-    includeFailed?: boolean | undefined;
-    transactionsEnabled?: boolean | undefined;
-  } | undefined;
+  config?:
+    | {
+        transactionAccountInclude?: string[] | undefined;
+        transactionAccountRequired?: string[] | undefined;
+        transactionAccountExclude?: string[] | undefined;
+        includeVotes?: boolean | undefined;
+        includeFailed?: boolean | undefined;
+        transactionsEnabled?: boolean | undefined;
+      }
+    | undefined;
 };
 
 export type ManagedStreamSubscriptionPreview = {
@@ -294,7 +303,13 @@ export type IndexerAdapterStatus = {
 
 export type IndexerAdapter = {
   ingestFeedEvent: (event: FeedEvent) => NormalizedIndexerEvent | undefined;
-  ingestIndexerEvent: (event: NormalizedIndexerEvent) => void;
+  ingestIndexerEvent: (
+    event: NormalizedIndexerEvent
+  ) => TradeIngestResult | null;
+  ingestFeedEventWithResult: (event: FeedEvent) => {
+    event: NormalizedIndexerEvent | undefined;
+    timeseriesResult: TradeIngestResult | null;
+  };
   publishMockStreamFixture: (fixture: string) => NormalizedIndexerEvent[];
   getLiveCards: () => LiveTokenState[];
   getRecentEvents: (limit?: number) => NormalizedIndexerEvent[];
@@ -314,6 +329,7 @@ export type IndexerAdapter = {
     mint: string
   ) => ReturnType<TradeTimeseries["getDerivatives"]>;
   getTimeseriesStatus: (mint?: string) => TradeTimeseriesStatus;
+  trackTimeseriesMint: (mint: string) => void;
 };
 
 export function createIndexerAdapter(
@@ -340,9 +356,11 @@ export function createIndexerAdapter(
     ...(liveStateEnabled ? { liveState } : {})
   });
 
-  function ingestIndexerEvent(event: NormalizedIndexerEvent): void {
+  function ingestIndexerEvent(
+    event: NormalizedIndexerEvent
+  ): TradeIngestResult | null {
     if (!enabled) {
-      return;
+      return null;
     }
 
     bus.publish(event);
@@ -352,8 +370,20 @@ export function createIndexerAdapter(
     }
 
     if (event.type === "token_trade") {
-      timeseries.ingestTrade(event);
+      return timeseries.ingestTradeWithResult(event);
     }
+    return null;
+  }
+
+  function ingestFeedEventWithResult(event: FeedEvent): {
+    event: NormalizedIndexerEvent | undefined;
+    timeseriesResult: TradeIngestResult | null;
+  } {
+    const indexerEvent = feedEventToIndexerEvent(event);
+    return {
+      event: indexerEvent,
+      timeseriesResult: indexerEvent ? ingestIndexerEvent(indexerEvent) : null
+    };
   }
 
   function publishMockStreamFixture(fixture: string): NormalizedIndexerEvent[] {
@@ -369,19 +399,15 @@ export function createIndexerAdapter(
 
   return {
     ingestFeedEvent: (event) => {
-      const indexerEvent = feedEventToIndexerEvent(event);
-
-      if (indexerEvent) {
-        ingestIndexerEvent(indexerEvent);
-      }
-
-      return indexerEvent;
+      return ingestFeedEventWithResult(event).event;
     },
+    ingestFeedEventWithResult,
     ingestIndexerEvent,
     publishMockStreamFixture,
     getLiveCards: () => liveState.getLiveCards(),
     getRecentEvents: (limit) => bus.getRecentEvents(limit),
-    getRecentStreamEnvelopes: (limit) => streamAdapter.getRecentEnvelopes(limit),
+    getRecentStreamEnvelopes: (limit) =>
+      streamAdapter.getRecentEnvelopes(limit),
     getStatus: () => ({
       enabled,
       liveStateEnabled,
@@ -398,8 +424,10 @@ export function createIndexerAdapter(
       managedStream: createManagedStreamApiStatus(streamConfig, streamAdapter),
       streamProvider: streamConfig.provider,
       streamEnabled: streamConfig.enabled,
-      streamConnectionState: createManagedStreamApiStatus(streamConfig, streamAdapter)
-        .connectionState,
+      streamConnectionState: createManagedStreamApiStatus(
+        streamConfig,
+        streamAdapter
+      ).connectionState,
       streamEnvelopeCount: streamAdapter.getAdapterStatus().envelopesReceived,
       streamEventCount: streamAdapter.getAdapterStatus().eventsProduced,
       timeseries: timeseries.getStatus(),
@@ -415,14 +443,17 @@ export function createIndexerAdapter(
         ...(liveStateEnabled ? [] : ["INDEXER_LIVE_STATE_DISABLED"])
       ]
     }),
-    getStreamStatus: () => createManagedStreamApiStatus(streamConfig, streamAdapter),
+    getStreamStatus: () =>
+      createManagedStreamApiStatus(streamConfig, streamAdapter),
     getStreamConfig: () => createManagedStreamConfigPreview(streamConfig),
-    getStreamRealReadiness: () => createManagedStreamRealReadiness(streamConfig),
+    getStreamRealReadiness: () =>
+      createManagedStreamRealReadiness(streamConfig),
     buildStreamSubscriptionPreview: (request = {}) =>
       buildManagedStreamSubscriptionPreview(streamConfig, request),
     getTimeseries: (mint, query) => timeseries.getSeries(mint, query),
     getDerivatives: (mint) => timeseries.getDerivatives(mint),
-    getTimeseriesStatus: (mint) => timeseries.getStatus(mint)
+    getTimeseriesStatus: (mint) => timeseries.getStatus(mint),
+    trackTimeseriesMint: (mint) => timeseries.trackMint(mint)
   };
 }
 
@@ -455,7 +486,8 @@ function normalizeManagedStreamConfig(
     laserstreamAuthToken: input.laserstreamAuthToken,
     laserstreamRegion: input.laserstreamRegion,
     laserstreamCommitment: input.laserstreamCommitment ?? "confirmed",
-    laserstreamTransactionsEnabled: input.laserstreamTransactionsEnabled ?? true,
+    laserstreamTransactionsEnabled:
+      input.laserstreamTransactionsEnabled ?? true,
     laserstreamAccountInclude: input.laserstreamAccountInclude ?? [],
     laserstreamAccountExclude: input.laserstreamAccountExclude ?? [],
     laserstreamAccountRequired: input.laserstreamAccountRequired ?? [],
@@ -500,7 +532,8 @@ function createManagedStreamApiStatus(
     endpointMasked: clientStatus.endpointMasked,
     authTokenMasked: clientStatus.authMasked,
     subscriptionConfig: sanitizeSubscriptionConfig(subscriptionConfig),
-    subscriptionSummary: createManagedStreamSubscriptionSummary(subscriptionConfig),
+    subscriptionSummary:
+      createManagedStreamSubscriptionSummary(subscriptionConfig),
     receivedCount: adapterStatus.envelopesReceived,
     transactionCount: adapterStatus.eventsProduced,
     errorCount: adapterStatus.decodeErrors,
@@ -530,8 +563,7 @@ function createManagedStreamApiStatus(
       reasonCodes: realReadiness.reasonCodes,
       messageCount: laserstreamStatus.receivedCount,
       lastMessageAt: laserstreamStatus.lastMessageAt,
-      maxMessagesPerSession:
-        realReadiness.maskedConfig.maxMessagesPerSession,
+      maxMessagesPerSession: realReadiness.maskedConfig.maxMessagesPerSession,
       maxRuntimeMs: realReadiness.maskedConfig.maxRuntimeMs
     },
     connectionBlockedReasons: realReadiness.connectionBlockedReasons,
@@ -558,7 +590,8 @@ function createManagedStreamConfigPreview(
     endpointMasked: clientStatus.endpointMasked,
     authTokenMasked: clientStatus.authMasked,
     commitment: subscriptionConfig.commitment,
-    subscriptionSummary: createManagedStreamSubscriptionSummary(subscriptionConfig),
+    subscriptionSummary:
+      createManagedStreamSubscriptionSummary(subscriptionConfig),
     yellowstoneStatus: createYellowstoneStatus(config),
     laserstreamStatus: createLaserStreamStatus(config),
     realReadiness,
@@ -578,7 +611,8 @@ function buildManagedStreamSubscriptionPreview(
   config: NormalizedManagedStreamConfig,
   request: ManagedStreamBuildSubscriptionRequest = {}
 ): ManagedStreamSubscriptionPreview {
-  const provider = request.provider ?? providerToPreviewProvider(config.provider);
+  const provider =
+    request.provider ?? providerToPreviewProvider(config.provider);
   const baseConfig = createManagedStreamSubscriptionConfig(config, {
     provider,
     commitment: request.commitment,
@@ -629,8 +663,11 @@ function buildManagedStreamSubscriptionPreview(
     profile: request.profile ?? null,
     request: buildResult.request,
     subscriptionConfig: buildResult.subscriptionConfig,
-    subscriptionSummary: profileResult?.subscriptionSummary ?? buildResult.subscriptionSummary,
-    endpointMasked: maskStreamEndpoint(resolveManagedStreamEndpoint(config, provider)),
+    subscriptionSummary:
+      profileResult?.subscriptionSummary ?? buildResult.subscriptionSummary,
+    endpointMasked: maskStreamEndpoint(
+      resolveManagedStreamEndpoint(config, provider)
+    ),
     authConfigured: resolveManagedStreamAuth(config, provider) !== undefined,
     paperOnly: true,
     tradingDisabled: true,
@@ -799,7 +836,8 @@ function createManagedStreamSubscriptionConfig(
   return createDefaultSubscriptionConfig({
     provider,
     authConfigured: resolveManagedStreamAuth(config, provider) !== undefined,
-    commitment: overrides.commitment ?? resolveManagedStreamCommitment(config, provider),
+    commitment:
+      overrides.commitment ?? resolveManagedStreamCommitment(config, provider),
     transactions: {
       enabled:
         overrides.transactionsEnabled ??
@@ -813,12 +851,21 @@ function createManagedStreamSubscriptionConfig(
       accountRequired:
         overrides.transactionAccountRequired ??
         resolveManagedStreamAccountRequired(config, provider),
-      vote: overrides.includeVotes ?? resolveManagedStreamIncludeVotes(config, provider),
+      vote:
+        overrides.includeVotes ??
+        resolveManagedStreamIncludeVotes(config, provider),
       failed:
-        overrides.includeFailed ?? resolveManagedStreamIncludeFailed(config, provider)
+        overrides.includeFailed ??
+        resolveManagedStreamIncludeFailed(config, provider)
     },
-    maxReconnectAttempts: resolveManagedStreamMaxReconnectAttempts(config, provider),
-    reconnectBackoffMs: resolveManagedStreamReconnectBackoffMs(config, provider),
+    maxReconnectAttempts: resolveManagedStreamMaxReconnectAttempts(
+      config,
+      provider
+    ),
+    reconnectBackoffMs: resolveManagedStreamReconnectBackoffMs(
+      config,
+      provider
+    ),
     ...(endpoint !== undefined ? { endpoint } : {})
   });
 }
@@ -1052,7 +1099,9 @@ function assertManagedStreamFilterLimits(
 
 function uniqueStrings(values: readonly unknown[]): string[] {
   return Array.from(
-    new Set(values.filter((value): value is string => typeof value === "string"))
+    new Set(
+      values.filter((value): value is string => typeof value === "string")
+    )
   );
 }
 
@@ -1139,13 +1188,9 @@ function tokenTradeFeedEventToIndexerEvent(
   const usableForMetrics = event.usableForMetrics === true;
 
   return {
-    id: createIndexerEventId({
-      type: "token_trade",
-      mint: event.mint,
-      source: event.source,
-      signature: event.signature ?? null,
-      receivedAt
-    }),
+    id:
+      event.tradeCoverage?.sourceEventKey ??
+      createStableTokenTradeEventKey(event),
     schemaVersion: 1,
     source: event.source,
     sourceMode: normalizeSourceMode(event.dataSourceMode),
@@ -1178,7 +1223,9 @@ function tokenTradeFeedEventToIndexerEvent(
   };
 }
 
-function normalizeSourceMode(value: unknown): "mock" | "real" | "replay" | "local" | "unknown" {
+function normalizeSourceMode(
+  value: unknown
+): "mock" | "real" | "replay" | "local" | "unknown" {
   return value === "mock" || value === "real" || value === "replay"
     ? value
     : "unknown";

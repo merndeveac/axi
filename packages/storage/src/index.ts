@@ -70,11 +70,19 @@ import {
   DiscoveryCoverageConnectionEventSchema,
   DiscoveryCoverageEventSchema,
   DiscoveryCoverageSessionSchema,
+  TradeDataCoverageEventSchema,
+  TradeDataCoverageSessionSchema,
+  TradeDataSubscriptionEventSchema,
   type ChainVerificationStatus,
   type DiscoveryCoverageConnectionEvent,
   type DiscoveryCoverageEvent,
   type DiscoveryCoverageEventQuery,
   type DiscoveryCoverageSession,
+  type TradeDataCoverageEvent,
+  type TradeDataCoverageEventQuery,
+  type TradeDataCoverageSession,
+  type TradeDataSubscriptionEvent,
+  type TradeDataSubscriptionEventQuery,
   OverlaySignalSchema,
   RiskSnapshotSchema,
   type CandidateDecision,
@@ -363,6 +371,9 @@ export type StorageStats = {
   discoveryCoverageSessionCount: number;
   discoveryCoverageEventCount: number;
   discoveryCoverageConnectionEventCount: number;
+  tradeDataCoverageSessionCount: number;
+  tradeDataCoverageEventCount: number;
+  tradeDataCoverageSubscriptionEventCount: number;
   lastSignalAt: string | null;
 };
 
@@ -3452,7 +3463,9 @@ export function listDiscoveryCoverageEvents(
        order by received_at desc, id desc
        limit ? offset ?`
     )
-    .all(...parameters, query.limit, query.offset) as { payload_json: string }[];
+    .all(...parameters, query.limit, query.offset) as {
+    payload_json: string;
+  }[];
   return rows.map((row) => mapDiscoveryCoverageEvent(row.payload_json));
 }
 
@@ -3483,6 +3496,309 @@ export function saveDiscoveryCoverageConnectionEvent(
       event.createdAt
     );
   return event;
+}
+
+export function saveTradeDataCoverageSession(
+  input: TradeDataCoverageSession
+): TradeDataCoverageSession {
+  const session = TradeDataCoverageSessionSchema.parse(input);
+  const existing = getTradeDataCoverageSession(session.sessionId);
+  if (existing?.stoppedAt) {
+    if (
+      existing.stoppedAt !== session.stoppedAt ||
+      existing.stopReason !== session.stopReason
+    ) {
+      throw new Error(
+        "A finalized trade data coverage session cannot be changed."
+      );
+    }
+    return existing;
+  }
+
+  getDb()
+    .prepare(
+      `insert into trade_data_coverage_sessions (
+        session_id, schema_version, provider, selected_mint, started_at,
+        stopped_at, stop_reason, subscription_summary_json, counters_json,
+        latency_summary_json, consistency_summary_json, timeseries_summary_json,
+        estimated_cost_sol, local_reconciliation_status,
+        upstream_coverage_status, reason_codes_json, payload_json, created_at,
+        updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(session_id) do update set
+        stopped_at = excluded.stopped_at,
+        stop_reason = excluded.stop_reason,
+        subscription_summary_json = excluded.subscription_summary_json,
+        counters_json = excluded.counters_json,
+        latency_summary_json = excluded.latency_summary_json,
+        consistency_summary_json = excluded.consistency_summary_json,
+        timeseries_summary_json = excluded.timeseries_summary_json,
+        estimated_cost_sol = excluded.estimated_cost_sol,
+        local_reconciliation_status = excluded.local_reconciliation_status,
+        upstream_coverage_status = excluded.upstream_coverage_status,
+        reason_codes_json = excluded.reason_codes_json,
+        payload_json = excluded.payload_json,
+        updated_at = excluded.updated_at`
+    )
+    .run(
+      session.sessionId,
+      session.schemaVersion,
+      session.provider,
+      session.selectedMint,
+      session.startedAt,
+      session.stoppedAt,
+      session.stopReason,
+      stringifyJson(session.subscriptionLifecycle),
+      stringifyJson(extractTradeCoverageCounters(session)),
+      stringifyJson(session.latencyDistributions),
+      stringifyJson(session.consistencySummary),
+      stringifyJson({
+        completedOneSecondBucketCount: session.completedOneSecondBucketCount,
+        firstDerivativeAvailable: session.firstDerivativeAvailable,
+        oneSecondBucketCount: session.oneSecondBucketCount,
+        secondDerivativeAvailable: session.secondDerivativeAvailable,
+        validSampleCount: session.validSampleCount
+      }),
+      session.estimatedCostSol,
+      session.localReconciliationStatus,
+      session.upstreamCoverageStatus,
+      stringifyJson(session.reasonCodes),
+      stringifyJson(session),
+      session.startedAt,
+      session.updatedAt
+    );
+  return session;
+}
+
+export function getTradeDataCoverageSession(
+  sessionId: string
+): TradeDataCoverageSession | null {
+  const row = getDb()
+    .prepare(
+      `select payload_json from trade_data_coverage_sessions where session_id = ?`
+    )
+    .get(sessionId) as { payload_json: string } | undefined;
+  return row
+    ? TradeDataCoverageSessionSchema.parse(JSON.parse(row.payload_json))
+    : null;
+}
+
+export function listTradeDataCoverageSessions(
+  limit = 25
+): TradeDataCoverageSession[] {
+  const safeLimit = z.number().int().positive().max(1000).parse(limit);
+  const rows = getDb()
+    .prepare(
+      `select payload_json from trade_data_coverage_sessions
+       order by started_at desc, id desc limit ?`
+    )
+    .all(safeLimit) as { payload_json: string }[];
+  return rows.map((row) =>
+    TradeDataCoverageSessionSchema.parse(JSON.parse(row.payload_json))
+  );
+}
+
+export function saveTradeDataCoverageEvent(
+  input: TradeDataCoverageEvent
+): TradeDataCoverageEvent {
+  const event = TradeDataCoverageEventSchema.parse(input);
+  getDb()
+    .prepare(
+      `insert into trade_data_coverage_events (
+        session_id, correlation_id, source_event_key, subscribed_mint,
+        observed_mint, signature, side, parser_outcome,
+        normalization_outcome, pipeline_outcome, usable_for_metrics,
+        duplicate_key, rejection_reason, failure_stage, failure_reason,
+        price_sol, volume_sol, token_amount, trader, provider_timestamp,
+        received_at, completed_at, post_stop, stage_timestamps_json,
+        stage_latencies_json, consistency_checks_json, reason_codes_json,
+        payload_json, created_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(session_id, correlation_id) do update set
+        source_event_key = excluded.source_event_key,
+        observed_mint = excluded.observed_mint,
+        signature = excluded.signature,
+        side = excluded.side,
+        parser_outcome = excluded.parser_outcome,
+        normalization_outcome = excluded.normalization_outcome,
+        pipeline_outcome = excluded.pipeline_outcome,
+        usable_for_metrics = excluded.usable_for_metrics,
+        duplicate_key = excluded.duplicate_key,
+        rejection_reason = excluded.rejection_reason,
+        failure_stage = excluded.failure_stage,
+        failure_reason = excluded.failure_reason,
+        price_sol = excluded.price_sol,
+        volume_sol = excluded.volume_sol,
+        token_amount = excluded.token_amount,
+        trader = excluded.trader,
+        provider_timestamp = excluded.provider_timestamp,
+        completed_at = excluded.completed_at,
+        post_stop = excluded.post_stop,
+        stage_timestamps_json = excluded.stage_timestamps_json,
+        stage_latencies_json = excluded.stage_latencies_json,
+        consistency_checks_json = excluded.consistency_checks_json,
+        reason_codes_json = excluded.reason_codes_json,
+        payload_json = excluded.payload_json`
+    )
+    .run(
+      event.sessionId,
+      event.correlationId,
+      event.sourceEventKey,
+      event.subscribedMint,
+      event.observedMint,
+      event.signature,
+      event.side,
+      event.parserOutcome,
+      event.normalizationOutcome,
+      event.pipelineOutcome,
+      event.usableForMetrics ? 1 : 0,
+      event.duplicateKey,
+      event.rejectionReason,
+      event.failureStage,
+      event.failureReason,
+      event.normalizedPriceSol,
+      event.normalizedVolumeSol,
+      event.normalizedTokenAmount,
+      event.trader,
+      event.providerTimestamp,
+      event.receivedAt,
+      event.completedAt,
+      event.postStop ? 1 : 0,
+      stringifyJson(event.stageTimestamps),
+      stringifyJson(event.stageLatenciesMs),
+      stringifyJson(event.consistencyChecks),
+      stringifyJson(event.reasonCodes),
+      stringifyJson(event),
+      event.createdAt
+    );
+  return event;
+}
+
+export function findTradeDataCoverageEventBySourceKey(
+  sessionId: string,
+  sourceEventKey: string
+): TradeDataCoverageEvent | null {
+  const row = getDb()
+    .prepare(
+      `select payload_json from trade_data_coverage_events
+       where session_id = ? and source_event_key = ?
+       order by id desc limit 1`
+    )
+    .get(sessionId, sourceEventKey) as { payload_json: string } | undefined;
+  return row
+    ? TradeDataCoverageEventSchema.parse(JSON.parse(row.payload_json))
+    : null;
+}
+
+export function listTradeDataCoverageEvents(
+  query: TradeDataCoverageEventQuery
+): TradeDataCoverageEvent[] {
+  const clauses: string[] = [];
+  const parameters: Array<string | number> = [];
+  const add = (column: string, value: string | undefined) => {
+    if (value !== undefined) {
+      clauses.push(`${column} = ?`);
+      parameters.push(value);
+    }
+  };
+  add("session_id", query.sessionId);
+  add("observed_mint", query.mint);
+  add("signature", query.signature);
+  add("parser_outcome", query.parserOutcome);
+  add("normalization_outcome", query.normalizationOutcome);
+  add("pipeline_outcome", query.pipelineOutcome);
+  if (query.usableForMetrics !== undefined) {
+    clauses.push("usable_for_metrics = ?");
+    parameters.push(query.usableForMetrics ? 1 : 0);
+  }
+  if (query.postStop !== undefined) {
+    clauses.push("post_stop = ?");
+    parameters.push(query.postStop ? 1 : 0);
+  }
+  const where = clauses.length > 0 ? `where ${clauses.join(" and ")}` : "";
+  const rows = getDb()
+    .prepare(
+      `select payload_json from trade_data_coverage_events ${where}
+       order by received_at desc, id desc limit ? offset ?`
+    )
+    .all(...parameters, query.limit, query.offset) as {
+    payload_json: string;
+  }[];
+  return rows.map((row) =>
+    TradeDataCoverageEventSchema.parse(JSON.parse(row.payload_json))
+  );
+}
+
+export function saveTradeDataSubscriptionEvent(
+  input: TradeDataSubscriptionEvent
+): TradeDataSubscriptionEvent {
+  const event = TradeDataSubscriptionEventSchema.parse(input);
+  getDb()
+    .prepare(
+      `insert into trade_data_coverage_subscription_events (
+        subscription_event_id, session_id, mint, event_type, safe_reason,
+        event_timestamp, payload_json, created_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(subscription_event_id) do nothing`
+    )
+    .run(
+      event.subscriptionEventId,
+      event.sessionId,
+      event.mint,
+      event.eventType,
+      event.safeReason,
+      event.timestamp,
+      stringifyJson(event),
+      event.createdAt
+    );
+  return event;
+}
+
+export function listTradeDataSubscriptionEvents(
+  query: TradeDataSubscriptionEventQuery
+): TradeDataSubscriptionEvent[] {
+  const clauses: string[] = [];
+  const parameters: Array<string | number> = [];
+  const add = (column: string, value: string | undefined) => {
+    if (value !== undefined) {
+      clauses.push(`${column} = ?`);
+      parameters.push(value);
+    }
+  };
+  add("session_id", query.sessionId);
+  add("mint", query.mint);
+  add("event_type", query.eventType);
+  const where = clauses.length > 0 ? `where ${clauses.join(" and ")}` : "";
+  const rows = getDb()
+    .prepare(
+      `select payload_json from trade_data_coverage_subscription_events ${where}
+       order by event_timestamp desc, id desc limit ? offset ?`
+    )
+    .all(...parameters, query.limit, query.offset) as {
+    payload_json: string;
+  }[];
+  return rows.map((row) =>
+    TradeDataSubscriptionEventSchema.parse(JSON.parse(row.payload_json))
+  );
+}
+
+function extractTradeCoverageCounters(
+  session: TradeDataCoverageSession
+): Record<string, number | boolean> {
+  return {
+    rawFrameCount: session.rawFrameCount,
+    recognizedTradeCount: session.recognizedTradeCount,
+    normalizationSuccessCount: session.normalizationSuccessCount,
+    duplicateCount: session.duplicateCount,
+    queueCommittedCount: session.queueCommittedCount,
+    persistenceCompletedCount: session.persistenceCompletedCount,
+    timeseriesAcceptedCount: session.timeseriesAcceptedCount,
+    scannerProjectedCount: session.scannerProjectedCount,
+    broadcastCompletedCount: session.broadcastCompletedCount,
+    usableTradeCount: session.usableTradeCount,
+    firstDerivativeAvailable: session.firstDerivativeAvailable,
+    secondDerivativeAvailable: session.secondDerivativeAvailable
+  };
 }
 
 export function saveSignal(signal: OverlaySignal): StoredSignal {
@@ -6705,10 +7021,7 @@ export function savePaperOperationsSession(
       }
       return existing;
     }
-    if (
-      existing.status !== "active" ||
-      parsed.status === "active"
-    ) {
+    if (existing.status !== "active" || parsed.status === "active") {
       throw new Error(
         `Paper operations session ${parsed.sessionId} cannot transition from ${existing.status} to ${parsed.status}.`
       );
@@ -6757,7 +7070,9 @@ export function savePaperOperationsSession(
   }
   const stored = getPaperOperationsSession(parsed.sessionId);
   if (!stored) {
-    throw new Error(`Paper operations session ${parsed.sessionId} was not persisted.`);
+    throw new Error(
+      `Paper operations session ${parsed.sessionId} was not persisted.`
+    );
   }
   return stored;
 }
@@ -6852,7 +7167,9 @@ export function savePaperOperationsSnapshot(
     );
   const stored = getPaperOperationsSnapshot(parsed.sampleId);
   if (!stored) {
-    throw new Error(`Paper operations snapshot ${parsed.sampleId} was not persisted.`);
+    throw new Error(
+      `Paper operations snapshot ${parsed.sampleId} was not persisted.`
+    );
   }
   return stored;
 }
@@ -6942,7 +7259,9 @@ export function savePaperOperationsAlert(
     );
   const stored = getPaperOperationsAlert(parsed.alertId);
   if (!stored) {
-    throw new Error(`Paper operations alert ${parsed.alertId} was not persisted.`);
+    throw new Error(
+      `Paper operations alert ${parsed.alertId} was not persisted.`
+    );
   }
   return stored;
 }
@@ -8535,14 +8854,20 @@ export function getStorageStats(): StorageStats {
     watchedWalletTradeEventCount: countRows(db, "watched_wallet_trade_events"),
     exitRuleCount: countRows(db, "exit_rules"),
     exitSignalCount: countRows(db, "exit_signals"),
-    discoveryCoverageSessionCount: countRows(
-      db,
-      "discovery_coverage_sessions"
-    ),
+    discoveryCoverageSessionCount: countRows(db, "discovery_coverage_sessions"),
     discoveryCoverageEventCount: countRows(db, "discovery_coverage_events"),
     discoveryCoverageConnectionEventCount: countRows(
       db,
       "discovery_coverage_connection_events"
+    ),
+    tradeDataCoverageSessionCount: countRows(
+      db,
+      "trade_data_coverage_sessions"
+    ),
+    tradeDataCoverageEventCount: countRows(db, "trade_data_coverage_events"),
+    tradeDataCoverageSubscriptionEventCount: countRows(
+      db,
+      "trade_data_coverage_subscription_events"
     ),
     lastSignalAt: lastSignal.last_signal_at
   };
@@ -9840,7 +10165,11 @@ function runMigrations(db: DatabaseSync): void {
     db.prepare(
       `insert into storage_migrations (id, name, applied_at)
        values (?, ?, ?)`
-    ).run(23, "paper_forward_operations_observability", new Date().toISOString());
+    ).run(
+      23,
+      "paper_forward_operations_observability",
+      new Date().toISOString()
+    );
   }
 
   if (!hasMigration(db, 24)) {
@@ -9938,6 +10267,113 @@ function runMigrations(db: DatabaseSync): void {
       `insert into storage_migrations (id, name, applied_at)
        values (?, ?, ?)`
     ).run(25, "discovery_coverage_instrumentation", new Date().toISOString());
+  }
+
+  if (!hasMigration(db, 26)) {
+    db.exec(`
+      create table if not exists trade_data_coverage_sessions (
+        id integer primary key autoincrement,
+        session_id text not null unique,
+        schema_version text not null,
+        provider text not null,
+        selected_mint text not null,
+        started_at text not null,
+        stopped_at text,
+        stop_reason text,
+        subscription_summary_json text not null,
+        counters_json text not null,
+        latency_summary_json text not null,
+        consistency_summary_json text not null,
+        timeseries_summary_json text not null,
+        estimated_cost_sol real not null,
+        local_reconciliation_status text not null,
+        upstream_coverage_status text not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null,
+        updated_at text not null
+      );
+
+      create index if not exists idx_trade_data_coverage_sessions_started
+        on trade_data_coverage_sessions(started_at);
+      create index if not exists idx_trade_data_coverage_sessions_mint
+        on trade_data_coverage_sessions(selected_mint, started_at);
+      create index if not exists idx_trade_data_coverage_sessions_outcomes
+        on trade_data_coverage_sessions(local_reconciliation_status, upstream_coverage_status);
+
+      create table if not exists trade_data_coverage_events (
+        id integer primary key autoincrement,
+        session_id text not null,
+        correlation_id text not null,
+        source_event_key text,
+        subscribed_mint text not null,
+        observed_mint text,
+        signature text,
+        side text,
+        parser_outcome text not null,
+        normalization_outcome text not null,
+        pipeline_outcome text not null,
+        usable_for_metrics integer not null,
+        duplicate_key text,
+        rejection_reason text,
+        failure_stage text,
+        failure_reason text,
+        price_sol real,
+        volume_sol real,
+        token_amount real,
+        trader text,
+        provider_timestamp text,
+        received_at text not null,
+        completed_at text,
+        post_stop integer not null,
+        stage_timestamps_json text not null,
+        stage_latencies_json text not null,
+        consistency_checks_json text not null,
+        reason_codes_json text not null,
+        payload_json text not null,
+        created_at text not null,
+        unique(session_id, correlation_id),
+        foreign key(session_id) references trade_data_coverage_sessions(session_id)
+      );
+
+      create index if not exists idx_trade_data_coverage_events_session
+        on trade_data_coverage_events(session_id, received_at);
+      create index if not exists idx_trade_data_coverage_events_source_key
+        on trade_data_coverage_events(session_id, source_event_key);
+      create index if not exists idx_trade_data_coverage_events_signature
+        on trade_data_coverage_events(signature, received_at);
+      create index if not exists idx_trade_data_coverage_events_mint
+        on trade_data_coverage_events(observed_mint, received_at);
+      create index if not exists idx_trade_data_coverage_events_outcomes
+        on trade_data_coverage_events(session_id, parser_outcome, normalization_outcome, pipeline_outcome);
+      create index if not exists idx_trade_data_coverage_events_timestamps
+        on trade_data_coverage_events(received_at, completed_at);
+
+      create table if not exists trade_data_coverage_subscription_events (
+        id integer primary key autoincrement,
+        subscription_event_id text not null unique,
+        session_id text not null,
+        mint text not null,
+        event_type text not null,
+        safe_reason text,
+        event_timestamp text not null,
+        payload_json text not null,
+        created_at text not null,
+        foreign key(session_id) references trade_data_coverage_sessions(session_id)
+      );
+
+      create index if not exists idx_trade_data_coverage_subscription_session
+        on trade_data_coverage_subscription_events(session_id, event_timestamp);
+      create index if not exists idx_trade_data_coverage_subscription_mint
+        on trade_data_coverage_subscription_events(mint, event_timestamp);
+      create index if not exists idx_trade_data_coverage_subscription_type
+        on trade_data_coverage_subscription_events(session_id, event_type, event_timestamp);
+    `);
+
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(26, "trade_data_coverage_validation", new Date().toISOString());
   }
 }
 
@@ -10981,7 +11417,9 @@ function mapPaperForwardEvaluationRow(
   };
 }
 
-function assertPaperOperationsSessionState(session: PaperOperationsSession): void {
+function assertPaperOperationsSessionState(
+  session: PaperOperationsSession
+): void {
   const active =
     session.status === "active" &&
     session.endedAt === null &&
@@ -11011,7 +11449,8 @@ function paperOperationsSessionImmutableFieldsDiffer(
     JSON.stringify(existing.config) !== JSON.stringify(candidate.config) ||
     existing.startedBy !== candidate.startedBy ||
     existing.startingMeteredCostSol !== candidate.startingMeteredCostSol ||
-    existing.startingMeteredEventCount !== candidate.startingMeteredEventCount ||
+    existing.startingMeteredEventCount !==
+      candidate.startingMeteredEventCount ||
     existing.startedAt !== candidate.startedAt ||
     existing.automaticMeteredStart !== candidate.automaticMeteredStart ||
     existing.automaticPaperArm !== candidate.automaticPaperArm ||

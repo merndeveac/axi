@@ -55,6 +55,8 @@ import type { LightningTradePlan } from "@axi/pumpportal-lightning";
 import {
   BotModeSchema,
   DiscoveryCoverageEventQuerySchema,
+  TradeDataCoverageEventQuerySchema,
+  TradeDataSubscriptionEventQuerySchema,
   type BotMode,
   type ChainVerificationSummary,
   type CandidateDecision,
@@ -86,6 +88,7 @@ import {
   closeStorage,
   findDiscoveryCoverageEventBySourceKey,
   getDiscoveryCoverageSession,
+  getTradeDataCoverageSession,
   getLatestChainVerification,
   getStorageStats,
   initStorage,
@@ -93,6 +96,9 @@ import {
   listCapacitySnapshots,
   listDiscoveryCoverageEvents,
   listDiscoveryCoverageSessions,
+  listTradeDataCoverageEvents,
+  listTradeDataCoverageSessions,
+  listTradeDataSubscriptionEvents,
   saveLiveFeedEvent,
   saveLightningTradePlan,
   listPaperOrders,
@@ -105,6 +111,10 @@ import {
   saveDiscoveryCoverageConnectionEvent,
   saveDiscoveryCoverageEvent,
   saveDiscoveryCoverageSession,
+  saveTradeDataCoverageEvent,
+  saveTradeDataCoverageSession,
+  saveTradeDataSubscriptionEvent,
+  findTradeDataCoverageEventBySourceKey,
   savePaperOrder,
   savePumpPortalWalletStatusSnapshot,
   saveRiskSnapshot,
@@ -140,6 +150,10 @@ import {
   createDiscoveryCoverageService,
   type DiscoveryCoverageService
 } from "./discovery-coverage-service";
+import {
+  createTradeDataCoverageService,
+  type TradeDataCoverageService
+} from "./trade-data-coverage-service";
 import {
   ChainVerifierUnavailableError,
   createChainVerifierService,
@@ -832,6 +846,46 @@ export const apiConfigSchema = z.object({
     .int()
     .positive()
     .default(60000),
+  TRADE_DATA_COVERAGE_MAX_MINTS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(1)
+    .default(1),
+  TRADE_DATA_COVERAGE_MAX_EVENTS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(50)
+    .default(50),
+  TRADE_DATA_COVERAGE_MAX_RUNTIME_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(90_000)
+    .default(90_000),
+  TRADE_DATA_COVERAGE_MAX_COST_SOL: z.coerce
+    .number()
+    .positive()
+    .max(0.0001)
+    .default(0.0001),
+  TRADE_DATA_COVERAGE_POST_STOP_GRACE_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(5_000),
+  TRADE_DATA_COVERAGE_CHAIN_VERIFY: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
+  TRADE_DATA_COVERAGE_CHAIN_VERIFY_MAX_SIGNATURES: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(5)
+    .default(5),
+  TRADE_DATA_COVERAGE_LIVE_ACK: z
+    .preprocess(parseBooleanEnv, z.boolean())
+    .default(false),
   MOMENTUM_ADAPTIVE_TRACKING_ENABLED: z
     .preprocess(parseBooleanEnv, z.boolean())
     .default(true),
@@ -1402,6 +1456,7 @@ export type ApiServer = {
   watchOrchestration: WatchOrchestrationService;
   actualData: ActualDataService;
   discoveryCoverage: DiscoveryCoverageService;
+  tradeDataCoverage: TradeDataCoverageService;
   launchScanner: LaunchScannerService;
   meteredLaunchData: MeteredLaunchDataService;
   runtimeControl: RuntimeControlService;
@@ -2003,10 +2058,27 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       listEvents: listDiscoveryCoverageEvents
     }
   });
+  const tradeDataCoverage = createTradeDataCoverageService({
+    provider: feed.name,
+    sourceMode: dataFeedMode,
+    estimatedCostPerEventSol:
+      (options.meteredLaunchData?.eventCostSolPer10000 ?? 0.01) / 10_000,
+    persistence: {
+      saveSession: saveTradeDataCoverageSession,
+      saveEvent: saveTradeDataCoverageEvent,
+      saveSubscriptionEvent: saveTradeDataSubscriptionEvent,
+      findEventBySourceKey: findTradeDataCoverageEventBySourceKey,
+      getSession: getTradeDataCoverageSession,
+      listSessions: listTradeDataCoverageSessions,
+      listEvents: listTradeDataCoverageEvents,
+      listSubscriptionEvents: listTradeDataSubscriptionEvents
+    }
+  });
   if (feed instanceof PumpPortalFeedProvider) {
     feed.setDiscoveryInstrumentation(
       discoveryCoverage.createFeedInstrumentation()
     );
+    feed.setTradeInstrumentation(tradeDataCoverage.createFeedInstrumentation());
   }
   let canCaptureCoveredMint: (mint: string) => boolean = () => false;
   const calibrationCapture = createCalibrationCaptureService({
@@ -3206,6 +3278,66 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       return session;
     }
   );
+
+  app.get("/runtime/trade-data-coverage", async () =>
+    tradeDataCoverage.getSummary()
+  );
+
+  app.get("/runtime/trade-data-coverage/events", async (request) => {
+    const query = TradeDataCoverageEventQuerySchema.parse(request.query);
+    return {
+      schemaVersion: "trade-data-coverage-v1",
+      events: tradeDataCoverage.listEvents(query),
+      limit: query.limit,
+      offset: query.offset,
+      paperOnly: true,
+      accountTradesActive: false,
+      liveTradingEnabled: false
+    };
+  });
+
+  app.get("/runtime/trade-data-coverage/sessions", async (request) => {
+    const query = limitQuerySchema.parse(request.query);
+    return {
+      schemaVersion: "trade-data-coverage-v1",
+      sessions: tradeDataCoverage.listSessions(query.limit),
+      paperOnly: true,
+      accountTradesActive: false,
+      liveTradingEnabled: false
+    };
+  });
+
+  app.get(
+    "/runtime/trade-data-coverage/sessions/:sessionId",
+    async (request, reply) => {
+      const params = z
+        .object({ sessionId: z.string().min(1) })
+        .parse(request.params);
+      const session = tradeDataCoverage.getSession(params.sessionId);
+      if (!session) {
+        return reply.code(404).send({
+          error: "TRADE_DATA_COVERAGE_SESSION_NOT_FOUND",
+          paperOnly: true,
+          accountTradesActive: false,
+          liveTradingEnabled: false
+        });
+      }
+      return session;
+    }
+  );
+
+  app.get("/runtime/trade-data-coverage/subscriptions", async (request) => {
+    const query = TradeDataSubscriptionEventQuerySchema.parse(request.query);
+    return {
+      schemaVersion: "trade-data-coverage-v1",
+      subscriptions: tradeDataCoverage.listSubscriptionEvents(query),
+      limit: query.limit,
+      offset: query.offset,
+      paperOnly: true,
+      accountTradesActive: false,
+      liveTradingEnabled: false
+    };
+  });
 
   app.get("/runtime/diagnostics", async () => runtimeControl.getDiagnostics());
 
@@ -4696,6 +4828,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       await stopFeed(null);
     } finally {
       discoveryCoverage.finalize("server_shutdown");
+      tradeDataCoverage.finalize("server_shutdown");
     }
     paperOperations.stop("server shutdown");
     calibrationCapture.interrupt("runtime_closed");
@@ -7005,6 +7138,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   function enqueueFeedEvent(event: FeedEvent): void {
     discoveryCoverage.markQueueAccepted(event);
+    tradeDataCoverage.markQueueAccepted(event);
     pendingFeedEvents.push(event);
     scheduleFeedEventDrain();
   }
@@ -7026,6 +7160,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           "pending_queue_cleared",
           safeDiscoveryErrorClass(error)
         );
+        tradeDataCoverage.markQueueFailedOrDropped(
+          dropped,
+          "pending_queue_cleared",
+          safeDiscoveryErrorClass(error)
+        );
         meteredLaunchData.stop();
         disarmPaidData("feed_event_processing_error");
         app.log.error({ error }, "Feed event batch failed; paid data stopped");
@@ -7043,6 +7182,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
     for (const event of batch) {
       discoveryCoverage.markQueueTransactionStarted(event);
+      tradeDataCoverage.markQueueTransactionStarted(event);
     }
 
     try {
@@ -7057,10 +7197,16 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         "queue_transaction_failed",
         safeDiscoveryErrorClass(error)
       );
+      tradeDataCoverage.markQueueFailedOrDropped(
+        batch,
+        "queue_transaction_failed",
+        safeDiscoveryErrorClass(error)
+      );
       throw error;
     }
 
     discoveryCoverage.markQueueCommittedAndPipelineCompleted(batch);
+    tradeDataCoverage.markQueueCommittedAndPipelineCompleted(batch);
   }
 
   function flushFeedEventQueue(): void {
@@ -7071,6 +7217,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     } catch (error) {
       const dropped = pendingFeedEvents.splice(0);
       discoveryCoverage.markQueueFailedOrDropped(
+        dropped,
+        "pending_queue_cleared_during_flush",
+        safeDiscoveryErrorClass(error)
+      );
+      tradeDataCoverage.markQueueFailedOrDropped(
         dropped,
         "pending_queue_cleared_during_flush",
         safeDiscoveryErrorClass(error)
@@ -7109,12 +7260,49 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       event.type === "trade" && event.source === "pumpportal"
         ? actualData.handlePumpPortalTradeEvent(event)
         : undefined;
-    indexerAdapter.ingestFeedEvent(event);
+    const indexerResult = indexerAdapter.ingestFeedEventWithResult(event);
     const identity = tokenIdentity.ingestFeedEvent(event);
     const identitySummary = toTokenIdentitySummary(identity);
     discoveryCoverage.markIdentityCompleted(event, !identityExisted);
 
     saveFeedEvent(event);
+    tradeDataCoverage.markPersistenceCompleted(event);
+    if (
+      event.type === "trade" &&
+      event.source === "pumpportal" &&
+      indexerResult.timeseriesResult
+    ) {
+      const timeseries = indexerAdapter.getTimeseries(event.mint, {
+        fillGaps: false
+      });
+      const derivatives = timeseries.derivatives.primary.metrics;
+      const firstDerivativeAvailable = [
+        derivatives.volumeVelocitySolPerSec,
+        derivatives.priceSolVelocityPerSec,
+        derivatives.buyerVelocityPerSec,
+        derivatives.tradeVelocityPerSec,
+        derivatives.buyPressureVelocityPerSec
+      ].some((metric) => metric.status === "available");
+      const secondDerivativeAvailable = [
+        derivatives.volumeAccelerationSolPerSec2,
+        derivatives.priceSolAccelerationPerSec2,
+        derivatives.buyerAccelerationPerSec2,
+        derivatives.tradeAccelerationPerSec2,
+        derivatives.buyPressureAccelerationPerSec2
+      ].some((metric) => metric.status === "available");
+      tradeDataCoverage.markTimeseries(event, {
+        action: indexerResult.timeseriesResult.action,
+        bucketUpdated: indexerResult.timeseriesResult.bucket !== null,
+        rollingWindowsUpdated: indexerResult.timeseriesResult.accepted,
+        oneSecondBucketCount: timeseries.actualBucketCount,
+        completedOneSecondBucketCount: timeseries.buckets.filter(
+          (bucket) => !bucket.synthetic && bucket.complete
+        ).length,
+        validSampleCount: timeseries.derivatives.observationCount,
+        firstDerivativeAvailable,
+        secondDerivativeAvailable
+      });
+    }
     const rollingMetrics = metricsEngine.ingestFeedEvent(event);
     const ingestedCandidate = candidateEngine.ingestFeedEvent(event);
     const candidate =
@@ -7156,6 +7344,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       rollingMetrics ?? metricsEngine.getMetrics(candidate.mint),
       indexerAdapter.getDerivatives(candidate.mint)
     );
+    tradeDataCoverage.markDerivativeStrengthUpdated(event);
     candidateEngine.updateMetrics(candidate.mint, latestMetrics);
 
     const effectiveMetrics = mergeRollingIntoLegacyMetrics(
@@ -7186,13 +7375,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     candidateEngine.updateRisk(candidate.mint, riskSnapshot);
     const launchCandidateView = launchScanner.ingestFeedEvent(event);
     if (launchCandidateView) {
-      discoveryCoverage.markCandidateCompleted(
-        event,
-        !launchCandidateExisted
-      );
+      discoveryCoverage.markCandidateCompleted(event, !launchCandidateExisted);
       discoveryCoverage.markScoreCompleted(event);
     }
-
     if (event.type === "trade" && event.source === "pumpportal") {
       meteredLaunchData.handlePumpPortalTokenTrade(event);
 
@@ -7268,6 +7453,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       }
     }
 
+    if (
+      event.type === "trade" &&
+      event.source === "pumpportal" &&
+      getMomentumScannerRows().some((row) => row.mint === event.mint)
+    ) {
+      tradeDataCoverage.markScannerProjected(event);
+    }
+
     if (!decision) {
       app.log.trace({ mint: candidate.mint }, "Candidate decision unavailable");
       return;
@@ -7289,6 +7482,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       score
     });
     const storedSignal = saveSignal(signal);
+    tradeDataCoverage.markSignalUpdated(event);
     cacheSignal(signal);
     paperOperations.observeSignal(signal);
     paperAutomation.observeSignal(signal);
@@ -7335,6 +7529,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       signal
     });
     discoveryCoverage.markBroadcastCompleted(event, clients.size);
+    tradeDataCoverage.markBroadcastCompleted(event);
 
     if (shouldVerifyOnChain) {
       void verifyAndApplyChainResult({
@@ -7811,6 +8006,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     chainEvents,
     close: () => app.close(),
     discoveryCoverage,
+    tradeDataCoverage,
     emitFeedEvent: handleFeedEvent,
     feed,
     getSignals: () => Array.from(signals.values()),

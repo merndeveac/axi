@@ -38,6 +38,7 @@ import type {
   RiskSnapshot,
   RollingMetricsSnapshot,
   StrategyStatus,
+  TradeDataCoverageSession,
   TokenIdentitySummary
 } from "@axi/shared";
 import { DataPanel } from "./components/DataPanel";
@@ -46,6 +47,11 @@ import {
   loadDiscoveryCoverage,
   type DiscoveryCoveragePanelState
 } from "./components/DiscoveryCoveragePanel";
+import {
+  TradeDataCoveragePanel,
+  loadTradeDataCoverage,
+  type TradeDataCoveragePanelState
+} from "./components/TradeDataCoveragePanel";
 import { MetricValue } from "./components/MetricValue";
 import { ReasonCodes } from "./components/ReasonCodes";
 import { Tooltip, TooltipProvider } from "./components/Tooltip";
@@ -1570,6 +1576,12 @@ export function App() {
       session: null,
       error: null
     });
+  const [tradeDataCoverageState, setTradeDataCoverageState] =
+    useState<TradeDataCoveragePanelState>({
+      status: "loading",
+      session: null,
+      error: null
+    });
   const [runtimeActionStatus, setRuntimeActionStatus] =
     useState<string>("ready");
   const [liveCardEnrichmentStatus, setLiveCardEnrichmentStatus] =
@@ -1612,6 +1624,31 @@ export function App() {
 
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadCoverage = async () => {
+      const nextState = await loadTradeDataCoverage(() =>
+        fetchJson<TradeDataCoverageSession | null>(
+          "/runtime/trade-data-coverage"
+        )
+      );
+      if (!cancelled) {
+        setTradeDataCoverageState(nextState);
+      }
+    };
+
+    void loadCoverage();
+    const timer = window.setInterval(() => {
+      void loadCoverage();
+    }, 10_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -2249,6 +2286,7 @@ export function App() {
                 dataWalletStatus={dataWalletStatus}
                 diagnostics={momentumDiagnostics}
                 discoveryCoverageState={discoveryCoverageState}
+                tradeDataCoverageState={tradeDataCoverageState}
                 lightningStatus={lightningStatus}
                 feedStatus={feedStatus}
                 liveCardEnrichmentStatus={liveCardEnrichmentStatus}
@@ -5331,6 +5369,7 @@ function DataTab({
   dataWalletStatus,
   diagnostics,
   discoveryCoverageState,
+  tradeDataCoverageState,
   lightningStatus,
   feedStatus,
   indexerStatus,
@@ -5355,6 +5394,7 @@ function DataTab({
   dataWalletStatus: PumpPortalDataWalletStatus | null;
   diagnostics: MomentumDiagnostics | null;
   discoveryCoverageState: DiscoveryCoveragePanelState;
+  tradeDataCoverageState: TradeDataCoveragePanelState;
   lightningStatus: LightningStatus | null;
   feedStatus: FeedStatus | null;
   indexerStatus: IndexerStatus | null;
@@ -5395,6 +5435,7 @@ function DataTab({
         </div>
       </div>
       <DiscoveryCoveragePanel state={discoveryCoverageState} />
+      <TradeDataCoveragePanel state={tradeDataCoverageState} />
       <DataPanel
         ariaLabel="Momentum scanner diagnostics"
         meta={<span>FIELD AVAILABILITY</span>}

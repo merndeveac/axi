@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildPumpPortalWsUrl,
+  createStableTokenTradeEventKey,
   maskPumpPortalUrl,
   normalizePumpPortalAccountTradePayload,
   normalizePumpPortalTokenTradePayload,
   PumpPortalFeedProvider,
   type FeedEvent,
   type PumpPortalDiscoveryInstrumentation,
+  type PumpPortalTradeInstrumentation,
   type PumpPortalFeedProviderOptions,
   type WebSocketLike
 } from "../src/index";
@@ -80,7 +82,9 @@ describe("PumpPortalFeedProvider", () => {
       onConnectionEvent: () => undefined
     };
     const emitted: FeedEvent[] = [];
-    const provider = createProvider({ discoveryInstrumentation: instrumentation });
+    const provider = createProvider({
+      discoveryInstrumentation: instrumentation
+    });
 
     provider.start((event) => emitted.push(event));
     const socket = FakeWebSocket.instances[0];
@@ -89,23 +93,32 @@ describe("PumpPortalFeedProvider", () => {
     socket?.emit("message", JSON.stringify({ status: "ok" }));
     socket?.emit("message", JSON.stringify({ unsupported: true }));
     socket?.emit("message", JSON.stringify({ txType: "create" }));
-    socket?.emit("message", JSON.stringify({
-      mint: "CreateMint11111111111111111111111111111111",
-      signature: "create-signature",
-      txType: "create"
-    }));
-    socket?.emit("message", JSON.stringify({
-      mint: "MigrationMint11111111111111111111111111111",
-      signature: "migration-signature",
-      txType: "migrate"
-    }));
-    socket?.emit("message", JSON.stringify({
-      mint: "So11111111111111111111111111111111111111112",
-      signature: "trade-signature",
-      solAmount: 1,
-      tokenAmount: 10,
-      txType: "buy"
-    }));
+    socket?.emit(
+      "message",
+      JSON.stringify({
+        mint: "CreateMint11111111111111111111111111111111",
+        signature: "create-signature",
+        txType: "create"
+      })
+    );
+    socket?.emit(
+      "message",
+      JSON.stringify({
+        mint: "MigrationMint11111111111111111111111111111",
+        signature: "migration-signature",
+        txType: "migrate"
+      })
+    );
+    socket?.emit(
+      "message",
+      JSON.stringify({
+        mint: "So11111111111111111111111111111111111111112",
+        signature: "trade-signature",
+        solAmount: 1,
+        tokenAmount: 10,
+        txType: "buy"
+      })
+    );
 
     expect(rawFrames).toHaveLength(8);
     expect(parserOutcomes).toEqual([
@@ -123,7 +136,9 @@ describe("PumpPortalFeedProvider", () => {
       "succeeded",
       "succeeded"
     ]);
-    expect(emitted.filter((event) => event.type === "token_created")).toHaveLength(2);
+    expect(
+      emitted.filter((event) => event.type === "token_created")
+    ).toHaveLength(2);
     expect(provider.getStatus().lastError).not.toContain("not-closed");
     provider.stop();
   });
@@ -141,7 +156,8 @@ describe("PumpPortalFeedProvider", () => {
 
   it("records reconnect and subscription replay while leaving gaps unproven", async () => {
     vi.useFakeTimers();
-    const connectionEvents: Array<{ eventType: string; gapStatus: string }> = [];
+    const connectionEvents: Array<{ eventType: string; gapStatus: string }> =
+      [];
     const provider = createProvider({
       discoveryInstrumentation: {
         onRawFrame: () => undefined,
@@ -157,11 +173,17 @@ describe("PumpPortalFeedProvider", () => {
 
     provider.start(() => undefined);
     FakeWebSocket.instances[0]?.emit("open");
-    FakeWebSocket.instances[0]?.emit("message", JSON.stringify({ status: "ok" }));
+    FakeWebSocket.instances[0]?.emit(
+      "message",
+      JSON.stringify({ status: "ok" })
+    );
     FakeWebSocket.instances[0]?.emit("close", 1006, "private provider text");
     await vi.advanceTimersByTimeAsync(1);
     FakeWebSocket.instances[1]?.emit("open");
-    FakeWebSocket.instances[1]?.emit("message", JSON.stringify({ status: "ok" }));
+    FakeWebSocket.instances[1]?.emit(
+      "message",
+      JSON.stringify({ status: "ok" })
+    );
 
     expect(connectionEvents.map((event) => event.eventType)).toEqual(
       expect.arrayContaining([
@@ -238,7 +260,10 @@ describe("PumpPortalFeedProvider", () => {
     await provider.stop();
     socket?.emit(
       "message",
-      JSON.stringify({ mint: "LateMint111111111111111111111111111111111", txType: "create" })
+      JSON.stringify({
+        mint: "LateMint111111111111111111111111111111111",
+        txType: "create"
+      })
     );
     expect(rawFrames).toEqual([]);
     expect(events).toEqual([]);
@@ -482,6 +507,140 @@ describe("PumpPortalFeedProvider", () => {
     expect(event?.priceSol).toBe(0.03);
     expect(event?.volumeSol).toBe(1.5);
     expect(event?.usableForMetrics).toBe(true);
+  });
+
+  it("normalizes raw token amounts only when decimals are known", () => {
+    const normalized = normalizePumpPortalTokenTradePayload({
+      mint: "So11111111111111111111111111111111111111112",
+      signature: "sig-raw",
+      solAmount: 2,
+      rawTokenAmount: 1_000_000,
+      tokenDecimals: 6,
+      txType: "buy"
+    });
+    const unknownUnits = normalizePumpPortalTokenTradePayload({
+      mint: "So11111111111111111111111111111111111111112",
+      signature: "sig-unknown",
+      solAmount: 2,
+      amount: 1_000_000,
+      txType: "buy"
+    });
+
+    expect(normalized).toMatchObject({
+      amountNormalizationMode: "decimals_normalized",
+      rawTokenAmount: 1_000_000,
+      tokenAmount: 1,
+      priceSol: 2,
+      usableForMetrics: true
+    });
+    expect(unknownUnits).toMatchObject({
+      amountNormalizationMode: "unknown",
+      rawTokenAmount: 1_000_000,
+      priceSol: null,
+      usableForMetrics: false
+    });
+    expect(unknownUnits?.tokenAmount).toBeUndefined();
+  });
+
+  it("uses immutable trade identity across local replay times", () => {
+    const first = normalizePumpPortalTokenTradePayload(
+      {
+        mint: "So11111111111111111111111111111111111111112",
+        signature: "stable-signature",
+        solAmount: 1,
+        tokenAmount: 10,
+        txType: "buy"
+      },
+      { now: () => new Date("2026-01-01T00:00:00.000Z") }
+    );
+    const replay = normalizePumpPortalTokenTradePayload(
+      {
+        mint: "So11111111111111111111111111111111111111112",
+        signature: "stable-signature",
+        solAmount: 1,
+        tokenAmount: 10,
+        txType: "buy"
+      },
+      { now: () => new Date("2026-01-01T00:01:00.000Z") }
+    );
+    if (!first || !replay) throw new Error("Expected normalized trades");
+    expect(createStableTokenTradeEventKey(first)).toBe(
+      createStableTokenTradeEventKey(replay)
+    );
+    first.eventIndex = "0";
+    replay.eventIndex = "1";
+    expect(createStableTokenTradeEventKey(first)).not.toBe(
+      createStableTokenTradeEventKey(replay)
+    );
+  });
+
+  it("classifies every active trade-session frame and records lifecycle sends", () => {
+    const parserOutcomes: string[] = [];
+    const lifecycle: string[] = [];
+    const instrumentation: PumpPortalTradeInstrumentation = {
+      onRawFrame: () => undefined,
+      onParserOutcome: (observation) =>
+        parserOutcomes.push(observation.parserOutcome),
+      onNormalizationOutcome: (observation) => ({
+        acceptedForPipeline: observation.event !== null,
+        duplicate: false,
+        duplicateKey: null,
+        duplicateReason: null,
+        rejectionReason: observation.rejectionReason,
+        metadata: observation.event
+          ? {
+              schemaVersion: "trade-data-coverage-v1",
+              sessionId: "session",
+              correlationId: observation.correlationId,
+              sourceEventKey: `key:${observation.correlationId}`,
+              receivedAtMonotonicMs: observation.receivedAtMonotonicMs,
+              normalizedAtMonotonicMs: observation.normalizedAtMonotonicMs
+            }
+          : null
+      }),
+      onSubscriptionEvent: (observation) =>
+        lifecycle.push(observation.eventType)
+    };
+    const mint = "So11111111111111111111111111111111111111112";
+    const provider = createProvider({
+      subscribeMigration: false,
+      subscribeNewToken: false,
+      tradeInstrumentation: instrumentation
+    });
+    provider.start(() => undefined);
+    FakeWebSocket.instances[0]?.emit("open");
+    provider.subscribeTokenTrades([mint]);
+    FakeWebSocket.instances[0]?.emit("message", "{bad-json");
+    FakeWebSocket.instances[0]?.emit(
+      "message",
+      JSON.stringify({ status: "ok" })
+    );
+    FakeWebSocket.instances[0]?.emit(
+      "message",
+      JSON.stringify({ mystery: true })
+    );
+    FakeWebSocket.instances[0]?.emit(
+      "message",
+      JSON.stringify({
+        mint,
+        signature: "instrumented",
+        solAmount: 1,
+        tokenAmount: 10,
+        txType: "buy"
+      })
+    );
+    provider.unsubscribeTokenTrades([mint]);
+
+    expect(parserOutcomes).toEqual([
+      "parse_failed",
+      "recognized_non_trade",
+      "unknown_payload",
+      "recognized_trade"
+    ]);
+    expect(lifecycle).toEqual(
+      expect.arrayContaining(["subscribe_sent", "active", "unsubscribe_sent"])
+    );
+    provider.stop();
   });
 
   it("handles unknown trade payloads safely", () => {

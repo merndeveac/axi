@@ -2647,6 +2647,117 @@ in that run. The instrumentation does not activate token trades, account
 trades, paid managed streams, paper automation, signing, SOL spending, or live
 execution.
 
+## Trade-Data Coverage Validation
+
+Branch `dev/trade-data-coverage-validation` adds versioned
+`trade-data-coverage-v1` evidence to the existing authoritative PumpPortal
+`subscribeTokenTrade` path. It does not add a second trade pipeline. During a
+bounded one-mint session it follows each locally received WebSocket frame
+through trade classification, unit-aware normalization, stable identity,
+duplicate suppression, the durable API queue, business persistence,
+event-time one-second buckets, rolling windows, canonical derivatives,
+derivative strength, signal/scanner projection, broadcast, unsubscribe, and
+finalization. Coverage records contain sanitized fields and checks, never raw
+frames, credentials, URLs, headers, or private configuration.
+
+Trade-session frames are classified independently from discovery coverage, so
+one physical WebSocket frame can increment one Phase 3 discovery classifier and
+one Phase 4 trade-session classifier without representing two received frames.
+The trade identities are:
+
+```text
+trade_session_frames = parse_failed + recognized_trade
+                     + recognized_non_trade + unknown_payload
+recognized_trade = normalization_succeeded + normalization_rejected
+normalization_succeeded = pipeline_completed + duplicate + rejected
+                        + failed_or_dropped
+usable_committed_trade = timeseries_accepted + timeseries_rejected
+```
+
+Every successful normalized trade receives a terminal outcome. Duplicate and
+wrong-mint/unusable trades do not enter the business pipeline. A batch failure
+marks both the failed batch and any subsequently cleared queue entries instead
+of losing them. `TRADE_DATA_LOCALLY_RECONCILED` means these local equations have
+zero residual and telemetry did not fail. It does not mean PumpPortal delivered
+every market trade. Without a provider sequence or independent comparator the
+separate verdict stays `UPSTREAM_TRADE_COMPLETENESS_UNPROVEN`.
+
+Stable event identity prefers signature plus instruction/event index, then
+signature plus mint, side, and canonical amounts, and finally a SHA-256 hash of
+sanitized immutable trade fields. Local receive time and random IDs are never
+part of the deduplication key. `tokenAmount`/`tokensAmount` are treated as UI
+amounts; explicit raw amounts require valid decimals before normalization.
+Ambiguous `amount` or raw amounts without decimals remain unknown/raw, cannot
+produce a price, and are unusable for metrics. `volumeSol` must be a finite
+positive SOL amount and `priceSol = volumeSol / normalizedTokenAmount` only
+when token units are understood. Evidence includes mint, finite-amount, units,
+side, signature, provider-time plausibility, price×amount, and optional reserve
+price checks with explicit tolerances.
+
+The canonical time series uses event-time one-second buckets and
+1s/5s/10s/30s/60s/2m/5m rolling windows. It reports OHLCV, buy/sell and net SOL
+volume, true unique accepted-trade count, buyer/seller identities, buy/sell
+ratio, net pressure, source-event count, excluded duplicates, accepted/rejected
+late-event evidence, and confidence. A tracked mint with no trades reports zero
+transactions; unavailable/untracked data reports null. First derivatives need
+two distinct valid timestamps, second derivatives need three, insufficient
+values stay null, and a real flat result may be zero. This validates derivative
+inputs and propagation, not trading calibration or edge.
+
+In-process latency uses monotonic time. Summaries report availability plus
+min/p50/p95/p99/max for receive→normalize, normalize→persist,
+persist→time-series, time-series→scanner, receive→scanner, and full pipeline.
+Provider→receive is only populated when the provider supplied a plausible
+timestamp. Cost is explicitly estimated from the configured PumpPortal
+per-event model.
+
+Read-only endpoints:
+
+- `GET /runtime/trade-data-coverage`
+- `GET /runtime/trade-data-coverage/events`
+- `GET /runtime/trade-data-coverage/sessions`
+- `GET /runtime/trade-data-coverage/sessions/:sessionId`
+- `GET /runtime/trade-data-coverage/subscriptions`
+
+The Data tab polls these diagnostics independently and renders unknown values
+as `—`, so a coverage-endpoint failure does not mark the whole dashboard
+offline. SQLite migration 26 adds audit-only session, event, and subscription
+tables; the existing PumpPortal token-trade table remains the canonical
+strategy-data store.
+
+The validation command is preflight-only unless both the CLI acknowledgement
+and the user-owned environment gate are present:
+
+```bash
+pnpm --filter @axi/api trade-data:coverage:validate -- --select newest --json true
+pnpm --filter @axi/api trade-data:coverage:status
+```
+
+An explicitly authorized bounded session is:
+
+```bash
+TRADE_DATA_COVERAGE_LIVE_ACK=true \
+pnpm --filter @axi/api trade-data:coverage:validate -- \
+  --select newest \
+  --max-events 50 \
+  --max-runtime-ms 90000 \
+  --max-cost-sol 0.0001 \
+  --post-stop-grace-ms 5000 \
+  --ack-metered \
+  --chain-verify false \
+  --json true
+```
+
+The first event, runtime, or estimated-cost cap requests stop. AXI explicitly
+unsubscribes the only selected mint, records frames during the grace interval,
+then stops the command-owned connection and finalizes exactly once. Free
+discovery is used to choose `newest`; a supplied `--mint` is validated. The CLI
+never enables account trades, paper automation, Lightning, signing,
+transaction sending, or live trading. Optional read-only `getTransaction`
+sampling is disabled by default, requires `SOLANA_RPC_HTTP`, is capped at five
+unique signatures, and records `VERIFIED`, `PARTIAL`, `MISMATCH`, or
+`UNAVAILABLE`; automated tests use fixtures only.
+
 ## Optional Infrastructure
 
 `docker-compose.yml` includes optional Postgres and Redis services for later
@@ -2717,6 +2828,9 @@ docker compose --profile indexer up -d
 
 ## Branch Workflow
 
+- `dev/trade-data-coverage-validation` adds bounded one-mint token-trade
+  reconciliation, time-series/derivative propagation proof, restart-safe audit
+  evidence, safe validation CLIs, API diagnostics, and the Data-tab panel.
 - `dev/discovery-coverage-instrumentation` adds local PumpPortal frame and
   pipeline reconciliation, latency/reconnect evidence, restart-safe SQLite
   sessions, read-only diagnostics endpoints, and the Data-tab coverage panel.

@@ -25,6 +25,9 @@ export type Ohlcv = {
   volumeSol: number;
   buyVolumeSol: number;
   sellVolumeSol: number;
+  netVolumeSol: number;
+  buySellRatio: number | null;
+  netBuyPressure: number | null;
   vwapSol: number | null;
   openUsd: number | null;
   highUsd: number | null;
@@ -75,6 +78,9 @@ export type TradeBucket1s = Ohlcv & {
   firstTradeAt: string | null;
   lastTradeAt: string | null;
   sourceCount: number;
+  sourceEventCount: number;
+  duplicateExcludedCount: number;
+  lateEventCount: number;
   sources: string[];
   confidence: "low" | "medium" | "high";
   complete: boolean;
@@ -116,6 +122,8 @@ export type TradeTimeseriesSeries = {
   retentionMs: number;
   actualBucketCount: number;
   gapBucketCount: number;
+  available: boolean;
+  transactionCount: number | null;
   buckets: TradeBucket1s[];
   windows: Record<TradeWindowLabel, Ohlcv>;
   rollingStats: RollingStats;
@@ -154,6 +162,7 @@ export type TradeTimeseries = {
   ingestTradeWithResult: (
     event: NormalizedTokenTradeEvent
   ) => TradeIngestResult;
+  trackMint: (mint: string) => void;
 };
 
 export type TradeTimeseriesOptions = {
@@ -179,6 +188,8 @@ type TradeSample = {
 
 type TokenTimeseriesState = {
   buckets: Map<number, TradeSample[]>;
+  duplicateExcludedCounts: Map<number, number>;
+  lateEventCounts: Map<number, number>;
   eventTimestamps: Map<string, number>;
   maxTimestampMs: number;
 };
@@ -227,6 +238,24 @@ export function createTradeTimeseries(
 
     if (existingTimestamp !== undefined) {
       duplicateEventCount += 1;
+      const existingBucketStart = toBucketStart(existingTimestamp);
+      state.duplicateExcludedCounts.set(
+        existingBucketStart,
+        (state.duplicateExcludedCounts.get(existingBucketStart) ?? 0) + 1
+      );
+      const existingSamples = state.buckets.get(existingBucketStart) ?? [];
+      if (existingSamples.length > 0) {
+        options.onBucketUpdated?.(
+          buildActualBucket(
+            sample.mint,
+            existingBucketStart,
+            existingSamples,
+            getLatestBucketStart(state),
+            state.duplicateExcludedCounts.get(existingBucketStart) ?? 0,
+            state.lateEventCounts.get(existingBucketStart) ?? 0
+          )
+        );
+      }
       return ingestResult(event, "duplicate", null, [
         "TIMESERIES_EVENT_DUPLICATE"
       ]);
@@ -261,6 +290,17 @@ export function createTradeTimeseries(
       ]);
     }
 
+    const acceptedLate =
+      Number.isFinite(state.maxTimestampMs) &&
+      sample.timestampMs < state.maxTimestampMs;
+    if (acceptedLate) {
+      lateEventCount += 1;
+      state.lateEventCounts.set(
+        sampleBucketStart,
+        (state.lateEventCounts.get(sampleBucketStart) ?? 0) + 1
+      );
+    }
+
     state.maxTimestampMs = nextMaxTimestampMs;
     state.eventTimestamps.set(sample.id, sample.timestampMs);
     const bucketSamples = state.buckets.get(sampleBucketStart) ?? [];
@@ -279,7 +319,9 @@ export function createTradeTimeseries(
       sample.mint,
       sampleBucketStart,
       bucketSamples,
-      getLatestBucketStart(state)
+      getLatestBucketStart(state),
+      state.duplicateExcludedCounts.get(sampleBucketStart) ?? 0,
+      state.lateEventCounts.get(sampleBucketStart) ?? 0
     );
 
     if (previousBucketToClose && previousBucketToClose.tradeCount > 0) {
@@ -290,7 +332,8 @@ export function createTradeTimeseries(
 
     return ingestResult(event, "accepted", bucket, [
       "TIMESERIES_EVENT_ACCEPTED",
-      "TIMESERIES_BUCKET_UPDATED"
+      "TIMESERIES_BUCKET_UPDATED",
+      ...(acceptedLate ? ["TIMESERIES_LATE_EVENT_ACCEPTED_WITH_EVIDENCE"] : [])
     ]);
   }
 
@@ -323,7 +366,9 @@ export function createTradeTimeseries(
             normalizedMint,
             start,
             state.buckets.get(start) ?? [],
-            latestBucketStart
+            latestBucketStart,
+            state.duplicateExcludedCounts.get(start) ?? 0,
+            state.lateEventCounts.get(start) ?? 0
           )
         );
     }
@@ -349,7 +394,9 @@ export function createTradeTimeseries(
           normalizedMint,
           start,
           samples,
-          latestBucketStart
+          latestBucketStart,
+          state.duplicateExcludedCounts.get(start) ?? 0,
+          state.lateEventCounts.get(start) ?? 0
         );
         carrySol = bucket.closeSol ?? carrySol;
         carryUsd = bucket.closeUsd ?? carryUsd;
@@ -409,18 +456,14 @@ export function createTradeTimeseries(
       sampleCount: window.observationCount,
       distinctTimestampCount: window.distinctTimestampCount,
       priceVelocityPctPerSec: metrics.priceVelocityPctPerSec.value,
-      priceAccelerationPctPerSec2:
-        metrics.priceAccelerationPctPerSec2.value,
+      priceAccelerationPctPerSec2: metrics.priceAccelerationPctPerSec2.value,
       priceSource: window.priceSource,
       priceSolVelocityPerSec: metrics.priceSolVelocityPerSec.value,
-      priceSolAccelerationPerSec2:
-        metrics.priceSolAccelerationPerSec2.value,
+      priceSolAccelerationPerSec2: metrics.priceSolAccelerationPerSec2.value,
       volumeVelocitySolPerSec: metrics.volumeVelocitySolPerSec.value,
-      volumeAccelerationSolPerSec2:
-        metrics.volumeAccelerationSolPerSec2.value,
+      volumeAccelerationSolPerSec2: metrics.volumeAccelerationSolPerSec2.value,
       volumeVelocityUsdPerSec: metrics.volumeVelocityUsdPerSec.value,
-      volumeAccelerationUsdPerSec2:
-        metrics.volumeAccelerationUsdPerSec2.value,
+      volumeAccelerationUsdPerSec2: metrics.volumeAccelerationUsdPerSec2.value,
       buyerVelocityPerSec: metrics.buyerVelocityPerSec.value,
       buyerAccelerationPerSec2: metrics.buyerAccelerationPerSec2.value,
       tradeVelocityPerSec: metrics.tradeVelocityPerSec.value,
@@ -530,6 +573,10 @@ export function createTradeTimeseries(
       retentionMs,
       actualBucketCount,
       gapBucketCount: buckets.length - actualBucketCount,
+      available: states.has(mint.trim()),
+      transactionCount: states.has(mint.trim())
+        ? getWindows(mint)["5m"].tradeCount
+        : null,
       buckets,
       windows: getWindows(mint),
       rollingStats: getRollingStats(mint),
@@ -559,7 +606,13 @@ export function createTradeTimeseries(
     getStatus,
     getWindows,
     ingestTrade,
-    ingestTradeWithResult
+    ingestTradeWithResult,
+    trackMint: (mint) => {
+      const normalizedMint = mint.trim();
+      if (normalizedMint && !states.has(normalizedMint)) {
+        states.set(normalizedMint, createTokenState());
+      }
+    }
   };
 }
 
@@ -606,6 +659,8 @@ function normalizeSample(event: NormalizedTokenTradeEvent): TradeSample | null {
 function createTokenState(): TokenTimeseriesState {
   return {
     buckets: new Map(),
+    duplicateExcludedCounts: new Map(),
+    lateEventCounts: new Map(),
     eventTimestamps: new Map(),
     maxTimestampMs: Number.NEGATIVE_INFINITY
   };
@@ -636,6 +691,8 @@ function pruneState(
   for (const start of state.buckets.keys()) {
     if (start < earliestRetainedBucketStart) {
       state.buckets.delete(start);
+      state.duplicateExcludedCounts.delete(start);
+      state.lateEventCounts.delete(start);
       pruned += 1;
     }
   }
@@ -709,7 +766,9 @@ function buildActualBucket(
   mint: string,
   bucketStartMs: number,
   samples: TradeSample[],
-  latestBucketStart: number
+  latestBucketStart: number,
+  duplicateExcludedCount = 0,
+  lateEventCount = 0
 ): TradeBucket1s {
   const ohlcv = computeFromSamples(samples);
   const first = samples[0];
@@ -726,6 +785,9 @@ function buildActualBucket(
     lastTradeAt: last ? new Date(last.timestampMs).toISOString() : null,
     ...ohlcv,
     sourceCount: sources.length,
+    sourceEventCount: samples.length,
+    duplicateExcludedCount,
+    lateEventCount,
     sources,
     confidence: lowestConfidence(samples),
     complete: bucketStartMs < latestBucketStart,
@@ -733,6 +795,10 @@ function buildActualBucket(
     reasonCodes: unique([
       "TIMESERIES_BUCKET_1S",
       "TIMESERIES_BUCKET_EVENT_TIME_ALIGNED",
+      ...(duplicateExcludedCount > 0
+        ? ["TIMESERIES_BUCKET_DUPLICATES_EXCLUDED"]
+        : []),
+      ...(lateEventCount > 0 ? ["TIMESERIES_BUCKET_LATE_EVENT_EVIDENCE"] : []),
       ...samples.flatMap((sample) => sample.reasonCodes)
     ]),
     paperOnly: true,
@@ -758,6 +824,9 @@ function buildSyntheticBucket(
     lastTradeAt: null,
     ...emptyOhlcv({ carrySol, carryUsd }),
     sourceCount: 0,
+    sourceEventCount: 0,
+    duplicateExcludedCount: 0,
+    lateEventCount: 0,
     sources: [],
     confidence: "low",
     complete: bucketStartMs < latestBucketStart,
@@ -835,6 +904,10 @@ function computeFromSamples(samples: TradeSample[]): Ohlcv {
     volumeSol: sol.volume,
     buyVolumeSol: sol.buyVolume,
     sellVolumeSol: sol.sellVolume,
+    netVolumeSol: sol.buyVolume - sol.sellVolume,
+    buySellRatio: sellCount > 0 ? buyCount / sellCount : null,
+    netBuyPressure:
+      sol.volume > 0 ? (sol.buyVolume - sol.sellVolume) / sol.volume : null,
     vwapSol: sol.vwap,
     openUsd: usd.open,
     highUsd: usd.high,
@@ -930,6 +1003,9 @@ function emptyOhlcv(
     volumeSol: 0,
     buyVolumeSol: 0,
     sellVolumeSol: 0,
+    netVolumeSol: 0,
+    buySellRatio: null,
+    netBuyPressure: null,
     vwapSol: null,
     openUsd: carryUsd,
     highUsd: carryUsd,
@@ -957,6 +1033,9 @@ function sanitizeOhlcv(input: Ohlcv): Ohlcv {
     volumeSol: roundMetric(input.volumeSol),
     buyVolumeSol: roundMetric(input.buyVolumeSol),
     sellVolumeSol: roundMetric(input.sellVolumeSol),
+    netVolumeSol: roundMetric(input.netVolumeSol),
+    buySellRatio: finiteOrNull(input.buySellRatio),
+    netBuyPressure: finiteOrNull(input.netBuyPressure),
     vwapSol: finiteOrNull(input.vwapSol),
     openUsd: finiteOrNull(input.openUsd),
     highUsd: finiteOrNull(input.highUsd),

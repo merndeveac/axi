@@ -13,9 +13,15 @@ import type {
   DiscoveryCoverageEvent,
   DiscoveryCoverageSession,
   OverlaySignal,
-  RiskSnapshot
+  RiskSnapshot,
+  TradeDataCoverageEvent,
+  TradeDataCoverageSession,
+  TradeDataSubscriptionEvent
 } from "@axi/shared";
-import { discoveryCoverageLatencyKeys } from "@axi/shared";
+import {
+  discoveryCoverageLatencyKeys,
+  tradeDataCoverageLatencyKeys
+} from "@axi/shared";
 import type { CalibrationDataset } from "@axi/session-capture";
 import {
   createCalibrationCaptureSession,
@@ -60,6 +66,7 @@ import {
   getChainTransactionEvent,
   getLatestChainVerification,
   getDiscoveryCoverageSession,
+  getTradeDataCoverageSession,
   getActiveCalibrationCaptureSessionForRuntime,
   getCalibrationCaptureSession,
   getCalibrationCaptureObservationCounts,
@@ -85,6 +92,9 @@ import {
   listLiveFeedEvents,
   listDiscoveryCoverageEvents,
   listDiscoveryCoverageSessions,
+  listTradeDataCoverageEvents,
+  listTradeDataCoverageSessions,
+  listTradeDataSubscriptionEvents,
   listLiveFeedEventsByMint,
   listLiveFeedEventsBySession,
   listLightningTradePlans,
@@ -189,6 +199,9 @@ import {
   saveDiscoveryCoverageConnectionEvent,
   saveDiscoveryCoverageEvent,
   saveDiscoveryCoverageSession,
+  saveTradeDataCoverageEvent,
+  saveTradeDataCoverageSession,
+  saveTradeDataSubscriptionEvent,
   saveLiveFeedEvent,
   saveLightningTradePlan,
   saveExitRule,
@@ -379,6 +392,68 @@ describe("@axi/storage", () => {
       discoveryCoverageSessionCount: 1,
       discoveryCoverageEventCount: 1,
       discoveryCoverageConnectionEventCount: 1
+    });
+  });
+
+  it("persists restart-safe trade coverage evidence with filters and immutable finalization", () => {
+    initStorage({ databasePath });
+    const active = createTradeCoverageSession();
+    const coverageEvent = createTradeCoverageEvent();
+    const subscriptionEvent = createTradeSubscriptionEvent();
+    saveTradeDataCoverageSession(active);
+    saveTradeDataCoverageEvent(coverageEvent);
+    saveTradeDataSubscriptionEvent(subscriptionEvent);
+
+    const finalized: TradeDataCoverageSession = {
+      ...active,
+      stoppedAt: "2026-08-02T00:00:05.000Z",
+      stopReason: "MAX_EVENTS",
+      updatedAt: "2026-08-02T00:00:05.000Z"
+    };
+    saveTradeDataCoverageSession(finalized);
+    saveTradeDataCoverageSession(finalized);
+    expect(
+      listTradeDataCoverageEvents({
+        sessionId: active.sessionId,
+        mint,
+        signature: coverageEvent.signature ?? undefined,
+        parserOutcome: "recognized_trade",
+        normalizationOutcome: "succeeded",
+        pipelineOutcome: "completed",
+        usableForMetrics: true,
+        postStop: false,
+        limit: 10,
+        offset: 0
+      })
+    ).toHaveLength(1);
+    expect(
+      listTradeDataSubscriptionEvents({
+        sessionId: active.sessionId,
+        mint,
+        eventType: "subscribe_sent",
+        limit: 10,
+        offset: 0
+      })
+    ).toHaveLength(1);
+    expect(() =>
+      saveTradeDataCoverageSession({
+        ...finalized,
+        stoppedAt: "2026-08-02T00:00:06.000Z"
+      })
+    ).toThrow("cannot be changed");
+
+    closeStorage();
+    initStorage({ databasePath });
+    expect(getTradeDataCoverageSession(active.sessionId)).toMatchObject({
+      stoppedAt: finalized.stoppedAt,
+      localReconciliationStatus: "TRADE_DATA_LOCALLY_RECONCILED",
+      upstreamCoverageStatus: "UPSTREAM_TRADE_COMPLETENESS_UNPROVEN"
+    });
+    expect(listTradeDataCoverageSessions(10)).toHaveLength(1);
+    expect(getStorageStats()).toMatchObject({
+      tradeDataCoverageSessionCount: 1,
+      tradeDataCoverageEventCount: 1,
+      tradeDataCoverageSubscriptionEventCount: 1
     });
   });
 
@@ -2519,6 +2594,187 @@ function createDiscoveryCoverageEvent(): DiscoveryCoverageEvent {
     reasonCodes: ["DISCOVERY_PIPELINE_COMPLETED"],
     completedAt: "2026-08-02T00:00:01.000Z",
     createdAt: "2026-08-02T00:00:00.000Z"
+  };
+}
+
+function createTradeCoverageSession(): TradeDataCoverageSession {
+  const unavailable = {
+    availableCount: 0,
+    unavailableCount: 1,
+    min: null,
+    p50: null,
+    p95: null,
+    p99: null,
+    max: null
+  };
+  const latencyDistributions = Object.fromEntries(
+    tradeDataCoverageLatencyKeys.map((key) => [key, unavailable])
+  ) as TradeDataCoverageSession["latencyDistributions"];
+  return {
+    schemaVersion: "trade-data-coverage-v1",
+    sessionId: "trade-coverage-session",
+    provider: "pumpportal",
+    sourceMode: "live",
+    startedAt: "2026-08-02T00:00:00.000Z",
+    stoppedAt: null,
+    stopReason: null,
+    selectedMint: mint,
+    subscriptionRequestedAt: "2026-08-02T00:00:00.000Z",
+    subscriptionSentAt: "2026-08-02T00:00:00.010Z",
+    subscriptionAcknowledgedAt: null,
+    firstTradeAt: "2026-08-02T00:00:00.100Z",
+    unsubscribeRequestedAt: null,
+    unsubscribeSentAt: null,
+    finalTradeAt: "2026-08-02T00:00:00.100Z",
+    activeDurationMs: 100,
+    observationDurationMs: 100,
+    postStopGraceMs: 5_000,
+    maxEvents: 50,
+    maxRuntimeMs: 90_000,
+    maxCostSol: 0.0001,
+    rawFrameCount: 1,
+    parsedFrameCount: 1,
+    parseFailureCount: 0,
+    recognizedTradeCount: 1,
+    recognizedNonTradeCount: 0,
+    unknownPayloadCount: 0,
+    normalizationSuccessCount: 1,
+    normalizationRejectCount: 0,
+    duplicateCount: 0,
+    rejectedCount: 0,
+    pipelineCompletedCount: 1,
+    pipelineFailedOrDroppedCount: 0,
+    queueAcceptedCount: 1,
+    queueCommittedCount: 1,
+    queueFailureCount: 0,
+    persistenceCompletedCount: 1,
+    timeseriesAcceptedCount: 1,
+    timeseriesRejectedCount: 0,
+    snapshotUpdatedCount: 1,
+    rollingWindowsUpdatedCount: 1,
+    derivativeUpdatedCount: 1,
+    derivativeStrengthUpdatedCount: 1,
+    signalUpdatedCount: 1,
+    scannerProjectedCount: 1,
+    broadcastCompletedCount: 1,
+    postStopFrameCount: 0,
+    postStopTradeCount: 0,
+    unexpectedPostStopTradeCount: 0,
+    usableTradeCount: 1,
+    unusableTradeCount: 0,
+    wrongMintFrameCount: 0,
+    missingSignatureCount: 0,
+    missingAmountCount: 0,
+    consistencyMismatchCount: 0,
+    oneSecondBucketCount: 1,
+    completedOneSecondBucketCount: 1,
+    validSampleCount: 1,
+    firstDerivativeAvailable: false,
+    secondDerivativeAvailable: false,
+    telemetryFailureCount: 0,
+    estimatedCostSol: 0.000001,
+    estimatedCostPerEventSol: 0.000001,
+    costIsEstimated: true,
+    consistencySummary: { passed: 4, failed: 0, unavailable: 2 },
+    latencyDistributions,
+    reconciliation: {
+      maximumAbsoluteResidual: 0,
+      equations: [
+        {
+          name: "trade_frame_classification",
+          left: 1,
+          right: 1,
+          residual: 0,
+          holds: true,
+          expression: "raw = terminal outcomes"
+        }
+      ]
+    },
+    chainVerification: {
+      enabled: false,
+      maxSignatures: 5,
+      sampledSignatures: 0,
+      verified: 0,
+      partial: 0,
+      mismatch: 0,
+      unavailable: 0
+    },
+    subscriptionLifecycle: [createTradeSubscriptionEvent()],
+    localReconciliationStatus: "TRADE_DATA_LOCALLY_RECONCILED",
+    upstreamCoverageStatus: "UPSTREAM_TRADE_COMPLETENESS_UNPROVEN",
+    reasonCodes: ["PAPER_ONLY", "UPSTREAM_TRADE_COMPLETENESS_UNPROVEN"],
+    updatedAt: "2026-08-02T00:00:00.100Z",
+    paperOnly: true,
+    accountTradesActive: false,
+    paperAutomationActive: false,
+    lightningActive: false,
+    signingActive: false,
+    transactionSendingActive: false,
+    liveTradingEnabled: false
+  };
+}
+
+function createTradeCoverageEvent(): TradeDataCoverageEvent {
+  return {
+    schemaVersion: "trade-data-coverage-v1",
+    sessionId: "trade-coverage-session",
+    correlationId: "trade-correlation-1",
+    sourceEventKey: "trade:signature:trade-signature:mint:test",
+    provider: "pumpportal",
+    subscribedMint: mint,
+    observedMint: mint,
+    signature: "trade-signature",
+    eventIndex: null,
+    receivedAt: "2026-08-02T00:00:00.000Z",
+    providerTimestamp: "2026-08-02T00:00:00.000Z",
+    side: "buy",
+    trader: "11111111111111111111111111111111",
+    rawSolAmount: 1,
+    rawTokenAmount: 10,
+    normalizedVolumeSol: 1,
+    normalizedTokenAmount: 10,
+    normalizedPriceSol: 0.1,
+    marketCapSol: null,
+    virtualTokenReserves: null,
+    virtualSolReserves: null,
+    amountNormalizationMode: "ui",
+    confidence: "high",
+    usableForMetrics: true,
+    parserOutcome: "recognized_trade",
+    normalizationOutcome: "succeeded",
+    pipelineOutcome: "completed",
+    duplicateKey: null,
+    duplicateReason: null,
+    rejectionReason: null,
+    failureStage: null,
+    failureReason: null,
+    postStop: false,
+    postStopClassification: "not_applicable",
+    stageTimestamps: {
+      raw_received: "2026-08-02T00:00:00.000Z",
+      pipeline_completed: "2026-08-02T00:00:00.100Z"
+    },
+    stageLatenciesMs: { receive_to_pipeline_complete: 100 },
+    consistencyChecks: {},
+    chainVerificationStatus: "NOT_REQUESTED",
+    reasonCodes: ["TRADE_PIPELINE_COMPLETED"],
+    completedAt: "2026-08-02T00:00:00.100Z",
+    createdAt: "2026-08-02T00:00:00.000Z"
+  };
+}
+
+function createTradeSubscriptionEvent(): TradeDataSubscriptionEvent {
+  return {
+    schemaVersion: "trade-data-coverage-v1",
+    subscriptionEventId: "trade-coverage-session:1:subscribe_sent",
+    sessionId: "trade-coverage-session",
+    mint,
+    eventType: "subscribe_sent",
+    timestamp: "2026-08-02T00:00:00.010Z",
+    safeReason: null,
+    reasonCodes: ["PUMPPORTAL_TOKEN_TRADE_SUBSCRIBE_SENT"],
+    payload: {},
+    createdAt: "2026-08-02T00:00:00.010Z"
   };
 }
 

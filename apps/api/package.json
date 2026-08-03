@@ -23,6 +23,8 @@
     "metered-launch-data:status": "tsx --conditions=development src/metered-launch-data-status.ts",
     "metered-launch-data:cost": "tsx --conditions=development src/metered-launch-data-cost.ts",
     "metered-launch-data:simulate": "tsx --conditions=development src/metered-launch-data-simulate.ts",
+    "trade-data:coverage:validate": "tsx --conditions=development src/trade-data-coverage-validate.ts",
+    "trade-data:coverage:status": "tsx --conditions=development src/trade-data-coverage-status.ts",
     "actual-data:status": "tsx --conditions=development src/actual-data-status.ts",
     "actual-data:probe": "tsx --conditions=development src/actual-data-probe.ts",
     "pumpportal:data-wallet:status": "tsx --conditions=development src/pumpportal-data-wallet-status.ts",

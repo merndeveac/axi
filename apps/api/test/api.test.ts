@@ -155,6 +155,130 @@ describe("@axi/api", () => {
     });
   });
 
+  it("exposes filtered trade-data coverage without raw secrets", async () => {
+    const mint = "So11111111111111111111111111111111111111112";
+    server = createApiServer({
+      dataFeed: "pumpportal",
+      dataFeedMode: "live",
+      logLevel: false,
+      paperAutoOrder: false,
+      pumpPortal: {
+        apiKey: "test-only-key",
+        maxAccountTradeSubscriptions: 0,
+        maxTokenTradeSubscriptions: 1,
+        subscribeMigration: false,
+        subscribeNewToken: false,
+        webSocketConstructor: FakeWebSocket,
+        wsUrl: "wss://example.test/pumpportal"
+      },
+      actualData: createActualDataConfig({
+        acknowledgedMetered: true,
+        apiKeyConfigured: true,
+        enabled: true,
+        maxEventsPerMint: 5,
+        maxEventsPerSession: 5,
+        maxSubscribedTokens: 1,
+        requireApiKey: true
+      }),
+      pumpPortalDataWallet: {
+        apiKeyConfigured: true,
+        publicKey: "11111111111111111111111111111111"
+      },
+      startFeed: true,
+      storageDatabasePath: databasePath
+    });
+    FakeWebSocket.instances[0]?.emit("open");
+    FakeWebSocket.instances[0]?.emit(
+      "message",
+      JSON.stringify({
+        mint,
+        name: "Coverage Trade Token",
+        signature: "coverage-create-signature",
+        symbol: "COV",
+        txType: "create"
+      })
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    server.indexerAdapter.trackTimeseriesMint(mint);
+    server.tradeDataCoverage.begin({
+      sessionId: "api-trade-coverage",
+      selectedMint: mint,
+      maxEvents: 5
+    });
+    server.actualData.subscribeMint(mint, "coverage_test");
+    FakeWebSocket.instances[0]?.emit(
+      "message",
+      JSON.stringify({
+        mint,
+        signature: "api-coverage-signature",
+        solAmount: 1,
+        tokenAmount: 10,
+        traderPublicKey: "11111111111111111111111111111111",
+        txType: "buy",
+        ignoredSecretShape: "must-not-be-persisted-in-evidence"
+      })
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const activeResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/trade-data-coverage"
+    });
+    expect(activeResponse.statusCode).toBe(200);
+    expect(activeResponse.json()).toMatchObject({
+      schemaVersion: "trade-data-coverage-v1",
+      rawFrameCount: 1,
+      recognizedTradeCount: 1,
+      normalizationSuccessCount: 1,
+      queueCommittedCount: 1,
+      timeseriesAcceptedCount: 1,
+      upstreamCoverageStatus: "UPSTREAM_TRADE_COMPLETENESS_UNPROVEN",
+      accountTradesActive: false,
+      liveTradingEnabled: false
+    });
+
+    const eventsResponse = await server.app.inject({
+      method: "GET",
+      url: `/runtime/trade-data-coverage/events?sessionId=api-trade-coverage&mint=${mint}&signature=api-coverage-signature&usableForMetrics=true&postStop=false&limit=10&offset=0`
+    });
+    expect(eventsResponse.statusCode).toBe(200);
+    const coverageEvents = (
+      eventsResponse.json() as {
+        events: Array<{
+          pipelineOutcome: string;
+          failureReason: string | null;
+        }>;
+      }
+    ).events;
+    expect(coverageEvents).toHaveLength(1);
+    expect(coverageEvents[0]).toMatchObject({
+      pipelineOutcome: "completed",
+      failureReason: null
+    });
+    expect(eventsResponse.body).not.toContain("must-not-be-persisted");
+
+    const subscriptionsResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/trade-data-coverage/subscriptions?sessionId=api-trade-coverage&eventType=subscribe_sent"
+    });
+    expect(
+      (subscriptionsResponse.json() as { subscriptions: unknown[] })
+        .subscriptions
+    ).toHaveLength(1);
+    server.actualData.unsubscribeMint(mint, "coverage_test_complete");
+    server.tradeDataCoverage.beginGrace("test_complete");
+    server.tradeDataCoverage.finalize("test_complete");
+
+    const sessionResponse = await server.app.inject({
+      method: "GET",
+      url: "/runtime/trade-data-coverage/sessions/api-trade-coverage"
+    });
+    expect(sessionResponse.json()).toMatchObject({
+      sessionId: "api-trade-coverage",
+      stopReason: "TEST_COMPLETE"
+    });
+  });
+
   it("uses one conservative local runtime configuration by default", () => {
     const config = loadApiConfig({});
 
@@ -167,6 +291,11 @@ describe("@axi/api", () => {
     expect(config.METERED_LAUNCH_DATA_START_ACTIVE).toBe(false);
     expect(config.METERED_LAUNCH_DATA_REQUIRE_UI_ACK).toBe(true);
     expect(config.METERED_LAUNCH_DATA_ACK_COST).toBe(false);
+    expect(config.TRADE_DATA_COVERAGE_MAX_MINTS).toBe(1);
+    expect(config.TRADE_DATA_COVERAGE_MAX_EVENTS).toBe(50);
+    expect(config.TRADE_DATA_COVERAGE_MAX_RUNTIME_MS).toBe(90_000);
+    expect(config.TRADE_DATA_COVERAGE_MAX_COST_SOL).toBe(0.0001);
+    expect(config.TRADE_DATA_COVERAGE_CHAIN_VERIFY).toBe(false);
     expect(config.METERED_LAUNCH_DATA_MAX_CONCURRENT_MINTS).toBe(3);
     expect(config.ROLLING_TRACKER_RESERVED_NEWEST_SLOTS).toBe(1);
     expect(config.ROLLING_TRACKER_MAX_PROTECTED_MINTS).toBe(2);

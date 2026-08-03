@@ -35,7 +35,13 @@ describe("@axi/timeseries", () => {
       lowSol: 1,
       closeSol: 1.5,
       volumeSol: 5,
+      netVolumeSol: -1,
+      buySellRatio: 1,
+      netBuyPressure: -0.2,
       tradeCount: 2,
+      sourceEventCount: 2,
+      duplicateExcludedCount: 0,
+      lateEventCount: 0,
       vwapSol: 1.3,
       synthetic: false
     });
@@ -72,6 +78,25 @@ describe("@axi/timeseries", () => {
     expect(series.ingestTradeWithResult(event).action).toBe("duplicate");
     expect(series.getWindows(mint)["1s"].tradeCount).toBe(1);
     expect(series.getStatus().duplicateEventCount).toBe(1);
+    expect(series.getBuckets(mint)[0]).toMatchObject({
+      tradeCount: 1,
+      sourceEventCount: 1,
+      duplicateExcludedCount: 1
+    });
+  });
+
+  it("distinguishes a tracked zero-trade mint from unavailable data", () => {
+    const series = createTradeTimeseries();
+    expect(series.getSeries(mint)).toMatchObject({
+      available: false,
+      transactionCount: null
+    });
+    series.trackMint(mint);
+    expect(series.getSeries(mint)).toMatchObject({
+      available: true,
+      transactionCount: 0,
+      actualBucketCount: 0
+    });
   });
 
   it("materializes gap buckets with carried prices and zero activity", () => {
@@ -202,6 +227,38 @@ describe("@axi/timeseries", () => {
     expect(series.getBuckets(mint).map((bucket) => bucket.bucketStart)).toEqual(
       ["2026-01-01T00:05:00.000Z"]
     );
+  });
+
+  it("accepts in-retention late events with explicit bucket evidence", () => {
+    const series = createTradeTimeseries();
+    series.ingestTrade(trade({ id: "latest", second: 10 }));
+    const late = series.ingestTradeWithResult(
+      trade({ id: "late", second: 9, millisecond: 500 })
+    );
+    expect(late).toMatchObject({ action: "accepted" });
+    expect(late.reasonCodes).toContain(
+      "TIMESERIES_LATE_EVENT_ACCEPTED_WITH_EVIDENCE"
+    );
+    expect(series.getBuckets(mint)[0]).toMatchObject({ lateEventCount: 1 });
+  });
+
+  it("keeps insufficient derivatives null and distinguishes true flat zero", () => {
+    const series = createTradeTimeseries();
+    series.ingestTrade(trade({ id: "one", second: 1, priceSol: 1 }));
+    expect(
+      series.getDerivatives(mint).primary.metrics.priceSolVelocityPerSec
+    ).toMatchObject({ value: null, status: "insufficient_samples" });
+    series.ingestTrade(trade({ id: "two", second: 2, priceSol: 1 }));
+    expect(
+      series.getDerivatives(mint).primary.metrics.priceSolVelocityPerSec
+    ).toMatchObject({ value: 0, status: "available", sampleCount: 2 });
+    expect(
+      series.getDerivatives(mint).primary.metrics.priceSolAccelerationPerSec2
+    ).toMatchObject({ value: null, status: "insufficient_samples" });
+    series.ingestTrade(trade({ id: "three", second: 3, priceSol: 1 }));
+    expect(
+      series.getDerivatives(mint).primary.metrics.priceSolAccelerationPerSec2
+    ).toMatchObject({ value: 0, status: "available", sampleCount: 3 });
   });
 
   it("projects sample-gated canonical derivatives into rolling stats", () => {
