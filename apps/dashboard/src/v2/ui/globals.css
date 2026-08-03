@@ -1,0 +1,45 @@
+body {
+  overflow-x: hidden;
+  color: var(--axi-v2-text);
+  background: var(--axi-v2-ink-950);
+  font-family: var(--axi-v2-font);
+  font-size: 14px;
+  line-height: 1.4;
+  text-rendering: optimizeLegibility;
+}
+
+:focus-visible {
+  outline: 2px solid var(--axi-v2-focus);
+  outline-offset: 2px;
+}
+
+::selection {
+  color: var(--axi-v2-text-strong);
+  background: rgb(91 169 230 / 30%);
+}
+
+.axi-v2-numeric {
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
+.axi-v2-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

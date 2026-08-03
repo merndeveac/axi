@@ -1,34 +1,22 @@
-import { goldenScannerSnapshot } from "./fixtures/golden-path";
-import { formatSolV2 } from "./lib/formatters";
-import "./placeholder.css";
+import { useState } from "react";
+import type { AppRoute } from "./app/navigation";
+import { RoutePlaceholder, ScannerShellPreview } from "./app/routes";
+import { AppShell } from "./components/layout/AppShell";
+import { meteredArmRequired } from "./fixtures/golden-path";
+import { TooltipProvider } from "./components/primitives/Tooltip";
+import "./ui/tokens.css";
+import "./ui/reset.css";
+import "./ui/globals.css";
+import "./ui/typography.css";
+import "./golden-path.css";
 
 export function GoldenPathApp() {
-  const lead = goldenScannerSnapshot.rows[0];
-
+  const [route, setRoute] = useState<AppRoute>("scanner");
   return (
-    <main className="v2-placeholder">
-      <p className="v2-placeholder__eyebrow">AXI · Paper only</p>
-      <h1>Golden-path UI contract checkpoint</h1>
-      <p>
-        The V2 boundary is isolated and rendering deterministic fixtures while
-        the legacy dashboard remains the default.
-      </p>
-      {lead ? (
-        <dl>
-          <div>
-            <dt>Fixture</dt>
-            <dd>{lead.identity.displayName}</dd>
-          </div>
-          <div>
-            <dt>Curve price</dt>
-            <dd>{formatSolV2(lead.market.priceSol.value)}</dd>
-          </div>
-          <div>
-            <dt>State</dt>
-            <dd>{lead.decision.signal}</dd>
-          </div>
-        </dl>
-      ) : null}
-    </main>
+    <TooltipProvider delayDuration={250}>
+      <AppShell route={route} runtime={meteredArmRequired} onNavigate={setRoute}>
+        {route === "scanner" ? <ScannerShellPreview /> : <RoutePlaceholder route={route} />}
+      </AppShell>
+    </TooltipProvider>
   );
 }
