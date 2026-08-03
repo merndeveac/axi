@@ -183,6 +183,7 @@ export interface RuntimeSummaryV2 {
   remainingSol: UiField<number>;
   walletBalanceSol: UiField<number>;
   trackedMintCount: UiField<number>;
+  maximumSessionCostSol: number;
   maximumConcurrentMints: number;
   maximumEvents: number;
   durationSeconds: number | null;

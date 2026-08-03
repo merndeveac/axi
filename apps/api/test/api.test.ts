@@ -5338,6 +5338,9 @@ describe("@axi/api", () => {
 
     expect(response.statusCode).toBe(200);
     expect(body.paperOnly).toBe(true);
+    expect(body.strategyVersion).toBe("paper-momentum-risk-v1");
+    expect(body.policyStatus).toBe("REFERENCE_POLICY");
+    expect(body.calibrated).toBe(false);
     expect(body.thresholds.minScoreForPaperBuyReady).toBe(75);
     expect(body.thresholds.minSampleCount).toBe(8);
     expect(body.safetyGates).toContain("NO_TRADING_CONTROLS");

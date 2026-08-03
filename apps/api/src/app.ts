@@ -7002,6 +7002,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   function getStrategyStatus(): StrategyStatus {
     return {
       strategyName: "paper-momentum-risk-v1",
+      strategyVersion: "paper-momentum-risk-v1",
+      policyStatus: "REFERENCE_POLICY",
+      calibrated: false,
       thresholds: {
         minScoreForPaperBuyReady: 75,
         minScoreForWatch: 45,

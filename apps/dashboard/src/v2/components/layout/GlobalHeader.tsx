@@ -5,7 +5,9 @@ import { SecondaryNavigation } from "./SecondaryNavigation";
 import type { AppRoute, PrimaryRoute, SecondaryRoute } from "../../app/navigation";
 import { useHealth } from "../../data/hooks/useHealth";
 import { useRuntimeStatus } from "../../data/hooks/useRuntimeStatus";
-import { meteredArmRequired } from "../../fixtures/golden-path";
+import { apiOfflineRuntime } from "../../fixtures/golden-path";
+import { adaptRuntimeStatusV2 } from "../../data/runtime-adapter";
+import { useRuntimeMutations } from "../../features/runtime/RuntimeMutations";
 
 function ConnectionHealth() {
   const health = useHealth();
@@ -23,7 +25,30 @@ function ConnectionHealth() {
 
 function ConnectedRuntimeControlBar() {
   const runtime = useRuntimeStatus();
-  return <RuntimeControlBar runtime={runtime.data ?? meteredArmRequired} />;
+  const mutation = useRuntimeMutations();
+  const summary = runtime.data ?? apiOfflineRuntime;
+  const run = async (command: Parameters<typeof mutation.mutateAsync>[0]) => {
+    const result = await mutation.mutateAsync(command);
+    return { message: result.message, runtime: adaptRuntimeStatusV2(result.status) };
+  };
+  const busyAction = mutation.isPending
+    ? mutation.variables.kind === "arm"
+      ? "arm"
+      : mutation.variables.kind === "start-metered"
+        ? "start"
+        : mutation.variables.kind === "stop-metered"
+          ? "stop"
+          : null
+    : null;
+  return (
+    <RuntimeControlBar
+      runtime={summary}
+      busyAction={busyAction}
+      onArm={(input) => run({ kind: "arm", input })}
+      onStart={() => run({ kind: "start-metered" })}
+      onStop={() => run({ kind: "stop-metered" })}
+    />
+  );
 }
 
 export function GlobalHeader({

@@ -3,10 +3,13 @@ import { adaptRuntimeStatusV2, type CanonicalRuntimeStatus } from "./runtime-ada
 
 function canonical(): CanonicalRuntimeStatus {
   return {
+    controlPlaneEnabled: true,
+    localOnly: true,
+    runtimeMode: "paper",
     paperOnly: true,
     tradingDisabled: true,
     api: { online: true, wsOnline: true, lastUpdatedAt: "2025-06-14T12:00:00.000Z" },
-    liveDiscovery: { connected: true, connecting: false, stopped: false },
+    liveDiscovery: { enabled: true, provider: "pumpportal", connected: true, connecting: false, stopped: false, lastStartedAt: null, lastStoppedAt: null, lastEventAt: null, newTokenEventCount: 0, migrationEventCount: 0, errorCount: 0, lastError: null, reasonCodes: [] },
     meteredPriceAction: {
       state: "READY",
       canArm: false,
@@ -19,10 +22,15 @@ function canonical(): CanonicalRuntimeStatus {
       budgetRemainingSol: 0.0001,
       maxConcurrentMints: 3,
       maxEventsPerSession: 1_000,
+      maxUiSessionCostSol: 0.0005,
+      eventCount: 0,
+      provider: "pumpportal",
+      active: false,
+      latestEventAt: null,
       blockers: [],
       warnings: []
     },
-    dataWallet: { balanceSol: null, lastBalanceCheckAt: null },
+    dataWallet: { publicKeyConfigured: true, publicKey: "wallet", shortPublicKey: "wallet", apiKeyConfigured: true, balanceSol: null, balanceStatus: "unknown", estimatedEventsRemaining: null, lastBalanceCheckAt: null, reasonCodes: [] },
     process: { pid: 42, startedAt: "2025-06-14T11:59:00.000Z" },
     safety: {
       accountTradesEnabled: false,

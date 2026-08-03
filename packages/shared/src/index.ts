@@ -619,6 +619,9 @@ export type StrategySignalExplanation = {
 
 export type StrategyStatus = {
   strategyName: string;
+  strategyVersion: "paper-momentum-risk-v1";
+  policyStatus: "REFERENCE_POLICY";
+  calibrated: false;
   thresholds: {
     minScoreForPaperBuyReady: number;
     minScoreForWatch: number;

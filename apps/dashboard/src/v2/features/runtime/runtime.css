@@ -1,0 +1,28 @@
+.axi-v2-runtime-page { display: grid; gap: 14px; }
+.axi-v2-heading-badges, .axi-v2-runtime-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.axi-v2-runtime-hero { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px; gap: 18px; border: 1px solid var(--axi-v2-ink-700); border-radius: var(--axi-v2-radius-3); background: linear-gradient(120deg, #172431, var(--axi-v2-ink-850)); }
+.axi-v2-runtime-hero h2 { margin: 4px 0; font-size: 20px; }
+.axi-v2-runtime-hero p, .axi-v2-runtime-panel p { margin: 4px 0; color: var(--axi-v2-text-muted); font-size: 13px; }
+.axi-v2-eyebrow { color: var(--axi-v2-accent-strong); font-size: 11px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+.axi-v2-runtime-feedback { margin: 0; padding: 10px 12px; border: 1px solid #315f80; border-radius: var(--axi-v2-radius-2); color: #a7d9fa; background: #173044; font-size: 13px; }
+.axi-v2-runtime-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.axi-v2-runtime-panel { min-width: 0; padding: 18px; border: 1px solid var(--axi-v2-ink-700); border-radius: var(--axi-v2-radius-3); background: var(--axi-v2-ink-850); }
+.axi-v2-runtime-panel > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; gap: 12px; }
+.axi-v2-runtime-panel h2 { margin: 0; color: var(--axi-v2-text-strong); font-size: 16px; }
+.axi-v2-stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; overflow: hidden; border: 1px solid var(--axi-v2-ink-700); border-radius: var(--axi-v2-radius-2); background: var(--axi-v2-ink-700); }
+.axi-v2-runtime-stat { display: grid; padding: 10px; gap: 3px; background: #151d25; }
+.axi-v2-runtime-stat span, .axi-v2-runtime-definition-list dt { color: var(--axi-v2-text-faint); font-size: 11px; }
+.axi-v2-runtime-note { margin-top: 13px !important; }
+.axi-v2-capability-list { display: grid; margin-top: 12px; gap: 7px; }
+.axi-v2-capability-list > div { display: flex; align-items: center; gap: 9px; color: var(--axi-v2-text-muted); font-size: 12px; }
+.axi-v2-runtime-definition-list { display: grid; margin: 0 0 14px; gap: 9px; }
+.axi-v2-runtime-definition-list > div { display: flex; justify-content: space-between; gap: 18px; border-bottom: 1px solid rgb(57 71 86 / 45%); padding-bottom: 7px; }
+.axi-v2-runtime-definition-list dd { min-width: 0; margin: 0; overflow: hidden; color: var(--axi-v2-text); text-overflow: ellipsis; text-align: right; white-space: nowrap; }
+.axi-v2-tracked-list { display: grid; max-height: 170px; margin: 0; padding: 0; gap: 6px; overflow: auto; list-style: none; }
+.axi-v2-tracked-list li { display: flex; justify-content: space-between; padding: 8px; border-radius: 5px; color: var(--axi-v2-text-muted); background: #121920; font-size: 12px; }
+.axi-v2-runtime-links { display: flex; flex-wrap: wrap; gap: 12px; }
+.axi-v2-runtime-links a, .axi-v2-runtime-links button { padding: 0; border: 0; color: var(--axi-v2-accent-strong); background: none; font: inherit; font-size: 12px; cursor: pointer; text-decoration: none; }
+.axi-v2-runtime-links a:hover, .axi-v2-runtime-links button:hover { text-decoration: underline; }
+.axi-v2-safety-banner { display: flex; flex-wrap: wrap; justify-content: center; padding: 10px 14px; gap: 18px; border: 1px solid #356b55; border-radius: var(--axi-v2-radius-2); color: #9ae5bf; background: #17392c; font-size: 12px; }
+.axi-v2-safety-banner span { display: inline-flex; align-items: center; gap: 5px; }
+@media (max-width: 900px) { .axi-v2-runtime-grid { grid-template-columns: 1fr; } .axi-v2-runtime-hero { align-items: flex-start; flex-direction: column; } }

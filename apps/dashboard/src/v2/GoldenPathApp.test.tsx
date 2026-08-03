@@ -6,6 +6,8 @@ import userEvent from "@testing-library/user-event";
 import axe from "axe-core";
 import { afterEach, describe, expect, it } from "vitest";
 import { GoldenPathApp } from "./GoldenPathApp";
+import { RuntimeControlBar } from "./components/layout/RuntimeControlBar";
+import { meteredArmRequired } from "./fixtures/golden-path";
 
 afterEach(cleanup);
 
@@ -36,7 +38,7 @@ describe("GoldenPathApp shell", () => {
 
   it("traps the arm dialog, closes with Escape, and restores focus", async () => {
     const user = userEvent.setup();
-    render(<GoldenPathApp />);
+    render(<RuntimeControlBar runtime={meteredArmRequired} onArm={async () => ({ message: "armed", runtime: meteredArmRequired })} />);
     const arm = screen.getByRole("button", { name: /arm/i });
     await user.click(arm);
     expect(screen.getByRole("dialog", { name: "Arm bounded metered data" })).toBeTruthy();

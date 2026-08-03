@@ -290,6 +290,7 @@ function runtime(
     remainingSol: value(0.0001, "runtime"),
     walletBalanceSol: value(0.0042, "runtime"),
     trackedMintCount: value(0, "runtime"),
+    maximumSessionCostSol: 0.0001,
     maximumConcurrentMints: 3,
     maximumEvents: 1_000,
     durationSeconds: 900,

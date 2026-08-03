@@ -2,13 +2,32 @@ import type { RuntimePhaseV2, RuntimeSummaryV2 } from "@axi/shared";
 import { uiField } from "../contracts/ui-field";
 
 export type CanonicalRuntimeStatus = {
+  controlPlaneEnabled: boolean;
+  localOnly: boolean;
+  runtimeMode: string;
   paperOnly: true;
   tradingDisabled: true;
-  api: { online: boolean; wsOnline: boolean; lastUpdatedAt: string };
+  api: {
+    online: boolean;
+    wsOnline: boolean;
+    lastUpdatedAt: string;
+    pid?: number;
+    ports?: number[];
+  };
   liveDiscovery: {
+    enabled: boolean;
+    provider: string;
     connected: boolean;
     connecting: boolean;
     stopped: boolean;
+    lastStartedAt: string | null;
+    lastStoppedAt: string | null;
+    lastEventAt: string | null;
+    newTokenEventCount: number;
+    migrationEventCount: number;
+    errorCount: number;
+    lastError: string | null;
+    reasonCodes: string[];
   };
   meteredPriceAction: {
     state: RuntimePhaseV2;
@@ -22,20 +41,33 @@ export type CanonicalRuntimeStatus = {
     budgetRemainingSol: number;
     maxConcurrentMints: number;
     maxEventsPerSession: number;
+    maxUiSessionCostSol: number;
+    eventCount: number;
+    provider: string;
+    active: boolean;
+    latestEventAt: string | null;
     blockers: string[];
     warnings: string[];
   };
   dataWallet: {
+    publicKeyConfigured: boolean;
+    publicKey: string | null;
+    shortPublicKey: string | null;
+    apiKeyConfigured: boolean;
     balanceSol: number | null;
+    balanceStatus: string;
+    estimatedEventsRemaining: number | null;
     lastBalanceCheckAt: string | null;
+    reasonCodes: string[];
   };
-  process: { pid: number; startedAt: string };
+  process: { pid: number; startedAt: string; uptimeSeconds?: number; ports?: number[] };
   safety: {
     accountTradesEnabled: false;
     lightningExecutionEnabled: false;
     localTransactionApiEnabled: false;
     privateKeysLoaded: false;
     liveTradingEnabled: false;
+    reasonCodes?: string[];
   };
 };
 
@@ -85,6 +117,7 @@ export function adaptRuntimeStatusV2(
       source: "runtime",
       observedAt
     }),
+    maximumSessionCostSol: metered.maxUiSessionCostSol || 0.0001,
     maximumConcurrentMints: metered.maxConcurrentMints || 3,
     maximumEvents: metered.maxEventsPerSession || 1_000,
     durationSeconds: null,

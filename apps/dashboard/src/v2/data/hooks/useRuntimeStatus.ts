@@ -21,3 +21,17 @@ export function useRuntimeStatus(enabled = true) {
     refetchInterval: () => visibleRefetchInterval(2_000)
   });
 }
+
+export function useCanonicalRuntimeStatus(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.runtime,
+    queryFn: ({ signal }) =>
+      apiClient.get<CanonicalRuntimeStatus>("/runtime/status", {
+        signal,
+        timeoutMs: 4_000
+      }),
+    enabled,
+    staleTime: 1_000,
+    refetchInterval: () => visibleRefetchInterval(2_000)
+  });
+}

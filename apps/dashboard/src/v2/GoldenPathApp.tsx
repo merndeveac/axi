@@ -24,7 +24,7 @@ function GoldenPathRouter() {
   return (
     <TooltipProvider delayDuration={250}>
       <AppShell route={route} onNavigate={setRoute}>
-        {route === "scanner" ? <ScannerRoute /> : <WorkflowRoute route={route} />}
+        {route === "scanner" ? <ScannerRoute /> : <WorkflowRoute route={route} onNavigate={setRoute} />}
       </AppShell>
     </TooltipProvider>
   );

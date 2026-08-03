@@ -2,7 +2,6 @@ import type { MomentumScannerSummaryV2 } from "@axi/shared";
 import { useDeferredValue, useMemo, useState } from "react";
 import { Badge } from "../../components/primitives/Badge";
 import { useRealtimeScanner } from "../../data/hooks/useRealtimeScanner";
-import { goldenScannerRows } from "../../fixtures/golden-path";
 import { matchesScannerFilter, matchesScannerSearch, type ScannerFilter } from "./filters";
 import { ScannerSummary } from "./ScannerSummary";
 import { ScannerToolbar, type ScannerDensity } from "./ScannerToolbar";
@@ -16,7 +15,7 @@ export function ScannerPage() {
   const [activeOnly, setActiveOnly] = useState(true);
   const [researchSelection, setResearchSelection] = useState<MomentumScannerSummaryV2 | null>(null);
   const scanner = useRealtimeScanner({ limit: 100, activeOnly });
-  const rows = scanner.rows.length > 0 ? scanner.rows : [...goldenScannerRows];
+  const rows = scanner.rows;
   return (
     <>
       <ScannerPageView

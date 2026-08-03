@@ -1,0 +1,21 @@
+.axi-v2-settings-page { display: grid; gap: 14px; }
+.axi-v2-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.axi-v2-settings-panel { min-width: 0; padding: 18px; border: 1px solid var(--axi-v2-ink-700); border-radius: var(--axi-v2-radius-3); background: var(--axi-v2-ink-850); }
+.axi-v2-settings-panel > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.axi-v2-settings-panel h2 { margin: 0; font-size: 16px; }
+.axi-v2-settings-panel p { margin: 12px 0 0; color: var(--axi-v2-text-muted); font-size: 12px; }
+.axi-v2-setting-control { display: grid; grid-template-columns: 1fr minmax(160px, 220px); align-items: center; padding: 9px 0; gap: 16px; border-bottom: 1px solid rgb(57 71 86 / 45%); font-size: 13px; }
+.axi-v2-setting-control select { height: 34px; padding: 0 9px; border: 1px solid var(--axi-v2-ink-600); border-radius: 5px; color: var(--axi-v2-text); background: #121920; }
+.axi-v2-settings-list { display: grid; margin: 0; gap: 9px; }
+.axi-v2-settings-list div { display: flex; justify-content: space-between; gap: 16px; }
+.axi-v2-settings-list dt { color: var(--axi-v2-text-faint); font-size: 12px; }
+.axi-v2-settings-list dd { min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.axi-v2-settings-items { display: grid; max-height: 190px; margin: 0; padding: 0; gap: 6px; overflow: auto; list-style: none; }
+.axi-v2-settings-items li { display: flex; align-items: center; justify-content: space-between; padding: 9px; gap: 12px; border-radius: 6px; background: #121920; }
+.axi-v2-settings-items li span:first-child { display: grid; min-width: 0; gap: 3px; }
+.axi-v2-settings-items small { overflow: hidden; color: var(--axi-v2-text-muted); text-overflow: ellipsis; white-space: nowrap; }
+.axi-v2-future-readiness { border: 1px solid var(--axi-v2-ink-700); border-radius: var(--axi-v2-radius-2); background: var(--axi-v2-ink-850); }
+.axi-v2-future-readiness summary { padding: 13px 16px; cursor: pointer; font-weight: 650; }
+.axi-v2-future-readiness > div { padding: 0 16px 16px; }
+.axi-v2-future-readiness p { color: var(--axi-v2-text-muted); font-size: 12px; }
+@media (max-width: 900px) { .axi-v2-settings-grid { grid-template-columns: 1fr; } }

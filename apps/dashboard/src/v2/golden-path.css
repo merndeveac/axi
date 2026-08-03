@@ -208,7 +208,13 @@
 .axi-v2-dialog__description { margin: 6px 0 0; color: var(--axi-v2-text-muted); font-size: 13px; }
 .axi-v2-dialog__footer { display: flex; justify-content: flex-end; margin-top: 20px; }
 .axi-v2-arm-summary { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 20px; padding: 16px; gap: 12px; border: 1px solid var(--axi-v2-ink-700); border-radius: var(--axi-v2-radius-2); }
+.axi-v2-arm-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 18px; gap: 10px; }
+.axi-v2-arm-fields label { display: grid; min-width: 0; gap: 6px; color: var(--axi-v2-text-muted); font-size: 12px; }
+.axi-v2-arm-fields input { width: 100%; height: 35px; padding: 0 8px; border: 1px solid var(--axi-v2-ink-600); border-radius: 5px; color: var(--axi-v2-text); background: #121920; font: inherit; }
+.axi-v2-arm-fields small { color: var(--axi-v2-text-faint); }
 .axi-v2-checkbox { display: flex; align-items: flex-start; margin-top: 18px; gap: 9px; color: var(--axi-v2-text); font-size: 13px; }
+.axi-v2-dialog-feedback, .axi-v2-form-error { margin: 12px 0 0; color: var(--axi-v2-text-muted); font-size: 12px; }
+.axi-v2-form-error, .axi-v2-runtime-bar__warning--error { color: var(--axi-v2-red); }
 .axi-v2-drawer__copy { color: var(--axi-v2-text-muted); }
 
 .axi-v2-menu,
@@ -241,4 +247,8 @@
 @media (max-width: 1279px) {
   .axi-v2-global-header__health span:last-child,
   .axi-v2-runtime-bar__status { display: none; }
+}
+
+@media (max-width: 640px) {
+  .axi-v2-arm-fields { grid-template-columns: 1fr; }
 }
