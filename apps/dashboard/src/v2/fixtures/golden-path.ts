@@ -278,6 +278,8 @@ function runtime(
     paperOnly: true,
     tradingDisabled: true,
     liveExecutionDisabled: true,
+    apiOnline: true,
+    websocketOnline: true,
     discovery: "active",
     acknowledged: false,
     canArm: { allowed: true, blocker: null },
@@ -325,6 +327,8 @@ export const meteredBudgetReached = runtime("BUDGET_REACHED", {
 });
 
 export const apiOfflineRuntime = runtime("ARM_REQUIRED", {
+  apiOnline: false,
+  websocketOnline: false,
   discovery: "offline",
   canArm: { allowed: false, blocker: "API offline" },
   walletBalanceSol: uiField(null, {
@@ -335,6 +339,7 @@ export const apiOfflineRuntime = runtime("ARM_REQUIRED", {
 });
 
 export const websocketOfflineRuntime = runtime("ARM_REQUIRED", {
+  websocketOnline: false,
   warning: "WebSocket offline; cached scanner rows retained"
 });
 

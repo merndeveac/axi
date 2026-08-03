@@ -153,9 +153,12 @@ export type ScannerStreamMessageV2 =
     });
 
 export type RuntimePhaseV2 =
+  | "OFF"
   | "ARM_REQUIRED"
   | "READY"
   | "ACTIVE"
+  | "STOPPED"
+  | "BLOCKED"
   | "BUDGET_REACHED";
 
 export interface RuntimeCapabilityV2 {
@@ -168,6 +171,8 @@ export interface RuntimeSummaryV2 {
   paperOnly: true;
   tradingDisabled: true;
   liveExecutionDisabled: true;
+  apiOnline: boolean;
+  websocketOnline: boolean;
   discovery: "offline" | "starting" | "active" | "stopped";
   acknowledged: boolean;
   canArm: RuntimeCapabilityV2;

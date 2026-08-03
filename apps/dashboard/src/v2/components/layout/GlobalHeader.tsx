@@ -1,19 +1,38 @@
-import type { RuntimeSummaryV2 } from "@axi/shared";
 import { Badge } from "../primitives/Badge";
 import { PrimaryNavigation } from "./PrimaryNavigation";
 import { RuntimeControlBar } from "./RuntimeControlBar";
 import { SecondaryNavigation } from "./SecondaryNavigation";
 import type { AppRoute, PrimaryRoute, SecondaryRoute } from "../../app/navigation";
+import { useHealth } from "../../data/hooks/useHealth";
+import { useRuntimeStatus } from "../../data/hooks/useRuntimeStatus";
+import { meteredArmRequired } from "../../fixtures/golden-path";
+
+function ConnectionHealth() {
+  const health = useHealth();
+  const runtime = useRuntimeStatus();
+  const apiOnline = health.isSuccess;
+  const wsOnline = runtime.data?.websocketOnline ?? false;
+  return (
+    <div className="axi-v2-global-header__health" aria-label="Connection health">
+      <span><i className={`axi-v2-dot ${apiOnline ? "axi-v2-dot--good" : "axi-v2-dot--warn"}`} />API</span>
+      <span><i className={`axi-v2-dot ${wsOnline ? "axi-v2-dot--good" : "axi-v2-dot--warn"}`} />WebSocket</span>
+      <span className="axi-v2-numeric">{runtime.dataUpdatedAt ? `Updated ${Math.max(0, Math.round((Date.now() - runtime.dataUpdatedAt) / 1_000))}s` : "Cached state"}</span>
+    </div>
+  );
+}
+
+function ConnectedRuntimeControlBar() {
+  const runtime = useRuntimeStatus();
+  return <RuntimeControlBar runtime={runtime.data ?? meteredArmRequired} />;
+}
 
 export function GlobalHeader({
   route,
-  runtime,
   onNavigatePrimary,
   onNavigateSecondary,
   onOpenDiagnostics
 }: {
   route: AppRoute;
-  runtime: RuntimeSummaryV2;
   onNavigatePrimary: (route: PrimaryRoute) => void;
   onNavigateSecondary: (route: SecondaryRoute) => void;
   onOpenDiagnostics: () => void;
@@ -26,14 +45,10 @@ export function GlobalHeader({
         </a>
         <Badge tone="info">Paper only</Badge>
         <PrimaryNavigation route={route} onNavigate={onNavigatePrimary} />
-        <div className="axi-v2-global-header__health" aria-label="Connection health">
-          <span><i className="axi-v2-dot axi-v2-dot--good" />API</span>
-          <span><i className="axi-v2-dot axi-v2-dot--good" />WebSocket</span>
-          <span className="axi-v2-numeric">Updated 1s</span>
-        </div>
+        <ConnectionHealth />
         <SecondaryNavigation onNavigate={onNavigateSecondary} onOpenDiagnostics={onOpenDiagnostics} />
       </div>
-      <RuntimeControlBar runtime={runtime} />
+      <ConnectedRuntimeControlBar />
     </header>
   );
 }

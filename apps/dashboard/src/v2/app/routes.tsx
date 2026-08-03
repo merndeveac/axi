@@ -1,6 +1,8 @@
 import type { AppRoute } from "./navigation";
 import { routeLabels } from "./navigation";
+import type { MomentumScannerSummaryV2 } from "@axi/shared";
 import { goldenScannerRows } from "../fixtures/golden-path";
+import { useScannerSnapshot } from "../data/hooks/useScannerSnapshot";
 import { formatSolV2 } from "../lib/formatters";
 import { Badge } from "../components/primitives/Badge";
 
@@ -18,7 +20,11 @@ export function RoutePlaceholder({ route }: { route: Exclude<AppRoute, "scanner"
   );
 }
 
-export function ScannerShellPreview() {
+export function ScannerShellPreview({
+  rows = [...goldenScannerRows]
+}: {
+  rows?: MomentumScannerSummaryV2[];
+}) {
   return (
     <section className="axi-v2-page" aria-labelledby="scanner-title">
       <header className="axi-v2-page__heading">
@@ -29,7 +35,7 @@ export function ScannerShellPreview() {
         <Badge tone="warning">Reference policy</Badge>
       </header>
       <div className="axi-v2-shell-preview" aria-label="Scanner contract preview">
-        {goldenScannerRows.slice(0, 6).map((row) => (
+        {rows.slice(0, 6).map((row) => (
           <article className="axi-v2-shell-preview__row" key={row.mint}>
             <strong>{row.identity.symbol ?? row.identity.displayName}</strong>
             <span>{row.readiness.validSampleCount} samples</span>
@@ -40,4 +46,9 @@ export function ScannerShellPreview() {
       </div>
     </section>
   );
+}
+
+export function ScannerRoute() {
+  const scanner = useScannerSnapshot({ limit: 100 });
+  return <ScannerShellPreview rows={scanner.data?.rows ?? [...goldenScannerRows]} />;
 }

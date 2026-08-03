@@ -93,6 +93,10 @@
   box-shadow: 0 0 0 3px rgb(95 209 155 / 10%);
 }
 
+.axi-v2-dot--warn {
+  background: var(--axi-v2-amber);
+}
+
 .axi-v2-runtime-bar {
   display: flex;
   align-items: center;
