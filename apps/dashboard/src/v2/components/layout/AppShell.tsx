@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import type { AppRoute, PrimaryRoute, SecondaryRoute } from "../../app/navigation";
 import { DiagnosticsDrawer } from "../../features/diagnostics/DiagnosticsDrawer";
 import { GlobalHeader } from "./GlobalHeader";
@@ -13,6 +13,7 @@ export function AppShell({
   children: ReactNode;
 }) {
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const diagnosticsTriggerRef = useRef<HTMLButtonElement>(null);
   return (
     <div className="axi-v2-shell">
       <GlobalHeader
@@ -20,9 +21,10 @@ export function AppShell({
         onNavigatePrimary={(next: PrimaryRoute) => onNavigate(next)}
         onNavigateSecondary={(next: SecondaryRoute) => onNavigate(next)}
         onOpenDiagnostics={() => setDiagnosticsOpen(true)}
+        diagnosticsTriggerRef={diagnosticsTriggerRef}
       />
       <main className="axi-v2-main" id="main-content">{children}</main>
-      <DiagnosticsDrawer open={diagnosticsOpen} onOpenChange={setDiagnosticsOpen} />
+      <DiagnosticsDrawer open={diagnosticsOpen} onOpenChange={setDiagnosticsOpen} restoreFocusRef={diagnosticsTriggerRef} />
     </div>
   );
 }

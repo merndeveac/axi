@@ -140,6 +140,36 @@ The API integration test independently verifies that a 125-row source returns
 100 then 25 rows, exposes projection count/time headers, stays under 500 KB,
 keeps upserts under 50 KB, and retains the legacy endpoint.
 
+## Browser regression suite
+
+The Playwright suite renders the actual Vite application in managed Chromium.
+It intercepts the V2 API origin and scanner WebSocket before navigation, and
+serves deterministic local fixtures for scanner, portfolio, research, strategy,
+runtime, settings, diagnostics, and bounded runtime mutations. It never starts
+the API, opens a paid stream, loads credentials, or sends a request to a live
+provider.
+
+Install the browser once per development environment, then run the suite with:
+
+```bash
+pnpm exec playwright install chromium
+# Ubuntu/WSL images may also need: pnpm exec playwright install-deps chromium
+pnpm test:e2e:typecheck
+pnpm test:e2e
+```
+
+Use `pnpm test:e2e:update` only after visually reviewing an intentional UI
+change. Curated `*-snapshots/*.png` files are fixture-only visual baselines and
+are committed. Playwright reports, traces, videos, and transient failure output
+remain disabled or ignored.
+
+The browser suite verifies the 108 px header, 128 px scanner chrome, 82 px
+compact cards, exact complete-card counts at all three target viewports, bounded
+DOM rows, no horizontal overflow, tiny nonzero SOL rendering, scanner keyboard
+selection, WebSocket selection stability, responsive research, all workflow
+surfaces, diagnostics failure isolation, tab navigation, ACK bounds, and focus
+restoration after dialogs and drawers close.
+
 ## Acceptance checklist
 
 Before launch or material scanner changes, run:
@@ -151,15 +181,19 @@ pnpm test
 pnpm lint
 pnpm build
 pnpm ui:v2:measure
+pnpm test:e2e:typecheck
+pnpm test:e2e
 ```
 
-Verify 1280×800, 1440×900, and 1920×1080 browser layouts. At 1280 there must
-be no horizontal page/card overflow. At 1440 at least five 82 px cards must be
-fully visible. Diagnostics must not change the 108 px header. Check API and
+Verify 1280×800, 1440×900, and 1920×1080 browser layouts. They must show 6, 7,
+and 9 complete compact cards respectively without horizontal page/card
+overflow. Diagnostics must not change the 108 px header. Check API and
 WebSocket offline/stale states, micro-price formatting, row keyboard selection,
 menu and drawer focus, Arm dialog focus/ACK/bounds, Stop reachability, public
 address clipboard feedback, and the absence of secrets and execution controls.
 
-Screenshots and runtime artifacts belong under ignored `.tmp/`; never commit
-`.env*`, `.data/`, SQLite/WAL/SHM, logs, PID files, wallet files, credentials,
-keys, auth tokens, seed phrases, or screenshots.
+Transient screenshots and runtime artifacts belong under ignored `.tmp/`.
+The only screenshot exception is reviewed, deterministic Playwright visual
+baselines under `apps/dashboard/e2e/*-snapshots/`. Never commit `.env*`,
+`.data/`, SQLite/WAL/SHM, logs, PID files, wallet files, credentials, keys,
+auth tokens, seed phrases, or screenshots containing live data.

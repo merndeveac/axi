@@ -1,5 +1,5 @@
 import type { MomentumScannerSummaryV2 } from "@axi/shared";
-import { useDeferredValue, useMemo, useState } from "react";
+import { useDeferredValue, useMemo, useRef, useState } from "react";
 import { Badge } from "../../components/primitives/Badge";
 import { useRealtimeScanner } from "../../data/hooks/useRealtimeScanner";
 import { matchesScannerFilter, matchesScannerSearch, type ScannerFilter } from "./filters";
@@ -14,8 +14,22 @@ import "./scanner.css";
 export function ScannerPage() {
   const [activeOnly, setActiveOnly] = useState(true);
   const [researchSelection, setResearchSelection] = useState<MomentumScannerSummaryV2 | null>(null);
+  const researchTriggerRef = useRef<HTMLElement | null>(null);
   const scanner = useRealtimeScanner({ limit: 100, activeOnly });
   const rows = scanner.rows;
+
+  function selectResearch(row: MomentumScannerSummaryV2 | null) {
+    if (row && document.activeElement instanceof HTMLElement) {
+      researchTriggerRef.current = document.activeElement;
+    }
+    setResearchSelection(row);
+  }
+
+  function closeResearch() {
+    setResearchSelection(null);
+    window.requestAnimationFrame(() => researchTriggerRef.current?.focus());
+  }
+
   return (
     <>
       <ScannerPageView
@@ -25,9 +39,9 @@ export function ScannerPage() {
         stale={scanner.isError && rows.length > 0}
         activeOnly={activeOnly}
         onActiveOnly={setActiveOnly}
-        onSelectionChange={setResearchSelection}
+        onSelectionChange={selectResearch}
       />
-      <TokenResearchSurface summary={researchSelection} onClose={() => setResearchSelection(null)} />
+      <TokenResearchSurface summary={researchSelection} onClose={closeResearch} />
     </>
   );
 }

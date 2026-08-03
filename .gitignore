@@ -6,6 +6,9 @@ node_modules/
 dist/
 build/
 coverage/
+playwright-report/
+test-results/
+blob-report/
 *.tsbuildinfo
 packages/*/src/**/*.js
 packages/*/src/**/*.js.map

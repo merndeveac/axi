@@ -1,6 +1,6 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
 import { IconButton } from "./IconButton";
 
 export function Drawer({
@@ -8,19 +8,29 @@ export function Drawer({
   onOpenChange,
   title,
   description,
-  children
+  children,
+  restoreFocusRef
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: string;
   children: ReactNode;
+  restoreFocusRef?: RefObject<HTMLElement | null>;
 }) {
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="axi-v2-dialog__overlay" />
-        <DialogPrimitive.Content className="axi-v2-drawer">
+        <DialogPrimitive.Content
+          className="axi-v2-drawer"
+          onCloseAutoFocus={(event) => {
+            if (restoreFocusRef?.current) {
+              event.preventDefault();
+              restoreFocusRef.current.focus();
+            }
+          }}
+        >
           <div className="axi-v2-dialog__heading">
             <DialogPrimitive.Title className="axi-v2-dialog__title">
               {title}

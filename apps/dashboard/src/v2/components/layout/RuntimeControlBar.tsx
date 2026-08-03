@@ -43,6 +43,7 @@ export function RuntimeControlBar({
     text: string;
   } | null>(null);
   const armButtonRef = useRef<HTMLButtonElement>(null);
+  const startButtonRef = useRef<HTMLButtonElement>(null);
   const pending = busyAction !== null;
   const valuesAreBounded =
     maximumSessionCostSol > 0 &&
@@ -107,6 +108,7 @@ export function RuntimeControlBar({
           <ShieldCheck size={14} aria-hidden="true" /> {busyAction === "arm" ? "Arming…" : "Arm"}
         </Button>
         <Button
+          ref={startButtonRef}
           size="compact"
           tone="primary"
           disabled={!runtime.canStart.allowed || pending}
@@ -142,7 +144,7 @@ export function RuntimeControlBar({
       <Dialog
         open={armOpen}
         onOpenChange={(open) => { if (!pending) setArmOpen(open); }}
-        restoreFocusRef={armButtonRef}
+        restoreFocusRef={runtime.canArm.allowed ? armButtonRef : startButtonRef}
         title="Arm bounded metered data"
         description="This acknowledges data-stream cost only. It cannot trade or sign transactions. ACK belongs to this API process session and is never stored in the browser."
       >

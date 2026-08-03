@@ -1,4 +1,5 @@
 import { AlertTriangle, CheckCircle2, LoaderCircle } from "lucide-react";
+import type { RefObject } from "react";
 import { Drawer } from "../../components/primitives/Drawer";
 import { useDiagnostics } from "../../data/hooks/useDiagnostics";
 import "./diagnostics.css";
@@ -15,9 +16,9 @@ const panels = [
   { id: "market-observations", title: "Market observations", path: "/market/observations?limit=25" }
 ] as const;
 
-export function DiagnosticsDrawer({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+export function DiagnosticsDrawer({ open, onOpenChange, restoreFocusRef }: { open: boolean; onOpenChange: (open: boolean) => void; restoreFocusRef?: RefObject<HTMLElement | null> }) {
   return (
-    <Drawer open={open} onOpenChange={onOpenChange} title="Developer diagnostics" description="Read-only engineering coverage, stream, storage, verification, and market evidence.">
+    <Drawer open={open} onOpenChange={onOpenChange} {...(restoreFocusRef ? { restoreFocusRef } : {})} title="Developer diagnostics" description="Read-only engineering coverage, stream, storage, verification, and market evidence.">
       <div className="axi-v2-diagnostics">
         <p>Read-only engineering evidence. Every resource loads independently and all polling stops when this drawer closes.</p>
         <div className="axi-v2-diagnostics__panels">

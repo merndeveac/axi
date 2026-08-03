@@ -1,4 +1,5 @@
 import { Badge } from "../primitives/Badge";
+import type { RefObject } from "react";
 import { PrimaryNavigation } from "./PrimaryNavigation";
 import { RuntimeControlBar } from "./RuntimeControlBar";
 import { SecondaryNavigation } from "./SecondaryNavigation";
@@ -53,12 +54,14 @@ export function GlobalHeader({
   route,
   onNavigatePrimary,
   onNavigateSecondary,
-  onOpenDiagnostics
+  onOpenDiagnostics,
+  diagnosticsTriggerRef
 }: {
   route: AppRoute;
   onNavigatePrimary: (route: PrimaryRoute) => void;
   onNavigateSecondary: (route: SecondaryRoute) => void;
   onOpenDiagnostics: () => void;
+  diagnosticsTriggerRef: RefObject<HTMLButtonElement | null>;
 }) {
   return (
     <header className="axi-v2-global-header">
@@ -69,7 +72,7 @@ export function GlobalHeader({
         <Badge tone="info">Paper only</Badge>
         <PrimaryNavigation route={route} onNavigate={onNavigatePrimary} />
         <ConnectionHealth />
-        <SecondaryNavigation onNavigate={onNavigateSecondary} onOpenDiagnostics={onOpenDiagnostics} />
+        <SecondaryNavigation onNavigate={onNavigateSecondary} onOpenDiagnostics={onOpenDiagnostics} triggerRef={diagnosticsTriggerRef} />
       </div>
       <ConnectedRuntimeControlBar />
     </header>

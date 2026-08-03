@@ -1,4 +1,5 @@
 import { MoreHorizontal } from "lucide-react";
+import type { RefObject } from "react";
 import {
   routeLabels,
   secondaryRoutes,
@@ -10,15 +11,17 @@ import { MenuContent, MenuItem, MenuRoot, MenuTrigger } from "../primitives/Menu
 
 export function SecondaryNavigation({
   onNavigate,
-  onOpenDiagnostics
+  onOpenDiagnostics,
+  triggerRef
 }: {
   onNavigate: (route: SecondaryRoute) => void;
   onOpenDiagnostics: () => void;
+  triggerRef: RefObject<HTMLButtonElement | null>;
 }) {
   return (
     <MenuRoot>
       <MenuTrigger>
-        <IconButton label="Open secondary navigation" tone="quiet">
+        <IconButton ref={triggerRef} label="Open secondary navigation" tone="quiet">
           <MoreHorizontal size={19} aria-hidden="true" />
         </IconButton>
       </MenuTrigger>
