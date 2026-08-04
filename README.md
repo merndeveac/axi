@@ -2775,6 +2775,56 @@ command applies migration 26 before querying; a migrated database with no
 evidence reports `NO_TRADE_DATA_COVERAGE_SESSION`, while a genuinely absent
 migration/table reports `TRADE_DATA_COVERAGE_STORAGE_NOT_READY`.
 
+### Phase 4B SQLite Startup Ownership
+
+Branch `dev/trade-data-coverage-sqlite-ownership-fix` makes the validation CLI
+the single owner of its writable SQLite lifecycle. The CLI initializes and
+migrates one handle, evaluates readiness against that handle, persists one
+runtime-session row, and only then constructs the provider and API services.
+The API receives the active handle with explicit `borrowed` ownership, so its
+close hook finalizes the runtime session but does not close storage owned by the
+command. A top-level CLI `finally` closes the owned handle exactly once. Normal
+API construction without an injected handle retains explicit `owned` semantics
+and closes its handle on shutdown or synchronous construction failure.
+
+SQLite continues to use foreign keys, WAL journal mode, and
+`synchronous=NORMAL`. Connections now also have a finite `busy_timeout` of
+1,000 ms by default, bounded to at most 5,000 ms. The timeout is secondary
+hardening: there is no write retry loop and no retry after a provider starts.
+Contention that outlives the bound fails with the sanitized code
+`TRADE_DATA_COVERAGE_STORAGE_LOCKED`; public output omits the database path,
+SQL, stack details, and environment values.
+
+The startup checker exercises the complete persistence and cleanup boundary on
+a disposable temporary database and a fake provider. It does not read
+`.env.local`, load credentials, start discovery, connect to PumpPortal or
+Solana RPC, create a coverage session, or spend SOL:
+
+```bash
+pnpm --filter @axi/api trade-data:coverage:startup-check -- \
+  --json true
+```
+
+Its successful result contains one finalized runtime session, no active runtime
+or trade-coverage session, `providerConnectCount: 0`,
+`networkConnectionStarted: false`, `paidStreamStarted: false`, and
+`cleanupCompleted: true`. Deterministic bounded contention can be checked
+without a network connection:
+
+```bash
+pnpm --filter @axi/api trade-data:coverage:startup-check -- \
+  --simulate-lock true \
+  --timeout-ms 100 \
+  --json true
+```
+
+A storage-startup failure must prevent provider construction or connection and
+must leave no active or duplicate runtime session. Releasing a simulated lock
+allows a later startup check to succeed. This zero-network check does not
+authorize a paid validation. The previous one-run authorization was consumed;
+a fresh explicit user authorization is required before another Phase 4 Level B
+paid run.
+
 The validation command remains preflight-only unless both the CLI
 acknowledgement and the user-owned environment gate are present:
 
@@ -2885,6 +2935,9 @@ docker compose --profile indexer up -d
 - `dev/trade-data-coverage-validation` adds bounded one-mint token-trade
   reconciliation, time-series/derivative propagation proof, restart-safe audit
   evidence, safe validation CLIs, API diagnostics, and the Data-tab panel.
+- `dev/trade-data-coverage-sqlite-ownership-fix` adds deterministic validation
+  CLI storage ownership, bounded lock diagnostics, zero-network startup checks,
+  and repeated lifecycle regression coverage.
 - `dev/discovery-coverage-instrumentation` adds local PumpPortal frame and
   pipeline reconciliation, latency/reconnect evidence, restart-safe SQLite
   sessions, read-only diagnostics endpoints, and the Data-tab coverage panel.
