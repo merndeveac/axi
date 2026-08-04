@@ -93,11 +93,13 @@ import {
   type ScannerSortV2
 } from "./ui-v2-scanner";
 import {
+  assertStorageHandleActive,
   closeStorage,
   findDiscoveryCoverageEventBySourceKey,
   getDiscoveryCoverageSession,
   getTradeDataCoverageSession,
   getLatestChainVerification,
+  getRuntimeSession,
   getStorageStats,
   initStorage,
   isTradeDataCoverageStorageReady,
@@ -1383,6 +1385,21 @@ export const apiConfigSchema = z.object({
 export type ApiConfig = z.infer<typeof apiConfigSchema>;
 export type ApiLogLevel = z.infer<typeof logLevelSchema>;
 
+export type StorageOwnership = "borrowed" | "owned";
+
+export type ApiStorageBinding = {
+  handle: StorageHandle;
+  ownership: StorageOwnership;
+};
+
+export type PreparedRuntimeSession = {
+  configFingerprint: string;
+  persisted: true;
+  runtimeMode: "live" | "mock" | "none" | "replay";
+  sessionId: string;
+  startedAt: string;
+};
+
 export function createLiveTradeTrackingConfig(
   input: Partial<LiveTradeTrackingConfig> = {}
 ): LiveTradeTrackingConfig {
@@ -1417,7 +1434,6 @@ export function createLiveCardEnrichmentConfig(
 export type ApiServerOptions = {
   allowedControlOrigins?: string[];
   chainEvents?: ChainEventsServiceOptions;
-  closeStorageOnClose?: boolean;
   chainVerifier?: ChainVerifierOptions;
   allowMockData?: boolean;
   dataFeedMode?: LiveFeedMode;
@@ -1449,7 +1465,9 @@ export type ApiServerOptions = {
   realDataRequired?: boolean;
   signalIntervalMs?: number;
   startFeed?: boolean;
+  storage?: ApiStorageBinding;
   storageDatabasePath?: string;
+  runtimeSession?: PreparedRuntimeSession;
   tokenIdentity?: TokenIdentityServiceConfig;
   tradeDataCoverageReadiness?: {
     liveAuthorizationPresent: boolean;
@@ -2036,6 +2054,42 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     );
   }
 
+  const storageBinding = resolveApiStorage(options);
+  try {
+    if (options.runtimeSession) {
+      const persistedRuntimeSession = getRuntimeSession(
+        options.runtimeSession.sessionId
+      );
+      if (
+        !persistedRuntimeSession ||
+        persistedRuntimeSession.stoppedAt !== null ||
+        persistedRuntimeSession.startedAt !==
+          options.runtimeSession.startedAt ||
+        persistedRuntimeSession.runtimeMode !==
+          options.runtimeSession.runtimeMode ||
+        persistedRuntimeSession.configFingerprint !==
+          options.runtimeSession.configFingerprint
+      ) {
+        throw new Error(
+          "The prepared runtime session is not active in the injected storage."
+        );
+      }
+    }
+    return createApiServerWithStorage(options, storageBinding);
+  } catch (error) {
+    if (storageBinding.ownership === "owned") {
+      closeStorage(storageBinding.handle);
+    }
+    throw error;
+  }
+}
+
+function createApiServerWithStorage(
+  options: ApiServerOptions,
+  storageBinding: ApiStorageBinding
+): ApiServer {
+  const mode = options.mode ?? "paper";
+
   const app = Fastify({
     logger:
       options.logLevel === false
@@ -2110,9 +2164,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const liveCardEnrichmentAttempts: number[] = [];
   const paperAutoOrder = options.paperAutoOrder ?? false;
   const dataFeedMode = options.dataFeedMode ?? "live";
-  const storage = options.storageDatabasePath
-    ? initStorage({ databasePath: options.storageDatabasePath })
-    : initStorage();
+  const storage = storageBinding.handle;
   const tokenIdentity = createTokenIdentityService({
     config: options.tokenIdentity ?? createTokenIdentityConfig(),
     logger: {
@@ -2141,9 +2193,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     mode: dataFeedMode,
     provider: feed.name
   });
-  const runtimeSessionId = randomUUID();
+  const runtimeSessionId = options.runtimeSession?.sessionId ?? randomUUID();
   const scannerProjectionV2 = new ScannerProjectionV2(runtimeSessionId);
-  const runtimeSessionStartedAt = new Date().toISOString();
+  const runtimeSessionStartedAt =
+    options.runtimeSession?.startedAt ?? new Date().toISOString();
   const discoveryCoverage = createDiscoveryCoverageService({
     sessionId: runtimeSessionId,
     provider: feed.name,
@@ -2296,7 +2349,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     });
   }
 
-  persistRuntimeSession();
+  if (!options.runtimeSession?.persisted) {
+    persistRuntimeSession();
+  }
   const lightningReadiness = createLightningReadinessService({
     config: createLightningReadinessConfig(options.lightning),
     wallets: pumpPortalWallets,
@@ -5056,8 +5111,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
     wss.close();
 
-    if (options.closeStorageOnClose ?? true) {
-      closeStorage();
+    if (storageBinding.ownership === "owned") {
+      closeStorage(storageBinding.handle);
     }
   });
 
@@ -8399,6 +8454,26 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     stopFeed,
     storage,
     tokenIdentity
+  };
+}
+
+function resolveApiStorage(options: ApiServerOptions): ApiStorageBinding {
+  if (options.storage) {
+    assertStorageHandleActive(options.storage.handle);
+    if (options.storageDatabasePath !== undefined) {
+      throw new Error(
+        "Injected storage cannot be combined with storageDatabasePath."
+      );
+    }
+    return options.storage;
+  }
+
+  const handle = options.storageDatabasePath
+    ? initStorage({ databasePath: options.storageDatabasePath })
+    : initStorage();
+  return {
+    handle,
+    ownership: "owned"
   };
 }
 

@@ -133,6 +133,7 @@ import {
   getLaunchCandidate,
   initStorage,
   initStorageReadOnly,
+  isStorageHandleActive,
   isTradeDataCoverageStorageReady,
   listCandidateDecisionsForReplay,
   listCapacitySnapshots,
@@ -334,6 +335,30 @@ afterEach(() => {
 });
 
 describe("@axi/storage", () => {
+  it("returns one stable handle and closes that handle exactly once", () => {
+    const owned = initStorage({ busyTimeoutMs: 25, databasePath });
+    const borrowed = initStorage();
+
+    expect(borrowed).toBe(owned);
+    expect(owned).toMatchObject({
+      busyTimeoutMs: 25,
+      databasePath,
+      mode: "read_write"
+    });
+    expect(isStorageHandleActive(owned)).toBe(true);
+    expect(closeStorage(owned)).toBe(true);
+    expect(closeStorage(owned)).toBe(false);
+    expect(isStorageHandleActive(owned)).toBe(false);
+  });
+
+  it("rejects an implicit switch to a different active database", () => {
+    const handle = initStorage({ databasePath });
+    expect(() =>
+      initStorage({ databasePath: join(testDirectory, "other.sqlite") })
+    ).toThrow("different database");
+    expect(isStorageHandleActive(handle)).toBe(true);
+  });
+
   it("persists restart-safe discovery coverage evidence and finalizes once", () => {
     initStorage({ databasePath });
     const active = createDiscoveryCoverageSession();

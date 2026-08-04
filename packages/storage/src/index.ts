@@ -93,13 +93,18 @@ import {
 } from "@axi/shared";
 
 export const defaultDatabaseRelativePath = ".data/axi.sqlite";
+export const defaultStorageBusyTimeoutMs = 1_000;
+export const maximumStorageBusyTimeoutMs = 5_000;
 
 export type StorageOptions = {
+  busyTimeoutMs?: number;
   databasePath?: string;
 };
 
 export type StorageHandle = {
   databasePath: string;
+  busyTimeoutMs: number;
+  mode: "read_only" | "read_write";
 };
 
 export type StoredFeedEvent = {
@@ -3165,53 +3170,63 @@ const exitSignalInputSchema = z.object({
 const limitSchema = z.number().int().positive().max(1000);
 
 let activeStorage: {
+  busyTimeoutMs: number;
   db: DatabaseSync;
   databasePath: string;
+  handle: StorageHandle;
   readOnly: boolean;
 } | null = null;
 
 export function initStorage(options: StorageOptions = {}): StorageHandle {
+  const busyTimeoutMs = parseStorageBusyTimeout(options.busyTimeoutMs);
   if (activeStorage) {
     if (activeStorage.readOnly) {
       throw new Error("Storage is already initialized in read-only mode.");
     }
 
-    return {
-      databasePath: activeStorage.databasePath
-    };
+    assertCompatibleActiveStorage(options, busyTimeoutMs);
+    return activeStorage.handle;
   }
 
   const databasePath = resolveDatabasePath(options.databasePath);
   mkdirSync(dirname(databasePath), { recursive: true });
 
   const db = new DatabaseSync(databasePath);
+  try {
+    configureStorageConnection(db, busyTimeoutMs);
+    runMigrations(db);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+
+  const handle: StorageHandle = {
+    busyTimeoutMs,
+    databasePath,
+    mode: "read_write"
+  };
   activeStorage = {
+    busyTimeoutMs,
     db,
     databasePath,
+    handle,
     readOnly: false
   };
 
-  db.exec("PRAGMA foreign_keys = ON");
-  db.exec("PRAGMA journal_mode = WAL");
-  db.exec("PRAGMA synchronous = NORMAL");
-  runMigrations(db);
-
-  return {
-    databasePath
-  };
+  return handle;
 }
 
 export function initStorageReadOnly(
   options: StorageOptions = {}
 ): StorageHandle {
+  const busyTimeoutMs = parseStorageBusyTimeout(options.busyTimeoutMs);
   if (activeStorage) {
     if (!activeStorage.readOnly) {
       throw new Error("Storage is already initialized in read-write mode.");
     }
 
-    return {
-      databasePath: activeStorage.databasePath
-    };
+    assertCompatibleActiveStorage(options, busyTimeoutMs);
+    return activeStorage.handle;
   }
 
   const databasePath = resolveDatabasePath(options.databasePath);
@@ -3221,21 +3236,97 @@ export function initStorageReadOnly(
   }
 
   const db = new DatabaseSync(databasePath, { readOnly: true });
+  const handle: StorageHandle = {
+    busyTimeoutMs,
+    databasePath,
+    mode: "read_only"
+  };
+  try {
+    db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
+    db.exec("PRAGMA query_only = ON");
+  } catch (error) {
+    db.close();
+    throw error;
+  }
   activeStorage = {
+    busyTimeoutMs,
     db,
     databasePath,
+    handle,
     readOnly: true
   };
-  db.exec("PRAGMA query_only = ON");
 
-  return {
-    databasePath
-  };
+  return handle;
 }
 
-export function closeStorage(): void {
-  activeStorage?.db.close();
+export function closeStorage(expectedHandle?: StorageHandle): boolean {
+  if (!activeStorage) {
+    return false;
+  }
+  if (expectedHandle && activeStorage.handle !== expectedHandle) {
+    return false;
+  }
+
+  activeStorage.db.close();
   activeStorage = null;
+  return true;
+}
+
+export function assertStorageHandleActive(handle: StorageHandle): void {
+  if (!activeStorage || activeStorage.handle !== handle) {
+    throw new Error("The injected storage handle is not active.");
+  }
+}
+
+export function isStorageHandleActive(handle: StorageHandle): boolean {
+  return activeStorage?.handle === handle;
+}
+
+function assertCompatibleActiveStorage(
+  options: StorageOptions,
+  busyTimeoutMs: number
+): void {
+  if (!activeStorage) {
+    return;
+  }
+  if (
+    options.databasePath !== undefined &&
+    resolveDatabasePath(options.databasePath) !== activeStorage.databasePath
+  ) {
+    throw new Error("Storage is already initialized for a different database.");
+  }
+  if (
+    options.busyTimeoutMs !== undefined &&
+    busyTimeoutMs !== activeStorage.busyTimeoutMs
+  ) {
+    throw new Error(
+      "Storage is already initialized with a different busy timeout."
+    );
+  }
+}
+
+function configureStorageConnection(
+  db: DatabaseSync,
+  busyTimeoutMs: number
+): void {
+  db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
+  db.exec("PRAGMA foreign_keys = ON");
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA synchronous = NORMAL");
+}
+
+function parseStorageBusyTimeout(value: number | undefined): number {
+  const busyTimeoutMs = value ?? defaultStorageBusyTimeoutMs;
+  if (
+    !Number.isInteger(busyTimeoutMs) ||
+    busyTimeoutMs < 0 ||
+    busyTimeoutMs > maximumStorageBusyTimeoutMs
+  ) {
+    throw new Error(
+      `Storage busy timeout must be an integer between 0 and ${maximumStorageBusyTimeoutMs} milliseconds.`
+    );
+  }
+  return busyTimeoutMs;
 }
 
 export function isTradeDataCoverageStorageReady(): boolean {
@@ -6230,6 +6321,16 @@ export function saveRuntimeSession(
   }
 
   return mapRuntimeSessionRow(row);
+}
+
+export function getRuntimeSession(
+  sessionId: string
+): StoredRuntimeSession | null {
+  const parsedSessionId = z.string().min(1).parse(sessionId);
+  const row = getDb()
+    .prepare("select * from runtime_sessions where session_id = ?")
+    .get(parsedSessionId) as RuntimeSessionRow | undefined;
+  return row ? mapRuntimeSessionRow(row) : null;
 }
 
 export function listRuntimeSessions(limit = 50): StoredRuntimeSession[] {
