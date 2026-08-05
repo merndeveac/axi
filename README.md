@@ -2591,8 +2591,8 @@ raw_received = parse_succeeded + parse_failed
 parse_succeeded = recognized_create + recognized_migration
                 + recognized_non_discovery + unknown_payload
 recognized_discovery = normalization_succeeded + normalization_rejected
-normalization_succeeded = pipeline_completed + duplicate + rejected
-                        + failed_or_dropped
+normalization_succeeded = pipeline_completed + evidence_only + duplicate
+                        + rejected + failed_or_dropped
 queue_accepted = queue_committed + queue_failed
 ```
 
@@ -2684,17 +2684,27 @@ zero residual and telemetry did not fail. It does not mean PumpPortal delivered
 every market trade. Without a provider sequence or independent comparator the
 separate verdict stays `UPSTREAM_TRADE_COMPLETENESS_UNPROVEN`.
 
+The Phase 4C admission state machine is `OPEN → STOP_REQUESTED →
+EVIDENCE_ONLY → FINALIZED`. The 50th matching, usable trade reserves the last
+canonical slot and closes admission synchronously. Frames already in flight
+remain sanitized coverage evidence and estimated billable messages, but never
+enter business persistence, time series, derivatives, signals, scanner state,
+calibration, or paper policy. Parent coverage-session persistence is verified
+before `track_requested`; lifecycle children use stable idempotency keys and
+embedded/table histories must agree.
+
 Stable event identity prefers signature plus instruction/event index, then
 signature plus mint, side, and canonical amounts, and finally a SHA-256 hash of
 sanitized immutable trade fields. Local receive time and random IDs are never
-part of the deduplication key. `tokenAmount`/`tokensAmount` are treated as UI
-amounts; explicit raw amounts require valid decimals before normalization.
-Ambiguous `amount` or raw amounts without decimals remain unknown/raw, cannot
-produce a price, and are unusable for metrics. `volumeSol` must be a finite
-positive SOL amount and `priceSol = volumeSol / normalizedTokenAmount` only
-when token units are understood. Evidence includes mint, finite-amount, units,
-side, signature, provider-time plausibility, price×amount, and optional reserve
-price checks with explicit tolerances.
+part of the deduplication key. `tokenAmount`/`tokensAmount` are confirmed
+PumpPortal UI trade deltas; explicit raw trade-delta amounts require valid
+decimals before normalization. `newTokenBalance`, total balances, and
+post-trade balances are never treated as trade quantities without a reliable
+pre/post delta. Ambiguous amounts remain unusable.
+`executionAveragePriceSol = tradeVolumeSol / tradedTokenAmountUi` is the
+canonical trade-series price only when units are proven. Provider-reported
+price and `curveMarkPriceSol = virtualSolReserves / virtualTokenReserves` are
+separate evidence; curve/execution spread is not a generic integrity failure.
 
 The canonical time series uses event-time one-second buckets and
 1s/5s/10s/30s/60s/2m/5m rolling windows. It reports OHLCV, buy/sell and net SOL
@@ -2707,8 +2717,13 @@ values stay null, and a real flat result may be zero. This validates derivative
 inputs and propagation, not trading calibration or edge.
 
 In-process latency uses monotonic time. Summaries report availability plus
-min/p50/p95/p99/max for receive→normalize, normalize→persist,
-persist→time-series, time-series→scanner, receive→scanner, and full pipeline.
+min/p50/p95/p99/max for normalize→queue, queue wait, database write,
+commit→time-series, derivative/time-series→signal compute, signal
+compute→scanner projection, scanner projection→broadcast, signal
+compute→signal persistence, receive→scanner, and full pipeline. Scanner rows
+reference the same stable decision ID, version, and source-event key computed
+for the current trade; scanner latency is never measured from the later signal
+persistence timestamp.
 Provider→receive is only populated when the provider supplied a plausible
 timestamp. Cost is explicitly estimated from the configured PumpPortal
 per-event model.
@@ -2824,6 +2839,32 @@ allows a later startup check to succeed. This zero-network check does not
 authorize a paid validation. The previous one-run authorization was consumed;
 a fresh explicit user authorization is required before another Phase 4 Level B
 paid run.
+
+### Phase 4C Offline Boundary Replay
+
+The correction workflow and counter identities are documented in
+[`docs/trade-data-coverage-operations.md`](docs/trade-data-coverage-operations.md).
+The replay command opens the source SQLite database read-only, writes only to a
+disposable target, loads no environment file, and creates no provider or RPC
+connection:
+
+```bash
+pnpm --filter @axi/api trade-data:coverage:replay-session -- \
+  --from-db /tmp/axi-phase4-live-evidence.sqlite \
+  --session '<coverage-session-id>' \
+  --json true
+```
+
+An optional `--output-db` preserves the corrected target evidence. The local
+65-frame acceptance benchmark also has no network path:
+
+```bash
+pnpm --filter @axi/api trade-data:coverage:benchmark
+```
+
+Neither command authorizes or substitutes for a paid run. The prior paid
+authorization was consumed; another Level B run requires fresh explicit user
+authorization after Phase 4C passes.
 
 The validation command remains preflight-only unless both the CLI
 acknowledgement and the user-owned environment gate are present:
