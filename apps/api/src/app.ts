@@ -5816,6 +5816,9 @@ function createApiServerWithStorage(
     ]);
 
     return sanitizeMomentumRow({
+      decisionId: card.decisionId ?? null,
+      decisionVersion: card.decisionVersion ?? null,
+      decisionSourceEventKey: card.decisionSourceEventKey ?? null,
       mint: card.mint,
       shortMint: card.shortMint,
       title: card.title,
@@ -6490,6 +6493,9 @@ function createApiServerWithStorage(
           : null
       });
       const card: LiveTokenCardViewModel = {
+        decisionId: decision?.decisionId ?? null,
+        decisionVersion: decision?.decisionVersion ?? null,
+        decisionSourceEventKey: decision?.sourceEventKey ?? null,
         mint: token.mint,
         shortMint: shortMint(token.mint),
         name: identity?.name ?? token.name ?? null,
@@ -7590,33 +7596,28 @@ function createApiServerWithStorage(
       return;
     }
 
-    for (const event of batch) {
+    for (const [index, event] of batch.entries()) {
       discoveryCoverage.markQueueTransactionStarted(event);
       tradeDataCoverage.markQueueTransactionStarted(event);
-    }
-
-    try {
-      runStorageTransaction(() => {
-        for (const event of batch) {
+      try {
           processFeedEvent(event);
-        }
-      });
-    } catch (error) {
-      discoveryCoverage.markQueueFailedOrDropped(
-        batch,
-        "queue_transaction_failed",
-        safeDiscoveryErrorClass(error)
-      );
-      tradeDataCoverage.markQueueFailedOrDropped(
-        batch,
-        "queue_transaction_failed",
-        safeDiscoveryErrorClass(error)
-      );
-      throw error;
+      } catch (error) {
+        const failed = batch.slice(index);
+        discoveryCoverage.markQueueFailedOrDropped(
+          failed,
+          "queue_event_processing_failed",
+          safeDiscoveryErrorClass(error)
+        );
+        tradeDataCoverage.markQueueFailedOrDropped(
+          failed,
+          "queue_event_processing_failed",
+          safeDiscoveryErrorClass(error)
+        );
+        throw error;
+      }
+      discoveryCoverage.markQueueCommittedAndPipelineCompleted([event]);
+      tradeDataCoverage.markQueueCommittedAndPipelineCompleted([event]);
     }
-
-    discoveryCoverage.markQueueCommittedAndPipelineCompleted(batch);
-    tradeDataCoverage.markQueueCommittedAndPipelineCompleted(batch);
   }
 
   function flushFeedEventQueue(): void {
@@ -7641,14 +7642,16 @@ function createApiServerWithStorage(
   }
 
   function handleFeedEvent(event: FeedEvent): void {
-    runStorageTransaction(() => processFeedEvent(event));
+    processFeedEvent(event);
   }
 
   function processFeedEvent(event: FeedEvent): void {
     if (event.type === "account_trade") {
-      saveFeedEvent(event);
-      const exitEvaluation = watchedWalletExit.ingestFeedEvent(event);
-      paperPortfolio.ingestExitSignals(exitEvaluation.signals);
+      runStorageTransaction(() => {
+        saveFeedEvent(event);
+        const exitEvaluation = watchedWalletExit.ingestFeedEvent(event);
+        paperPortfolio.ingestExitSignals(exitEvaluation.signals);
+      });
       return;
     }
 
@@ -7666,17 +7669,22 @@ function createApiServerWithStorage(
       ? launchScanner.getCandidate(discoveryMint) !== null
       : false;
 
-    const actualDataSummary =
-      event.type === "trade" && event.source === "pumpportal"
-        ? actualData.handlePumpPortalTradeEvent(event)
-        : undefined;
+    tradeDataCoverage.markDatabaseWriteStarted(event);
+    const persisted = runStorageTransaction(() => {
+      const actualDataSummary =
+        event.type === "trade" && event.source === "pumpportal"
+          ? actualData.handlePumpPortalTradeEvent(event)
+          : undefined;
+      const identity = tokenIdentity.ingestFeedEvent(event);
+      saveFeedEvent(event);
+      return { actualDataSummary, identity };
+    });
+    tradeDataCoverage.markPersistenceCompleted(event);
+    tradeDataCoverage.markDatabaseCommitted(event);
+    const { actualDataSummary, identity } = persisted;
     const indexerResult = indexerAdapter.ingestFeedEventWithResult(event);
-    const identity = tokenIdentity.ingestFeedEvent(event);
     const identitySummary = toTokenIdentitySummary(identity);
     discoveryCoverage.markIdentityCompleted(event, !identityExisted);
-
-    saveFeedEvent(event);
-    tradeDataCoverage.markPersistenceCompleted(event);
     if (
       event.type === "trade" &&
       event.source === "pumpportal" &&
@@ -7823,7 +7831,11 @@ function createApiServerWithStorage(
       rollingMetrics: latestMetrics
     });
     candidateEngine.updateScore(candidate.mint, score);
-    const decision = candidateEngine.evaluateCandidate(candidate.mint);
+    const decision = candidateEngine.evaluateCandidate(candidate.mint, {
+      ...(event.tradeCoverage?.sourceEventKey
+        ? { sourceEventKey: event.tradeCoverage.sourceEventKey }
+        : {})
+    });
     const liveToken = liveTokens.ingestLiveFeedEvent(event, {
       candidate,
       ...(decision ? { decision } : {}),
@@ -7863,22 +7875,10 @@ function createApiServerWithStorage(
       }
     }
 
-    if (
-      event.type === "trade" &&
-      event.source === "pumpportal" &&
-      getMomentumScannerRows().some((row) => row.mint === event.mint)
-    ) {
-      tradeDataCoverage.markScannerProjected(event);
-    }
-
-    broadcastScannerUpsertV2(candidate.mint);
-
     if (!decision) {
       app.log.trace({ mint: candidate.mint }, "Candidate decision unavailable");
       return;
     }
-
-    saveCandidateDecision(decision);
 
     const nextActualDataSummary =
       actualDataSummary ?? actualData.getCandidateSummary(candidate.mint);
@@ -7893,14 +7893,49 @@ function createApiServerWithStorage(
       rollingMetrics: latestMetrics,
       score
     });
-    const storedSignal = saveSignal(signal);
-    tradeDataCoverage.markSignalUpdated(event);
+    const decisionEvidence =
+      event.tradeCoverage &&
+      decision.decisionId &&
+      decision.decisionVersion &&
+      decision.sourceEventKey === event.tradeCoverage.sourceEventKey
+        ? {
+            decisionId: decision.decisionId,
+            decisionVersion: decision.decisionVersion,
+            sourceEventKey: decision.sourceEventKey
+          }
+        : null;
+    if (decisionEvidence) {
+      tradeDataCoverage.markSignalComputed(event, decisionEvidence);
+    }
     cacheSignal(signal);
+    const scannerProjected =
+      event.type === "trade" &&
+      event.source === "pumpportal" &&
+      getMomentumScannerRows().some(
+        (row) =>
+          row.mint === event.mint &&
+          (!decisionEvidence ||
+            (row.decisionId === decisionEvidence.decisionId &&
+              row.decisionVersion === decisionEvidence.decisionVersion &&
+              row.decisionSourceEventKey === decisionEvidence.sourceEventKey))
+      );
+    broadcastScannerUpsertV2(candidate.mint);
+    if (scannerProjected && decisionEvidence) {
+      tradeDataCoverage.markScannerProjected(event, decisionEvidence);
+      tradeDataCoverage.markBroadcastCompleted(event);
+    }
+
+    saveCandidateDecision(decision);
+    const storedSignal = saveSignal(signal);
+    if (decisionEvidence) {
+      tradeDataCoverage.markSignalPersisted(event, decisionEvidence);
+    } else {
+      tradeDataCoverage.markSignalUpdated(event);
+    }
     paperOperations.observeSignal(signal);
     paperAutomation.observeSignal(signal);
     paperPortfolio.evaluateEntrySignal(signal);
     paperPortfolio.evaluateExits();
-    broadcastScannerUpsertV2(candidate.mint);
     discoveryCoverage.markPersistenceCompleted(event);
 
     if (
@@ -7942,7 +7977,6 @@ function createApiServerWithStorage(
       signal
     });
     discoveryCoverage.markBroadcastCompleted(event, clients.size);
-    tradeDataCoverage.markBroadcastCompleted(event);
 
     if (shouldVerifyOnChain) {
       void verifyAndApplyChainResult({
@@ -8116,6 +8150,15 @@ function createApiServerWithStorage(
       actualData.getCandidateSummary(options.candidate.mint);
 
     const signal: OverlaySignal = {
+      ...(options.decision.decisionId
+        ? { decisionId: options.decision.decisionId }
+        : {}),
+      ...(options.decision.decisionVersion
+        ? { decisionVersion: options.decision.decisionVersion }
+        : {}),
+      ...(options.decision.sourceEventKey
+        ? { sourceEventKey: options.decision.sourceEventKey }
+        : {}),
       mint: options.candidate.mint,
       symbol: identity?.symbol ?? options.candidate.symbol ?? "UNKNOWN",
       ...(identity?.name

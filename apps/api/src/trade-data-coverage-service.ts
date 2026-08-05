@@ -20,6 +20,7 @@ import {
   type TradeDataCoverageSession,
   type TradeDataChainVerificationStatus,
   type TradeDataCoverageStage,
+  type TradeDataAdmissionState,
   type TradeDataSubscriptionEvent,
   type TradeDataSubscriptionEventQuery,
   type TradeDataSubscriptionEventType
@@ -56,6 +57,7 @@ type ActiveCoverageSession = {
   chainVerify: boolean;
   chainVerifyMaxSignatures: number;
   onStopRequested: ((reason: string) => void) | undefined;
+  onHardCostCapReached: (() => void) | undefined;
   stopRequestedAt: string | null;
   stoppedAt: string | null;
   stopReason: string | null;
@@ -66,7 +68,11 @@ type ActiveCoverageSession = {
   unsubscribeRequestedAt: string | null;
   unsubscribeSentAt: string | null;
   finalTradeAt: string | null;
-  subscriptionSequence: number;
+  admissionState: TradeDataAdmissionState;
+  preStopObservedTradeCount: number;
+  postStopObservedTradeCount: number;
+  estimatedBillableMessageCount: number;
+  hardCostCallbackIssued: boolean;
   telemetryFailureCount: number;
   lastTelemetryFailure: string | null;
   oneSecondBucketCount: number;
@@ -86,7 +92,20 @@ export type BeginTradeDataCoverageInput = {
   chainVerify?: boolean;
   chainVerifyMaxSignatures?: number;
   onStopRequested?: (reason: string) => void;
+  onHardCostCapReached?: () => void;
 };
+
+export type TradeDataLifecycleAppendResult =
+  | {
+      status: "persisted" | "idempotent";
+      event: TradeDataSubscriptionEvent;
+      safeErrorClass: null;
+    }
+  | {
+      status: "failed";
+      event: TradeDataSubscriptionEvent;
+      safeErrorClass: string;
+    };
 
 export type TradeDataCoverageServiceOptions = {
   provider: string;
@@ -110,6 +129,12 @@ export type TradeDataTimeseriesObservation = {
   validSampleCount: number;
   firstDerivativeAvailable: boolean;
   secondDerivativeAvailable: boolean;
+};
+
+export type TradeDataDecisionEvidence = {
+  decisionId: string;
+  decisionVersion: number;
+  sourceEventKey: string;
 };
 
 export class TradeDataCoverageService {
@@ -164,6 +189,7 @@ export class TradeDataCoverageService {
         nonnegativeInteger(input.chainVerifyMaxSignatures, 5)
       ),
       onStopRequested: input.onStopRequested,
+      onHardCostCapReached: input.onHardCostCapReached,
       stopRequestedAt: null,
       stoppedAt: null,
       stopReason: null,
@@ -174,7 +200,11 @@ export class TradeDataCoverageService {
       unsubscribeRequestedAt: null,
       unsubscribeSentAt: null,
       finalTradeAt: null,
-      subscriptionSequence: 0,
+      admissionState: "OPEN",
+      preStopObservedTradeCount: 0,
+      postStopObservedTradeCount: 0,
+      estimatedBillableMessageCount: 0,
+      hardCostCallbackIssued: false,
       telemetryFailureCount: 0,
       lastTelemetryFailure: null,
       oneSecondBucketCount: 0,
@@ -183,13 +213,13 @@ export class TradeDataCoverageService {
       firstDerivativeAvailable: false,
       secondDerivativeAvailable: false
     };
-    this.recordSubscriptionEvent(
+    this.persistParentSessionRequired();
+    this.appendLifecycleEvent(
       "track_requested",
       selectedMint,
       "BOUNDED_ONE_MINT_COVERAGE_SESSION",
       ["TRADE_DATA_COVERAGE_TRACK_REQUESTED"]
     );
-    this.persistSession();
     return this.getActiveSummary();
   }
 
@@ -220,6 +250,12 @@ export class TradeDataCoverageService {
           normalizedVolumeSol: null,
           normalizedTokenAmount: null,
           normalizedPriceSol: null,
+          executionAveragePriceSol: null,
+          curveMarkPriceSol: null,
+          providerReportedPriceSol: null,
+          curveExecutionSpread: null,
+          priceSource: "unavailable",
+          tokenAmountSemantics: "unproven",
           marketCapSol: null,
           virtualTokenReserves: null,
           virtualSolReserves: null,
@@ -229,6 +265,7 @@ export class TradeDataCoverageService {
           parserOutcome: "pending",
           normalizationOutcome: "pending",
           pipelineOutcome: "pending",
+          canonicalAdmission: "pending",
           duplicateKey: null,
           duplicateReason: null,
           rejectionReason: null,
@@ -240,6 +277,8 @@ export class TradeDataCoverageService {
               ? "unexpected_after_unsubscribe"
               : "expected_in_flight"
             : "not_applicable",
+          decisionId: null,
+          decisionVersion: null,
           stageTimestamps: { raw_received: observation.receivedAt },
           stageLatenciesMs: {},
           consistencyChecks: {},
@@ -255,8 +294,6 @@ export class TradeDataCoverageService {
           }
         };
         this.events.set(event.correlationId, event);
-        this.persistEvent(event);
-        this.persistSession();
       },
       onParserOutcome: (observation) => {
         const event = this.events.get(observation.correlationId);
@@ -282,11 +319,13 @@ export class TradeDataCoverageService {
         if (observation.parserOutcome !== "recognized_trade") {
           event.normalizationOutcome = "not_applicable";
           event.pipelineOutcome = "not_applicable";
+          event.canonicalAdmission = "not_applicable";
           event.completedAt = this.now().toISOString();
         }
         this.refreshLatencies(event);
-        this.persistEvent(event);
-        this.persistSession();
+        if (observation.parserOutcome !== "recognized_trade") {
+          this.persistEvent(event);
+        }
       },
       onNormalizationOutcome: (observation) =>
         this.observeNormalization(observation),
@@ -299,7 +338,7 @@ export class TradeDataCoverageService {
         if (mint !== active.selectedMint) {
           return;
         }
-        this.recordSubscriptionEvent(
+        this.appendLifecycleEvent(
           observation.eventType,
           mint,
           observation.safeReason,
@@ -316,14 +355,24 @@ export class TradeDataCoverageService {
   markQueueAccepted(event: FeedEvent): void {
     this.withEvent(event, (coverageEvent) => {
       this.markStage(coverageEvent, "queue_accepted");
-      this.persistEvent(coverageEvent);
-      this.persistSession();
     });
   }
 
   markQueueTransactionStarted(event: FeedEvent): void {
     this.withEvent(event, (coverageEvent) => {
       this.markStage(coverageEvent, "queue_transaction_started");
+    });
+  }
+
+  markDatabaseWriteStarted(event: FeedEvent): void {
+    this.withEvent(event, (coverageEvent) => {
+      this.markStage(coverageEvent, "database_write_started");
+    });
+  }
+
+  markDatabaseCommitted(event: FeedEvent): void {
+    this.withEvent(event, (coverageEvent) => {
+      this.markStage(coverageEvent, "database_committed");
     });
   }
 
@@ -381,8 +430,6 @@ export class TradeDataCoverageService {
         ]);
       }
       this.refreshLatencies(coverageEvent);
-      this.persistEvent(coverageEvent);
-      this.persistSession();
     });
   }
 
@@ -396,9 +443,56 @@ export class TradeDataCoverageService {
 
   markSignalUpdated(event: FeedEvent): void {
     this.markBusinessStage(event, "signal_updated", "TRADE_SIGNAL_UPDATED");
+    this.markBusinessStage(event, "signal_persisted", "TRADE_SIGNAL_PERSISTED");
   }
 
-  markScannerProjected(event: FeedEvent): void {
+  markSignalComputed(
+    event: FeedEvent,
+    decision: TradeDataDecisionEvidence
+  ): void {
+    this.withEvent(event, (coverageEvent) => {
+      if (decision.sourceEventKey !== coverageEvent.sourceEventKey) {
+        this.recordTelemetryFailure("TRADE_DECISION_SOURCE_KEY_MISMATCH");
+        return;
+      }
+      coverageEvent.decisionId = decision.decisionId;
+      coverageEvent.decisionVersion = decision.decisionVersion;
+      this.markStage(coverageEvent, "signal_computed");
+      coverageEvent.reasonCodes = unique([
+        ...coverageEvent.reasonCodes,
+        "TRADE_SIGNAL_COMPUTED"
+      ]);
+    });
+  }
+
+  markSignalPersisted(
+    event: FeedEvent,
+    decision: TradeDataDecisionEvidence
+  ): void {
+    this.withMatchingDecision(event, decision, (coverageEvent) => {
+      this.markStage(coverageEvent, "signal_updated");
+      this.markStage(coverageEvent, "signal_persisted");
+      coverageEvent.reasonCodes = unique([
+        ...coverageEvent.reasonCodes,
+        "TRADE_SIGNAL_PERSISTED"
+      ]);
+    });
+  }
+
+  markScannerProjected(
+    event: FeedEvent,
+    decision?: TradeDataDecisionEvidence
+  ): void {
+    if (decision) {
+      this.withMatchingDecision(event, decision, (coverageEvent) => {
+        this.markStage(coverageEvent, "scanner_projected");
+        coverageEvent.reasonCodes = unique([
+          ...coverageEvent.reasonCodes,
+          "TRADE_SCANNER_ROW_PROJECTED"
+        ]);
+      });
+      return;
+    }
     this.markBusinessStage(
       event,
       "scanner_projected",
@@ -491,14 +585,14 @@ export class TradeDataCoverageService {
     active.stopRequestedAt = now;
     active.unsubscribeRequestedAt = now;
     active.stopReason = sanitizeReason(reason);
-    this.recordSubscriptionEvent(
+    active.admissionState = "STOP_REQUESTED";
+    this.appendLifecycleEvent(
       "stop_requested",
       active.selectedMint,
       active.stopReason,
       ["TRADE_DATA_COVERAGE_STOP_REQUESTED"],
       now
     );
-    this.persistSession();
     try {
       active.onStopRequested?.(active.stopReason);
     } catch (error) {
@@ -526,17 +620,15 @@ export class TradeDataCoverageService {
     if (!active.stopRequestedAt) {
       this.requestStop(reason);
     }
+    active.admissionState = "EVIDENCE_ONLY";
     if (
       !this.subscriptionEvents.some(
         (event) => event.eventType === "grace_started"
       )
     ) {
-      this.recordSubscriptionEvent(
-        "grace_started",
-        active.selectedMint,
-        reason,
-        ["TRADE_DATA_COVERAGE_POST_STOP_GRACE_STARTED"]
-      );
+      this.appendLifecycleEvent("grace_started", active.selectedMint, reason, [
+        "TRADE_DATA_COVERAGE_POST_STOP_GRACE_STARTED"
+      ]);
     }
   }
 
@@ -553,15 +645,16 @@ export class TradeDataCoverageService {
     if (!active.stopRequestedAt) {
       this.requestStop(reason);
     }
-    active.stoppedAt = stoppedAt;
     active.stopReason = active.stopReason ?? sanitizeReason(reason);
-    this.recordSubscriptionEvent(
+    this.appendLifecycleEvent(
       "finalized",
       active.selectedMint,
       active.stopReason,
       ["TRADE_DATA_COVERAGE_FINALIZED"],
       stoppedAt
     );
+    active.stoppedAt = stoppedAt;
+    active.admissionState = "FINALIZED";
     const summary = this.buildSummary(active);
     this.persistSafely(active, "save_session_final", () =>
       this.persistence.saveSession(summary)
@@ -709,10 +802,14 @@ export class TradeDataCoverageService {
         "TRADE_COVERAGE_CONFIDENCE_REDUCED"
       ]);
     }
+    const admission = this.reserveCanonicalAdmission(coverageEvent);
     const normalizationRejection = getNormalizationRejection(trade);
     if (normalizationRejection) {
       coverageEvent.normalizationOutcome = "rejected";
-      coverageEvent.pipelineOutcome = "not_applicable";
+      coverageEvent.pipelineOutcome =
+        admission === "evidence_only" ? "evidence_only" : "not_applicable";
+      coverageEvent.canonicalAdmission =
+        admission === "evidence_only" ? "post_stop_evidence_only" : "rejected";
       coverageEvent.rejectionReason = normalizationRejection;
       coverageEvent.usableForMetrics = false;
       this.markStageAt(
@@ -727,10 +824,11 @@ export class TradeDataCoverageService {
         normalizationRejection,
         "TRADE_NORMALIZATION_REJECTED"
       ]);
-      this.observeMatchingTradeForCaps(coverageEvent);
+      if (admission === "evidence_only") {
+        this.markStage(coverageEvent, "post_stop_evidence_persisted");
+      }
       this.refreshLatencies(coverageEvent);
       this.persistEvent(coverageEvent);
-      this.persistSession();
       return rejectedNormalizationResult(normalizationRejection);
     }
 
@@ -741,6 +839,20 @@ export class TradeDataCoverageService {
       observation.normalizedAt,
       observation.normalizedAtMonotonicMs
     );
+    if (admission === "evidence_only") {
+      coverageEvent.canonicalAdmission = "post_stop_evidence_only";
+      coverageEvent.pipelineOutcome = "evidence_only";
+      coverageEvent.completedAt = observation.normalizedAt;
+      this.markStage(coverageEvent, "post_stop_evidence_persisted");
+      coverageEvent.reasonCodes = unique([
+        ...coverageEvent.reasonCodes,
+        "TRADE_POST_STOP_EVIDENCE_ONLY",
+        "TRADE_CANONICAL_PIPELINE_BLOCKED"
+      ]);
+      this.refreshLatencies(coverageEvent);
+      this.persistEvent(coverageEvent);
+      return rejectedNormalizationResult("TRADE_POST_STOP_EVIDENCE_ONLY");
+    }
     const persisted = this.persistence.findEventBySourceKey(
       active.sessionId,
       sourceEventKey
@@ -760,10 +872,9 @@ export class TradeDataCoverageService {
         ...coverageEvent.reasonCodes,
         "TRADE_DUPLICATE_SUPPRESSED"
       ]);
-      this.observeMatchingTradeForCaps(coverageEvent);
+      coverageEvent.canonicalAdmission = "rejected";
       this.refreshLatencies(coverageEvent);
       this.persistEvent(coverageEvent);
-      this.persistSession();
       return {
         acceptedForPipeline: false,
         duplicate: true,
@@ -788,17 +899,19 @@ export class TradeDataCoverageService {
         ...coverageEvent.reasonCodes,
         coverageEvent.rejectionReason
       ]);
+      coverageEvent.canonicalAdmission = "rejected";
     } else {
+      coverageEvent.canonicalAdmission = "admitted";
+      this.markStage(coverageEvent, "canonical_admitted");
       coverageEvent.reasonCodes = unique([
         ...coverageEvent.reasonCodes,
+        "TRADE_CANONICAL_ADMISSION_GRANTED",
         "TRADE_NORMALIZATION_SUCCEEDED",
         "TRADE_SELECTED_MINT_MATCHED"
       ]);
     }
-    this.observeMatchingTradeForCaps(coverageEvent);
     this.refreshLatencies(coverageEvent);
     this.persistEvent(coverageEvent);
-    this.persistSession();
     return {
       acceptedForPipeline: coverageEvent.pipelineOutcome === "pending",
       duplicate: false,
@@ -812,6 +925,7 @@ export class TradeDataCoverageService {
               sessionId: active.sessionId,
               correlationId: coverageEvent.correlationId,
               sourceEventKey,
+              canonicalAdmission: "admitted",
               receivedAtMonotonicMs:
                 coverageEvent.monotonicStages.raw_received ??
                 observation.receivedAtMonotonicMs,
@@ -840,6 +954,18 @@ export class TradeDataCoverageService {
     event.normalizedVolumeSol = finiteOrNull(trade.volumeSol ?? null);
     event.normalizedTokenAmount = finiteOrNull(trade.tokenAmount ?? null);
     event.normalizedPriceSol = finiteOrNull(trade.priceSol ?? null);
+    event.executionAveragePriceSol = finiteOrNull(
+      trade.executionAveragePriceSol ?? trade.priceSol ?? null
+    );
+    event.curveMarkPriceSol = finiteOrNull(trade.curveMarkPriceSol ?? null);
+    event.providerReportedPriceSol = finiteOrNull(
+      trade.providerReportedPriceSol ?? null
+    );
+    event.curveExecutionSpread = finiteOrNull(
+      trade.curveExecutionSpread ?? null
+    );
+    event.priceSource = trade.priceSource ?? "unavailable";
+    event.tokenAmountSemantics = trade.tokenAmountSemantics ?? "unproven";
     event.marketCapSol = finiteOrNull(trade.marketCapSol ?? null);
     event.virtualTokenReserves = finiteOrNull(
       trade.virtualTokenReserves ?? null
@@ -853,12 +979,15 @@ export class TradeDataCoverageService {
     ]);
   }
 
-  private observeMatchingTradeForCaps(event: MutableCoverageEvent): void {
+  private reserveCanonicalAdmission(
+    event: MutableCoverageEvent
+  ): "candidate" | "evidence_only" | "not_matching" {
     const active = this.active;
     if (!active || event.observedMint !== active.selectedMint) {
-      return;
+      return "not_matching";
     }
     const observedAt = this.now().toISOString();
+    active.estimatedBillableMessageCount += 1;
     active.firstTradeAt ??= observedAt;
     active.finalTradeAt = observedAt;
     if (
@@ -866,7 +995,7 @@ export class TradeDataCoverageService {
         (item) => item.eventType === "first_trade_received"
       )
     ) {
-      this.recordSubscriptionEvent(
+      this.appendLifecycleEvent(
         "first_trade_received",
         active.selectedMint,
         null,
@@ -874,29 +1003,46 @@ export class TradeDataCoverageService {
         observedAt
       );
     }
-    const matchingTradeCount = [...this.events.values()].filter(
-      (item) =>
-        item.parserOutcome === "recognized_trade" &&
-        item.observedMint === active.selectedMint
-    ).length;
-    const estimatedCost = matchingTradeCount * this.estimatedCostPerEventSol;
-    if (matchingTradeCount >= active.maxEvents) {
-      this.requestStop("max_events");
-    } else if (estimatedCost >= active.maxCostSol) {
-      this.requestStop("max_estimated_cost");
+
+    if (active.admissionState === "OPEN") {
+      active.preStopObservedTradeCount += 1;
+      const estimatedCost =
+        active.estimatedBillableMessageCount * this.estimatedCostPerEventSol;
+      if (active.preStopObservedTradeCount >= active.maxEvents) {
+        this.requestStop("max_events");
+      } else if (estimatedCost >= active.maxCostSol) {
+        this.requestStop("max_estimated_cost");
+      }
+      return "candidate";
     }
+
+    active.admissionState = "EVIDENCE_ONLY";
+    active.postStopObservedTradeCount += 1;
+    const estimatedCost =
+      active.estimatedBillableMessageCount * this.estimatedCostPerEventSol;
+    if (estimatedCost >= active.maxCostSol && !active.hardCostCallbackIssued) {
+      active.hardCostCallbackIssued = true;
+      try {
+        active.onHardCostCapReached?.();
+      } catch (error) {
+        this.recordTelemetryFailure(
+          `HARD_COST_HANDLER:${safeErrorClass(error)}`
+        );
+      }
+    }
+    return "evidence_only";
   }
 
-  private recordSubscriptionEvent(
+  private appendLifecycleEvent(
     eventType: TradeDataSubscriptionEventType,
     mint: string,
     safeReason: string | null,
     reasonCodes: string[],
     timestamp = this.now().toISOString()
-  ): void {
+  ): TradeDataLifecycleAppendResult | null {
     const active = this.active;
     if (!active) {
-      return;
+      return null;
     }
     if (eventType === "subscribe_sent") {
       active.subscriptionSentAt ??= timestamp;
@@ -905,22 +1051,51 @@ export class TradeDataCoverageService {
     } else if (eventType === "unsubscribe_sent") {
       active.unsubscribeSentAt ??= timestamp;
     }
-    const event = TradeDataSubscriptionEventSchema.parse({
-      schemaVersion: "trade-data-coverage-v1",
-      subscriptionEventId: `${active.sessionId}:subscription-${++active.subscriptionSequence}`,
-      sessionId: active.sessionId,
-      mint,
-      eventType,
-      timestamp,
-      safeReason,
-      reasonCodes: unique(reasonCodes),
-      payload: {},
-      createdAt: timestamp
-    });
-    this.subscriptionEvents.push(event);
-    this.persistSafely(active, "save_subscription_event", () =>
-      this.persistence.saveSubscriptionEvent(event)
+    const subscriptionEventId = `${active.sessionId}:lifecycle:${eventType}`;
+    const existing = this.subscriptionEvents.find(
+      (item) => item.subscriptionEventId === subscriptionEventId
     );
+    const event =
+      existing ??
+      TradeDataSubscriptionEventSchema.parse({
+        schemaVersion: "trade-data-coverage-v1",
+        subscriptionEventId,
+        sessionId: active.sessionId,
+        mint,
+        eventType,
+        timestamp,
+        safeReason,
+        reasonCodes: unique(reasonCodes),
+        payload: {},
+        createdAt: timestamp
+      });
+    if (!existing) {
+      this.subscriptionEvents.push(event);
+    }
+    try {
+      this.persistence.saveSubscriptionEvent(event);
+      const persisted = this.persistence
+        .listSubscriptionEvents({
+          sessionId: active.sessionId,
+          limit: 1000,
+          offset: 0
+        })
+        .some((item) => item.subscriptionEventId === subscriptionEventId);
+      if (!persisted) {
+        throw new Error("LIFECYCLE_EVENT_NOT_DURABLE");
+      }
+      this.persistSession();
+      return {
+        status: existing ? "idempotent" : "persisted",
+        event,
+        safeErrorClass: null
+      };
+    } catch (error) {
+      const errorClass = safeErrorClass(error);
+      this.recordTelemetryFailure(`save_subscription_event:${errorClass}`);
+      this.persistSession();
+      return { status: "failed", event, safeErrorClass: errorClass };
+    }
   }
 
   private markBusinessStage(
@@ -935,8 +1110,24 @@ export class TradeDataCoverageService {
         reasonCode
       ]);
       this.refreshLatencies(coverageEvent);
-      this.persistEvent(coverageEvent);
-      this.persistSession();
+    });
+  }
+
+  private withMatchingDecision(
+    event: FeedEvent,
+    decision: TradeDataDecisionEvidence,
+    operation: (coverageEvent: MutableCoverageEvent) => void
+  ): void {
+    this.withEvent(event, (coverageEvent) => {
+      if (
+        coverageEvent.decisionId !== decision.decisionId ||
+        coverageEvent.decisionVersion !== decision.decisionVersion ||
+        coverageEvent.sourceEventKey !== decision.sourceEventKey
+      ) {
+        this.recordTelemetryFailure("TRADE_DECISION_EVIDENCE_MISMATCH");
+        return;
+      }
+      operation(coverageEvent);
     });
   }
 
@@ -1011,6 +1202,23 @@ export class TradeDataCoverageService {
     );
   }
 
+  private persistParentSessionRequired(): void {
+    const active = this.active;
+    if (!active) {
+      throw new Error("No active trade data coverage session.");
+    }
+    try {
+      this.persistence.saveSession(this.buildSummary(active));
+      if (!this.persistence.getSession(active.sessionId)) {
+        throw new Error("TRADE_COVERAGE_PARENT_SESSION_NOT_DURABLE");
+      }
+    } catch (error) {
+      active.telemetryFailureCount += 1;
+      active.lastTelemetryFailure = `save_parent_session:${safeErrorClass(error)}`;
+      throw error;
+    }
+  }
+
   private persistSafely(
     active: ActiveCoverageSession,
     stage: string,
@@ -1053,11 +1261,57 @@ export class TradeDataCoverageService {
     const consistencyChecks = events.flatMap((event) =>
       Object.values(event.consistencyChecks)
     );
+    const persistedLifecycle = this.persistence.listSubscriptionEvents({
+      sessionId: active.sessionId,
+      limit: 1000,
+      offset: 0
+    });
+    const lifecycleResidual =
+      this.subscriptionEvents.length - persistedLifecycle.length;
+    const persistedLifecycleById = new Map(
+      persistedLifecycle.map((event) => [event.subscriptionEventId, event])
+    );
+    const lifecycleHistoriesMatch = this.subscriptionEvents.every((event) => {
+      const persisted = persistedLifecycleById.get(event.subscriptionEventId);
+      return (
+        persisted?.eventType === event.eventType &&
+        persisted.timestamp === event.timestamp &&
+        persisted.mint === event.mint
+      );
+    });
+    const counterResiduals = {
+      observed_partition:
+        counts.matchingSelectedTradeCount -
+        (active.preStopObservedTradeCount + active.postStopObservedTradeCount),
+      pre_stop_classification:
+        active.preStopObservedTradeCount -
+        (counts.canonicalAdmittedTradeCount +
+          counts.canonicalRejectedTradeCount +
+          counts.preStopDuplicateTradeCount +
+          counts.preStopUnusableTradeCount),
+      canonical_business:
+        counts.canonicalAdmittedTradeCount - counts.persistenceCompletedCount,
+      canonical_timeseries:
+        counts.canonicalAdmittedTradeCount - counts.timeseriesAcceptedCount,
+      post_stop_evidence:
+        active.postStopObservedTradeCount -
+        counts.postStopEvidencePersistedCount,
+      billable_observed:
+        active.estimatedBillableMessageCount - counts.matchingSelectedTradeCount
+    };
+    const maximumAbsoluteCounterResidual = Math.max(
+      0,
+      ...Object.values(counterResiduals).map((value) => Math.abs(value))
+    );
     const stoppedOrNow = active.stoppedAt ?? this.now().toISOString();
     const activeEnd =
       active.unsubscribeSentAt ?? active.stopRequestedAt ?? stoppedOrNow;
     const locallyReconciled =
       maximumAbsoluteResidual === 0 &&
+      lifecycleResidual === 0 &&
+      lifecycleHistoriesMatch &&
+      maximumAbsoluteCounterResidual === 0 &&
+      counts.postStopCanonicalMutationCount === 0 &&
       active.telemetryFailureCount === 0 &&
       events.every((event) => event.parserOutcome !== "pending") &&
       events
@@ -1086,6 +1340,7 @@ export class TradeDataCoverageService {
       maxEvents: active.maxEvents,
       maxRuntimeMs: active.maxRuntimeMs,
       maxCostSol: active.maxCostSol,
+      admissionState: active.admissionState,
       ...counts,
       oneSecondBucketCount: active.oneSecondBucketCount,
       completedOneSecondBucketCount: active.completedOneSecondBucketCount,
@@ -1093,8 +1348,23 @@ export class TradeDataCoverageService {
       firstDerivativeAvailable: active.firstDerivativeAvailable,
       secondDerivativeAvailable: active.secondDerivativeAvailable,
       telemetryFailureCount: active.telemetryFailureCount,
+      recognizedMatchingTradeFrameCount: counts.matchingSelectedTradeCount,
+      preStopObservedTradeCount: active.preStopObservedTradeCount,
+      canonicalAdmittedTradeCount: counts.canonicalAdmittedTradeCount,
+      canonicalRejectedTradeCount: counts.canonicalRejectedTradeCount,
+      postStopObservedTradeCount: active.postStopObservedTradeCount,
+      postStopEvidencePersistedCount: counts.postStopEvidencePersistedCount,
+      canonicalBusinessTradeCount: counts.persistenceCompletedCount,
+      canonicalTimeSeriesSourceEventCount: counts.timeseriesAcceptedCount,
+      estimatedBillableMessageCount: active.estimatedBillableMessageCount,
+      postStopCanonicalMutationCount: counts.postStopCanonicalMutationCount,
+      lifecycleEmbeddedEventCount: this.subscriptionEvents.length,
+      lifecyclePersistedEventCount: persistedLifecycle.length,
+      lifecycleResidual,
+      counterResiduals,
+      maximumAbsoluteCounterResidual,
       estimatedCostSol: roundSol(
-        counts.matchingSelectedTradeCount * this.estimatedCostPerEventSol
+        active.estimatedBillableMessageCount * this.estimatedCostPerEventSol
       ),
       estimatedCostPerEventSol: this.estimatedCostPerEventSol,
       costIsEstimated: true,
@@ -1105,6 +1375,26 @@ export class TradeDataCoverageService {
           .length,
         unavailable: consistencyChecks.filter(
           (check) => check.status === "unavailable"
+        ).length
+      },
+      normalizationClassificationSummary: {
+        executionIdentityPassed: consistencyChecks.filter(
+          (check) => check.reasonCode === "PRICE_VOLUME_IDENTITY_PASSED"
+        ).length,
+        executionIdentityFailed: consistencyChecks.filter(
+          (check) => check.reasonCode === "PRICE_VOLUME_IDENTITY_FAILED"
+        ).length,
+        expectedCurveSpread: consistencyChecks.filter(
+          (check) => check.classification === "expected_spread"
+        ).length,
+        providerPriceMismatch: consistencyChecks.filter(
+          (check) => check.reasonCode === "PROVIDER_PRICE_EXECUTION_MISMATCH"
+        ).length,
+        unitUnproven: consistencyChecks.filter(
+          (check) => check.classification === "unit_unproven"
+        ).length,
+        unavailable: consistencyChecks.filter(
+          (check) => check.classification === "unavailable"
         ).length
       },
       latencyDistributions,
@@ -1162,15 +1452,17 @@ export class TradeDataCoverageService {
 }
 
 const requiredPipelineStages: TradeDataCoverageStage[] = [
+  "database_committed",
   "persistence_completed",
   "timeseries_accepted",
   "snapshot_updated",
   "rolling_windows_updated",
   "derivatives_updated",
   "derivative_strength_updated",
-  "signal_updated",
+  "signal_computed",
   "scanner_projected",
-  "broadcast_completed"
+  "broadcast_completed",
+  "signal_persisted"
 ];
 
 export function createTradeDataCoverageService(
@@ -1222,11 +1514,15 @@ function getNormalizationRejection(event: TokenTradeEvent): string | null {
   if (rawSol === 0 || rawToken === 0) {
     return "TRADE_AMOUNTS_ZERO";
   }
+  if (event.tokenAmountSemantics === "balance_not_delta") {
+    return "TOKEN_AMOUNT_IS_BALANCE_NOT_DELTA";
+  }
   if (
+    event.tokenAmountSemantics === "unproven" ||
     event.amountNormalizationMode === "unknown" ||
     event.amountNormalizationMode === "raw"
   ) {
-    return "TRADE_TOKEN_AMOUNT_UNITS_UNDERSTOOD_REQUIRED";
+    return "TOKEN_AMOUNT_UNIT_UNPROVEN";
   }
   if (
     !isPositiveFinite(event.volumeSol) ||
@@ -1254,26 +1550,37 @@ function createConsistencyChecks(
     Number.isFinite(event.rawSolAmount ?? event.volumeSol) &&
     Number.isFinite(event.rawTokenAmount ?? event.tokenAmount);
   const unitsUnderstood =
-    event.amountNormalizationMode === "ui" ||
-    event.amountNormalizationMode === "decimals_normalized";
+    event.tokenAmountSemantics === "confirmed_ui_trade_delta" ||
+    event.tokenAmountSemantics === "confirmed_raw_trade_delta";
+  const executionAverage = finiteOrNull(
+    event.executionAveragePriceSol ?? event.priceSol ?? null
+  );
   const expectedVolume =
-    isPositiveFinite(event.priceSol) && isPositiveFinite(event.tokenAmount)
-      ? (event.priceSol ?? 0) * (event.tokenAmount ?? 0)
+    isPositiveFinite(executionAverage) && isPositiveFinite(event.tokenAmount)
+      ? (executionAverage ?? 0) * (event.tokenAmount ?? 0)
       : null;
   const observedVolume = finiteOrNull(event.volumeSol ?? null);
-  const priceTolerance = 1e-8;
+  const priceTolerance =
+    observedVolume === null
+      ? null
+      : Math.max(1e-12, Math.abs(observedVolume) * 1e-9);
   const priceMatches =
-    expectedVolume !== null && observedVolume !== null
+    expectedVolume !== null &&
+    observedVolume !== null &&
+    priceTolerance !== null
       ? approximatelyEqual(expectedVolume, observedVolume, priceTolerance)
       : null;
-  const curvePrice =
-    isPositiveFinite(event.virtualSolReserves) &&
-    isPositiveFinite(event.virtualTokenReserves)
-      ? (event.virtualSolReserves ?? 0) / (event.virtualTokenReserves ?? 1)
-      : null;
-  const curveMatches =
-    curvePrice !== null && isPositiveFinite(event.priceSol)
-      ? approximatelyEqual(curvePrice, event.priceSol ?? 0, 0.1)
+  const curvePrice = finiteOrNull(event.curveMarkPriceSol ?? null);
+  const providerPrice = finiteOrNull(event.providerReportedPriceSol ?? null);
+  const providerTolerance =
+    executionAverage === null
+      ? null
+      : Math.max(1e-12, Math.abs(executionAverage) * 1e-6);
+  const providerMatches =
+    providerPrice !== null &&
+    executionAverage !== null &&
+    providerTolerance !== null
+      ? approximatelyEqual(providerPrice, executionAverage, providerTolerance)
       : null;
   const providerTimeMs = event.providerTimestamp
     ? Date.parse(event.providerTimestamp)
@@ -1296,7 +1603,12 @@ function createConsistencyChecks(
       unitsUnderstood ? "passed" : "failed",
       unitsUnderstood
         ? "TRADE_AMOUNT_UNITS_UNDERSTOOD"
-        : "TRADE_AMOUNT_UNITS_UNKNOWN"
+        : event.tokenAmountSemantics === "balance_not_delta"
+          ? "TOKEN_AMOUNT_IS_BALANCE_NOT_DELTA"
+          : "TOKEN_AMOUNT_UNIT_UNPROVEN",
+      {
+        classification: unitsUnderstood ? "pass" : "unit_unproven"
+      }
     ),
     side_recognized: check(
       event.side === "buy" || event.side === "sell" ? "passed" : "failed",
@@ -1327,31 +1639,56 @@ function createConsistencyChecks(
           ? "passed"
           : "failed",
       priceMatches === null
-        ? "TRADE_PRICE_VOLUME_CHECK_UNAVAILABLE"
+        ? "PRICE_VOLUME_IDENTITY_UNAVAILABLE"
         : priceMatches
-          ? "TRADE_PRICE_VOLUME_CONSISTENT"
-          : "TRADE_PRICE_VOLUME_MISMATCH",
+          ? "PRICE_VOLUME_IDENTITY_PASSED"
+          : "PRICE_VOLUME_IDENTITY_FAILED",
       {
         expected: expectedVolume,
         observed: observedVolume,
-        tolerance: priceTolerance
+        tolerance: priceTolerance,
+        classification:
+          priceMatches === null ? "unavailable" : priceMatches ? "pass" : "fail"
       }
     ),
     curve_price_consistency: check(
-      curveMatches === null
+      curvePrice === null || executionAverage === null
         ? "unavailable"
-        : curveMatches
-          ? "passed"
-          : "failed",
-      curveMatches === null
-        ? "TRADE_CURVE_PRICE_CHECK_UNAVAILABLE"
-        : curveMatches
-          ? "TRADE_CURVE_PRICE_CONSISTENT"
-          : "TRADE_CURVE_PRICE_MISMATCH",
+        : "passed",
+      curvePrice === null || executionAverage === null
+        ? "RESERVE_UNIT_UNPROVEN"
+        : "CURVE_MARK_EXECUTION_SPREAD",
       {
         expected: curvePrice,
-        observed: finiteOrNull(event.priceSol ?? null),
-        tolerance: curvePrice === null ? null : Math.abs(curvePrice) * 0.1
+        observed: executionAverage,
+        tolerance: null,
+        classification:
+          curvePrice === null || executionAverage === null
+            ? "unit_unproven"
+            : "expected_spread"
+      }
+    ),
+    provider_price_execution_consistency: check(
+      providerMatches === null
+        ? "unavailable"
+        : providerMatches
+          ? "passed"
+          : "failed",
+      providerMatches === null
+        ? "PROVIDER_PRICE_EXECUTION_UNAVAILABLE"
+        : providerMatches
+          ? "PROVIDER_PRICE_EXECUTION_MATCHED"
+          : "PROVIDER_PRICE_EXECUTION_MISMATCH",
+      {
+        expected: executionAverage,
+        observed: providerPrice,
+        tolerance: providerTolerance,
+        classification:
+          providerMatches === null
+            ? "unavailable"
+            : providerMatches
+              ? "pass"
+              : "fail"
       }
     )
   };
@@ -1390,6 +1727,9 @@ function calculateLatencies(
     receive_to_normalize:
       duration("raw_received", "normalization_succeeded") ??
       duration("raw_received", "normalization_rejected"),
+    normalize_to_queue: duration("normalization_succeeded", "queue_accepted"),
+    queue_wait: duration("queue_accepted", "queue_transaction_started"),
+    database_write: duration("database_write_started", "database_committed"),
     normalize_to_persist: duration(
       "normalization_succeeded",
       "persistence_completed"
@@ -1397,6 +1737,27 @@ function calculateLatencies(
     persist_to_timeseries:
       duration("persistence_completed", "timeseries_accepted") ??
       duration("persistence_completed", "timeseries_rejected"),
+    commit_to_timeseries: duration("database_committed", "timeseries_accepted"),
+    timeseries_to_signal_compute: duration(
+      "timeseries_accepted",
+      "signal_computed"
+    ),
+    derivative_to_signal_compute: duration(
+      "derivatives_updated",
+      "signal_computed"
+    ),
+    signal_compute_to_scanner_projection: duration(
+      "signal_computed",
+      "scanner_projected"
+    ),
+    scanner_projection_to_broadcast: duration(
+      "scanner_projected",
+      "broadcast_completed"
+    ),
+    signal_compute_to_signal_persist: duration(
+      "signal_computed",
+      "signal_persisted"
+    ),
     timeseries_to_scanner: duration("timeseries_accepted", "scanner_projected"),
     receive_to_scanner: duration("raw_received", "scanner_projected"),
     receive_to_pipeline_complete: terminal
@@ -1412,7 +1773,9 @@ function aggregateLatency(
   const eligible = events.filter((event) =>
     key === "provider_to_receive"
       ? true
-      : event.parserOutcome === "recognized_trade"
+      : key === "receive_to_normalize"
+        ? event.parserOutcome === "recognized_trade"
+        : event.canonicalAdmission === "admitted"
   );
   const values = eligible
     .map((event) => event.stageLatenciesMs[key])
@@ -1466,6 +1829,9 @@ function countEvents(events: MutableCoverageEvent[]) {
     ),
     duplicateCount: count((event) => event.pipelineOutcome === "duplicate"),
     rejectedCount: count((event) => event.pipelineOutcome === "rejected"),
+    evidenceOnlyCount: count(
+      (event) => event.pipelineOutcome === "evidence_only"
+    ),
     pipelineCompletedCount: count(
       (event) => event.pipelineOutcome === "completed"
     ),
@@ -1500,7 +1866,11 @@ function countEvents(events: MutableCoverageEvent[]) {
     ),
     unusableTradeCount: count(
       (event) =>
-        event.parserOutcome === "recognized_trade" && !event.usableForMetrics
+        event.parserOutcome === "recognized_trade" &&
+        event.observedMint === event.subscribedMint &&
+        event.canonicalAdmission !== "post_stop_evidence_only" &&
+        event.pipelineOutcome !== "duplicate" &&
+        !event.usableForMetrics
     ),
     wrongMintFrameCount: count(
       (event) =>
@@ -1520,6 +1890,46 @@ function countEvents(events: MutableCoverageEvent[]) {
       Object.values(event.consistencyChecks).some(
         (check) => check.status === "failed"
       )
+    ),
+    canonicalAdmittedTradeCount: count(
+      (event) => event.canonicalAdmission === "admitted"
+    ),
+    canonicalRejectedTradeCount: count(
+      (event) =>
+        event.canonicalAdmission === "rejected" &&
+        event.observedMint === event.subscribedMint &&
+        event.pipelineOutcome !== "duplicate" &&
+        event.usableForMetrics
+    ),
+    preStopDuplicateTradeCount: count(
+      (event) =>
+        !event.postStop &&
+        event.observedMint === event.subscribedMint &&
+        event.pipelineOutcome === "duplicate"
+    ),
+    preStopUnusableTradeCount: count(
+      (event) =>
+        !event.postStop &&
+        event.observedMint === event.subscribedMint &&
+        event.canonicalAdmission === "rejected" &&
+        event.pipelineOutcome !== "duplicate" &&
+        !event.usableForMetrics
+    ),
+    postStopEvidencePersistedCount: stage("post_stop_evidence_persisted"),
+    postStopCanonicalMutationCount: count(
+      (event) =>
+        event.canonicalAdmission === "post_stop_evidence_only" &&
+        [
+          "persistence_completed",
+          "timeseries_accepted",
+          "derivatives_updated",
+          "derivative_strength_updated",
+          "signal_computed",
+          "signal_persisted",
+          "scanner_projected"
+        ].some((name) =>
+          Boolean(event.stageTimestamps[name as TradeDataCoverageStage])
+        )
     ),
     matchingSelectedTradeCount
   };
@@ -1559,10 +1969,11 @@ function buildEquations(counts: ReturnType<typeof countEvents>) {
       "normalization_terminal",
       counts.normalizationSuccessCount,
       counts.pipelineCompletedCount +
+        counts.evidenceOnlyCount +
         counts.duplicateCount +
         counts.rejectedCount +
         counts.pipelineFailedOrDroppedCount,
-      "normalization_succeeded = pipeline_completed + duplicate + rejected + failed_or_dropped"
+      "normalization_succeeded = pipeline_completed + evidence_only + duplicate + rejected + failed_or_dropped"
     ),
     equation(
       "usable_committed_timeseries",

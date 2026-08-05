@@ -1591,6 +1591,11 @@ describe("@axi/storage", () => {
 
     expect(session.id).toBeGreaterThan(0);
     expect(subscription.id).toBeGreaterThan(0);
+    expect(subscription).toMatchObject({
+      eventCount: 2,
+      postStopEventCount: 0,
+      billableEventCount: 2
+    });
     expect(event.id).toBeGreaterThan(0);
     expect(listMeteredLaunchDataSessions(10)).toHaveLength(1);
     expect(listMeteredLaunchDataSubscriptions(10)).toHaveLength(1);
@@ -1607,6 +1612,21 @@ describe("@axi/storage", () => {
     expect(JSON.stringify(event.payload).toLowerCase()).not.toContain(
       "secret-api-key"
     );
+
+    const coverageSubscription = saveMeteredLaunchDataSubscription({
+      ...createMeteredLaunchDataSubscription(),
+      eventCount: 50,
+      postStopEventCount: 15,
+      billableEventCount: 65,
+      estimatedCostSol: 0.000065,
+      reason: "trade_data_coverage_reconciled"
+    });
+    expect(coverageSubscription).toMatchObject({
+      eventCount: 50,
+      postStopEventCount: 15,
+      billableEventCount: 65,
+      estimatedCostSol: 0.000065
+    });
   });
 
   it("upserts canonical launch buckets and exposes them for replay", async () => {
@@ -2659,6 +2679,7 @@ function createTradeCoverageSession(): TradeDataCoverageSession {
     maxEvents: 50,
     maxRuntimeMs: 90_000,
     maxCostSol: 0.0001,
+    admissionState: "OPEN",
     rawFrameCount: 1,
     parsedFrameCount: 1,
     parseFailureCount: 0,
@@ -2699,10 +2720,33 @@ function createTradeCoverageSession(): TradeDataCoverageSession {
     firstDerivativeAvailable: false,
     secondDerivativeAvailable: false,
     telemetryFailureCount: 0,
+    recognizedMatchingTradeFrameCount: 1,
+    preStopObservedTradeCount: 1,
+    canonicalAdmittedTradeCount: 1,
+    canonicalRejectedTradeCount: 0,
+    postStopObservedTradeCount: 0,
+    postStopEvidencePersistedCount: 0,
+    canonicalBusinessTradeCount: 1,
+    canonicalTimeSeriesSourceEventCount: 1,
+    estimatedBillableMessageCount: 1,
+    postStopCanonicalMutationCount: 0,
+    lifecycleEmbeddedEventCount: 1,
+    lifecyclePersistedEventCount: 1,
+    lifecycleResidual: 0,
+    counterResiduals: {},
+    maximumAbsoluteCounterResidual: 0,
     estimatedCostSol: 0.000001,
     estimatedCostPerEventSol: 0.000001,
     costIsEstimated: true,
     consistencySummary: { passed: 4, failed: 0, unavailable: 2 },
+    normalizationClassificationSummary: {
+      executionIdentityPassed: 1,
+      executionIdentityFailed: 0,
+      expectedCurveSpread: 0,
+      providerPriceMismatch: 0,
+      unitUnproven: 0,
+      unavailable: 0
+    },
     latencyDistributions,
     reconciliation: {
       maximumAbsoluteResidual: 0,
@@ -2761,6 +2805,12 @@ function createTradeCoverageEvent(): TradeDataCoverageEvent {
     normalizedVolumeSol: 1,
     normalizedTokenAmount: 10,
     normalizedPriceSol: 0.1,
+    executionAveragePriceSol: 0.1,
+    curveMarkPriceSol: null,
+    providerReportedPriceSol: null,
+    curveExecutionSpread: null,
+    priceSource: "execution_average",
+    tokenAmountSemantics: "confirmed_ui_trade_delta",
     marketCapSol: null,
     virtualTokenReserves: null,
     virtualSolReserves: null,
@@ -2770,6 +2820,7 @@ function createTradeCoverageEvent(): TradeDataCoverageEvent {
     parserOutcome: "recognized_trade",
     normalizationOutcome: "succeeded",
     pipelineOutcome: "completed",
+    canonicalAdmission: "admitted",
     duplicateKey: null,
     duplicateReason: null,
     rejectionReason: null,
@@ -2777,6 +2828,8 @@ function createTradeCoverageEvent(): TradeDataCoverageEvent {
     failureReason: null,
     postStop: false,
     postStopClassification: "not_applicable",
+    decisionId: "candidate-decision:test:1",
+    decisionVersion: 1,
     stageTimestamps: {
       raw_received: "2026-08-02T00:00:00.000Z",
       pipeline_completed: "2026-08-02T00:00:00.100Z"

@@ -1,10 +1,6 @@
 import { z } from "zod";
 
-export type UiAvailability =
-  | "available"
-  | "unavailable"
-  | "stale"
-  | "unproven";
+export type UiAvailability = "available" | "unavailable" | "stale" | "unproven";
 
 export type UiFieldSource =
   | "token_trade"
@@ -25,17 +21,10 @@ export interface UiField<T> {
 }
 
 export type ScannerSignalV2 =
-  | "DISCOVERY"
-  | "WATCH"
-  | "HOT"
-  | "RIPPING"
-  | "REJECT";
+  "DISCOVERY" | "WATCH" | "HOT" | "RIPPING" | "REJECT";
 
 export type ScannerReadinessV2 =
-  | "discovery"
-  | "observed"
-  | "d1_ready"
-  | "d2_ready";
+  "discovery" | "observed" | "d1_ready" | "d2_ready";
 
 export interface MomentumScannerSummaryV2 {
   mint: string;
@@ -84,6 +73,9 @@ export interface MomentumScannerSummaryV2 {
     confidence: UiField<number>;
   };
   decision: {
+    decisionId?: string | null;
+    decisionVersion?: number | null;
+    sourceEventKey?: string | null;
     signal: ScannerSignalV2;
     score: number;
     topDriver: string | null;

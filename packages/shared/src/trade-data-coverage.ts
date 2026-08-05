@@ -47,6 +47,7 @@ export type TradeDataNormalizationOutcome = z.infer<
 export const TradeDataPipelineOutcomeSchema = z.enum([
   "pending",
   "not_applicable",
+  "evidence_only",
   "completed",
   "duplicate",
   "rejected",
@@ -54,6 +55,27 @@ export const TradeDataPipelineOutcomeSchema = z.enum([
 ]);
 export type TradeDataPipelineOutcome = z.infer<
   typeof TradeDataPipelineOutcomeSchema
+>;
+
+export const TradeDataCanonicalAdmissionSchema = z.enum([
+  "pending",
+  "not_applicable",
+  "admitted",
+  "rejected",
+  "post_stop_evidence_only"
+]);
+export type TradeDataCanonicalAdmission = z.infer<
+  typeof TradeDataCanonicalAdmissionSchema
+>;
+
+export const TradeDataAdmissionStateSchema = z.enum([
+  "OPEN",
+  "STOP_REQUESTED",
+  "EVIDENCE_ONLY",
+  "FINALIZED"
+]);
+export type TradeDataAdmissionState = z.infer<
+  typeof TradeDataAdmissionStateSchema
 >;
 
 export const TradeAmountNormalizationModeSchema = z.enum([
@@ -75,9 +97,13 @@ export const TradeDataCoverageStageSchema = z.enum([
   "unknown_payload",
   "normalization_succeeded",
   "normalization_rejected",
+  "canonical_admitted",
+  "post_stop_evidence_persisted",
   "duplicate_detected",
   "queue_accepted",
   "queue_transaction_started",
+  "database_write_started",
+  "database_committed",
   "queue_committed",
   "queue_failed",
   "persistence_completed",
@@ -87,7 +113,9 @@ export const TradeDataCoverageStageSchema = z.enum([
   "rolling_windows_updated",
   "derivatives_updated",
   "derivative_strength_updated",
+  "signal_computed",
   "signal_updated",
+  "signal_persisted",
   "scanner_projected",
   "broadcast_completed",
   "pipeline_completed",
@@ -101,8 +129,17 @@ export type TradeDataCoverageStage = z.infer<
 export const TradeDataCoverageLatencyKeySchema = z.enum([
   "provider_to_receive",
   "receive_to_normalize",
+  "normalize_to_queue",
+  "queue_wait",
+  "database_write",
   "normalize_to_persist",
   "persist_to_timeseries",
+  "commit_to_timeseries",
+  "timeseries_to_signal_compute",
+  "derivative_to_signal_compute",
+  "signal_compute_to_scanner_projection",
+  "scanner_projection_to_broadcast",
+  "signal_compute_to_signal_persist",
   "timeseries_to_scanner",
   "receive_to_scanner",
   "receive_to_pipeline_complete"
@@ -126,6 +163,9 @@ export type TradeDataCoverageLatencyDistribution = z.infer<
 
 export const TradeDataConsistencyCheckSchema = z.object({
   status: z.enum(["passed", "failed", "unavailable"]),
+  classification: z
+    .enum(["pass", "fail", "unavailable", "expected_spread", "unit_unproven"])
+    .optional(),
   observed: z.number().finite().nullable().optional(),
   expected: z.number().finite().nullable().optional(),
   tolerance: z.number().nonnegative().nullable().optional(),
@@ -220,6 +260,26 @@ export const TradeDataCoverageEventSchema = z.object({
   normalizedVolumeSol: z.number().finite().nullable(),
   normalizedTokenAmount: z.number().finite().nullable(),
   normalizedPriceSol: z.number().finite().nullable(),
+  executionAveragePriceSol: z.number().finite().nullable().default(null),
+  curveMarkPriceSol: z.number().finite().nullable().default(null),
+  providerReportedPriceSol: z.number().finite().nullable().default(null),
+  curveExecutionSpread: z.number().finite().nullable().default(null),
+  priceSource: z
+    .enum([
+      "execution_average",
+      "provider_reported",
+      "curve_mark",
+      "unavailable"
+    ])
+    .default("unavailable"),
+  tokenAmountSemantics: z
+    .enum([
+      "confirmed_ui_trade_delta",
+      "confirmed_raw_trade_delta",
+      "balance_not_delta",
+      "unproven"
+    ])
+    .default("unproven"),
   marketCapSol: z.number().finite().nullable(),
   virtualTokenReserves: z.number().finite().nullable(),
   virtualSolReserves: z.number().finite().nullable(),
@@ -229,6 +289,7 @@ export const TradeDataCoverageEventSchema = z.object({
   parserOutcome: TradeDataParserOutcomeSchema,
   normalizationOutcome: TradeDataNormalizationOutcomeSchema,
   pipelineOutcome: TradeDataPipelineOutcomeSchema,
+  canonicalAdmission: TradeDataCanonicalAdmissionSchema.default("pending"),
   duplicateKey: z.string().min(1).nullable(),
   duplicateReason: z.string().min(1).nullable(),
   rejectionReason: z.string().min(1).nullable(),
@@ -242,6 +303,8 @@ export const TradeDataCoverageEventSchema = z.object({
       "unexpected_after_unsubscribe"
     ])
     .default("not_applicable"),
+  decisionId: z.string().min(1).nullable().default(null),
+  decisionVersion: z.number().int().positive().nullable().default(null),
   stageTimestamps: stageTimestampRecordSchema,
   stageLatenciesMs: stageLatencyRecordSchema,
   consistencyChecks: z.record(z.string(), TradeDataConsistencyCheckSchema),
@@ -278,6 +341,7 @@ export const TradeDataCoverageSessionSchema = z.object({
   maxEvents: z.number().int().positive(),
   maxRuntimeMs: z.number().int().positive(),
   maxCostSol: z.number().positive(),
+  admissionState: TradeDataAdmissionStateSchema.default("OPEN"),
   rawFrameCount: nonnegativeCount,
   parsedFrameCount: nonnegativeCount,
   parseFailureCount: nonnegativeCount,
@@ -318,6 +382,21 @@ export const TradeDataCoverageSessionSchema = z.object({
   firstDerivativeAvailable: z.boolean(),
   secondDerivativeAvailable: z.boolean(),
   telemetryFailureCount: nonnegativeCount,
+  recognizedMatchingTradeFrameCount: nonnegativeCount.default(0),
+  preStopObservedTradeCount: nonnegativeCount.default(0),
+  canonicalAdmittedTradeCount: nonnegativeCount.default(0),
+  canonicalRejectedTradeCount: nonnegativeCount.default(0),
+  postStopObservedTradeCount: nonnegativeCount.default(0),
+  postStopEvidencePersistedCount: nonnegativeCount.default(0),
+  canonicalBusinessTradeCount: nonnegativeCount.default(0),
+  canonicalTimeSeriesSourceEventCount: nonnegativeCount.default(0),
+  estimatedBillableMessageCount: nonnegativeCount.default(0),
+  postStopCanonicalMutationCount: nonnegativeCount.default(0),
+  lifecycleEmbeddedEventCount: nonnegativeCount.default(0),
+  lifecyclePersistedEventCount: nonnegativeCount.default(0),
+  lifecycleResidual: z.number().int().default(0),
+  counterResiduals: z.record(z.string(), z.number().int()).default({}),
+  maximumAbsoluteCounterResidual: nonnegativeCount.default(0),
   estimatedCostSol: z.number().nonnegative(),
   estimatedCostPerEventSol: z.number().nonnegative(),
   costIsEstimated: z.literal(true),
@@ -326,6 +405,23 @@ export const TradeDataCoverageSessionSchema = z.object({
     failed: nonnegativeCount,
     unavailable: nonnegativeCount
   }),
+  normalizationClassificationSummary: z
+    .object({
+      executionIdentityPassed: nonnegativeCount,
+      executionIdentityFailed: nonnegativeCount,
+      expectedCurveSpread: nonnegativeCount,
+      providerPriceMismatch: nonnegativeCount,
+      unitUnproven: nonnegativeCount,
+      unavailable: nonnegativeCount
+    })
+    .default({
+      executionIdentityPassed: 0,
+      executionIdentityFailed: 0,
+      expectedCurveSpread: 0,
+      providerPriceMismatch: 0,
+      unitUnproven: 0,
+      unavailable: 0
+    }),
   latencyDistributions: z.record(
     TradeDataCoverageLatencyKeySchema,
     TradeDataCoverageLatencyDistributionSchema

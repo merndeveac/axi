@@ -35,7 +35,9 @@ describe("TradeDataCoverageService", () => {
     first.event.tradeCoverage = first.result.metadata ?? undefined;
     service.markQueueAccepted(first.event);
     service.markQueueTransactionStarted(first.event);
+    service.markDatabaseWriteStarted(first.event);
     service.markPersistenceCompleted(first.event);
+    service.markDatabaseCommitted(first.event);
     service.markTimeseries(first.event, {
       action: "accepted",
       bucketUpdated: true,
@@ -47,9 +49,15 @@ describe("TradeDataCoverageService", () => {
       secondDerivativeAvailable: false
     });
     service.markDerivativeStrengthUpdated(first.event);
-    service.markSignalUpdated(first.event);
-    service.markScannerProjected(first.event);
+    const decision = {
+      decisionId: "candidate-decision:test:1",
+      decisionVersion: 1,
+      sourceEventKey: first.result.metadata?.sourceEventKey ?? "missing"
+    };
+    service.markSignalComputed(first.event, decision);
+    service.markScannerProjected(first.event, decision);
     service.markBroadcastCompleted(first.event);
+    service.markSignalPersisted(first.event, decision);
     service.markQueueCommittedAndPipelineCompleted([first.event]);
 
     const duplicate = observeTrade(
@@ -120,6 +128,34 @@ describe("TradeDataCoverageService", () => {
     });
   });
 
+  it("fails a genuinely inconsistent execution identity but not curve spread", () => {
+    const harness = createHarness();
+    harness.service.begin({
+      sessionId: "execution-identity",
+      selectedMint: mint
+    });
+    const inconsistent = trade();
+    inconsistent.executionAveragePriceSol = 0.2;
+    inconsistent.priceSol = 0.2;
+    inconsistent.curveMarkPriceSol = 0.05;
+    observeTrade(
+      harness.service.createFeedInstrumentation(),
+      "inconsistent-execution",
+      inconsistent
+    );
+    expect(harness.events[0]?.consistencyChecks).toMatchObject({
+      price_volume_consistency: {
+        status: "failed",
+        reasonCode: "PRICE_VOLUME_IDENTITY_FAILED"
+      },
+      curve_price_consistency: {
+        status: "passed",
+        classification: "expected_spread",
+        reasonCode: "CURVE_MARK_EXECUTION_SPREAD"
+      }
+    });
+  });
+
   it("requests a single stop at the event cap and finalizes idempotently", () => {
     const onStop = vi.fn();
     const harness = createHarness();
@@ -147,6 +183,45 @@ describe("TradeDataCoverageService", () => {
     );
   });
 
+  it("persists the parent before track_requested and retries lifecycle idempotently", () => {
+    const harness = createHarness();
+    harness.service.begin({ sessionId: "parent-first", selectedMint: mint });
+    expect(harness.persistenceOrder.slice(0, 2)).toEqual([
+      "session:parent-first",
+      "lifecycle:track_requested"
+    ]);
+    const instrumentation = harness.service.createFeedInstrumentation();
+    const subscription = {
+      eventType: "subscribe_sent" as const,
+      mint,
+      timestamp: "2026-08-02T00:00:00.100Z",
+      safeReason: null,
+      reasonCodes: ["TEST_SUBSCRIBE_SENT"]
+    };
+    instrumentation.onSubscriptionEvent(subscription);
+    instrumentation.onSubscriptionEvent(subscription);
+    expect(
+      harness.subscriptions.filter(
+        (event) => event.eventType === "subscribe_sent"
+      )
+    ).toHaveLength(1);
+  });
+
+  it("records typed lifecycle persistence failure evidence without false reconciliation", () => {
+    const harness = createHarness({ failLifecyclePersistence: true });
+    const summary = harness.service.begin({
+      sessionId: "lifecycle-foreign-key-failure",
+      selectedMint: mint
+    });
+    expect(summary.telemetryFailureCount).toBe(1);
+    expect(summary.lifecycleEmbeddedEventCount).toBe(1);
+    expect(summary.lifecyclePersistedEventCount).toBe(0);
+    expect(summary.lifecycleResidual).toBe(1);
+    expect(summary.localReconciliationStatus).toBe(
+      "TRADE_DATA_LOCAL_RECONCILIATION_FAILED"
+    );
+  });
+
   it("enforces the bounded runtime cap with an injected clock", () => {
     let now = new Date("2026-08-02T00:00:00.000Z");
     const onStop = vi.fn();
@@ -162,6 +237,28 @@ describe("TradeDataCoverageService", () => {
     now = new Date("2026-08-02T00:00:01.000Z");
     expect(harness.service.enforceRuntimeCap()).toBe(true);
     expect(onStop).toHaveBeenCalledWith("MAX_RUNTIME");
+  });
+
+  it("issues the hard-cost shutdown callback once during evidence-only grace", () => {
+    const onHardCostCapReached = vi.fn();
+    const harness = createHarness();
+    harness.service.begin({
+      sessionId: "hard-cost-grace",
+      selectedMint: mint,
+      maxEvents: 1,
+      maxCostSol: 0.000002,
+      onHardCostCapReached
+    });
+    const instrumentation = harness.service.createFeedInstrumentation();
+    observeTrade(instrumentation, "cost-1", trade());
+    observeTrade(instrumentation, "cost-2", trade("2026-08-02T00:00:01.000Z"));
+    observeTrade(instrumentation, "cost-3", trade("2026-08-02T00:00:02.000Z"));
+    expect(onHardCostCapReached).toHaveBeenCalledOnce();
+    expect(harness.service.getSummary()).toMatchObject({
+      canonicalAdmittedTradeCount: 1,
+      postStopObservedTradeCount: 2,
+      estimatedBillableMessageCount: 3
+    });
   });
 
   it("invalidates reconciliation when telemetry persistence fails", () => {
@@ -222,13 +319,19 @@ describe("assessTradeTransaction", () => {
 });
 
 function createHarness(
-  options: { failEventPersistence?: boolean; now?: () => Date } = {}
+  options: {
+    failEventPersistence?: boolean;
+    failLifecyclePersistence?: boolean;
+    now?: () => Date;
+  } = {}
 ) {
   const sessions = new Map<string, TradeDataCoverageSession>();
   const events: TradeDataCoverageEvent[] = [];
   const subscriptions: TradeDataSubscriptionEvent[] = [];
+  const persistenceOrder: string[] = [];
   return {
     events,
+    persistenceOrder,
     subscriptions,
     service: createTradeDataCoverageService({
       provider: "pumpportal",
@@ -236,7 +339,10 @@ function createHarness(
       estimatedCostPerEventSol: 0.000001,
       ...(options.now ? { now: options.now } : {}),
       persistence: {
-        saveSession: (session) => sessions.set(session.sessionId, session),
+        saveSession: (session) => {
+          persistenceOrder.push(`session:${session.sessionId}`);
+          sessions.set(session.sessionId, session);
+        },
         saveEvent: (event) => {
           if (options.failEventPersistence) {
             throw new Error("SQLITE_BUSY");
@@ -249,7 +355,17 @@ function createHarness(
           if (index >= 0) events[index] = event;
           else events.push(event);
         },
-        saveSubscriptionEvent: (event) => subscriptions.push(event),
+        saveSubscriptionEvent: (event) => {
+          if (options.failLifecyclePersistence) {
+            throw new Error("SQLITE_CONSTRAINT_FOREIGNKEY");
+          }
+          persistenceOrder.push(`lifecycle:${event.eventType}`);
+          const index = subscriptions.findIndex(
+            (item) => item.subscriptionEventId === event.subscriptionEventId
+          );
+          if (index >= 0) subscriptions[index] = event;
+          else subscriptions.push(event);
+        },
         findEventBySourceKey: (sessionId, key) =>
           events.find(
             (event) =>

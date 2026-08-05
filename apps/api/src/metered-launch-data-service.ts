@@ -66,6 +66,8 @@ export type MeteredLaunchDataTrackedMint = {
   status: "tracking" | "unsubscribed";
   reason: string;
   eventCount: number;
+  postStopEventCount: number;
+  billableEventCount: number;
   estimatedCostSol: number;
   subscribedAt: string | null;
   unsubscribedAt: string | null;
@@ -877,6 +879,8 @@ export class MeteredLaunchDataService {
       status: "tracking",
       reason,
       eventCount: existing?.eventCount ?? 0,
+      postStopEventCount: existing?.postStopEventCount ?? 0,
+      billableEventCount: existing?.billableEventCount ?? 0,
       subscribedAt,
       unsubscribedAt: null,
       initialReviewAt,
@@ -954,12 +958,17 @@ export class MeteredLaunchDataService {
 
     const tracked = this.tracked.get(event.mint);
 
-    if (!tracked || tracked.status !== "tracking") {
+    const coverageAdmission = event.tradeCoverage?.canonicalAdmission;
+    if (
+      !tracked ||
+      (tracked.status !== "tracking" && coverageAdmission !== "admitted")
+    ) {
       this.enforceBillableSessionCaps();
       return undefined;
     }
 
     tracked.eventCount += 1;
+    tracked.billableEventCount += 1;
     tracked.latestTradeAt = event.timestamp;
     tracked.latestPriceSol = event.priceSol ?? tracked.latestPriceSol;
     tracked.latestVolumeSol = event.volumeSol ?? tracked.latestVolumeSol;
@@ -995,6 +1004,7 @@ export class MeteredLaunchDataService {
     this.persistSubscription(tracked);
 
     const reachedPerMintCap =
+      tracked.status === "tracking" &&
       tracked.eventCount >= this.config.maxEventsPerMint;
 
     if (reachedPerMintCap) {
@@ -1012,6 +1022,58 @@ export class MeteredLaunchDataService {
     }
 
     return this.getTrackedMint(event.mint) ?? undefined;
+  }
+
+  reconcileTradeCoverageCounters(input: {
+    mint: string;
+    coverageStartedAt: string;
+    canonicalAdmittedTradeCount: number;
+    postStopObservedTradeCount: number;
+    estimatedBillableMessageCount: number;
+  }): MeteredLaunchDataTrackedMint | null {
+    const state = this.tracked.get(input.mint.trim());
+    if (!state) {
+      return null;
+    }
+    state.eventCount = Math.max(
+      state.eventCount,
+      Math.floor(input.canonicalAdmittedTradeCount)
+    );
+    state.postStopEventCount = Math.max(
+      state.postStopEventCount,
+      Math.floor(input.postStopObservedTradeCount)
+    );
+    state.billableEventCount = Math.max(
+      state.billableEventCount,
+      Math.floor(input.estimatedBillableMessageCount)
+    );
+    this.totalEventsThisSession = Math.max(
+      this.totalEventsThisSession,
+      state.billableEventCount
+    );
+    state.reasonCodes = unique([
+      ...state.reasonCodes,
+      "METERED_TRADE_COVERAGE_COUNTERS_RECONCILED"
+    ]);
+    this.persistSubscription(state);
+    const reconciledAt = new Date().toISOString();
+    saveMeteredLaunchDataSession({
+      status: this.runtimeStopped ? "stopped" : "running",
+      mode: this.config.mode,
+      trackedMintCount: this.getTrackedMints().length,
+      totalEvents: this.getBillableEventCount(),
+      estimatedCostSol: this.getEstimatedCostSol(),
+      budgetReached: this.isSessionBudgetReached(),
+      reasonCodes: unique([
+        ...this.getReasonCodes(),
+        "METERED_TRADE_COVERAGE_COUNTERS_RECONCILED"
+      ]),
+      payload: this.getStatus(),
+      startedAt: input.coverageStartedAt,
+      stoppedAt: this.runtimeStopped ? reconciledAt : null,
+      createdAt: reconciledAt
+    });
+    return this.toTrackedMint(state);
   }
 
   getStatus(): MeteredLaunchDataStatus {
@@ -1717,7 +1779,9 @@ export class MeteredLaunchDataService {
       status: state.status,
       reason: state.reason,
       eventCount: state.eventCount,
-      estimatedCostSol: this.getEstimatedCostSol(state.eventCount),
+      postStopEventCount: state.postStopEventCount,
+      billableEventCount: state.billableEventCount,
+      estimatedCostSol: this.getEstimatedCostSol(state.billableEventCount),
       subscribedAt: state.subscribedAt,
       unsubscribedAt: state.unsubscribedAt,
       reasonCodes: state.reasonCodes,
@@ -1956,7 +2020,9 @@ export class MeteredLaunchDataService {
       status: state.status,
       reason: state.reason,
       eventCount: state.eventCount,
-      estimatedCostSol: this.getEstimatedCostSol(state.eventCount),
+      postStopEventCount: state.postStopEventCount,
+      billableEventCount: state.billableEventCount,
+      estimatedCostSol: this.getEstimatedCostSol(state.billableEventCount),
       subscribedAt: state.subscribedAt,
       unsubscribedAt: state.unsubscribedAt,
       initialReviewAt: state.initialReviewAt,

@@ -278,6 +278,9 @@ export function projectMomentumScannerSummaryV2(
       })
     },
     decision: {
+      decisionId: row.decisionId ?? null,
+      decisionVersion: row.decisionVersion ?? null,
+      sourceEventKey: row.decisionSourceEventKey ?? null,
       signal: row.signalDisplay.label,
       score: row.signalDisplay.score,
       topDriver: operatorEvidenceLabel(row.signalDisplay.topDriver),

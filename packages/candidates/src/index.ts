@@ -155,13 +155,18 @@ export class CandidateLifecycleEngine {
     state.lastUpdatedAt = metrics.lastUpdatedAt;
 
     if (metrics.sampleCount > 0 && state.lifecycleState === "new") {
-      state.lifecycleState = metrics.insufficientMetrics ? "warming" : "watching";
+      state.lifecycleState = metrics.insufficientMetrics
+        ? "warming"
+        : "watching";
     }
 
     return state;
   }
 
-  updateRisk(mint: string, riskSnapshot: RiskSnapshot): CandidateState | undefined {
+  updateRisk(
+    mint: string,
+    riskSnapshot: RiskSnapshot
+  ): CandidateState | undefined {
     const state = this.candidates.get(mint);
 
     if (!state) {
@@ -332,7 +337,10 @@ export class CandidateLifecycleEngine {
     return decision;
   }
 
-  evaluateCandidate(mint: string): CandidateDecision | undefined {
+  evaluateCandidate(
+    mint: string,
+    evidence: { sourceEventKey?: string } = {}
+  ): CandidateDecision | undefined {
     const state = this.candidates.get(mint);
 
     if (!state) {
@@ -340,6 +348,11 @@ export class CandidateLifecycleEngine {
     }
 
     const decision = this.createDecision(state);
+    decision.decisionVersion = (state.latestDecision?.decisionVersion ?? 0) + 1;
+    decision.decisionId = `candidate-decision:${state.mint}:${decision.decisionVersion}`;
+    if (evidence.sourceEventKey) {
+      decision.sourceEventKey = evidence.sourceEventKey;
+    }
     state.latestDecision = decision;
     state.decisionHistory = [decision, ...state.decisionHistory].slice(
       0,
@@ -460,8 +473,10 @@ export class CandidateLifecycleEngine {
       action = metricsSummary.sampleCount > 0 ? "WATCH" : "IGNORE";
       lifecycleReasonCodes.push("INSUFFICIENT_TRADE_METRICS");
     } else if (
-      compareRiskLevel(riskSummary.riskLevel, this.config.maxRiskLevelForPaperBuyReady) >
-      0
+      compareRiskLevel(
+        riskSummary.riskLevel,
+        this.config.maxRiskLevelForPaperBuyReady
+      ) > 0
     ) {
       lifecycleState = "watching";
       action = "WATCH";
@@ -564,7 +579,8 @@ export class CandidateLifecycleEngine {
     }
 
     if (state.onChainFreezeAuthorityActive !== undefined) {
-      decision.onChainFreezeAuthorityActive = state.onChainFreezeAuthorityActive;
+      decision.onChainFreezeAuthorityActive =
+        state.onChainFreezeAuthorityActive;
     }
 
     if (state.onChainSupplyUi !== undefined) {
@@ -776,10 +792,7 @@ function getFirstSeenAt(event: FeedEvent): string {
     : event.timestamp;
 }
 
-function getEventAgeSeconds(
-  event: FeedEvent,
-  state?: CandidateState
-): number {
+function getEventAgeSeconds(event: FeedEvent, state?: CandidateState): number {
   if (event.type === "token_created") {
     return event.candidate.ageSeconds;
   }
@@ -789,7 +802,9 @@ function getEventAgeSeconds(
   }
 
   const ageMillis = Date.parse(event.timestamp) - Date.parse(state.firstSeenAt);
-  return Number.isFinite(ageMillis) ? Math.max(0, ageMillis / 1000) : state.ageSeconds;
+  return Number.isFinite(ageMillis)
+    ? Math.max(0, ageMillis / 1000)
+    : state.ageSeconds;
 }
 
 function compareRiskLevel(left: RiskLevel, right: RiskLevel): number {

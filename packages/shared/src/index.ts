@@ -492,6 +492,9 @@ export const CandidateRiskSummarySchema = z.object({
 export type CandidateRiskSummary = z.infer<typeof CandidateRiskSummarySchema>;
 
 export const CandidateDecisionSchema = z.object({
+  decisionId: z.string().min(1).optional(),
+  decisionVersion: z.number().int().positive().optional(),
+  sourceEventKey: z.string().min(1).optional(),
   mint: z.string().min(32),
   symbol: z.string().min(1).optional(),
   name: z.string().min(1).optional(),
@@ -534,6 +537,9 @@ export const CandidateDecisionSchema = z.object({
 export type CandidateDecision = z.infer<typeof CandidateDecisionSchema>;
 
 export const OverlaySignalSchema = z.object({
+  decisionId: z.string().min(1).optional(),
+  decisionVersion: z.number().int().positive().optional(),
+  sourceEventKey: z.string().min(1).optional(),
   mint: z.string().min(32),
   symbol: z.string().min(1),
   name: z.string().min(1).optional(),
@@ -884,6 +890,9 @@ export type MomentumRowDataQuality = {
 };
 
 export type LiveTokenCardViewModel = {
+  decisionId?: string | null;
+  decisionVersion?: number | null;
+  decisionSourceEventKey?: string | null;
   mint: string;
   shortMint: string;
   name: string | null;
@@ -1182,6 +1191,9 @@ export type MomentumRowData = {
 };
 
 export type MomentumScannerRow = {
+  decisionId?: string | null;
+  decisionVersion?: number | null;
+  decisionSourceEventKey?: string | null;
   mint: string;
   shortMint: string;
   title: string;

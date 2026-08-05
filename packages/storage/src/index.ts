@@ -858,6 +858,8 @@ export type MeteredLaunchDataSubscriptionInput = {
   status: string;
   reason: string;
   eventCount: number;
+  postStopEventCount?: number;
+  billableEventCount?: number;
   estimatedCostSol: number;
   subscribedAt?: string | null;
   unsubscribedAt?: string | null;
@@ -868,12 +870,18 @@ export type MeteredLaunchDataSubscriptionInput = {
 
 export type StoredMeteredLaunchDataSubscription = Omit<
   MeteredLaunchDataSubscriptionInput,
-  "createdAt" | "subscribedAt" | "unsubscribedAt"
+  | "createdAt"
+  | "subscribedAt"
+  | "unsubscribedAt"
+  | "postStopEventCount"
+  | "billableEventCount"
 > & {
   id: number;
   createdAt: string;
   subscribedAt: string | null;
   unsubscribedAt: string | null;
+  postStopEventCount: number;
+  billableEventCount: number;
 };
 
 export type MeteredLaunchDataEventInput = {
@@ -1425,6 +1433,8 @@ type MeteredLaunchDataSubscriptionRow = {
   status: string;
   reason: string;
   event_count: number;
+  post_stop_event_count?: number;
+  billable_event_count?: number;
   estimated_cost_sol: number;
   subscribed_at: string | null;
   unsubscribed_at: string | null;
@@ -2192,6 +2202,8 @@ const meteredLaunchDataSubscriptionInputSchema = z.object({
   status: z.string().min(1),
   reason: z.string().min(1),
   eventCount: z.number().int().nonnegative(),
+  postStopEventCount: z.number().int().nonnegative().default(0),
+  billableEventCount: z.number().int().nonnegative().optional(),
   estimatedCostSol: z.number().nonnegative(),
   subscribedAt: z.string().datetime().nullable().optional(),
   unsubscribedAt: z.string().datetime().nullable().optional(),
@@ -3909,6 +3921,22 @@ function extractTradeCoverageCounters(
     scannerProjectedCount: session.scannerProjectedCount,
     broadcastCompletedCount: session.broadcastCompletedCount,
     usableTradeCount: session.usableTradeCount,
+    recognizedMatchingTradeFrameCount:
+      session.recognizedMatchingTradeFrameCount,
+    preStopObservedTradeCount: session.preStopObservedTradeCount,
+    canonicalAdmittedTradeCount: session.canonicalAdmittedTradeCount,
+    canonicalRejectedTradeCount: session.canonicalRejectedTradeCount,
+    postStopObservedTradeCount: session.postStopObservedTradeCount,
+    postStopEvidencePersistedCount: session.postStopEvidencePersistedCount,
+    canonicalBusinessTradeCount: session.canonicalBusinessTradeCount,
+    canonicalTimeSeriesSourceEventCount:
+      session.canonicalTimeSeriesSourceEventCount,
+    estimatedBillableMessageCount: session.estimatedBillableMessageCount,
+    postStopCanonicalMutationCount: session.postStopCanonicalMutationCount,
+    lifecycleEmbeddedEventCount: session.lifecycleEmbeddedEventCount,
+    lifecyclePersistedEventCount: session.lifecyclePersistedEventCount,
+    lifecycleResidual: session.lifecycleResidual,
+    maximumAbsoluteCounterResidual: session.maximumAbsoluteCounterResidual,
     firstDerivativeAvailable: session.firstDerivativeAvailable,
     secondDerivativeAvailable: session.secondDerivativeAvailable
   };
@@ -5088,6 +5116,8 @@ export function saveMeteredLaunchDataSubscription(
 ): StoredMeteredLaunchDataSubscription {
   const parsed = meteredLaunchDataSubscriptionInputSchema.parse(subscription);
   const createdAt = parsed.createdAt ?? new Date().toISOString();
+  const billableEventCount =
+    parsed.billableEventCount ?? parsed.eventCount + parsed.postStopEventCount;
   const payload = sanitizeStoragePayload(parsed.payload);
   const db = getDb();
 
@@ -5098,6 +5128,8 @@ export function saveMeteredLaunchDataSubscription(
         status,
         reason,
         event_count,
+        post_stop_event_count,
+        billable_event_count,
         estimated_cost_sol,
         subscribed_at,
         unsubscribed_at,
@@ -5105,13 +5137,15 @@ export function saveMeteredLaunchDataSubscription(
         payload_json,
         created_at
       )
-      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       parsed.mint,
       parsed.status,
       parsed.reason,
       parsed.eventCount,
+      parsed.postStopEventCount,
+      billableEventCount,
       parsed.estimatedCostSol,
       parsed.subscribedAt ?? null,
       parsed.unsubscribedAt ?? null,
@@ -5126,6 +5160,8 @@ export function saveMeteredLaunchDataSubscription(
     status: parsed.status,
     reason: parsed.reason,
     eventCount: parsed.eventCount,
+    postStopEventCount: parsed.postStopEventCount,
+    billableEventCount,
     estimatedCostSol: parsed.estimatedCostSol,
     subscribedAt: parsed.subscribedAt ?? null,
     unsubscribedAt: parsed.unsubscribedAt ?? null,
@@ -10498,6 +10534,22 @@ function runMigrations(db: DatabaseSync): void {
        values (?, ?, ?)`
     ).run(26, "trade_data_coverage_validation", new Date().toISOString());
   }
+
+  if (!hasMigration(db, 27)) {
+    db.exec(`
+      alter table metered_launch_data_subscriptions
+        add column post_stop_event_count integer not null default 0;
+      alter table metered_launch_data_subscriptions
+        add column billable_event_count integer not null default 0;
+      update metered_launch_data_subscriptions
+        set billable_event_count = event_count
+        where billable_event_count = 0 and event_count > 0;
+    `);
+    db.prepare(
+      `insert into storage_migrations (id, name, applied_at)
+       values (?, ?, ?)`
+    ).run(27, "trade_coverage_counter_semantics", new Date().toISOString());
+  }
 }
 
 function hasMigration(db: DatabaseSync, id: number): boolean {
@@ -11003,6 +11055,8 @@ function mapMeteredLaunchDataSubscriptionRow(
     status: row.status,
     reason: row.reason,
     eventCount: row.event_count,
+    postStopEventCount: row.post_stop_event_count ?? 0,
+    billableEventCount: row.billable_event_count ?? row.event_count,
     estimatedCostSol: row.estimated_cost_sol,
     subscribedAt: row.subscribed_at,
     unsubscribedAt: row.unsubscribed_at,

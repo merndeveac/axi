@@ -509,6 +509,75 @@ describe("PumpPortalFeedProvider", () => {
     expect(event?.usableForMetrics).toBe(true);
   });
 
+  it("keeps execution average, provider price, and curve mark separate", () => {
+    const event = normalizePumpPortalTokenTradePayload({
+      mint: "So11111111111111111111111111111111111111112",
+      signature: "semantic-price-fixture",
+      solAmount: 2,
+      tokenAmount: 100,
+      priceSol: 0.021,
+      vSolInBondingCurve: 30,
+      vTokensInBondingCurve: 2_000,
+      txType: "buy"
+    });
+
+    expect(event).toMatchObject({
+      tradeVolumeSol: 2,
+      tradedTokenAmountUi: 100,
+      executionAveragePriceSol: 0.02,
+      providerReportedPriceSol: 0.021,
+      curveMarkPriceSol: 0.015,
+      priceSol: 0.02,
+      priceSource: "execution_average",
+      tokenAmountSemantics: "confirmed_ui_trade_delta",
+      usableForMetrics: true
+    });
+    expect(event?.curveExecutionSpread).toBeCloseTo(1 / 3, 12);
+  });
+
+  it("never treats a post-trade balance as traded token amount", () => {
+    const event = normalizePumpPortalTokenTradePayload({
+      mint: "So11111111111111111111111111111111111111112",
+      signature: "balance-only-fixture",
+      solAmount: 2,
+      newTokenBalance: 1_000_000,
+      txType: "buy"
+    });
+
+    expect(event).toMatchObject({
+      tokenAmountSemantics: "balance_not_delta",
+      amountNormalizationMode: "unknown",
+      priceSol: null,
+      usableForMetrics: false
+    });
+    expect(event?.tokenAmount).toBeUndefined();
+    expect(event?.reasonCodes).toContain("TOKEN_AMOUNT_IS_BALANCE_NOT_DELTA");
+  });
+
+  it.each([
+    { solAmount: 0, tokenAmount: 10 },
+    { solAmount: -1, tokenAmount: 10 },
+    { solAmount: 1, tokenAmount: 0 },
+    { solAmount: 1, tokenAmount: -10 },
+    { solAmount: Number.POSITIVE_INFINITY, tokenAmount: 10 }
+  ])("does not assign high confidence to invalid amounts %#", (amounts) => {
+    const event = normalizePumpPortalTokenTradePayload({
+      mint: "So11111111111111111111111111111111111111112",
+      signature: "invalid-amount-fixture",
+      txType: "buy",
+      ...amounts
+    });
+
+    expect(event?.usableForMetrics).toBe(false);
+    expect(event?.priceSol == null || Number.isFinite(event.priceSol)).toBe(
+      true
+    );
+    expect(event?.volumeSol == null || Number.isFinite(event.volumeSol)).toBe(
+      true
+    );
+    expect(event?.confidence).not.toBe("high");
+  });
+
   it("normalizes raw token amounts only when decimals are known", () => {
     const normalized = normalizePumpPortalTokenTradePayload({
       mint: "So11111111111111111111111111111111111111112",
@@ -593,6 +662,7 @@ describe("PumpPortalFeedProvider", () => {
               sessionId: "session",
               correlationId: observation.correlationId,
               sourceEventKey: `key:${observation.correlationId}`,
+              canonicalAdmission: "admitted",
               receivedAtMonotonicMs: observation.receivedAtMonotonicMs,
               normalizedAtMonotonicMs: observation.normalizedAtMonotonicMs
             }

@@ -51,6 +51,7 @@ export type TradeDataCoverageFeedMetadata = {
   sessionId: string;
   correlationId: string;
   sourceEventKey: string;
+  canonicalAdmission: "admitted";
   receivedAtMonotonicMs: number;
   normalizedAtMonotonicMs: number;
 };
@@ -73,6 +74,19 @@ export type TokenTradeEvent = NormalizedFeedMetadata & {
   volumeUsd: number | null;
   priceSol?: number | null;
   volumeSol?: number | null;
+  tradeVolumeSol?: number | null;
+  tradedTokenAmountUi?: number | null;
+  executionAveragePriceSol?: number | null;
+  curveMarkPriceSol?: number | null;
+  providerReportedPriceSol?: number | null;
+  curveExecutionSpread?: number | null;
+  priceSource?:
+    "execution_average" | "provider_reported" | "curve_mark" | "unavailable";
+  tokenAmountSemantics?:
+    | "confirmed_ui_trade_delta"
+    | "confirmed_raw_trade_delta"
+    | "balance_not_delta"
+    | "unproven";
   priceQuote?: number | null;
   volumeQuote?: number | null;
   quoteAsset?: QuoteAsset;
@@ -2329,14 +2343,42 @@ export function normalizePumpPortalTokenTradePayload(
   const rawTokenAmount = tokenAmountObservation.rawAmount;
   const tokenAmount = tokenAmountObservation.normalizedAmount;
   const amountNormalizationMode = tokenAmountObservation.mode;
-  const priceSol =
+  const tradeVolumeSol = solAmount !== null && solAmount > 0 ? solAmount : null;
+  const executionAveragePriceSol =
     solAmount !== null &&
     tokenAmount !== null &&
     solAmount > 0 &&
     tokenAmount > 0
-      ? roundMetric(solAmount / tokenAmount)
+      ? solAmount / tokenAmount
       : null;
-  const volumeSol = solAmount !== null && solAmount > 0 ? solAmount : null;
+  const providerReportedPriceSol = readNumber(payload, [
+    "priceSol",
+    "tokenPriceSol",
+    "executionPriceSol"
+  ]);
+  const virtualTokenReserves = readNumber(payload, [
+    "vTokensInBondingCurve",
+    "virtualTokenReserves",
+    "virtual_token_reserves"
+  ]);
+  const virtualSolReserves = readNumber(payload, [
+    "vSolInBondingCurve",
+    "virtualSolReserves",
+    "virtual_sol_reserves"
+  ]);
+  const curveMarkPriceSol =
+    virtualSolReserves !== null &&
+    virtualTokenReserves !== null &&
+    virtualSolReserves > 0 &&
+    virtualTokenReserves > 0
+      ? virtualSolReserves / virtualTokenReserves
+      : null;
+  const curveExecutionSpread =
+    executionAveragePriceSol !== null && curveMarkPriceSol !== null
+      ? (executionAveragePriceSol - curveMarkPriceSol) / curveMarkPriceSol
+      : null;
+  const priceSol = executionAveragePriceSol;
+  const volumeSol = tradeVolumeSol;
   const validMint = rawMint !== undefined && isValidSolanaMint(rawMint);
   const usableForMetrics =
     validMint &&
@@ -2358,7 +2400,8 @@ export function normalizePumpPortalTokenTradePayload(
     usableForMetrics,
     validMint,
     volumeSol,
-    amountNormalizationMode
+    amountNormalizationMode,
+    tokenAmountSemantics: tokenAmountObservation.semantics
   });
   const providerTimestamp = readTimestamp(payload) ?? null;
   const timestamp =
@@ -2390,16 +2433,6 @@ export function normalizePumpPortalTokenTradePayload(
   const discord = readString(payload, ["discord"]);
   const eventIndex = readEventIndex(payload);
   const marketCapSol = readNumber(payload, ["marketCapSol", "market_cap_sol"]);
-  const virtualTokenReserves = readNumber(payload, [
-    "vTokensInBondingCurve",
-    "virtualTokenReserves",
-    "virtual_token_reserves"
-  ]);
-  const virtualSolReserves = readNumber(payload, [
-    "vSolInBondingCurve",
-    "virtualSolReserves",
-    "virtual_sol_reserves"
-  ]);
   const metrics = createPumpPortalTradeMetrics({
     priceSol,
     reasonCodes,
@@ -2424,6 +2457,21 @@ export function normalizePumpPortalTokenTradePayload(
     volumeUsd: null,
     priceSol,
     volumeSol,
+    tradeVolumeSol,
+    tradedTokenAmountUi: tokenAmount,
+    executionAveragePriceSol,
+    curveMarkPriceSol,
+    providerReportedPriceSol,
+    curveExecutionSpread,
+    priceSource:
+      executionAveragePriceSol !== null
+        ? "execution_average"
+        : providerReportedPriceSol !== null
+          ? "provider_reported"
+          : curveMarkPriceSol !== null
+            ? "curve_mark"
+            : "unavailable",
+    tokenAmountSemantics: tokenAmountObservation.semantics,
     priceQuote: priceSol,
     volumeQuote: volumeSol,
     quoteAsset: "SOL",
@@ -2746,6 +2794,11 @@ function readPumpPortalTokenAmount(payload: Record<string, unknown>): {
   rawAmount: number | null;
   normalizedAmount: number | null;
   mode: TradeAmountNormalizationMode;
+  semantics:
+    | "confirmed_ui_trade_delta"
+    | "confirmed_raw_trade_delta"
+    | "balance_not_delta"
+    | "unproven";
 } {
   const ui = readNumber(payload, [
     "tokenAmount",
@@ -2753,7 +2806,12 @@ function readPumpPortalTokenAmount(payload: Record<string, unknown>): {
     "tokenAmountUi"
   ]);
   if (ui !== null) {
-    return { rawAmount: ui, normalizedAmount: ui, mode: "ui" };
+    return {
+      rawAmount: ui,
+      normalizedAmount: ui,
+      mode: "ui",
+      semantics: "confirmed_ui_trade_delta"
+    };
   }
 
   const raw = readNumber(payload, [
@@ -2773,10 +2831,30 @@ function readPumpPortalTokenAmount(payload: Record<string, unknown>): {
       return {
         rawAmount: raw,
         normalizedAmount: raw / 10 ** decimals,
-        mode: "decimals_normalized"
+        mode: "decimals_normalized",
+        semantics: "confirmed_raw_trade_delta"
       };
     }
-    return { rawAmount: raw, normalizedAmount: null, mode: "raw" };
+    return {
+      rawAmount: raw,
+      normalizedAmount: null,
+      mode: "raw",
+      semantics: "unproven"
+    };
+  }
+
+  const balance = readNumber(payload, [
+    "newTokenBalance",
+    "tokenBalance",
+    "postTokenBalance"
+  ]);
+  if (balance !== null) {
+    return {
+      rawAmount: null,
+      normalizedAmount: null,
+      mode: "unknown",
+      semantics: "balance_not_delta"
+    };
   }
 
   const ambiguous = readNumber(payload, ["amount"]);
@@ -2784,11 +2862,17 @@ function readPumpPortalTokenAmount(payload: Record<string, unknown>): {
     return {
       rawAmount: ambiguous,
       normalizedAmount: null,
-      mode: "unknown"
+      mode: "unknown",
+      semantics: "unproven"
     };
   }
 
-  return { rawAmount: null, normalizedAmount: null, mode: "unknown" };
+  return {
+    rawAmount: null,
+    normalizedAmount: null,
+    mode: "unknown",
+    semantics: "unproven"
+  };
 }
 
 function readEventIndex(payload: Record<string, unknown>): string | null {
@@ -2872,6 +2956,7 @@ function createPumpPortalTradeReasonCodes(input: {
   validMint: boolean;
   volumeSol: number | null;
   amountNormalizationMode: TradeAmountNormalizationMode;
+  tokenAmountSemantics: NonNullable<TokenTradeEvent["tokenAmountSemantics"]>;
 }): string[] {
   const reasonCodes = [
     "PUMPPORTAL_TOKEN_TRADE",
@@ -2902,6 +2987,14 @@ function createPumpPortalTradeReasonCodes(input: {
 
   if (input.amountNormalizationMode === "unknown") {
     reasonCodes.push("PUMPPORTAL_TRADE_TOKEN_AMOUNT_UNITS_UNKNOWN");
+  }
+
+  if (input.tokenAmountSemantics === "balance_not_delta") {
+    reasonCodes.push("TOKEN_AMOUNT_IS_BALANCE_NOT_DELTA");
+  } else if (input.tokenAmountSemantics === "confirmed_ui_trade_delta") {
+    reasonCodes.push("EXECUTION_PRICE_DERIVED_FROM_CONFIRMED_TRADE_DELTA");
+  } else if (input.tokenAmountSemantics === "unproven") {
+    reasonCodes.push("TOKEN_AMOUNT_UNIT_UNPROVEN");
   }
 
   if (input.priceSol !== null) {

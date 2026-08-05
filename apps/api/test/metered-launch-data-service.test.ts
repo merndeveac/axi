@@ -581,6 +581,49 @@ describe("MeteredLaunchDataService", () => {
     expect(service.getRecentTradeEvents()).toHaveLength(1);
   });
 
+  it("reconciles canonical, post-stop, and billable counts monotonically", () => {
+    const service = createService({
+      acknowledgedCost: true,
+      apiKeyConfigured: true,
+      dataWalletPublicKeyConfigured: true,
+      enabled: true,
+      maxEventsPerMint: 100,
+      maxEventsPerSession: 100
+    });
+    service.trackMint(mint, "trade_data_coverage");
+    for (let index = 0; index < 23; index += 1) {
+      service.handlePumpPortalTokenTrade(createTokenTradeEvent());
+    }
+    service.untrackMint(mint, "coverage_boundary");
+
+    const reconciled = service.reconcileTradeCoverageCounters({
+      mint,
+      coverageStartedAt: "2026-08-04T00:00:00.000Z",
+      canonicalAdmittedTradeCount: 50,
+      postStopObservedTradeCount: 15,
+      estimatedBillableMessageCount: 65
+    });
+    expect(reconciled).toMatchObject({
+      eventCount: 50,
+      postStopEventCount: 15,
+      billableEventCount: 65,
+      estimatedCostSol: 0.000065
+    });
+
+    const stale = service.reconcileTradeCoverageCounters({
+      mint,
+      coverageStartedAt: "2026-08-04T00:00:00.000Z",
+      canonicalAdmittedTradeCount: 23,
+      postStopObservedTradeCount: 0,
+      estimatedBillableMessageCount: 23
+    });
+    expect(stale).toMatchObject({
+      eventCount: 50,
+      postStopEventCount: 15,
+      billableEventCount: 65
+    });
+  });
+
   it("uses the provider event counter when stale paid events outlive tracking", () => {
     const { actualData, service } = createServiceHarness({
       acknowledgedCost: true,

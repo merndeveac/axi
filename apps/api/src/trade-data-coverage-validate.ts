@@ -171,7 +171,14 @@ async function runValidation(): Promise<void> {
       chainVerify: args.chainVerify,
       chainVerifyMaxSignatures:
         config.TRADE_DATA_COVERAGE_CHAIN_VERIFY_MAX_SIGNATURES,
-      onStopRequested: resolveStop
+      onStopRequested: (reason) => {
+        provider.unsubscribeTokenTrades([selectedMint]);
+        resolveStop(reason);
+      },
+      onHardCostCapReached: () => {
+        provider.unsubscribeTokenTrades([selectedMint]);
+        void server?.stopFeed();
+      }
     });
     startup.coverageSessionCreated = true;
     server.meteredLaunchData.acknowledgeSession({
@@ -198,6 +205,19 @@ async function runValidation(): Promise<void> {
     server.tradeDataCoverage.beginGrace(stopReason);
     await delay(args.postStopGraceMs);
     await server.stopFeed();
+    const preFinalizeSummary = server.tradeDataCoverage.getSummary();
+    if (preFinalizeSummary) {
+      server.meteredLaunchData.reconcileTradeCoverageCounters({
+        mint: selectedMint,
+        coverageStartedAt: preFinalizeSummary.startedAt,
+        canonicalAdmittedTradeCount:
+          preFinalizeSummary.canonicalAdmittedTradeCount,
+        postStopObservedTradeCount:
+          preFinalizeSummary.postStopObservedTradeCount,
+        estimatedBillableMessageCount:
+          preFinalizeSummary.estimatedBillableMessageCount
+      });
+    }
     await server.tradeDataCoverage.verifySampledSignatures(
       args.chainVerify && config.SOLANA_RPC_HTTP
         ? createReadOnlyTransactionVerifier(config.SOLANA_RPC_HTTP)

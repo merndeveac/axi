@@ -284,8 +284,12 @@ describe("@axi/api", () => {
     const coverageEvents = (
       eventsResponse.json() as {
         events: Array<{
+          decisionId: string | null;
+          decisionVersion: number | null;
           pipelineOutcome: string;
           failureReason: string | null;
+          sourceEventKey: string | null;
+          stageTimestamps: Record<string, string>;
         }>;
       }
     ).events;
@@ -293,6 +297,34 @@ describe("@axi/api", () => {
     expect(coverageEvents[0]).toMatchObject({
       pipelineOutcome: "completed",
       failureReason: null
+    });
+    const coveredTrade = coverageEvents[0];
+    expect(coveredTrade?.decisionId).toEqual(expect.any(String));
+    expect(coveredTrade?.decisionVersion).toEqual(expect.any(Number));
+    expect(
+      Date.parse(coveredTrade?.stageTimestamps.signal_computed ?? "")
+    ).toBeLessThanOrEqual(
+      Date.parse(coveredTrade?.stageTimestamps.scanner_projected ?? "")
+    );
+    expect(
+      Date.parse(coveredTrade?.stageTimestamps.scanner_projected ?? "")
+    ).toBeLessThanOrEqual(
+      Date.parse(coveredTrade?.stageTimestamps.broadcast_completed ?? "")
+    );
+    expect(
+      Date.parse(coveredTrade?.stageTimestamps.signal_persisted ?? "")
+    ).not.toBeNaN();
+    const scannerResponse = await server.app.inject({
+      method: "GET",
+      url: "/ui/v2/scanner?limit=100&activeOnly=true"
+    });
+    const scannerRow = (scannerResponse.json() as ScannerSnapshotV2).rows.find(
+      (row) => row.mint === mint
+    );
+    expect(scannerRow?.decision).toMatchObject({
+      decisionId: coveredTrade?.decisionId,
+      decisionVersion: coveredTrade?.decisionVersion,
+      sourceEventKey: coveredTrade?.sourceEventKey
     });
     expect(eventsResponse.body).not.toContain("must-not-be-persisted");
 
@@ -3964,7 +3996,9 @@ describe("@axi/api", () => {
       startFeed: false,
       storageDatabasePath: databasePath
     });
-    const event = createPumpPortalEvent({ timestamp: new Date().toISOString() });
+    const event = createPumpPortalEvent({
+      timestamp: new Date().toISOString()
+    });
     server.emitFeedEvent(event);
 
     const detail = await server.app.inject({
@@ -3991,7 +4025,9 @@ describe("@axi/api", () => {
       sequence: 1
     });
 
-    const event = createPumpPortalEvent({ timestamp: new Date().toISOString() });
+    const event = createPumpPortalEvent({
+      timestamp: new Date().toISOString()
+    });
     server.emitFeedEvent(event);
     const detail = await server.app.inject({
       method: "GET",

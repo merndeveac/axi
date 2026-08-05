@@ -16,7 +16,9 @@ describe("@axi/candidates", () => {
 
     expect(state.lifecycleState).toBe("new");
     expect(state.symbol).toBe("CAND");
-    expect(engine.getCandidate(mint)?.eventTypesSeen).toContain("token_created");
+    expect(engine.getCandidate(mint)?.eventTypesSeen).toContain(
+      "token_created"
+    );
   });
 
   it("metrics move candidate into warming or watching", () => {
@@ -27,7 +29,9 @@ describe("@axi/candidates", () => {
     const decision = engine.evaluateCandidate(mint);
 
     expect(decision?.lifecycleState).toBe("warming");
-    expect(decision?.combinedReasonCodes).toContain("INSUFFICIENT_TRADE_METRICS");
+    expect(decision?.combinedReasonCodes).toContain(
+      "INSUFFICIENT_TRADE_METRICS"
+    );
   });
 
   it("hard reject moves candidate to rejected", () => {
@@ -35,7 +39,10 @@ describe("@axi/candidates", () => {
 
     engine.ingestFeedEvent(createTokenEvent());
     engine.updateMetrics(mint, createMetrics());
-    engine.updateRisk(mint, createRisk({ hardReject: true, riskLevel: "high" }));
+    engine.updateRisk(
+      mint,
+      createRisk({ hardReject: true, riskLevel: "high" })
+    );
     engine.updateScore(mint, createScore({ total: 92 }));
 
     const decision = engine.evaluateCandidate(mint);
@@ -48,14 +55,19 @@ describe("@axi/candidates", () => {
     const engine = createCandidateLifecycleEngine();
 
     engine.ingestFeedEvent(createTokenEvent());
-    engine.updateMetrics(mint, createMetrics({ insufficientMetrics: true, sampleCount: 2 }));
+    engine.updateMetrics(
+      mint,
+      createMetrics({ insufficientMetrics: true, sampleCount: 2 })
+    );
     engine.updateRisk(mint, createRisk());
     engine.updateScore(mint, createScore({ total: 95 }));
 
     const decision = engine.evaluateCandidate(mint);
 
     expect(decision?.action).not.toBe("PAPER_BUY_READY");
-    expect(decision?.combinedReasonCodes).toContain("INSUFFICIENT_TRADE_METRICS");
+    expect(decision?.combinedReasonCodes).toContain(
+      "INSUFFICIENT_TRADE_METRICS"
+    );
   });
 
   it("high score with acceptable risk and enough metrics can qualify", () => {
@@ -70,6 +82,32 @@ describe("@axi/candidates", () => {
 
     expect(decision?.lifecycleState).toBe("qualified");
     expect(decision?.action).toBe("PAPER_BUY_READY");
+  });
+
+  it("versions each decision and retains the triggering source event key", () => {
+    const engine = createCandidateLifecycleEngine();
+    engine.ingestFeedEvent(createTokenEvent());
+    engine.updateMetrics(mint, createMetrics({ sampleCount: 12 }));
+    engine.updateRisk(mint, createRisk({ riskLevel: "low" }));
+    engine.updateScore(mint, createScore({ total: 88 }));
+
+    const first = engine.evaluateCandidate(mint, {
+      sourceEventKey: "trade-source-event-1"
+    });
+    const second = engine.evaluateCandidate(mint, {
+      sourceEventKey: "trade-source-event-2"
+    });
+
+    expect(first).toMatchObject({
+      decisionId: `candidate-decision:${mint}:1`,
+      decisionVersion: 1,
+      sourceEventKey: "trade-source-event-1"
+    });
+    expect(second).toMatchObject({
+      decisionId: `candidate-decision:${mint}:2`,
+      decisionVersion: 2,
+      sourceEventKey: "trade-source-event-2"
+    });
   });
 
   it("critical risk prevents PAPER_BUY_READY", () => {
@@ -140,7 +178,9 @@ describe("@axi/candidates", () => {
 
     expect(decision?.chainVerificationStatus).toBe("verified");
     expect(decision?.chainReasonCodes).toContain("ON_CHAIN_MINT_VERIFIED");
-    expect(decision?.combinedReasonCodes).toContain("ON_CHAIN_HOLDERS_VERIFIED");
+    expect(decision?.combinedReasonCodes).toContain(
+      "ON_CHAIN_HOLDERS_VERIFIED"
+    );
     expect(decision?.onChainTopHolderPct).toBe(8.5);
   });
 
