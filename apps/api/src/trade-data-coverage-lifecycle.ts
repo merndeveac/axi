@@ -1,3 +1,8 @@
+import type { TrackingExpiryOwner } from "./metered-launch-data-service";
+
+export const tradeDataCoverageTrackingExpiryOwner: TrackingExpiryOwner =
+  "coverage_validator";
+
 export function getCoverageOwnedSubscriptionWindowMs(input: {
   maxRuntimeMs: number;
   postStopGraceMs: number;

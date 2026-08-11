@@ -23,6 +23,22 @@ import type { LaunchCandidateView } from "./launch-scanner-service";
 export type MeteredLaunchDataMode =
   "manual" | "newest" | "hot_candidates" | "launch_score";
 
+export const trackingExpiryOwners = [
+  "metered_service",
+  "coverage_validator"
+] as const;
+
+export type TrackingExpiryOwner = (typeof trackingExpiryOwners)[number];
+
+export type MeteredLaunchDataClock = {
+  now: () => Date;
+  setTimeout: (
+    handler: () => void,
+    delayMs: number
+  ) => ReturnType<typeof setTimeout>;
+  clearTimeout: (handle: ReturnType<typeof setTimeout>) => void;
+};
+
 export const meteredSessionRolloverConfirmation =
   "ROLLOVER METERED DATA SESSION" as const;
 
@@ -48,6 +64,7 @@ export type MeteredLaunchDataConfig = {
   minScoreToProtectRipping: number;
   protectedMaxAgeMs: number;
   staleNoTradesMs: number;
+  trackingExpiryOwner: TrackingExpiryOwner;
   maxEventsPerMint: number;
   maxEventsPerSession: number;
   maxSessionCostSol: number;
@@ -216,6 +233,7 @@ export type MeteredLaunchDataRateObservation = {
 
 export type MeteredLaunchDataServiceOptions = {
   actualData: ActualDataService;
+  clock?: MeteredLaunchDataClock;
   config?: Partial<MeteredLaunchDataConfig>;
   dataWalletReadiness?: () => ActualDataDataWalletReadiness;
   getLaunchCandidate?: (mint: string) => LaunchCandidateView | null;
@@ -261,6 +279,11 @@ export function createMeteredLaunchDataConfig(
     input.maxConcurrentMints ?? safeMeteredRuntimeDefaults.maxConcurrentMints;
   const reservedNewestSlots =
     input.reservedNewestSlots ?? safeMeteredRuntimeDefaults.reservedNewestSlots;
+  const trackingExpiryOwner =
+    input.trackingExpiryOwner ?? "metered_service";
+  if (!trackingExpiryOwners.includes(trackingExpiryOwner)) {
+    throw new Error(`Invalid tracking expiry owner: ${trackingExpiryOwner}`);
+  }
 
   return {
     enabled: input.enabled ?? false,
@@ -289,6 +312,7 @@ export function createMeteredLaunchDataConfig(
     minScoreToProtectRipping: input.minScoreToProtectRipping ?? 80,
     protectedMaxAgeMs: input.protectedMaxAgeMs ?? 900_000,
     staleNoTradesMs: input.staleNoTradesMs ?? 30_000,
+    trackingExpiryOwner,
     maxEventsPerMint:
       input.maxEventsPerMint ?? safeMeteredRuntimeDefaults.maxEventsPerMint,
     maxEventsPerSession:
@@ -317,6 +341,7 @@ export function createMeteredLaunchDataService(
 
 export class MeteredLaunchDataService {
   private readonly actualData: ActualDataService;
+  private readonly clock: MeteredLaunchDataClock;
   private readonly config: MeteredLaunchDataConfig;
   private readonly dataWalletReadiness:
     (() => ActualDataDataWalletReadiness) | undefined;
@@ -357,6 +382,13 @@ export class MeteredLaunchDataService {
 
   constructor(options: MeteredLaunchDataServiceOptions) {
     this.actualData = options.actualData;
+    this.clock =
+      options.clock ??
+      ({
+        now: () => new Date(),
+        setTimeout: (handler, delayMs) => setTimeout(handler, delayMs),
+        clearTimeout: (handle) => clearTimeout(handle)
+      } satisfies MeteredLaunchDataClock);
     this.config = createMeteredLaunchDataConfig(options.config);
     this.dataWalletReadiness = options.dataWalletReadiness;
     this.getLaunchCandidate = options.getLaunchCandidate;
@@ -385,7 +417,7 @@ export class MeteredLaunchDataService {
       return;
     }
 
-    this.startedAt = new Date().toISOString();
+    this.startedAt = this.clock.now().toISOString();
     this.reconcileSchedulerQueue();
     saveMeteredLaunchDataSession({
       status: this.config.enabled
@@ -419,7 +451,7 @@ export class MeteredLaunchDataService {
       return;
     }
 
-    const stoppedAt = new Date().toISOString();
+    const stoppedAt = this.clock.now().toISOString();
     saveMeteredLaunchDataSession({
       status: "stopped",
       mode: this.config.mode,
@@ -866,7 +898,7 @@ export class MeteredLaunchDataService {
       throw error;
     }
 
-    const now = new Date();
+    const now = this.clock.now();
     const subscribedAt = now.toISOString();
     const initialReviewAt = new Date(
       now.getTime() + this.config.initialTrackMs
@@ -892,6 +924,12 @@ export class MeteredLaunchDataService {
         "METERED_LAUNCH_DATA_TRACKING_STARTED",
         "PUMPPORTAL_TRADE_STREAM_METERED",
         "METERED_LAUNCH_DATA_ONLY_NO_TRADING",
+        ...(this.config.trackingExpiryOwner === "coverage_validator"
+          ? [
+              "TRADE_COVERAGE_EXPIRY_OWNED_BY_VALIDATOR",
+              "TRADE_COVERAGE_STALE_TIMER_SUPPRESSED"
+            ]
+          : []),
         ...subscription.reasonCodes
       ])
     };
@@ -930,7 +968,7 @@ export class MeteredLaunchDataService {
       ...existing,
       status: "unsubscribed",
       reason,
-      unsubscribedAt: new Date().toISOString(),
+      unsubscribedAt: this.clock.now().toISOString(),
       reasonCodes: unique([
         ...existing.reasonCodes,
         "METERED_LAUNCH_DATA_TRACKING_STOPPED",
@@ -1007,7 +1045,10 @@ export class MeteredLaunchDataService {
       tracked.status === "tracking" &&
       tracked.eventCount >= this.config.maxEventsPerMint;
 
-    if (reachedPerMintCap) {
+    if (
+      reachedPerMintCap &&
+      this.config.trackingExpiryOwner === "metered_service"
+    ) {
       this.untrackMint(event.mint, "max_events_per_mint", {
         reconcileQueue: false
       });
@@ -1168,6 +1209,60 @@ export class MeteredLaunchDataService {
     return state ? this.toTrackedMint(state) : null;
   }
 
+  getExpiryDiagnostics(mint?: string): {
+    expiryOwner: TrackingExpiryOwner;
+    staleTimerActive: boolean;
+    staleTimerSuppressed: boolean;
+    pendingTimerCount: number;
+  } {
+    const states = mint
+      ? [this.tracked.get(mint.trim())].filter(
+          (state): state is InternalTrackedMint => state !== undefined
+        )
+      : [...this.tracked.values()];
+    const pendingTimerCount = states.reduce(
+      (count, state) =>
+        count +
+        Number(state.initialReviewTimer !== undefined) +
+        Number(state.extendedReviewTimer !== undefined) +
+        Number(state.staleNoTradesTimer !== undefined),
+      0
+    );
+    return {
+      expiryOwner: this.config.trackingExpiryOwner,
+      staleTimerActive: states.some(
+        (state) => state.staleNoTradesTimer !== undefined
+      ),
+      staleTimerSuppressed:
+        this.config.trackingExpiryOwner === "coverage_validator",
+      pendingTimerCount
+    };
+  }
+
+  stopCoverageOwnedMint(
+    mint: string,
+    reason: string
+  ): MeteredLaunchDataTrackedMint | null {
+    if (this.config.trackingExpiryOwner !== "coverage_validator") {
+      throw new MeteredLaunchDataServiceError(
+        "TRADE_COVERAGE_EXPIRY_OWNER_REQUIRED",
+        "Coverage-owned stop requires coverage-validator expiry ownership."
+      );
+    }
+    const state = this.tracked.get(mint.trim());
+    if (!state || state.status !== "tracking") {
+      return state ? this.toTrackedMint(state) : null;
+    }
+    state.reasonCodes = unique([
+      ...state.reasonCodes,
+      "TRADE_COVERAGE_AUTHORITATIVE_STOP",
+      coverageStopReasonCode(reason)
+    ]);
+    return this.untrackMint(mint, `trade_data_coverage_${reason}`, {
+      reconcileQueue: false
+    });
+  }
+
   getSessionCost(): MeteredLaunchDataCost {
     const totalEventsThisSession = this.getBillableEventCount();
     const budgetReached = this.isSessionBudgetReached();
@@ -1232,6 +1327,12 @@ export class MeteredLaunchDataService {
       ...this.getDataWalletReadiness().reasonCodes,
       ...(blockers.length === 0 ? ["METERED_LAUNCH_DATA_READY"] : []),
       ...(budgetReached ? ["METERED_LAUNCH_DATA_BUDGET_REACHED"] : []),
+      ...(this.config.trackingExpiryOwner === "coverage_validator"
+        ? [
+            "TRADE_COVERAGE_EXPIRY_OWNED_BY_VALIDATOR",
+            "TRADE_COVERAGE_STALE_TIMER_SUPPRESSED"
+          ]
+        : []),
       ...(this.getEstimatedCostSol() >= this.getMaxSessionCostSol()
         ? ["METERED_LAUNCH_DATA_COST_CAP_REACHED"]
         : []),
@@ -1492,6 +1593,7 @@ export class MeteredLaunchDataService {
       const trackingAgeExpired =
         this.config.extendedTrackMs > 0 && ageMs >= this.config.extendedTrackMs;
       const staleNoTrades =
+        this.config.trackingExpiryOwner === "metered_service" &&
         this.config.staleNoTradesMs > 0 &&
         ageMs >= this.config.staleNoTradesMs &&
         tracked.eventCount === 0;
@@ -1633,7 +1735,10 @@ export class MeteredLaunchDataService {
   private scheduleInitialReview(mint: string): void {
     const state = this.tracked.get(mint);
 
-    if (!state) {
+    if (
+      !state ||
+      this.config.trackingExpiryOwner === "coverage_validator"
+    ) {
       return;
     }
 
@@ -1644,7 +1749,7 @@ export class MeteredLaunchDataService {
       return;
     }
 
-    state.initialReviewTimer = setTimeout(() => {
+    state.initialReviewTimer = this.clock.setTimeout(() => {
       this.reviewInitialWindow(mint);
     }, this.config.initialTrackMs);
   }
@@ -1652,11 +1757,15 @@ export class MeteredLaunchDataService {
   private scheduleStaleNoTradesReview(mint: string): void {
     const state = this.tracked.get(mint);
 
-    if (!state || this.config.staleNoTradesMs <= 0) {
+    if (
+      !state ||
+      this.config.trackingExpiryOwner === "coverage_validator" ||
+      this.config.staleNoTradesMs <= 0
+    ) {
       return;
     }
 
-    state.staleNoTradesTimer = setTimeout(() => {
+    state.staleNoTradesTimer = this.clock.setTimeout(() => {
       this.reviewStaleNoTrades(mint);
     }, this.config.staleNoTradesMs);
   }
@@ -1687,7 +1796,7 @@ export class MeteredLaunchDataService {
       calibrationProtectionUntilMs !== null &&
       calibrationProtectionUntilMs > Date.now()
     ) {
-      state.initialReviewTimer = setTimeout(
+      state.initialReviewTimer = this.clock.setTimeout(
         () => {
           this.reviewInitialWindow(mint);
         },
@@ -1739,24 +1848,24 @@ export class MeteredLaunchDataService {
       return;
     }
 
-    state.extendedReviewTimer = setTimeout(() => {
+    state.extendedReviewTimer = this.clock.setTimeout(() => {
       this.untrackMint(mint, "extended_window_elapsed");
     }, remainingMs);
   }
 
   private clearTimers(state: InternalTrackedMint): void {
     if (state.initialReviewTimer) {
-      clearTimeout(state.initialReviewTimer);
+      this.clock.clearTimeout(state.initialReviewTimer);
       delete state.initialReviewTimer;
     }
 
     if (state.extendedReviewTimer) {
-      clearTimeout(state.extendedReviewTimer);
+      this.clock.clearTimeout(state.extendedReviewTimer);
       delete state.extendedReviewTimer;
     }
 
     if (state.staleNoTradesTimer) {
-      clearTimeout(state.staleNoTradesTimer);
+      this.clock.clearTimeout(state.staleNoTradesTimer);
       delete state.staleNoTradesTimer;
     }
   }
@@ -1990,14 +2099,18 @@ export class MeteredLaunchDataService {
   private enforceBillableSessionCaps(): void {
     if (this.getBillableEventCount() >= this.getMaxEventsPerSession()) {
       this.budgetReached = true;
-      this.untrackAll("max_events_per_session");
+      if (this.config.trackingExpiryOwner === "metered_service") {
+        this.untrackAll("max_events_per_session");
+      }
       this.schedulerQueue.clear();
       return;
     }
 
     if (this.getEstimatedCostSol() >= this.getMaxSessionCostSol()) {
       this.budgetReached = true;
-      this.untrackAll("max_session_cost");
+      if (this.config.trackingExpiryOwner === "metered_service") {
+        this.untrackAll("max_session_cost");
+      }
       this.schedulerQueue.clear();
     }
   }
@@ -2115,6 +2228,23 @@ function reasonToCode(reason: string): string {
   return normalized
     ? `METERED_LAUNCH_DATA_${normalized}`
     : "METERED_LAUNCH_DATA_STOPPED";
+}
+
+function coverageStopReasonCode(reason: string): string {
+  const normalized = reason.trim().toUpperCase();
+  if (normalized === "MAX_RUNTIME") {
+    return "TRADE_COVERAGE_RUNTIME_BOUNDARY_REACHED";
+  }
+  if (normalized === "MAX_EVENTS") {
+    return "TRADE_COVERAGE_EVENT_BOUNDARY_REACHED";
+  }
+  if (normalized === "MAX_ESTIMATED_COST" || normalized === "MAX_COST") {
+    return "TRADE_COVERAGE_COST_BOUNDARY_REACHED";
+  }
+  if (normalized === "VALIDATION_ERROR" || normalized === "PROVIDER_ERROR") {
+    return "TRADE_COVERAGE_PROVIDER_ERROR_BOUNDARY_REACHED";
+  }
+  return "TRADE_COVERAGE_EXPLICIT_STOP_BOUNDARY_REACHED";
 }
 
 function round(value: number): number {

@@ -23,7 +23,10 @@ import {
   type TradeDataCoverageStartupStage,
   type TradeDataCoverageStorageOwner
 } from "./trade-data-coverage-runtime-startup";
-import { getCoverageOwnedSubscriptionWindowMs } from "./trade-data-coverage-lifecycle";
+import {
+  getCoverageOwnedSubscriptionWindowMs,
+  tradeDataCoverageTrackingExpiryOwner
+} from "./trade-data-coverage-lifecycle";
 
 const config = loadApiConfig(loadTradeDataCoverageEnvironment());
 const args = parseTradeDataCoverageArgs(process.argv.slice(2), {
@@ -173,11 +176,17 @@ async function runValidation(): Promise<void> {
       chainVerifyMaxSignatures:
         config.TRADE_DATA_COVERAGE_CHAIN_VERIFY_MAX_SIGNATURES,
       onStopRequested: (reason) => {
-        provider.unsubscribeTokenTrades([selectedMint]);
-        resolveStop(reason);
+        try {
+          server?.meteredLaunchData.stopCoverageOwnedMint(
+            selectedMint,
+            reason
+          );
+        } finally {
+          resolveStop(reason);
+        }
       },
       onHardCostCapReached: () => {
-        provider.unsubscribeTokenTrades([selectedMint]);
+        server?.tradeDataCoverage.requestStop("max_estimated_cost");
         void server?.stopFeed();
       }
     });
@@ -199,10 +208,6 @@ async function runValidation(): Promise<void> {
     }, args.maxRuntimeMs);
     const stopReason = await stopped;
     clearTimeout(runtimeTimer);
-    server.meteredLaunchData.untrackMint(
-      selectedMint,
-      `trade_data_coverage_${stopReason}`
-    );
     server.tradeDataCoverage.beginGrace(stopReason);
     await delay(args.postStopGraceMs);
     await server.stopFeed();
@@ -421,7 +426,8 @@ function createCoverageServer(input: {
       requireDataWalletReady: true,
       requireUiAck: true,
       rollingTrackerEnabled: false,
-      startActive: false
+      startActive: false,
+      trackingExpiryOwner: tradeDataCoverageTrackingExpiryOwner
     }),
     pumpPortalDataWallet: {
       apiKeyConfigured: true,
