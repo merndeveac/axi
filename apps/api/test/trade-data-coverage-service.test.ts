@@ -308,6 +308,100 @@ describe("TradeDataCoverageService", () => {
     });
   });
 
+  it("creates the max-cost stop boundary before synchronous unsubscribe", () => {
+    let nowMs = Date.parse("2026-08-02T00:00:00.000Z");
+    const harness = createHarness({ now: () => new Date(nowMs++) });
+    const instrumentation = harness.service.createFeedInstrumentation();
+    harness.service.begin({
+      sessionId: "max-cost-order",
+      selectedMint: mint,
+      maxEvents: 50,
+      maxCostSol: 0.000001,
+      onStopRequested: () => {
+        instrumentation.onSubscriptionEvent({
+          eventType: "unsubscribe_sent",
+          mint,
+          timestamp: new Date(nowMs++).toISOString(),
+          safeReason: null,
+          reasonCodes: ["TEST_UNSUBSCRIBE_SENT"]
+        });
+      }
+    });
+
+    observeTrade(instrumentation, "max-cost", trade());
+    const lifecycle = harness.subscriptions.filter((event) =>
+      ["stop_requested", "unsubscribe_sent"].includes(event.eventType)
+    );
+    expect(lifecycle.map((event) => event.eventType)).toEqual([
+      "stop_requested",
+      "unsubscribe_sent"
+    ]);
+    expect(harness.service.getSummary()?.stopReason).toBe(
+      "MAX_ESTIMATED_COST"
+    );
+  });
+
+  it("keeps provider-error, duplicate-stop, and post-finalization callbacks idempotent", () => {
+    const onStop = vi.fn();
+    const harness = createHarness();
+    harness.service.begin({
+      sessionId: "provider-error-idempotency",
+      selectedMint: mint,
+      onStopRequested: onStop
+    });
+    const instrumentation = harness.service.createFeedInstrumentation();
+
+    expect(harness.service.requestStop("provider_error")).toBe(true);
+    expect(harness.service.requestStop("explicit_validator_stop")).toBe(false);
+    const postStop = observeTrade(
+      instrumentation,
+      "post-stop",
+      trade("2026-08-02T00:00:01.000Z")
+    );
+    expect(postStop.result.acceptedForPipeline).toBe(false);
+    expect(harness.events.at(-1)?.canonicalAdmission).toBe(
+      "post_stop_evidence_only"
+    );
+    harness.service.beginGrace("provider_error");
+    harness.service.beginGrace("provider_error");
+    const first = harness.service.finalize("provider_error");
+    const lifecycleCount = first?.subscriptionLifecycle.length;
+    const second = harness.service.finalize("late_duplicate");
+    instrumentation.onSubscriptionEvent({
+      eventType: "unsubscribe_sent",
+      mint,
+      timestamp: "2026-08-02T00:00:02.000Z",
+      safeReason: null,
+      reasonCodes: ["LATE_CALLBACK"]
+    });
+
+    expect(onStop).toHaveBeenCalledOnce();
+    expect(second).toEqual(first);
+    expect(second?.subscriptionLifecycle).toHaveLength(lifecycleCount ?? 0);
+    expect(second).toMatchObject({
+      postStopObservedTradeCount: 1,
+      canonicalAdmittedTradeCount: 0,
+      canonicalBusinessTradeCount: 0,
+      canonicalTimeSeriesSourceEventCount: 0,
+      postStopCanonicalMutationCount: 0
+    });
+    expect(
+      second?.subscriptionLifecycle.filter(
+        (event) => event.eventType === "stop_requested"
+      )
+    ).toHaveLength(1);
+    expect(
+      second?.subscriptionLifecycle.filter(
+        (event) => event.eventType === "grace_started"
+      )
+    ).toHaveLength(1);
+    expect(
+      second?.subscriptionLifecycle.filter(
+        (event) => event.eventType === "finalized"
+      )
+    ).toHaveLength(1);
+  });
+
   it("invalidates reconciliation when telemetry persistence fails", () => {
     const harness = createHarness({ failEventPersistence: true });
     harness.service.begin({ sessionId: "session-4", selectedMint: mint });

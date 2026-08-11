@@ -13,6 +13,7 @@ import {
 import type { LaunchCandidateView } from "../src/launch-scanner-service";
 import {
   MeteredLaunchDataServiceError,
+  createMeteredLaunchDataConfig,
   createMeteredLaunchDataService
 } from "../src/metered-launch-data-service";
 
@@ -34,6 +35,17 @@ afterEach(() => {
 });
 
 describe("MeteredLaunchDataService", () => {
+  it("defaults expiry ownership to the metered service and rejects invalid owners", () => {
+    expect(createMeteredLaunchDataConfig().trackingExpiryOwner).toBe(
+      "metered_service"
+    );
+    expect(() =>
+      createMeteredLaunchDataConfig({
+        trackingExpiryOwner: "ambiguous_owner" as never
+      })
+    ).toThrow("Invalid tracking expiry owner");
+  });
+
   it("is disabled by default", () => {
     const service = createService();
 
@@ -482,6 +494,43 @@ describe("MeteredLaunchDataService", () => {
     expect(service.getStatus().reasonCodes).toContain(
       "METERED_LAUNCH_DATA_COST_CAP_REACHED"
     );
+  });
+
+  it("leaves coverage-owned event and cost boundaries to the validator", () => {
+    const provider = new PumpPortalFeedProvider();
+    const service = createService(
+      {
+        acknowledgedCost: true,
+        apiKeyConfigured: true,
+        dataWalletPublicKeyConfigured: true,
+        enabled: true,
+        maxEventsPerMint: 1,
+        maxEventsPerSession: 1,
+        maxSessionCostSol: 0.000001,
+        trackingExpiryOwner: "coverage_validator"
+      },
+      readyWallet,
+      provider
+    );
+
+    service.trackMint(mint, "trade_data_coverage");
+    service.handlePumpPortalTokenTrade(createTokenTradeEvent());
+
+    expect(service.getStatus().budgetReached).toBe(true);
+    expect(service.getTrackedMints()).toEqual([mint]);
+    expect(service.getTrackedMint(mint)?.reasonCodes).toEqual(
+      expect.arrayContaining([
+        "TRADE_COVERAGE_EXPIRY_OWNED_BY_VALIDATOR",
+        "TRADE_COVERAGE_STALE_TIMER_SUPPRESSED"
+      ])
+    );
+
+    const stopped = service.stopCoverageOwnedMint(mint, "max_events");
+    expect(stopped?.status).toBe("unsubscribed");
+    expect(stopped?.reasonCodes).toContain(
+      "TRADE_COVERAGE_EVENT_BOUNDARY_REACHED"
+    );
+    expect(provider.getTokenTradeSubscriptions()).toEqual([]);
   });
 
   it("auto-unsubscribes hard rejected launch candidates", () => {

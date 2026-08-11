@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { getCoverageOwnedSubscriptionWindowMs } from "../src/trade-data-coverage-lifecycle";
+import {
+  getCoverageOwnedSubscriptionWindowMs,
+  tradeDataCoverageTrackingExpiryOwner
+} from "../src/trade-data-coverage-lifecycle";
 
 describe("trade data coverage lifecycle ownership", () => {
+  it("explicitly assigns tracking expiry to the coverage validator", () => {
+    expect(tradeDataCoverageTrackingExpiryOwner).toBe("coverage_validator");
+  });
+
   it("keeps provider and metered expiry strictly after the coverage stop boundary", () => {
     expect(
       getCoverageOwnedSubscriptionWindowMs({
