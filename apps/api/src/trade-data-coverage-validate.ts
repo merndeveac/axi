@@ -23,6 +23,7 @@ import {
   type TradeDataCoverageStartupStage,
   type TradeDataCoverageStorageOwner
 } from "./trade-data-coverage-runtime-startup";
+import { getCoverageOwnedSubscriptionWindowMs } from "./trade-data-coverage-lifecycle";
 
 const config = loadApiConfig(loadTradeDataCoverageEnvironment());
 const args = parseTradeDataCoverageArgs(process.argv.slice(2), {
@@ -373,6 +374,10 @@ function createCoverageServer(input: {
   provider: PumpPortalFeedProvider;
   runtimeSession: PreparedRuntimeSession;
 }): ApiServer {
+  const subscriptionWindowMs = getCoverageOwnedSubscriptionWindowMs({
+    maxRuntimeMs: args.maxRuntimeMs,
+    postStopGraceMs: args.postStopGraceMs
+  });
   return createApiServer({
     dataFeed: "pumpportal",
     dataFeedMode: "live",
@@ -396,7 +401,7 @@ function createCoverageServer(input: {
       maxEventsPerSession: input.hardEventCap,
       maxSubscribedTokens: 1,
       requireApiKey: true,
-      unsubscribeAfterMs: args.maxRuntimeMs + args.postStopGraceMs
+      unsubscribeAfterMs: subscriptionWindowMs
     }),
     meteredLaunchData: createMeteredLaunchDataConfig({
       acknowledgedCost: true,
@@ -405,8 +410,8 @@ function createCoverageServer(input: {
       dataWalletPublicKeyConfigured: true,
       enabled: true,
       eventCostSolPer10000: config.PUMPPORTAL_DATA_EVENT_COST_SOL_PER_10000,
-      initialTrackMs: args.maxRuntimeMs,
-      extendedTrackMs: args.maxRuntimeMs,
+      initialTrackMs: subscriptionWindowMs,
+      extendedTrackMs: subscriptionWindowMs,
       maxConcurrentMints: 1,
       maxEventsPerMint: input.hardEventCap,
       maxEventsPerSession: input.hardEventCap,

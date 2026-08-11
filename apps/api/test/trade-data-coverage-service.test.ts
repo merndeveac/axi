@@ -239,6 +239,53 @@ describe("TradeDataCoverageService", () => {
     expect(onStop).toHaveBeenCalledWith("MAX_RUNTIME");
   });
 
+  it("records stop before unsubscribe send and acknowledgement", () => {
+    let nowMs = Date.parse("2026-08-02T00:00:00.000Z");
+    const harness = createHarness({ now: () => new Date(nowMs++) });
+    let unsubscribe = () => undefined;
+    harness.service.begin({
+      sessionId: "ordered-stop",
+      selectedMint: mint,
+      onStopRequested: () => unsubscribe()
+    });
+    const instrumentation = harness.service.createFeedInstrumentation();
+    unsubscribe = () => {
+      instrumentation.onSubscriptionEvent({
+        eventType: "unsubscribe_sent",
+        mint,
+        timestamp: new Date(nowMs++).toISOString(),
+        safeReason: null,
+        reasonCodes: ["TEST_UNSUBSCRIBE_SENT"]
+      });
+    };
+
+    expect(harness.service.requestStop("test_boundary")).toBe(true);
+    instrumentation.onSubscriptionEvent({
+      eventType: "unsubscribe_acknowledged",
+      mint,
+      timestamp: new Date(nowMs++).toISOString(),
+      safeReason: null,
+      reasonCodes: ["TEST_UNSUBSCRIBE_ACKNOWLEDGED"]
+    });
+
+    const lifecycle = harness.subscriptions.filter((event) =>
+      [
+        "stop_requested",
+        "unsubscribe_sent",
+        "unsubscribe_acknowledged"
+      ].includes(event.eventType)
+    );
+    expect(lifecycle.map((event) => event.eventType)).toEqual([
+      "stop_requested",
+      "unsubscribe_sent",
+      "unsubscribe_acknowledged"
+    ]);
+    expect(
+      Date.parse(lifecycle[1]?.timestamp ?? "") -
+        Date.parse(lifecycle[0]?.timestamp ?? "")
+    ).toBeGreaterThanOrEqual(0);
+  });
+
   it("issues the hard-cost shutdown callback once during evidence-only grace", () => {
     const onHardCostCapReached = vi.fn();
     const harness = createHarness();
