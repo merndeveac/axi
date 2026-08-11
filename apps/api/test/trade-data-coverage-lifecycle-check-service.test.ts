@@ -34,6 +34,13 @@ describe("trade-data coverage expiry ownership", () => {
       cleanupCompleted: true
     });
     expect(result.checkpoints).toEqual([
+      expect.objectContaining({
+        atMs: 0,
+        tracked: true,
+        stopRequestedCount: 0,
+        unsubscribeSentCount: 0,
+        finalizationCount: 0
+      }),
       expect.objectContaining({ atMs: 29_999, tracked: true }),
       expect.objectContaining({ atMs: 30_000, tracked: true }),
       expect.objectContaining({ atMs: 30_001, tracked: true }),
@@ -52,7 +59,7 @@ describe("trade-data coverage expiry ownership", () => {
     ]);
     expect(
       result.checkpoints
-        .slice(0, 5)
+        .slice(0, 6)
         .every(
           (checkpoint) =>
             checkpoint.stopRequestedCount === 0 &&

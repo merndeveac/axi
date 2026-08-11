@@ -581,7 +581,7 @@ function requireOfflineSocket(): OfflineWebSocket {
 }
 
 function checkpointTimes(runtimeMs: number): number[] {
-  return [29_999, 30_000, 30_001, 60_000, 89_999, runtimeMs].filter(
+  return [0, 29_999, 30_000, 30_001, 60_000, 89_999, runtimeMs].filter(
     (value, index, values) =>
       value >= 0 && value <= runtimeMs && values.indexOf(value) === index
   );
