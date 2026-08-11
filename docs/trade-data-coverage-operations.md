@@ -39,6 +39,48 @@ unsubscribe_acknowledged
 finalized
 ```
 
+## Subscription-expiry ownership
+
+Tracking expiry has two explicit owners. Ordinary runtime defaults to
+`metered_service` and preserves stale-no-trades, initial/extended review,
+scheduler, hard-reject, and normal untracking policy. The bounded coverage
+validator selects `coverage_validator` for its one mint. In that mode the
+metered service does not schedule its own initial, extended, or stale-no-trades
+expiry timer, and its event/cost accounting does not directly untrack ahead of
+the coverage boundary.
+
+`TradeDataCoverageService.requestStop` is the authoritative idempotent
+coordinator: it closes admission and persists `stop_requested` before calling
+the validator-owned untrack path. That path clears tracked-mint timers and
+emits provider unsubscribe. Provider acknowledgement remains optional; grace
+and finalization remain command-owned. Normal runtime does not use this
+coordinator and retains its 30-second zero-trade stale behavior.
+
+The offline proof advances logical time through 29,999, 30,000, 30,001,
+60,000, 89,999, and 90,000 ms without sleeping. Its service-owned control
+separately proves the unchanged 30-second policy:
+
+```bash
+pnpm --filter @axi/api trade-data:coverage:lifecycle-check -- \
+  --scenario zero-trade \
+  --runtime-ms 90000 \
+  --stale-no-trades-ms 30000 \
+  --grace-ms 5000 \
+  --json true
+
+pnpm --filter @axi/api trade-data:coverage:lifecycle-check -- \
+  --scenario service-owned-control \
+  --runtime-ms 90000 \
+  --stale-no-trades-ms 30000 \
+  --grace-ms 5000 \
+  --json true
+```
+
+This check uses a fake provider, fake clock, and temporary SQLite. It reads no
+environment file, uses no credential, makes no external connection, starts no
+paid stream, and spends no SOL. The previous live authorization was consumed;
+a future live validation requires a new explicit authorization.
+
 ## Authoritative counters
 
 Observed provider messages and canonical strategy inputs have different

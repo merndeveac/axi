@@ -2866,6 +2866,47 @@ Neither command authorizes or substitutes for a paid run. The prior paid
 authorization was consumed; another Level B run requires fresh explicit user
 authorization after Phase 4C passes.
 
+### Phase 4E Coverage-Owned Subscription Expiry
+
+Branch `dev/trade-data-coverage-stale-expiry-fix` makes tracking-expiry
+ownership explicit. Normal AXI runtime continues to default to
+`metered_service`, including its ordinary 30-second stale-no-trades policy,
+initial/extended reviews, scheduler decisions, and normal untracking behavior.
+The bounded trade-data validator selects `coverage_validator`; while that
+command owns the mint, MeteredLaunchDataService schedules no initial,
+extended, or stale-no-trades expiry timer and does not preempt the coverage
+event/cost boundary with a service-owned untrack.
+
+The coverage session persists `stop_requested` before its idempotent callback
+untracks the mint and emits provider unsubscribe. The command then owns grace
+and exactly-once finalization. A zero-trade run therefore remains subscribed
+through the 30-second ordinary stale boundary and reaches `MAX_RUNTIME`
+without `METERED_LAUNCH_DATA_STALE_NO_TRADES` becoming its unsubscribe cause.
+
+Use the fake-clock lifecycle proof for zero-network validation:
+
+```bash
+pnpm --filter @axi/api trade-data:coverage:lifecycle-check -- \
+  --scenario zero-trade \
+  --runtime-ms 90000 \
+  --stale-no-trades-ms 30000 \
+  --grace-ms 5000 \
+  --json true
+
+pnpm --filter @axi/api trade-data:coverage:lifecycle-check -- \
+  --scenario service-owned-control \
+  --runtime-ms 90000 \
+  --stale-no-trades-ms 30000 \
+  --grace-ms 5000 \
+  --json true
+```
+
+Both scenarios use an offline fake provider, logical time, and disposable
+SQLite. They do not read `.env.local`, load credentials, open an external
+connection, start a paid stream, call RPC, or spend SOL. No paid run occurred
+for Phase 4E. The previous live authorization was consumed; any later live
+validation requires fresh explicit user authorization.
+
 The validation command remains preflight-only unless both the CLI
 acknowledgement and the user-owned environment gate are present:
 
