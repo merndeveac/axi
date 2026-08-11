@@ -4,6 +4,7 @@ import Fastify, {
   type FastifyRequest
 } from "fastify";
 import { createHash, randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
 import {
@@ -75,6 +76,7 @@ import {
   type RollingMetrics,
   type RollingMetricsSnapshot,
   type ScoreBreakdown,
+  type ScannerStreamMessageV2,
   type SignalState,
   type SignalStrength,
   type StrategySignalDriver,
@@ -1469,6 +1471,9 @@ export type ApiServerOptions = {
   storageDatabasePath?: string;
   runtimeSession?: PreparedRuntimeSession;
   tokenIdentity?: TokenIdentityServiceConfig;
+  queuedFeedEventTransactionMode?: "legacy_autocommit" | "per_event";
+  tradePipelineProfiler?: (sample: TradePipelineProfileSample) => void;
+  tradeDataCoverageNow?: () => Date;
   tradeDataCoverageReadiness?: {
     liveAuthorizationPresent: boolean;
     dataApiKeyConfigured: boolean;
@@ -1480,6 +1485,27 @@ export type ApiServerOptions = {
     };
   };
   watchOrchestrator?: WatchOrchestratorOptions;
+};
+
+export type TradePipelineProfileStage =
+  | "canonical_persistence"
+  | "timeseries_derivatives"
+  | "candidate_context"
+  | "risk_persistence"
+  | "launch_scanner"
+  | "metered_launch_data"
+  | "score_decision"
+  | "live_token_persistence"
+  | "signal_computation"
+  | "scanner_projection"
+  | "decision_signal_persistence"
+  | "paper_observers";
+
+export type TradePipelineProfileSample = {
+  durationMs: number;
+  mint: string;
+  sourceEventKey: string | null;
+  stage: TradePipelineProfileStage;
 };
 
 export type ApiServer = {
@@ -2217,6 +2243,9 @@ function createApiServerWithStorage(
     sourceMode: dataFeedMode,
     estimatedCostPerEventSol:
       (options.meteredLaunchData?.eventCostSolPer10000 ?? 0.01) / 10_000,
+    ...(options.tradeDataCoverageNow
+      ? { now: options.tradeDataCoverageNow }
+      : {}),
     persistence: {
       saveSession: saveTradeDataCoverageSession,
       saveEvent: saveTradeDataCoverageEvent,
@@ -5380,29 +5409,33 @@ function createApiServerWithStorage(
     return scannerProjectionV2.snapshotEnvelope(snapshot);
   }
 
-  function broadcastScannerUpsertV2(mint: string): void {
-    if (scannerClientsV2.size === 0) return;
+  function broadcastScannerUpsertV2(
+    mint: string
+  ): ScannerStreamMessageV2 | null {
     const card = getLiveTokenCardsForUi([mint])[0];
-    if (!card) return;
+    if (!card) return null;
     const message = scannerProjectionV2.upsert(
       liveCardToMomentumScannerRow(card)
     );
-    if (!message || message.type !== "scanner.upsert") return;
-    broadcastV2(message);
+    if (!message || message.type !== "scanner.upsert") return null;
     const previousSignal = scannerSignalsV2.get(mint);
     const nextSignal = message.row.decision.signal;
-    if (previousSignal && previousSignal !== nextSignal) {
-      broadcastV2(
-        scannerProjectionV2.signalTransition({
-          mint,
-          rowVersion: message.row.rowVersion,
-          from: previousSignal,
-          to: nextSignal,
-          generatedAt: message.generatedAt
-        })
-      );
+    if (scannerClientsV2.size > 0) {
+      broadcastV2(message);
+      if (previousSignal && previousSignal !== nextSignal) {
+        broadcastV2(
+          scannerProjectionV2.signalTransition({
+            mint,
+            rowVersion: message.row.rowVersion,
+            from: previousSignal,
+            to: nextSignal,
+            generatedAt: message.generatedAt
+          })
+        );
+      }
     }
     scannerSignalsV2.set(mint, nextSignal);
+    return message;
   }
 
   function buildMomentumSparkline(
@@ -7600,7 +7633,16 @@ function createApiServerWithStorage(
       discoveryCoverage.markQueueTransactionStarted(event);
       tradeDataCoverage.markQueueTransactionStarted(event);
       try {
+        if (
+          event.type === "trade" &&
+          event.source === "pumpportal" &&
+          options.queuedFeedEventTransactionMode !== "legacy_autocommit"
+        ) {
+          runStorageTransaction(() => processFeedEvent(event, true));
+          tradeDataCoverage.markDatabaseCommitted(event);
+        } else {
           processFeedEvent(event);
+        }
       } catch (error) {
         const failed = batch.slice(index);
         discoveryCoverage.markQueueFailedOrDropped(
@@ -7645,7 +7687,10 @@ function createApiServerWithStorage(
     processFeedEvent(event);
   }
 
-  function processFeedEvent(event: FeedEvent): void {
+  function processFeedEvent(
+    event: FeedEvent,
+    deferDatabaseCommitted = false
+  ): void {
     if (event.type === "account_trade") {
       runStorageTransaction(() => {
         saveFeedEvent(event);
@@ -7668,6 +7713,26 @@ function createApiServerWithStorage(
     const launchCandidateExisted = discoveryMint
       ? launchScanner.getCandidate(discoveryMint) !== null
       : false;
+    const shouldProfile =
+      event.type === "trade" &&
+      event.source === "pumpportal" &&
+      options.tradePipelineProfiler !== undefined;
+    let profileStartedAt = performance.now();
+    const profileStage = (stage: TradePipelineProfileStage): void => {
+      const completedAt = performance.now();
+      if (shouldProfile) {
+        options.tradePipelineProfiler?.({
+          durationMs: completedAt - profileStartedAt,
+          mint: event.type === "trade" ? event.mint : "",
+          sourceEventKey:
+            event.type === "trade"
+              ? (event.tradeCoverage?.sourceEventKey ?? null)
+              : null,
+          stage
+        });
+      }
+      profileStartedAt = completedAt;
+    };
 
     tradeDataCoverage.markDatabaseWriteStarted(event);
     const persisted = runStorageTransaction(() => {
@@ -7680,7 +7745,10 @@ function createApiServerWithStorage(
       return { actualDataSummary, identity };
     });
     tradeDataCoverage.markPersistenceCompleted(event);
-    tradeDataCoverage.markDatabaseCommitted(event);
+    if (!deferDatabaseCommitted) {
+      tradeDataCoverage.markDatabaseCommitted(event);
+    }
+    profileStage("canonical_persistence");
     const { actualDataSummary, identity } = persisted;
     const indexerResult = indexerAdapter.ingestFeedEventWithResult(event);
     const identitySummary = toTokenIdentitySummary(identity);
@@ -7763,6 +7831,7 @@ function createApiServerWithStorage(
       indexerAdapter.getDerivatives(candidate.mint)
     );
     tradeDataCoverage.markDerivativeStrengthUpdated(event);
+    profileStage("timeseries_derivatives");
     candidateEngine.updateMetrics(candidate.mint, latestMetrics);
 
     const effectiveMetrics = mergeRollingIntoLegacyMetrics(
@@ -7779,6 +7848,7 @@ function createApiServerWithStorage(
         createPendingChainVerificationSummary(candidate.mint, event.timestamp)
       );
     }
+    profileStage("candidate_context");
 
     const riskSnapshot = riskEngine.evaluateRisk(
       createRiskInput({
@@ -7791,11 +7861,13 @@ function createApiServerWithStorage(
     riskSnapshots.set(candidate.mint, riskSnapshot);
     saveRiskSnapshot(riskSnapshot);
     candidateEngine.updateRisk(candidate.mint, riskSnapshot);
+    profileStage("risk_persistence");
     const launchCandidateView = launchScanner.ingestFeedEvent(event);
     if (launchCandidateView) {
       discoveryCoverage.markCandidateCompleted(event, !launchCandidateExisted);
       discoveryCoverage.markScoreCompleted(event);
     }
+    profileStage("launch_scanner");
     if (event.type === "trade" && event.source === "pumpportal") {
       meteredLaunchData.handlePumpPortalTokenTrade(event);
 
@@ -7803,6 +7875,7 @@ function createApiServerWithStorage(
         disarmPaidData("budget_reached");
       }
     }
+    profileStage("metered_launch_data");
 
     if (event.type === "token_created" && launchCandidateView) {
       try {
@@ -7836,6 +7909,7 @@ function createApiServerWithStorage(
         ? { sourceEventKey: event.tradeCoverage.sourceEventKey }
         : {})
     });
+    profileStage("score_decision");
     const liveToken = liveTokens.ingestLiveFeedEvent(event, {
       candidate,
       ...(decision ? { decision } : {}),
@@ -7874,6 +7948,7 @@ function createApiServerWithStorage(
         );
       }
     }
+    profileStage("live_token_persistence");
 
     if (!decision) {
       app.log.trace({ mint: candidate.mint }, "Candidate decision unavailable");
@@ -7908,22 +7983,25 @@ function createApiServerWithStorage(
       tradeDataCoverage.markSignalComputed(event, decisionEvidence);
     }
     cacheSignal(signal);
+    profileStage("signal_computation");
+    const scannerMessage = broadcastScannerUpsertV2(candidate.mint);
     const scannerProjected =
       event.type === "trade" &&
       event.source === "pumpportal" &&
-      getMomentumScannerRows().some(
-        (row) =>
-          row.mint === event.mint &&
-          (!decisionEvidence ||
-            (row.decisionId === decisionEvidence.decisionId &&
-              row.decisionVersion === decisionEvidence.decisionVersion &&
-              row.decisionSourceEventKey === decisionEvidence.sourceEventKey))
-      );
-    broadcastScannerUpsertV2(candidate.mint);
+      scannerMessage?.type === "scanner.upsert" &&
+      scannerMessage.row.mint === event.mint &&
+      (!decisionEvidence ||
+        (scannerMessage.row.decision.decisionId ===
+          decisionEvidence.decisionId &&
+          scannerMessage.row.decision.decisionVersion ===
+            decisionEvidence.decisionVersion &&
+          scannerMessage.row.decision.sourceEventKey ===
+            decisionEvidence.sourceEventKey));
     if (scannerProjected && decisionEvidence) {
       tradeDataCoverage.markScannerProjected(event, decisionEvidence);
       tradeDataCoverage.markBroadcastCompleted(event);
     }
+    profileStage("scanner_projection");
 
     saveCandidateDecision(decision);
     const storedSignal = saveSignal(signal);
@@ -7932,10 +8010,12 @@ function createApiServerWithStorage(
     } else {
       tradeDataCoverage.markSignalUpdated(event);
     }
+    profileStage("decision_signal_persistence");
     paperOperations.observeSignal(signal);
     paperAutomation.observeSignal(signal);
     paperPortfolio.evaluateEntrySignal(signal);
     paperPortfolio.evaluateExits();
+    profileStage("paper_observers");
     discoveryCoverage.markPersistenceCompleted(event);
 
     if (

@@ -4029,6 +4029,8 @@ describe("@axi/api", () => {
       timestamp: new Date().toISOString()
     });
     server.emitFeedEvent(event);
+    expect(server.scannerProjectionV2.version).toBe(2);
+    expect(server.scannerProjectionV2.metrics.projectionCount).toBe(1);
     const detail = await server.app.inject({
       method: "GET",
       url: `/ui/v2/scanner/${event.candidate.mint}`
@@ -4036,13 +4038,8 @@ describe("@axi/api", () => {
     const upsert = server.scannerProjectionV2.upsert(
       detail.json() as MomentumScannerRow
     );
-    expect(upsert).toMatchObject({
-      schemaVersion: "scanner-stream-v2",
-      type: "scanner.upsert",
-      sequence: 2,
-      row: { mint: event.candidate.mint }
-    });
-    expect(Buffer.byteLength(JSON.stringify(upsert))).toBeLessThan(50_000);
+    expect(upsert).toBeNull();
+    expect(server.scannerProjectionV2.version).toBe(2);
   });
 
   it("GET /ui/momentum-rows returns a discovery-only scanner row", async () => {
